@@ -3,9 +3,11 @@ import { Check, Lock, Shield } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { DropControl } from "@/components/kept/DropControl";
 import { LinkPill } from "@/components/kept/LinkPill";
 import { UtilityBar } from "@/components/kept/UtilityBar";
 import { VesselMount } from "@/components/kept/VesselMount";
+import { VesselStateProvider } from "@/components/kept/vessel-state";
 
 /**
  * kept landing (frontend-specs §12 — `kept Landing.dc.html` adopted).
@@ -179,32 +181,42 @@ export default function MarketingHome() {
 
       <main id="top">
         {/* ───────────────── HERO ───────────────── */}
-        <section className="relative mx-auto grid max-w-[1280px] items-center gap-6 px-6 md:min-h-[calc(100vh-72px)] md:grid-cols-[1.12fr_0.88fr] md:px-12">
-          <div className="relative z-[2] py-10">
-            <h1 className="m-0 font-display text-[clamp(48px,7.4vw,104px)] font-bold leading-[0.95] tracking-[-0.03em]">
-              Drop an HTML file.
-              <br />
-              Get a link.
-              <br />
-              Kept&nbsp;&mdash;&nbsp;
-              <span className="text-accent">forever.</span>
-            </h1>
-            <div className="mt-10 flex flex-wrap items-center gap-3.5">
-              <Button variant="link" size="default">
-                <span className="text-base">&uarr;</span> Drop a file or browse
-              </Button>
-              <LinkPill slug="yourpage.kept.host" />
-            </div>
-            <p className="mono-label mt-6 text-xs text-text-muted">
-              No account needed · drag a file anywhere on this page
-            </p>
-          </div>
+        <VesselStateProvider>
+          <section className="relative mx-auto grid max-w-[1280px] items-center gap-6 px-6 md:min-h-[calc(100vh-72px)] md:grid-cols-[1.12fr_0.88fr] md:px-12">
+            {/* faint vertical column grid (inset by the gutter) */}
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-y-0 left-6 right-6 md:left-12 md:right-12"
+              style={{
+                background:
+                  "repeating-linear-gradient(90deg, transparent 0, transparent calc(8.333% - 1px), color-mix(in srgb, var(--text) 6%, transparent) calc(8.333% - 1px), color-mix(in srgb, var(--text) 6%, transparent) 8.333%)",
+              }}
+            />
 
-          {/* the Vessel mount point */}
-          <div className="relative z-[1] flex items-center justify-center">
-            <VesselMount />
-          </div>
-        </section>
+            <div className="relative z-[2] py-10">
+              <h1 className="m-0 font-display text-[clamp(48px,7.4vw,104px)] font-bold leading-[0.95] tracking-[-0.03em]">
+                Drop an HTML file.
+                <br />
+                Get a link.
+                <br />
+                Kept&nbsp;&mdash;&nbsp;
+                <span className="text-accent">forever.</span>
+              </h1>
+              <div className="mt-10 flex flex-wrap items-center gap-3.5">
+                <DropControl />
+                <LinkPill slug="yourpage.kept.host" />
+              </div>
+              <p className="mono-label mt-6 text-xs text-text-muted">
+                No account needed · drag a file anywhere on this page
+              </p>
+            </div>
+
+            {/* the Vessel mount point */}
+            <div className="relative z-[1] flex items-center justify-center">
+              <VesselMount />
+            </div>
+          </section>
+        </VesselStateProvider>
 
         {/* ───────────────── HOW IT WORKS ───────────────── */}
         <section
