@@ -1,0 +1,15 @@
+{
+  "name": "@kept/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "echo \"@kept/web: dev placeholder (Next.js scaffolded in task 003)\"",
+    "build": "echo \"@kept/web: build placeholder (Next.js scaffolded in task 003)\"",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@kept/shared": "workspace:*"
+  }
+}
