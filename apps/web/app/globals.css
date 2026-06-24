@@ -160,3 +160,28 @@
     letter-spacing: 0.08em;
   }
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Landing keyframes (frontend-specs §6/§7). keptFloat drives the static Vessel
+   idle bob; keptLive is the live-dot pulse. Both are applied via motion-safe:
+   so reduced-motion users see them static.
+   ───────────────────────────────────────────────────────────────────────── */
+@keyframes keptFloat {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+@keyframes keptLive {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--live) 45%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--live) 0%, transparent);
+  }
+}
