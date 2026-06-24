@@ -29,11 +29,17 @@ import { useVesselState } from "@/components/kept/vessel-state";
 const ACCENT_LIGHT = "#6D4AFF";
 const ACCENT_DARK = "#8B6DFF";
 
-/** Smooth urn profile via a spline through control points (design source). */
+/** Smooth egg/ovoid urn profile — taller than wide, belly low (~40% up), a
+ *  continuous taper to a rounded narrower mouth (NO straight wall, so it reads
+ *  as an elegant vessel, not a barrel/can). Outer silhouette bottom→top, then
+ *  inner wall top→bottom for a hollow body with a thin rim. */
 const URN_CONTROL: [number, number][] = [
-  [0.0, -1.06], [0.4, -1.02], [0.72, -0.86], [0.92, -0.54], [1.03, -0.14], [1.04, 0.18],
-  [0.96, 0.5], [0.82, 0.76], [0.71, 0.93], [0.69, 0.99], [0.57, 0.985], [0.57, 0.86],
-  [0.64, 0.58], [0.72, 0.2], [0.74, -0.16], [0.64, -0.5], [0.46, -0.74], [0.28, -0.84], [0.0, -0.86],
+  // outer wall, bottom → mouth
+  [0.0, -1.12], [0.3, -1.06], [0.54, -0.93], [0.72, -0.74], [0.84, -0.5], [0.9, -0.22],
+  [0.89, 0.06], [0.84, 0.34], [0.76, 0.58], [0.67, 0.78], [0.6, 0.94], [0.57, 1.02],
+  // inner wall, mouth → bottom
+  [0.5, 1.02], [0.51, 0.92], [0.58, 0.66], [0.66, 0.34], [0.72, 0.0], [0.74, -0.28],
+  [0.69, -0.56], [0.56, -0.8], [0.34, -0.98], [0.0, -1.0],
 ];
 
 function buildUrnGeometry(): THREE.LatheGeometry {
@@ -207,11 +213,11 @@ function Scene({ reducedMotion }: { reducedMotion: boolean }) {
       // One settled, static pose. No time-driven motion.
       group.scale.setScalar(1);
       group.rotation.set(-0.12, 0, 0);
-      const oy = 0.02;
+      const oy = -0.05;
       orb.position.set(0, oy, 0);
       orbLight.position.set(0, oy, 0);
       glow.position.set(0, oy, 0.2);
-      glow.scale.setScalar(1);
+      glow.scale.setScalar(0.64);
       const inten = 1.45 + health * 0.6;
       orbMaterial.emissiveIntensity = inten;
       orbLight.intensity = inten * 1.15;
@@ -242,7 +248,7 @@ function Scene({ reducedMotion }: { reducedMotion: boolean }) {
     const rise = active ? 0.5 : 0;
     e.rise += (rise - e.rise) * 0.07;
     const ox = px * 0.55;
-    const oy = 0.02 + bob + e.rise;
+    const oy = -0.05 + bob + e.rise;
     const oz = py * -0.2;
 
     // Glow / brightness, out-of-phase pulse; health lifts the floor.
@@ -258,7 +264,7 @@ function Scene({ reducedMotion }: { reducedMotion: boolean }) {
     orbLight.position.set(ox, oy, oz);
     glow.position.set(ox, oy, oz + 0.2);
     glow.scale.setScalar(
-      (0.95 + Math.sin(time * 1.5 + 1.3) * 0.13) * (1 + e.glowBoost * 0.3),
+      (0.62 + Math.sin(time * 1.5 + 1.3) * 0.09) * (1 + e.glowBoost * 0.3),
     );
 
     // Brighten on pointer proximity to the orb (subtle).
@@ -295,8 +301,8 @@ function Scene({ reducedMotion }: { reducedMotion: boolean }) {
             Sized up from the design's 0.16 so it reads as a distinct hovering
             orb whose refraction through the curved glass produces the winged
             halo — never a flat band/disc. radius == uniform, so it can't scale flat. */}
-        <mesh ref={orbRef} material={orbMaterial} position={[0, 0.02, 0]}>
-          <sphereGeometry args={[0.3, 48, 48]} />
+        <mesh ref={orbRef} material={orbMaterial} position={[0, -0.05, 0]}>
+          <sphereGeometry args={[0.22, 48, 48]} />
         </mesh>
         <pointLight ref={orbLightRef} color={accent} intensity={1.8} distance={7} decay={2} />
         <primitive object={glow} />
