@@ -1,0 +1,41 @@
+# @kept/edge — Cloudflare Worker (serving data plane).
+#
+# This Worker serves published pages at `{slug}.kept.host` from R2 (files) + KV
+# (manifest). It reads those two stores ONLY — never the control plane (apps/web),
+# never Supabase. Real routing/serving logic lands in epic E0; task 004 ships an
+# empty skeleton that returns a placeholder/404.
+#
+# BINDING CONTRACT (soft contract with task 005 + task 008 `.env.example`):
+#   - R2 bucket binding:  KEPT_R2
+#   - KV namespace binding: KEPT_KV
+# Task 005 provisions the bucket + namespace and fills in `bucket_name` / `id`
+# below. Until then `wrangler dev`/`deploy` against a real account is gated on 005.
+
+name = "kept-edge"
+main = "src/index.ts"
+compatibility_date = "2026-06-24"
+compatibility_flags = ["nodejs_compat"]
+
+# Serve every first-level subdomain of kept.host. Zone + wildcard DNS are
+# provisioned in task 005; apex `kept.host` and `www`/`app`/`api`/`assets` route
+# to the control plane, not here (reserved labels handled in E0).
+# routes = [
+#   { pattern = "*.kept.host/*", zone_name = "kept.host" }
+# ]
+
+# R2 bucket holding `sites/{siteId}/{versionId}/{path}` objects.
+# `bucket_name` is filled in by task 005.
+[[r2_buckets]]
+binding = "KEPT_R2"
+bucket_name = "kept-sites"
+# preview_bucket_name = "kept-sites-preview"
+
+# KV namespace holding the per-slug manifest (see @kept/shared KvManifest).
+# `id` is filled in by task 005.
+[[kv_namespaces]]
+binding = "KEPT_KV"
+id = "REPLACE_WITH_KV_NAMESPACE_ID_FROM_TASK_005"
+# preview_id = "REPLACE_WITH_PREVIEW_KV_NAMESPACE_ID_FROM_TASK_005"
+
+[observability]
+enabled = true

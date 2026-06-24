@@ -19,6 +19,7 @@ out/
 # Cloudflare / Wrangler
 .wrangler/
 .dev.vars
+worker-configuration.d.ts
 
 # Env / secrets
 .env
