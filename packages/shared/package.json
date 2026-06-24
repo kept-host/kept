@@ -12,5 +12,8 @@
     "build": "echo \"@kept/shared: no build step (consumed as source)\"",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
   }
 }
