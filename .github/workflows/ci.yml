@@ -1,0 +1,57 @@
+name: CI
+
+# Validate-on-merge only: install -> typecheck -> lint -> build across the
+# workspace. NO deploy here. Tag-based dev/prod release automation (Railway for
+# apps/web, Wrangler for apps/edge) is owned by epic E-CI and lives in separate
+# workflows.
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Typecheck / Lint / Build
+    runs-on: ubuntu-latest
+    # Node 22 across the board: apps/edge uses wrangler 4.x which requires
+    # Node >=22. apps/web + packages/shared run fine on 22 too, so a single
+    # version keeps the Turbo graph (lint/typecheck/build dependsOn ^build)
+    # intact in one job rather than splitting the workspace across runners.
+    env:
+      NODE_VERSION: "22"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.13.1
+
+      - name: Setup Node ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Build
+        run: pnpm build
