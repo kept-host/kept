@@ -1,0 +1,162 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* next-themes sets data-theme on <html>; make Tailwind's `dark:` variant read it
+   so dark-only utilities (e.g. icon swaps) track the kept dark token block. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* ─────────────────────────────────────────────────────────────────────────
+   kept design tokens — single source of truth (frontend-specs §3).
+   Defined once as CSS variables; exposed to Tailwind v4 via @theme inline;
+   shadcn's CSS vars are pointed at them below. Theme toggle swaps the
+   [data-theme="dark"] block. NEVER hardcode a hex elsewhere — use tokens.
+   ───────────────────────────────────────────────────────────────────────── */
+
+:root {
+  --bg: #faf8f4;
+  --surface: #ffffff;
+  --surface-sunken: #f2efe9;
+  --text: #1a1714;
+  --text-secondary: #6b645c;
+  --text-muted: #9b948b;
+  --border: #e5e0d8;
+  --accent: #6d4aff;
+  --accent-hover: #5b38f0;
+  --accent-soft: #ede9ff;
+  --live: #3fb950;
+  --warning: #e0a33a;
+  --danger: #e5484d;
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 24px;
+  --r-pill: 999px;
+  --shadow-sm: 0 1px 2px rgba(40, 30, 20, 0.05);
+  --shadow-md: 0 4px 16px rgba(40, 30, 20, 0.08);
+  --shadow-lg: 0 12px 40px rgba(40, 30, 20, 0.12);
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+[data-theme="dark"] {
+  --bg: #131210;
+  --surface: #1e1b17;
+  --surface-sunken: #0e0d0b;
+  --text: #f5f1ea;
+  --text-secondary: #a8a096;
+  --text-muted: #6e6760;
+  --border: #2a2620;
+  --accent: #8b6dff;
+  --accent-hover: #9d83ff;
+  --accent-soft: #221b3a;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-sunken: var(--surface-sunken);
+  --color-text: var(--text);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-live: var(--live);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --radius-sm: var(--r-sm);
+  --radius-md: var(--r-md);
+  --radius-lg: var(--r-lg);
+  --radius-xl: var(--r-xl);
+  --font-display: "Hanken Grotesk", sans-serif;
+  --font-body: "Geist", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+
+  /* next/font binds the actual face files to these variables; fall back to the
+     family names above so a stock screen still reads as kept. */
+  --font-display: var(--font-display-face, "Hanken Grotesk"), sans-serif;
+  --font-body: var(--font-geist-sans, "Geist"), sans-serif;
+  --font-mono: var(--font-mono-face, "JetBrains Mono"), monospace;
+
+  --ease-out: var(--ease-out);
+  --ease-spring: var(--ease-spring);
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   shadcn/ui bridge — its component classes read these var names. Point every
+   one at a kept token so nothing renders as stock shadcn. No new colors here.
+   ───────────────────────────────────────────────────────────────────────── */
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--text);
+  --color-card: var(--surface);
+  --color-card-foreground: var(--text);
+  --color-popover: var(--surface);
+  --color-popover-foreground: var(--text);
+  --color-primary: var(--accent);
+  --color-primary-foreground: #ffffff;
+  --color-secondary: var(--surface-sunken);
+  --color-secondary-foreground: var(--text);
+  --color-muted: var(--surface-sunken);
+  --color-muted-foreground: var(--text-muted);
+  --color-accent-shadcn: var(--accent-soft);
+  --color-accent-foreground: var(--accent);
+  --color-destructive: var(--danger);
+  --color-destructive-foreground: #ffffff;
+  --color-border: var(--border);
+  --color-input: var(--border);
+  --color-ring: var(--accent);
+  --radius: var(--r-md);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  html {
+    color-scheme: light;
+  }
+
+  html[data-theme="dark"] {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--bg);
+    color: var(--text);
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Visible keyboard focus = accent ring (quality floor §10). */
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background-color: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  /* Display set large & tight; mono labels uppercase + tracked (§5). */
+  .font-display {
+    letter-spacing: -0.03em;
+    line-height: 0.95;
+  }
+
+  .mono-label {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+}
