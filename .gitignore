@@ -36,3 +36,6 @@ pnpm-debug.log*
 coverage/
 .vercel/
 *.tsbuildinfo
+
+# Playwright MCP scratch
+.playwright-mcp/
