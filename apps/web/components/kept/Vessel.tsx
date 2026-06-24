@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { ContactShadows } from "@react-three/drei";
 import { useTheme } from "next-themes";
 import * as THREE from "three";
 
@@ -118,20 +119,26 @@ function Scene({ reducedMotion }: { reducedMotion: boolean }) {
   const geometry = React.useMemo(buildUrnGeometry, []);
   const material = React.useMemo(
     () =>
+      // Crisp translucent frosted glass. Lower roughness than the design's
+      // r0.150 source (0.18 → 0.12) so the PMREM env paints clean highlights
+      // under r0.184's physically-correct lighting (post-r155 useLegacyLights
+      // default flip made the old values read milky/plastic). Thickness pulled
+      // from 1.8 → 0.9 so the orb refracts as a rounded SPHERE through the wall
+      // instead of smearing into a horizontal "liquid" band. ior 1.45 glass.
       new THREE.MeshPhysicalMaterial({
         color: 0xffffff,
-        roughness: 0.18,
+        roughness: 0.12,
         metalness: 0,
         transmission: 1,
-        thickness: 1.8,
-        ior: 1.42,
-        clearcoat: 0.7,
-        clearcoatRoughness: 0.35,
+        thickness: 0.9,
+        ior: 1.45,
+        clearcoat: 0.6,
+        clearcoatRoughness: 0.28,
         attenuationColor: new THREE.Color(0xece6ff),
-        attenuationDistance: 1.8,
+        attenuationDistance: 2.2,
         transparent: true,
         side: THREE.DoubleSide,
-        envMapIntensity: 1.15,
+        envMapIntensity: 1.25,
       }),
     [],
   );
@@ -141,7 +148,8 @@ function Scene({ reducedMotion }: { reducedMotion: boolean }) {
         color: ACCENT_LIGHT,
         emissive: ACCENT_LIGHT,
         emissiveIntensity: 1.8,
-        roughness: 0.45,
+        roughness: 0.4,
+        toneMapped: false,
       }),
     [],
   );
@@ -167,8 +175,8 @@ function Scene({ reducedMotion }: { reducedMotion: boolean }) {
   React.useEffect(() => {
     material.color.set(dark ? 0x6a6490 : 0xffffff);
     material.attenuationColor.set(dark ? 0x322b52 : 0xece6ff);
-    material.roughness = dark ? 0.28 : 0.18;
-    material.envMapIntensity = dark ? 0.75 : 1.15;
+    material.roughness = dark ? 0.2 : 0.12;
+    material.envMapIntensity = dark ? 0.85 : 1.25;
     orbMaterial.color.set(accent);
     orbMaterial.emissive.set(accent);
     if (orbLightRef.current) orbLightRef.current.color.set(accent);
@@ -261,19 +269,39 @@ function Scene({ reducedMotion }: { reducedMotion: boolean }) {
   });
 
   return (
-    <group ref={groupRef}>
+    <>
+      {/* World-fixed studio rig (design adds these to the scene, NOT the rotating
+          group) — keeps the key/fill/rim stable so glass highlights don't swim
+          as the vessel turns. */}
       <ambientLight intensity={0.4} />
       <directionalLight position={[3, 5, 4]} intensity={1.1} />
       <directionalLight color={0xc9b8ff} position={[-4, 1, 2]} intensity={0.45} />
       <directionalLight position={[-2, 3, -4]} intensity={0.8} />
 
-      <mesh geometry={geometry} material={material} />
-      <mesh ref={orbRef} material={orbMaterial} position={[0, 0.02, 0]}>
-        <sphereGeometry args={[0.16, 32, 32]} />
-      </mesh>
-      <pointLight ref={orbLightRef} color={accent} intensity={1.8} distance={7} decay={2} />
-      <primitive object={glow} />
-    </group>
+      {/* Soft contact shadow pooled under the urn's foot (y ≈ -1.06). */}
+      <ContactShadows
+        position={[0, -1.12, 0]}
+        scale={3.4}
+        opacity={dark ? 0.5 : 0.32}
+        blur={2.6}
+        far={2.2}
+        resolution={512}
+        color={dark ? "#000000" : "#2a2014"}
+      />
+
+      <group ref={groupRef}>
+        <mesh geometry={geometry} material={material} />
+        {/* A real SPHERE (~0.30 of the ~1.04 belly width), self-luminous violet.
+            Sized up from the design's 0.16 so it reads as a distinct hovering
+            orb whose refraction through the curved glass produces the winged
+            halo — never a flat band/disc. radius == uniform, so it can't scale flat. */}
+        <mesh ref={orbRef} material={orbMaterial} position={[0, 0.02, 0]}>
+          <sphereGeometry args={[0.3, 48, 48]} />
+        </mesh>
+        <pointLight ref={orbLightRef} color={accent} intensity={1.8} distance={7} decay={2} />
+        <primitive object={glow} />
+      </group>
+    </>
   );
 }
 

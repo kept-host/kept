@@ -24,9 +24,10 @@ export function VesselStill() {
       {/* the vessel — a glassy urn with a glowing accent orb */}
       <div
         aria-hidden
-        className="motion-safe:animate-[keptFloat_7s_ease-in-out_infinite] relative h-[280px] w-[240px] border border-[color-mix(in_srgb,var(--surface)_50%,transparent)]"
+        className="motion-safe:animate-[keptFloat_7s_ease-in-out_infinite] relative h-[300px] w-[220px] border border-[color-mix(in_srgb,var(--surface)_50%,transparent)]"
         style={{
-          borderRadius: "42% 42% 46% 46% / 46% 46% 50% 50%",
+          // Tapered urn: narrower rounded mouth up top, fuller belly below.
+          borderRadius: "44% 44% 48% 48% / 32% 32% 60% 60%",
           background:
             "radial-gradient(58% 52% at 50% 60%, color-mix(in srgb, var(--accent) 55%, transparent), transparent 62%), linear-gradient(160deg, color-mix(in srgb, var(--surface) 92%, #fff), color-mix(in srgb, var(--bg) 60%, var(--accent-soft)))",
           boxShadow:
