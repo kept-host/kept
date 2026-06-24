@@ -6,10 +6,11 @@
 # empty skeleton that returns a placeholder/404.
 #
 # BINDING CONTRACT (soft contract with task 005 + task 008 `.env.example`):
-#   - R2 bucket binding:  KEPT_R2
-#   - KV namespace binding: KEPT_KV
-# Task 005 provisions the bucket + namespace and fills in `bucket_name` / `id`
-# below. Until then `wrangler dev`/`deploy` against a real account is gated on 005.
+#   - R2 bucket binding:  KEPT_R2  → auto-kept-sites-dev (v1-active, region "auto")
+#   - KV namespace binding: KEPT_KV → kept-manifest-dev
+# An EU-residency bucket (eu-kept-sites-dev) also exists; its Worker binding
+# (KEPT_R2_EU) is added in E8 when region="eu" routing activates — the v1 skeleton
+# reads neither store yet (E0 wires reads), so it stays unbound here for now.
 
 name = "kept-edge"
 main = "src/index.ts"
@@ -23,19 +24,18 @@ compatibility_flags = ["nodejs_compat"]
 #   { pattern = "*.kept.host/*", zone_name = "kept.host" }
 # ]
 
-# R2 bucket holding `sites/{siteId}/{versionId}/{path}` objects.
-# `bucket_name` is filled in by task 005.
+# R2 bucket holding `sites/{siteId}/{versionId}/{path}` objects (default region).
 [[r2_buckets]]
 binding = "KEPT_R2"
-bucket_name = "kept-sites"
-# preview_bucket_name = "kept-sites-preview"
+bucket_name = "auto-kept-sites-dev"
+# preview_bucket_name = "auto-kept-sites-preview"
 
 # KV namespace holding the per-slug manifest (see @kept/shared KvManifest).
-# `id` is filled in by task 005.
+# Paste the "kept-manifest-dev" namespace ID below.
 [[kv_namespaces]]
 binding = "KEPT_KV"
-id = "REPLACE_WITH_KV_NAMESPACE_ID_FROM_TASK_005"
-# preview_id = "REPLACE_WITH_PREVIEW_KV_NAMESPACE_ID_FROM_TASK_005"
+id = "fd5c0c7fbd9147f4849f65d59cdcd14c"
+# preview_id = "REPLACE_WITH_PREVIEW_KV_NAMESPACE_ID"
 
 [observability]
 enabled = true
