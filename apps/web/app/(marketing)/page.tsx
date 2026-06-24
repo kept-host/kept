@@ -5,8 +5,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DropControl } from "@/components/kept/DropControl";
 import { LinkPill } from "@/components/kept/LinkPill";
+import { Reveal, RevealGroup, RevealItem } from "@/components/kept/Reveal";
 import { UtilityBar } from "@/components/kept/UtilityBar";
-import { VesselMount } from "@/components/kept/VesselMount";
+import { VesselScrollStage } from "@/components/kept/VesselScrollStage";
 import { VesselStateProvider } from "@/components/kept/vessel-state";
 
 /**
@@ -180,86 +181,89 @@ export default function MarketingHome() {
       <UtilityBar />
 
       <main id="top">
-        {/* ───────────────── HERO ───────────────── */}
+        {/* ───────── PINNED VESSEL SCROLL STAGE (hero + how + agents) ───────── */}
         <VesselStateProvider>
-          <section className="relative mx-auto grid max-w-[1280px] items-center gap-6 px-6 md:min-h-[calc(100vh-72px)] md:grid-cols-[1.12fr_0.88fr] md:px-12">
-            {/* faint vertical column grid (inset by the gutter) */}
-            <div
-              aria-hidden
-              className="pointer-events-none absolute inset-y-0 left-6 right-6 md:left-12 md:right-12"
-              style={{
-                background:
-                  "repeating-linear-gradient(90deg, transparent 0, transparent calc(8.333% - 1px), color-mix(in srgb, var(--text) 6%, transparent) calc(8.333% - 1px), color-mix(in srgb, var(--text) 6%, transparent) 8.333%)",
-              }}
-            />
-
-            <div className="relative z-[2] py-10">
-              <h1 className="m-0 font-display text-[clamp(48px,7.4vw,104px)] font-bold leading-[0.95] tracking-[-0.03em]">
-                Drop an HTML file.
-                <br />
-                Get a link.
-                <br />
-                Kept&nbsp;&mdash;&nbsp;
-                <span className="text-accent">forever.</span>
-              </h1>
-              <div className="mt-10 flex flex-wrap items-center gap-3.5">
-                <DropControl />
-                <LinkPill slug="yourpage.kept.host" />
-              </div>
-              <p className="mono-label mt-6 text-xs text-text-muted">
-                No account needed · drag a file anywhere on this page
-              </p>
-            </div>
-
-            {/* the Vessel mount point */}
-            <div className="relative z-[1] flex items-center justify-center">
-              <VesselMount />
-            </div>
-          </section>
-        </VesselStateProvider>
-
-        {/* ───────────────── HOW IT WORKS ───────────────── */}
-        <section
-          id="how"
-          className="mx-auto max-w-[1280px] border-t border-border px-6 py-[120px] md:px-12"
-        >
-          <p className="mono-label mb-3.5 text-xs text-text-muted">
-            How it works
-          </p>
-          <h2 className="m-0 mb-16 max-w-[14ch] font-display text-[clamp(32px,4.4vw,56px)] font-bold leading-none tracking-[-0.03em]">
-            Three steps. No build, no Git, no account.
-          </h2>
-          <div className="grid gap-px overflow-hidden rounded-[var(--r-lg)] border border-border bg-border md:grid-cols-3">
-            {HOW_STEPS.map((step) => (
+          <VesselScrollStage>
+            {/* ───────────────── HERO ───────────────── */}
+            <section className="relative mx-auto grid max-w-[1280px] items-center gap-6 px-6 md:min-h-[calc(100vh-72px)] md:grid-cols-[1.12fr_0.88fr] md:px-12">
+              {/* faint vertical column grid (inset by the gutter) */}
               <div
-                key={step.n}
-                className="flex min-h-[260px] flex-col bg-bg p-9"
-              >
-                <span className="font-mono text-[13px] text-accent">
-                  {step.n}
-                </span>
-                <div className="mt-auto">
-                  <div className="mb-4.5 text-text">{step.icon}</div>
-                  <h3 className="m-0 mb-2.5 font-display text-2xl font-semibold tracking-[-0.02em]">
-                    {step.title}
-                  </h3>
-                  <p className="m-0 text-[15px] leading-[1.55] text-text-secondary">
-                    {step.body}
-                  </p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
+                aria-hidden
+                className="pointer-events-none absolute inset-y-0 left-6 right-6 md:left-12 md:right-12"
+                style={{
+                  background:
+                    "repeating-linear-gradient(90deg, transparent 0, transparent calc(8.333% - 1px), color-mix(in srgb, var(--text) 6%, transparent) calc(8.333% - 1px), color-mix(in srgb, var(--text) 6%, transparent) 8.333%)",
+                }}
+              />
 
-        {/* ───────────────── FOR AGENTS (MCP) ───────────────── */}
-        <section
-          id="agents"
-          className="mx-auto max-w-[1280px] border-t border-border px-6 py-[120px] md:px-12"
-        >
-          <div className="grid items-center gap-16 md:grid-cols-[1fr_1.02fr]">
-            {/* copy */}
-            <div>
+              <div className="relative z-[2] py-10">
+                <h1 className="m-0 font-display text-[clamp(48px,7.4vw,104px)] font-bold leading-[0.95] tracking-[-0.03em]">
+                  Drop an HTML file.
+                  <br />
+                  Get a link.
+                  <br />
+                  Kept&nbsp;&mdash;&nbsp;
+                  <span className="text-accent">forever.</span>
+                </h1>
+                <div className="mt-10 flex flex-wrap items-center gap-3.5">
+                  <DropControl />
+                  <LinkPill slug="yourpage.kept.host" />
+                </div>
+                <p className="mono-label mt-6 text-xs text-text-muted">
+                  No account needed · drag a file anywhere on this page
+                </p>
+              </div>
+
+              {/* Spacer reserving the hero's right column — the Vessel canvas is
+                  rendered once in VesselScrollStage's pinned layer and shows
+                  through here, so it stays mounted as the page scrolls. */}
+              <div aria-hidden className="h-[560px]" />
+            </section>
+
+            {/* ───────────────── HOW IT WORKS ───────────────── */}
+            <section
+              id="how"
+              className="mx-auto max-w-[1280px] border-t border-border px-6 py-[120px] md:px-12"
+            >
+              <Reveal>
+                <p className="mono-label mb-3.5 text-xs text-text-muted">
+                  How it works
+                </p>
+                <h2 className="m-0 mb-16 max-w-[14ch] font-display text-[clamp(32px,4.4vw,56px)] font-bold leading-none tracking-[-0.03em]">
+                  Three steps. No build, no Git, no account.
+                </h2>
+              </Reveal>
+              <RevealGroup className="grid gap-px overflow-hidden rounded-[var(--r-lg)] border border-border bg-border md:grid-cols-3">
+                {HOW_STEPS.map((step) => (
+                  <RevealItem
+                    key={step.n}
+                    className="flex min-h-[260px] flex-col bg-bg p-9"
+                  >
+                    <span className="font-mono text-[13px] text-accent">
+                      {step.n}
+                    </span>
+                    <div className="mt-auto">
+                      <div className="mb-4.5 text-text">{step.icon}</div>
+                      <h3 className="m-0 mb-2.5 font-display text-2xl font-semibold tracking-[-0.02em]">
+                        {step.title}
+                      </h3>
+                      <p className="m-0 text-[15px] leading-[1.55] text-text-secondary">
+                        {step.body}
+                      </p>
+                    </div>
+                  </RevealItem>
+                ))}
+              </RevealGroup>
+            </section>
+
+            {/* ───────────────── FOR AGENTS (MCP) ───────────────── */}
+            <section
+              id="agents"
+              className="mx-auto max-w-[1280px] border-t border-border px-6 py-[120px] md:px-12"
+            >
+              <div className="grid items-center gap-16 md:grid-cols-[1fr_1.02fr]">
+                {/* copy */}
+                <Reveal>
               <div className="mb-4.5 flex items-center gap-3">
                 <span className="mono-label text-xs text-text-muted">
                   Built for the AI era
@@ -317,10 +321,13 @@ export default function MarketingHome() {
                   Read the docs &rarr;
                 </Button>
               </div>
-            </div>
+            </Reveal>
 
             {/* tool-call snippet card */}
-            <div className="overflow-hidden rounded-[var(--r-lg)] border border-border bg-surface shadow-[var(--shadow-lg)]">
+            <Reveal
+              delay={0.1}
+              className="overflow-hidden rounded-[var(--r-lg)] border border-border bg-surface shadow-[var(--shadow-lg)]"
+            >
               <div className="flex items-center gap-2.5 border-b border-border bg-sunken px-4.5 py-3.5">
                 <div className="flex gap-1.5">
                   <span className="size-2.5 rounded-full bg-border" />
@@ -382,16 +389,18 @@ export default function MarketingHome() {
                   link returned to the agent · kept online, permanently
                 </span>
               </div>
-            </div>
-          </div>
-        </section>
+            </Reveal>
+              </div>
+            </section>
+          </VesselScrollStage>
+        </VesselStateProvider>
 
         {/* ───────────────── GAUGE TEASER (ink panel) ───────────────── */}
         <section
           id="gauge"
           className="mx-auto max-w-[1280px] px-6 pb-[120px] md:px-12"
         >
-          <div
+          <Reveal
             data-theme="dark"
             className="relative overflow-hidden rounded-[var(--r-xl)] bg-bg p-8 text-text md:p-14"
           >
@@ -429,7 +438,7 @@ export default function MarketingHome() {
                 ))}
               </div>
             </div>
-          </div>
+          </Reveal>
         </section>
 
         {/* ───────────────── WHY KEPT ───────────────── */}
@@ -437,18 +446,20 @@ export default function MarketingHome() {
           id="why"
           className="mx-auto max-w-[1280px] px-6 pb-[120px] md:px-12"
         >
-          <h2 className="m-0 mb-3 font-display text-[clamp(40px,6.5vw,96px)] font-bold leading-[0.98] tracking-[-0.03em]">
-            This link
-            <br />
-            won&rsquo;t rot.
-          </h2>
-          <p className="m-0 mb-[72px] max-w-[48ch] text-lg leading-[1.6] text-text-secondary">
-            Most &ldquo;free&rdquo; hosts quietly delete you. kept is built to do
-            the opposite &mdash; and to prove it in the open.
-          </p>
-          <div className="grid gap-10 md:grid-cols-3">
+          <Reveal>
+            <h2 className="m-0 mb-3 font-display text-[clamp(40px,6.5vw,96px)] font-bold leading-[0.98] tracking-[-0.03em]">
+              This link
+              <br />
+              won&rsquo;t rot.
+            </h2>
+            <p className="m-0 mb-[72px] max-w-[48ch] text-lg leading-[1.6] text-text-secondary">
+              Most &ldquo;free&rdquo; hosts quietly delete you. kept is built to
+              do the opposite &mdash; and to prove it in the open.
+            </p>
+          </Reveal>
+          <RevealGroup className="grid gap-10 md:grid-cols-3">
             {WHY_CARDS.map((card) => (
-              <div key={card.title}>
+              <RevealItem key={card.title}>
                 <p className="mono-label mb-4.5 border-b border-border pb-4.5 text-xs text-accent">
                   {card.kicker}
                 </p>
@@ -458,9 +469,9 @@ export default function MarketingHome() {
                 <p className="m-0 text-[15px] leading-[1.6] text-text-secondary">
                   {card.body}
                 </p>
-              </div>
+              </RevealItem>
             ))}
-          </div>
+          </RevealGroup>
         </section>
 
         {/* ───────────────── FREE + PRO ───────────────── */}
@@ -470,7 +481,7 @@ export default function MarketingHome() {
         >
           <div className="grid items-stretch gap-6 md:grid-cols-[1.3fr_1fr]">
             {/* Free */}
-            <div className="relative overflow-hidden rounded-[var(--r-xl)] border-[1.5px] border-accent bg-surface p-8 shadow-[var(--shadow-md)] md:p-12">
+            <Reveal className="relative overflow-hidden rounded-[var(--r-xl)] border-[1.5px] border-accent bg-surface p-8 shadow-[var(--shadow-md)] md:p-12">
               <Badge className="absolute right-6 top-6">Free forever</Badge>
               <h3 className="m-0 mb-2 font-display text-[clamp(32px,4vw,52px)] font-bold tracking-[-0.03em]">
                 Free
@@ -490,10 +501,13 @@ export default function MarketingHome() {
                 ))}
               </div>
               <Button className="mt-9">Drop a file to start</Button>
-            </div>
+            </Reveal>
 
             {/* Pro */}
-            <div className="flex flex-col rounded-[var(--r-xl)] border border-dashed border-border bg-sunken p-8 md:p-12">
+            <Reveal
+              delay={0.1}
+              className="flex flex-col rounded-[var(--r-xl)] border border-dashed border-border bg-sunken p-8 md:p-12"
+            >
               <div className="mb-2 flex items-center gap-2.5">
                 <h3 className="m-0 font-display text-[26px] font-semibold tracking-[-0.02em] text-text-secondary">
                   Pro
@@ -529,7 +543,7 @@ export default function MarketingHome() {
                   <Button variant="secondary">Notify me about Pro</Button>
                 </div>
               </div>
-            </div>
+            </Reveal>
           </div>
         </section>
       </main>

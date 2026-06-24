@@ -230,8 +230,11 @@ function Scene({ reducedMotion }: { reducedMotion: boolean }) {
     const px = state.pointer.x * 0.5;
     const py = state.pointer.y * 0.5;
 
-    // Scroll scrub (Phase 2 drives scrollProgress; ease toward it).
+    // Scroll scrub (Phase 2 drives scrollProgress; ease toward it). A gentle
+    // ease-out shaping (not linear) so the side-turn reads deliberate/premium.
     e.scroll += (scrollProgress - e.scroll) * 0.08;
+    const s = e.scroll;
+    const scrollEased = 1 - (1 - s) * (1 - s); // quad ease-out
 
     // Vessel breathing + drag inhale.
     const breathe = 1 + Math.sin(time * 0.8) * 0.018;
@@ -240,23 +243,31 @@ function Scene({ reducedMotion }: { reducedMotion: boolean }) {
     group.scale.setScalar(breathe * e.scale);
 
     // Rotation: slow drift + scroll scrub + pointer parallax (vessel moves less).
-    group.rotation.y = time * 0.12 + e.scroll * Math.PI * 0.55 + px * 0.35;
-    group.rotation.x = -0.12 + Math.sin(time * 0.5) * 0.035 - py * 0.18 - e.scroll * 0.18;
+    // The scroll turns the urn to its side (rotation.y) and tips it forward
+    // (rotation.x), so the contained orb swings into profile as the page advances.
+    group.rotation.y = time * 0.12 + scrollEased * Math.PI * 0.62 + px * 0.4;
+    group.rotation.x =
+      -0.12 + Math.sin(time * 0.5) * 0.035 - py * 0.2 - scrollEased * 0.24;
 
     // Orb bob (independent, faster) + parallax (orb moves more) + rise on drag.
+    // Pointer parallax pushed a touch livelier (0.55→0.62) so the orb feels more
+    // alive under the cursor, still eased by R3F's smoothed pointer.
     const bob = Math.sin(time * 2.2) * 0.11;
     const rise = active ? 0.5 : 0;
     e.rise += (rise - e.rise) * 0.07;
-    const ox = px * 0.55;
+    const ox = px * 0.62;
     const oy = -0.05 + bob + e.rise;
-    const oz = py * -0.2;
+    const oz = py * -0.22;
 
-    // Glow / brightness, out-of-phase pulse; health lifts the floor.
+    // Glow / brightness, out-of-phase pulse; health lifts the floor; scroll
+    // intensifies the orb as the vessel turns into profile (the light the page's
+    // ambient glow layer mirrors). Eased, so it swells rather than snaps.
     const basePulse = 1.45 + Math.sin(time * 1.5 + 1.3) * 0.45;
     const dragBoost = active ? 0.9 : 0;
     const healthBoost = (health - 0.5) * 0.8;
+    const scrollGlow = Math.sin(scrollEased * Math.PI) * 1.0; // peaks mid-scroll
     e.glowBoost *= 0.94;
-    const inten = basePulse + dragBoost + healthBoost + e.glowBoost;
+    const inten = basePulse + dragBoost + healthBoost + scrollGlow + e.glowBoost;
     orbMaterial.emissiveIntensity = inten;
     orbLight.intensity = inten * 1.15;
 
@@ -264,12 +275,14 @@ function Scene({ reducedMotion }: { reducedMotion: boolean }) {
     orbLight.position.set(ox, oy, oz);
     glow.position.set(ox, oy, oz + 0.2);
     glow.scale.setScalar(
-      (0.62 + Math.sin(time * 1.5 + 1.3) * 0.09) * (1 + e.glowBoost * 0.3),
+      (0.62 + Math.sin(time * 1.5 + 1.3) * 0.09 + scrollGlow * 0.12) *
+        (1 + e.glowBoost * 0.3),
     );
 
-    // Brighten on pointer proximity to the orb (subtle).
+    // Brighten on pointer proximity to the orb (a bit punchier, still subtle).
     const prox = 1 - Math.min(1, Math.hypot(state.pointer.x, state.pointer.y));
-    orbLight.intensity += prox * 0.25;
+    orbLight.intensity += prox * 0.35;
+    orbMaterial.emissiveIntensity += prox * 0.12;
 
     void delta;
   });
