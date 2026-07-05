@@ -39,3 +39,6 @@ coverage/
 
 # Playwright MCP scratch
 .playwright-mcp/
+
+# Design handoff bundles (local reference only)
+*handoff.zip
