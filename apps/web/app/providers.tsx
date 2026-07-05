@@ -14,8 +14,9 @@ export function Providers({ children }: { children: ReactNode }) {
   return (
     <ThemeProvider
       attribute="data-theme"
-      defaultTheme="system"
-      enableSystem
+      defaultTheme="light"
+      forcedTheme="light"
+      enableSystem={false}
       disableTransitionOnChange
     >
       <TooltipProvider delayDuration={200}>{children}</TooltipProvider>

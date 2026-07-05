@@ -72,15 +72,13 @@
   --radius-md: var(--r-md);
   --radius-lg: var(--r-lg);
   --radius-xl: var(--r-xl);
-  --font-display: "Hanken Grotesk", sans-serif;
-  --font-body: "Geist", sans-serif;
-  --font-mono: "JetBrains Mono", monospace;
-
-  /* next/font binds the actual face files to these variables; fall back to the
-     family names above so a stock screen still reads as kept. */
-  --font-display: var(--font-display-face, "Hanken Grotesk"), sans-serif;
-  --font-body: var(--font-geist-sans, "Geist"), sans-serif;
-  --font-mono: var(--font-mono-face, "JetBrains Mono"), monospace;
+  /* Claude Design v2: Geist display · Inter body · JetBrains Mono.
+     next/font binds the actual face files to these variables; fall back to the
+     family names so a stock screen still reads as kept. */
+  --font-display: var(--font-geist-sans, "Geist"), system-ui, sans-serif;
+  --font-body: var(--font-body-face, "Inter"), system-ui, sans-serif;
+  --font-mono:
+    var(--font-mono-face, "JetBrains Mono"), ui-monospace, monospace;
 
   --ease-out: var(--ease-out);
   --ease-spring: var(--ease-spring);
@@ -179,9 +177,103 @@
 @keyframes keptLive {
   0%,
   100% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--live) 45%, transparent);
+    box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.5);
   }
   50% {
-    box-shadow: 0 0 0 5px color-mix(in srgb, var(--live) 0%, transparent);
+    box-shadow: 0 0 0 5px rgba(63, 185, 80, 0);
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   kept Landing v2 (Claude Design) — the "drop box" choreography stylesheet.
+   Ported verbatim from `kept Landing v2.dc.html`'s <style> block: the mobile
+   slot, and the ≤820px overrides that flatten the pinned sections and reflow
+   the grids. The :root tokens and @keyframes already live above (values match).
+   ───────────────────────────────────────────────────────────────────────── */
+#hero-mobile-slot {
+  display: none;
+}
+@media (max-width: 820px) {
+  #nav-links,
+  #nav-divider,
+  #scroll-hint,
+  #wall-hole,
+  #how-hint,
+  [data-hide-mobile] {
+    display: none !important;
+  }
+  #nav-inner {
+    padding: 0 20px !important;
+  }
+  [data-container="1"] {
+    padding: 0 24px !important;
+  }
+  #wall {
+    width: 340vw !important;
+  }
+  #hero-scrim {
+    background: linear-gradient(
+      to bottom,
+      rgba(250, 248, 244, 0.94) 0%,
+      rgba(250, 248, 244, 0.8) 46%,
+      rgba(250, 248, 244, 0.52) 100%
+    ) !important;
+  }
+  #hero-h1 {
+    font-size: clamp(34px, 10.5vw, 52px) !important;
+  }
+  #hero-mobile-slot {
+    display: block;
+  }
+  #cta-live {
+    left: 24px !important;
+    right: 24px !important;
+    max-width: none !important;
+  }
+  #cta-live h1 {
+    font-size: clamp(30px, 9vw, 46px) !important;
+  }
+  #how-grid {
+    grid-template-columns: 1fr !important;
+  }
+  #how-grid [data-step] {
+    min-height: 250px !important;
+    padding: 24px 20px !important;
+  }
+  #agents-grid {
+    grid-template-columns: 1fr !important;
+    gap: 40px !important;
+  }
+  #agents-grid > div {
+    min-width: 0;
+  }
+  #gauge,
+  #why,
+  #pricing {
+    padding: 0 24px 90px !important;
+  }
+  #gauge-card {
+    padding: 32px 24px !important;
+  }
+  #gauge-grid {
+    grid-template-columns: 1fr !important;
+    gap: 36px !important;
+  }
+  #gauge-dots {
+    grid-template-columns: repeat(16, 1fr) !important;
+    gap: 5px !important;
+  }
+  #why-grid {
+    grid-template-columns: 1fr !important;
+    gap: 32px !important;
+  }
+  #pricing-grid {
+    grid-template-columns: 1fr !important;
+  }
+  #pricing-grid > div {
+    padding: 32px 24px !important;
+  }
+  #footer-inner {
+    padding: 72px 24px 40px !important;
   }
 }
