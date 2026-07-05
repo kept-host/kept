@@ -37,6 +37,14 @@ coverage/
 .vercel/
 *.tsbuildinfo
 
+# Playwright
+/test-results/
+/playwright-report/
+/.playwright/
+**/test-results/
+**/playwright-report/
+**/.playwright/
+
 # Playwright MCP scratch
 .playwright-mcp/
 
