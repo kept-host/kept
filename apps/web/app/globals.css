@@ -184,6 +184,29 @@
   }
 }
 
+/* keptGaugeRipple: a soft glow wave that travels outward from the anchor dot
+   through the funded (accent) dots. Per-dot phase comes from --ripple-delay,
+   set inline from each dot's distance to the anchor. Glow/brightness only —
+   no transform — so it never fights the reveal spring. Motion-gated below. */
+@keyframes keptGaugeRipple {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(139, 109, 255, 0);
+    filter: brightness(1);
+  }
+  50% {
+    box-shadow: 0 0 8px 1px rgba(139, 109, 255, 0.55);
+    filter: brightness(1.4);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  #gauge-dots [data-on="1"] {
+    animation: keptGaugeRipple 3.6s ease-in-out infinite;
+    animation-delay: var(--ripple-delay, 0ms);
+  }
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
    kept Landing v2 (Claude Design) — the "drop box" choreography stylesheet.
    Ported verbatim from `kept Landing v2.dc.html`'s <style> block: the mobile

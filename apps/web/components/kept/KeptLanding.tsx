@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useReducer, useRef } from "react";
+import { type CSSProperties, useEffect, useMemo, useReducer, useRef } from "react";
 
 import {
   KeptEngine,
@@ -100,10 +100,12 @@ export default function KeptLanding() {
       const col = i % 24,
         row = (i / 24) | 0;
       const first = i === 0;
+      const dist = Math.hypot(col, row * 1.7);
+      const on = !first && i < onCount;
       dots.push({
         color: first
           ? "#FFFFFF"
-          : i < onCount
+          : on
             ? "var(--accent)"
             : "rgba(255,255,255,0.09)",
         glow: first
@@ -111,7 +113,11 @@ export default function KeptLanding() {
           : "none",
         op: revealed ? 1 : 0,
         tf: revealed ? (first ? "scale(1.5)" : "scale(1)") : "scale(.2)",
-        delay: revealed ? ((Math.hypot(col, row * 1.7) * 26) | 0) + "ms" : "0ms",
+        delay: revealed ? ((dist * 26) | 0) + "ms" : "0ms",
+        // Funded dots ripple once revealed; phase = distance to the anchor, so
+        // the glow wave expands outward from the top-left anchor dot.
+        on: revealed && on,
+        rippleDelay: ((dist * 90) | 0) + "ms",
       });
     }
     return dots;
@@ -1681,17 +1687,21 @@ export default function KeptLanding() {
                   {gaugeDots.map((d, i) => (
                     <div
                       key={i}
-                      style={{
-                        aspectRatio: "1",
-                        borderRadius: "50%",
-                        background: d.color,
-                        boxShadow: d.glow,
-                        opacity: d.op,
-                        transform: d.tf,
-                        transition:
-                          "opacity .55s ease, transform .6s cubic-bezier(.34,1.45,.5,1)",
-                        transitionDelay: d.delay,
-                      }}
+                      data-on={d.on ? "1" : undefined}
+                      style={
+                        {
+                          aspectRatio: "1",
+                          borderRadius: "50%",
+                          background: d.color,
+                          boxShadow: d.glow,
+                          opacity: d.op,
+                          transform: d.tf,
+                          transition:
+                            "opacity .55s ease, transform .6s cubic-bezier(.34,1.45,.5,1)",
+                          transitionDelay: d.delay,
+                          "--ripple-delay": d.rippleDelay,
+                        } as CSSProperties
+                      }
                     />
                   ))}
                 </div>
