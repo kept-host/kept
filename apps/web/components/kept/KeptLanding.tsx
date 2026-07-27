@@ -32,7 +32,6 @@ import {
 
 // Data figures come from the open-books module — never hardcoded here.
 const LIVE_COUNT = keptCount;
-const GAUGE_FUNDED = keptCount;
 // Visual constant: how many dots the field draws, not a number we report.
 const GAUGE_TOTAL = 288;
 
@@ -86,7 +85,7 @@ export default function KeptLanding() {
   useEffect(() => {
     const engine = new KeptEngine(
       refs,
-      { liveCount: LIVE_COUNT, gaugeFunded: GAUGE_FUNDED },
+      { liveCount: LIVE_COUNT },
       () => stateRef.current,
       (patch, cb) => {
         // keep the engine's synchronous reads coherent within a frame
@@ -134,8 +133,8 @@ export default function KeptLanding() {
 
   const gaugeDots = useMemo(() => {
     // One meaning: every lit dot is a page kept online right now. The lit count
-    // is the kept count itself, capped at the field size — there is no
-    // funded/unfunded split and no target denominator. Drafts are not drawn.
+    // is the kept count itself, capped at the field size — a dot has no second
+    // meaning, and there is no target denominator. Drafts are not drawn.
     // At the launch baseline (0 kept) nothing lights, and the field reads as a
     // calm, deliberately empty grid rather than a broken one.
     const onCount = Math.min(Math.max(keptCount, 0), GAUGE_TOTAL);
@@ -491,7 +490,7 @@ export default function KeptLanding() {
                   Every square is a real page someone is keeping online right
                   now.{" "}
                   <b style={{ color: "var(--text)" }}>The glowing one is yours</b>{" "}
-                  &mdash; drop a file to claim it.
+                  &mdash; drop a file to make it yours.
                 </p>
                 <div
                   style={{
@@ -971,8 +970,9 @@ export default function KeptLanding() {
                     </svg>
                     <h3 style={howTitle}>Kept forever</h3>
                     <p style={howBody}>
-                      It stays up — no expiry, no rot. Permanent by default, from
-                      the moment it mints.
+                      Once kept, there&rsquo;s no expiry and no rot. Nothing to
+                      renew, no login needed to keep it up, and we never delete
+                      it quietly.
                     </p>
                   </div>
                 </div>
@@ -1930,11 +1930,11 @@ export default function KeptLanding() {
               <h3 style={whyTitle}>Nothing to lock you in</h3>
               <p style={whyBody}>
                 The whole platform is open. Self-host it, fork it, audit it. Your
-                pages aren&rsquo;t hostage to one company&rsquo;s runway.
+                pages aren&rsquo;t hostage to one company staying in business.
               </p>
             </div>
             <div data-reveal data-delay="180">
-              <div style={whyKicker}>OPEN BOOKS</div>
+              <div style={whyKicker}>COSTS IN PUBLIC</div>
               <h3 style={whyTitle}>Math you can check</h3>
               <p style={whyBody}>
                 Infra costs and uptime are public. Pro subscriptions fund the
@@ -2013,7 +2013,7 @@ export default function KeptLanding() {
                   `Unlimited drafts — live instantly, ${DRAFT_TTL_DAYS} days`,
                   `${KEPT_PAGE_LIMIT} pages kept forever`,
                   "Instant link, QR, live status",
-                  "Claim, rename slug, replace versions",
+                  "Keep, rename slug, replace versions",
                   "Dashboard for pages & drafts",
                 ].map((f) => (
                   <div key={f} style={freeFeature}>
@@ -2962,7 +2962,7 @@ export default function KeptLanding() {
                   margin: 0,
                 }}
               >
-                Claim this page
+                Keep this page
               </h3>
               <button
                 onClick={() => e()?.closeAuth()}
@@ -2991,8 +2991,8 @@ export default function KeptLanding() {
               <b ref={bind(refs.authSlugRef)} style={{ color: "var(--text)" }}>
                 your-page.kept.host
               </b>{" "}
-              to your account. It stays exactly where it is — claiming just lets
-              you manage it.
+              to your account. It stays exactly where it is — keeping it stops
+              the {DRAFT_TTL_DAYS}-day draft clock and puts it in your dashboard.
             </p>
             <button style={authGithub}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">

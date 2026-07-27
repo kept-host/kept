@@ -137,8 +137,11 @@ interface SectionResult {
 }
 
 export interface EngineProps {
+  /**
+   * Pages kept forever, right now. Drives the nav counter and the open-books
+   * gauge number — both report the same figure, so there is only one prop.
+   */
   liveCount: number;
-  gaugeFunded: number;
 }
 
 export class KeptEngine {
@@ -221,7 +224,9 @@ export class KeptEngine {
     this.setState = setState;
     this.reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     this.isMobile = window.matchMedia("(max-width: 820px)").matches;
-    this.count = props.liveCount || 1284;
+    // Never `||` — a zero kept count is the real launch baseline and must
+    // render as 0, not fall through to a made-up figure.
+    this.count = props.liveCount;
     this.tiles = this.buildTiles();
   }
 
@@ -481,9 +486,8 @@ export class KeptEngine {
       }
       setTimeout(() => this.applyAccordion(this.getState().openTab, null), 0);
       if (this.reduced && r.gaugeNumRef.current)
-        r.gaugeNumRef.current.textContent = (
-          this.props.gaugeFunded ?? 1284
-        ).toLocaleString();
+        r.gaugeNumRef.current.textContent =
+          this.props.liveCount.toLocaleString();
     }
     this.paintThumbs();
     this.revealTiles();
@@ -513,11 +517,16 @@ export class KeptEngine {
     this.runLoader();
     if (!this.reduced) {
       this.tick();
-      this.countTimer = setInterval(() => {
-        this.count += Math.random() < 0.6 ? 1 : 0;
-        if (r.navCountRef.current)
-          r.navCountRef.current.textContent = this.count.toLocaleString();
-      }, 9000);
+      // Ambient drift is only honest once real pages exist. At the zero
+      // baseline there is nothing to tick up, and inventing one would be a
+      // fabricated number.
+      if (this.count > 0) {
+        this.countTimer = setInterval(() => {
+          this.count += Math.random() < 0.6 ? 1 : 0;
+          if (r.navCountRef.current)
+            r.navCountRef.current.textContent = this.count.toLocaleString();
+        }, 9000);
+      }
     }
   }
   unmount() {
@@ -593,11 +602,8 @@ export class KeptEngine {
     if (this._gaugeRevealed) return;
     this._gaugeRevealed = true;
     this.setState({ gaugeRevealed: true });
-    this.countUp(
-      this.refs.gaugeNumRef.current,
-      this.props.gaugeFunded ?? 1284,
-      1400,
-    );
+    // The gauge reports the open-books figure, not the drifting nav counter.
+    this.countUp(this.refs.gaugeNumRef.current, this.props.liveCount, 1400);
   }
   countUp(el: HTMLElement | null, target: number, dur: number) {
     if (!el) return;

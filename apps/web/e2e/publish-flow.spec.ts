@@ -51,5 +51,22 @@ test.describe("publish flow", () => {
         { timeout: 8_000, intervals: [200, 300, 500] },
       )
       .toMatch(KEPT_HOST);
+
+    // A minted page is a DRAFT. The next step offers to keep it — the modal is
+    // rendered only once opened, and speaks keep/kept, never "claim".
+    await expect(page.getByRole("heading", { name: "Keep this page" })).toHaveCount(
+      0,
+    );
+    await page.getByRole("button", { name: /Keep it & manage it/ }).click();
+
+    const modalHeading = page.getByRole("heading", { name: "Keep this page" });
+    await expect(modalHeading).toBeVisible();
+    await expect(
+      page.getByText(
+        /keeping it stops the 7-day draft clock and puts it in your dashboard/,
+      ),
+    ).toBeVisible();
+    // The pre-pivot "Claim this page" framing is gone entirely.
+    await expect(page.getByText(/Claim this page/)).toHaveCount(0);
   });
 });
