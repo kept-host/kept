@@ -185,7 +185,7 @@
 }
 
 /* keptGaugeRipple: a soft glow wave that travels outward from the anchor dot
-   through the funded (accent) dots. Per-dot phase comes from --ripple-delay,
+   through the lit (accent) kept-page dots. Per-dot phase comes from --ripple-delay,
    set inline from each dot's distance to the anchor. Glow/brightness only —
    no transform — so it never fights the reveal spring. Motion-gated below. */
 @keyframes keptGaugeRipple {

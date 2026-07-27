@@ -4,7 +4,7 @@ import { type CSSProperties, useEffect, useMemo, useReducer, useRef } from "reac
 
 import { DRAFT_TTL_DAYS, KEPT_PAGE_LIMIT } from "@kept/shared";
 
-import { keptCount } from "@/lib/landing-stats";
+import { infraCostMonth, keptCount, uptime } from "@/lib/landing-stats";
 
 import {
   KeptEngine,
@@ -98,31 +98,40 @@ export default function KeptLanding() {
   const chevron = (id: Tab) => (state.openTab === id ? "180deg" : "0deg");
 
   const gaugeDots = useMemo(() => {
-    const funded = GAUGE_FUNDED;
-    const onCount = Math.round((funded / 2000) * GAUGE_TOTAL);
+    // One meaning: every lit dot is a page kept online right now. The lit count
+    // is the kept count itself, capped at the field size — there is no
+    // funded/unfunded split and no target denominator. Drafts are not drawn.
+    // At the launch baseline (0 kept) nothing lights, and the field reads as a
+    // calm, deliberately empty grid rather than a broken one.
+    const onCount = Math.min(Math.max(keptCount, 0), GAUGE_TOTAL);
     const revealed = state.gaugeRevealed;
     const dots = [];
     for (let i = 0; i < GAUGE_TOTAL; i++) {
       const col = i % 24,
         row = (i / 24) | 0;
-      const first = i === 0;
       const dist = Math.hypot(col, row * 1.7);
-      const on = !first && i < onCount;
+      const lit = i < onCount;
+      // The first kept page anchors the field: brighter, statically glowing,
+      // and the origin the ripple wave expands from. With nothing kept there
+      // is no anchor — the grid is uniformly unlit.
+      const anchor = lit && i === 0;
       dots.push({
-        color: first
+        color: anchor
           ? "#FFFFFF"
-          : on
+          : lit
             ? "var(--accent)"
             : "rgba(255,255,255,0.09)",
-        glow: first
+        glow: anchor
           ? "0 0 14px 4px rgba(139,109,255,.85), 0 0 3px 1px rgba(255,255,255,.9)"
           : "none",
         op: revealed ? 1 : 0,
-        tf: revealed ? (first ? "scale(1.5)" : "scale(1)") : "scale(.2)",
+        tf: revealed ? (anchor ? "scale(1.5)" : "scale(1)") : "scale(.2)",
         delay: revealed ? ((dist * 26) | 0) + "ms" : "0ms",
-        // Funded dots ripple once revealed; phase = distance to the anchor, so
-        // the glow wave expands outward from the top-left anchor dot.
-        on: revealed && on,
+        // Lit dots ripple once revealed; phase = distance to the anchor, so the
+        // glow wave expands outward from the top-left. The anchor keeps its own
+        // static glow instead. At zero nothing carries data-on and the ripple
+        // simply has nothing to animate.
+        on: revealed && lit && !anchor,
         rippleDelay: ((dist * 90) | 0) + "ms",
       });
     }
@@ -1647,7 +1656,7 @@ export default function KeptLanding() {
                     marginBottom: 18,
                   }}
                 >
-                  Kept alive by the community
+                  Open books
                 </div>
                 <div
                   style={{
@@ -1659,31 +1668,39 @@ export default function KeptLanding() {
                   }}
                 >
                   <span ref={bind(refs.gaugeNumRef)}>0</span>
-                  <span
-                    style={{
-                      color: "#6E6760",
-                      fontSize: "0.5em",
-                      fontWeight: 600,
-                    }}
-                  >
-                    {" "}
-                    / 2,000
-                  </span>
                 </div>
                 <p
                   style={{
                     fontSize: 16,
                     lineHeight: 1.6,
                     color: "#A8A096",
-                    margin: "18px 0 28px",
+                    margin: "18px 0 20px",
                     maxWidth: "38ch",
                   }}
                 >
-                  Free hosting is funded by donations. Every dot is a page the
-                  community is keeping online right now.
+                  Every dot is a page kept online right now. Pro pages fund the
+                  free ones — and the books are public.
                 </p>
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: "8px 24px",
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 12,
+                    color: "#A8A096",
+                    margin: "0 0 28px",
+                  }}
+                >
+                  <span>
+                    infra cost this month · &euro;{infraCostMonth.toFixed(2)}
+                  </span>
+                  <span>
+                    uptime · {uptime === null ? "not yet measured" : `${uptime}%`}
+                  </span>
+                </div>
                 <a
-                  href="#pricing"
+                  href="/stats"
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
@@ -1698,7 +1715,7 @@ export default function KeptLanding() {
                     padding: "13px 22px",
                   }}
                 >
-                  Help keep more pages free <span>&rarr;</span>
+                  See the math <span>&rarr;</span>
                 </a>
               </div>
               <div ref={bind(refs.gaugeWrapRef)} style={{ position: "relative" }}>
@@ -1789,8 +1806,9 @@ export default function KeptLanding() {
               <div style={whyKicker}>PERMANENT BY DEFAULT</div>
               <h3 style={whyTitle}>No expiry, ever</h3>
               <p style={whyBody}>
-                Anonymous pages are real pages. They don&rsquo;t time out,
-                don&rsquo;t require a login to stay up, and never silently vanish.
+                Kept pages don&rsquo;t time out, don&rsquo;t need a login to stay
+                up, and never silently vanish. Drafts are honest too: {DRAFT_TTL_DAYS}{" "}
+                days, clearly labeled.
               </p>
             </div>
             <div data-reveal data-delay="90">
@@ -1803,10 +1821,11 @@ export default function KeptLanding() {
             </div>
             <div data-reveal data-delay="180">
               <div style={whyKicker}>OPEN BOOKS</div>
-              <h3 style={whyTitle}>Funding you can see</h3>
+              <h3 style={whyTitle}>Math you can check</h3>
               <p style={whyBody}>
-                Infra cost, donations, and runway are public. When we say
-                &ldquo;free forever,&rdquo; you can check our math.
+                Infra costs and uptime are public. Pro subscriptions fund the
+                free tier. When we say &ldquo;free forever,&rdquo; you can check
+                the math.
               </p>
             </div>
           </div>
