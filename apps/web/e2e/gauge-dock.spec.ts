@@ -107,23 +107,20 @@ test.describe("gauge next-slot dock", () => {
     expect(shape.litDots).toBe(0);
   });
 
-  test("the tile docks onto the slot dot instead of the left edge", async ({
+  test("the tile docks beside the slot dot instead of the left edge", async ({
     page,
   }) => {
     await page.goto("/");
     await parkGauge(page, 0.3);
 
-    // The tile lerps toward its target ~0.14/frame; wait for it to settle onto
-    // the dot's centre before reading the pose.
+    // The tile lerps toward its target ~0.14/frame; wait for it to settle level
+    // with the dot before reading the pose.
     await expect
       .poll(
         async () => {
           const p = await dockState(page);
           return Math.round(
-            Math.max(
-              Math.abs(p.tile[0]! + p.tile[2]! / 2 - p.slotCentre[0]!),
-              Math.abs(p.tile[1]! + p.tile[3]! / 2 - p.slotCentre[1]!),
-            ),
+            Math.abs(p.tile[1]! + p.tile[3]! / 2 - p.slotCentre[1]!),
           );
         },
         { timeout: 15_000 },
@@ -133,21 +130,29 @@ test.describe("gauge next-slot dock", () => {
     const s = await dockState(page);
     const [left, , w, h] = s.tile as [number, number, number, number];
 
-    // Small circular dock, not the old 72–104px square.
-    expect(s.tileRadius).toBe("50%");
+    // A small rounded box, not the old 72–104px square and not a disc — it sits
+    // next to the dot field, so it must not read as another dot.
+    expect(s.tileRadius).not.toBe("50%");
     expect(w).toBeGreaterThan(30);
     expect(w).toBeLessThan(48);
     expect(Math.abs(w - h)).toBeLessThan(1);
 
-    // The pulsing dot is hidden while the tile sits on it — never both at once.
-    expect(s.slotOpacity).toBe("0");
+    // It lands to the LEFT of the pulsing dot and clear of it — the box points
+    // at the dot, so covering the dot would hide the thing being pointed at.
+    expect(left + w).toBeLessThanOrEqual(s.slotCentre[0]!);
+
+    // And the dot stays visible the whole time.
+    expect(s.slotOpacity).toBe("1");
 
     // The old bug parked the tile at x ≈ 130–180 (transit()'s left clamp) and
     // dragged it across the left column. Nothing may sit left of the dot field.
     const dotsLeft = await page.evaluate(
       () => document.querySelector("#gauge-dots")!.getBoundingClientRect().left,
     );
-    expect(left).toBeGreaterThan(dotsLeft - w);
+    // The old bug parked it at x ≈ 130–180 via transit()'s left clamp. It may
+    // now sit just left of the field (the gap + its own width) but no further:
+    // anything beyond that is drifting back toward the left column.
+    expect(left).toBeGreaterThan(dotsLeft - (w + 24));
   });
 
   test("the dock never crosses the left column's text at any scroll position", async ({
@@ -194,9 +199,12 @@ test.describe("gauge next-slot dock", () => {
   test("hovering the dock expands it into the drop panel", async ({ page }) => {
     await page.goto("/");
     await parkGauge(page, 0.3);
+    // Settle: the docked box is ~40px wide, well short of the 300px panel.
     await expect
-      .poll(async () => (await dockState(page)).tileRadius, { timeout: 15_000 })
-      .toBe("50%");
+      .poll(async () => Math.round((await dockState(page)).tile[2]!), {
+        timeout: 15_000,
+      })
+      .toBeLessThan(48);
 
     const [cx, cy] = (await dockState(page)).slotCentre;
     await page.mouse.move(cx!, cy!);
@@ -208,7 +216,39 @@ test.describe("gauge next-slot dock", () => {
       .toBe(1);
     const s = await dockState(page);
     expect(s.tile[2]).toBeGreaterThan(250);
-    expect(s.tileRadius).not.toBe("50%");
+    // Expanded it is the full drop panel, which carries the card radius —
+    // neither the dock's rounded box nor #why's disc.
+    expect(s.tileRadius).toBe("14px");
+  });
+
+  test("leaving the gauge goes straight to the link icon, never back through the drop box", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await parkGauge(page, 0.3);
+    await expect
+      .poll(async () => Math.round((await dockState(page)).tile[2]!), {
+        timeout: 15_000,
+      })
+      .toBeLessThan(48);
+
+    // Scroll out of the gauge and into #why. The exit used to blend through
+    // transit(), which re-inflated the tile to a 128px card — so the sequence
+    // read upload box → drop box → link icon. It must now go straight from one
+    // small form to the other, so the width never balloons on the way.
+    const widths: number[] = [];
+    for (let f = 0.0; f >= -0.6; f -= 0.05) {
+      await parkGauge(page, +f.toFixed(2));
+      await page.waitForTimeout(260);
+      const w = (await dockState(page)).tile[2]!;
+      // Ignore the hover panel if the pointer happens to sit near the dock.
+      if ((await dockState(page)).panelOpacity !== 1) widths.push(w);
+    }
+    const peak = Math.max(...widths);
+    expect(
+      peak,
+      `tile inflated to ${Math.round(peak)}px between the dock and the link icon`,
+    ).toBeLessThan(72);
   });
 
   test("keyboard focus reaches the slot and opens the same panel", async ({

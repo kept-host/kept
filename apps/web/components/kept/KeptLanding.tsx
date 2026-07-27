@@ -2792,7 +2792,9 @@ export default function KeptLanding() {
               alignItems: "center",
               justifyContent: "center",
               background: "var(--accent)",
-              borderRadius: "50%",
+              // A rounded box, not a disc: it sits BESIDE the pulsing slot dot
+              // rather than on top of it, so it must not read as another dot.
+              borderRadius: 12,
               opacity: 0,
               pointerEvents: "none",
               transition: "opacity .15s ease",

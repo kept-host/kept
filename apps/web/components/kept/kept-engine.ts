@@ -1165,17 +1165,20 @@ export class KeptEngine {
     const clamp = (v: number) => Math.max(0, Math.min(1, v));
     if (gr.top > H * 0.92)
       return { pose: entry, active: false, dock: 0, expanded: false };
-    // Dock onto the pulsing "next slot" dot itself. The old park sat at
-    // `numRow.right + 26 + s/2`, which overshot the 48px grid gap and landed a
-    // 72–104px square on top of the dot field. A raw grid dot is only ~16px —
-    // too small to read as lit, and impossible to hover — so the tile lands as
-    // a ~40px circle centred on it, and the dot underneath is hidden while it
-    // sits there (never both at once).
+    // Dock BESIDE the pulsing "next slot" dot, on its left — not on top of it.
+    // Covering the dot meant hiding the very thing the dock points at; landing
+    // alongside keeps both visible, so the pulse still reads as "your next
+    // slot" while the box reads as "drop here". It renders as a rounded box
+    // (see gaugeDockRef), deliberately not a disc, so it is never mistaken for
+    // another dot in the field.
     const dr = slot.getBoundingClientRect();
     const s = Math.max(36, Math.min(40, dr.width * 2.6));
     const dx = dr.left + dr.width / 2,
       dy = dr.top + dr.height / 2;
-    const park = { cx: dx, cy: dy, w: s, h: s, rot: 0 };
+    // Sit clear of the dot: half the dot + a 10px gap + half the box.
+    const GAP = 10;
+    const parkCx = dx - dr.width / 2 - GAP - s / 2;
+    const park = { cx: parkCx, cy: dy, w: s, h: s, rot: 0 };
     const a = clamp((H * 0.6 - gr.top) / (0.28 * H));
     // Hold the dock until the card's top edge has cleared the viewport. The
     // exit blends diagonally down-left toward #why's rotating word; starting it
@@ -1191,19 +1194,23 @@ export class KeptEngine {
       pose = park;
       dock = 1;
     } else {
-      pose = this.blend(
-        park,
-        this.transit(r.rotWordRef, W, H, H * 0.52),
-        this.ease(out),
-      );
+      // Go straight from the upload box to #why's link icon. Blending through
+      // `transit()` here re-inflated the tile into the full drop box on the way
+      // out, so the sequence read upload → drop box → link instead of
+      // upload → link.
+      const exit = this.whyIconPose() ?? this.transit(r.rotWordRef, W, H, H * 0.52);
+      pose = this.blend(park, exit, this.ease(out));
       dock = 1 - out;
     }
     // Hover, mouse proximity, or keyboard focus on the slot dot expands the
     // dock into the real drop panel — the same one #why opens — so a page can
     // actually be published from here. Focus alone is enough: a keyboard user
     // never generates the pointer proximity the mouse path relies on.
+    // Proximity counts against BOTH the dot and the box beside it — they are
+    // one affordance, and the pointer approaching either should open it.
     const near = this.mouseRaw
-      ? Math.hypot(this.mouseRaw.x - dx, this.mouseRaw.y - dy) < 48
+      ? Math.hypot(this.mouseRaw.x - dx, this.mouseRaw.y - dy) < 48 ||
+        Math.hypot(this.mouseRaw.x - parkCx, this.mouseRaw.y - dy) < 48
       : false;
     let expanded = false;
     if (
@@ -1212,9 +1219,10 @@ export class KeptEngine {
     ) {
       const cw = 300,
         ch = 290;
+      // Grow from the box, which is where the pointer actually is.
       const cx = Math.min(
           W - cw / 2 - 20,
-          Math.max(cw / 2 + 20, dx + cw / 2 - s / 2),
+          Math.max(cw / 2 + 20, parkCx + cw / 2 - s / 2),
         ),
         cy = Math.min(
           H - ch / 2 - 20,
@@ -1225,6 +1233,25 @@ export class KeptEngine {
       dock = 1;
     }
     return { pose, active: true, dock, expanded };
+  }
+  /**
+   * The #why link-icon pose. Shared so the gauge can exit straight into it:
+   * routing the gauge exit through `transit()` first inflated the tile to a
+   * 128px card — the drop box briefly reappearing between the upload box and
+   * the link icon. Both callers reading one pose removes that intermediate.
+   */
+  whyIconPose(): Pose | null {
+    const word = this.refs.rotWordRef.current;
+    if (!word) return null;
+    const wr = word.getBoundingClientRect();
+    const s = Math.max(36, wr.height * 0.42);
+    return {
+      cx: wr.right + s / 2 + 16,
+      cy: wr.top + wr.height * 0.54,
+      w: s,
+      h: s,
+      rot: 0,
+    };
   }
   computeWhy(entry: Pose, W: number, H: number): WhyResult {
     const r = this.refs;
@@ -1237,10 +1264,10 @@ export class KeptEngine {
       return { pose: entry, active: false, iconAmt: 0, expanded: false };
     const wr = word.getBoundingClientRect();
     const clamp = (v: number) => Math.max(0, Math.min(1, v));
-    const s = Math.max(36, wr.height * 0.42);
-    const ix = wr.right + s / 2 + 16,
-      iy = wr.top + wr.height * 0.54;
-    const icon = { cx: ix, cy: iy, w: s, h: s, rot: 0 };
+    const icon = this.whyIconPose()!;
+    const s = icon.w;
+    const ix = icon.cx,
+      iy = icon.cy;
     const a = clamp((H * 0.62 - wr.top) / (0.3 * H));
     const out = clamp((H * 0.16 - wr.top) / (0.2 * H));
     const near = this.mouseRaw
@@ -1578,12 +1605,11 @@ export class KeptEngine {
     // Docked on the gauge slot, either as the lit disc or opened into the panel.
     const gaugeOn = !!g.active && (g.dock || 0) > 0.5;
     const gaugeDisc = gaugeOn && !g.expanded;
-    // Never show the pulsing dot and the disc sitting on it at the same time.
-    // Once expanded the panel drops clear below the dot, so the dot comes back
-    // — it is the focusable control, and its focus ring must stay visible.
+    // The box now lands BESIDE the pulsing dot rather than over it, so the dot
+    // stays visible throughout — it is the thing the box points at, and it is
+    // the focusable control whose focus ring must remain visible.
     const gslot = r.gaugeSlotRef.current;
-    if (gslot)
-      gslot.style.opacity = this._gaugeRevealed && !gaugeDisc ? "1" : "0";
+    if (gslot) gslot.style.opacity = this._gaugeRevealed ? "1" : "0";
     const gdock = r.gaugeDockRef.current;
     if (gdock) gdock.style.opacity = gaugeDisc ? "1" : "0";
     const link = r.whyLinkRef.current;
@@ -1612,7 +1638,9 @@ export class KeptEngine {
     if (dk) dk.style.opacity = phase === "idle" ? (ft.lock || 0).toFixed(3) : "0";
     const inner = r.tileInnerRef.current;
     if (inner)
-      inner.style.borderRadius = iconOn || gaugeDisc ? "50%" : "14px";
+      // #why's link icon is a disc; the gauge dock is a rounded box so it never
+      // reads as another dot in the field.
+      inner.style.borderRadius = iconOn ? "50%" : gaugeDisc ? "12px" : "14px";
     if (iconOn || gaugeDisc) {
       const idle = r.slotIdleRef.current;
       if (idle) idle.style.opacity = "0";
