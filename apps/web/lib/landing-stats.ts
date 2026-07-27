@@ -5,8 +5,12 @@
 // to report. Zero is the honest answer and must render as zero; `uptime` is
 // `null` because no measurement window exists — it must never render as 100%.
 
-/** Pages kept forever, right now. TODO(E09): replaced by a live snapshot from /stats. */
-export const keptCount = 0;
+/**
+ * Pages kept forever, right now. TODO(E09): replaced by a live snapshot from /stats.
+ * Typed `number`, not the literal `0`, so consumers can branch on the value
+ * (pluralization, zero-state) without TS narrowing the comparison away.
+ */
+export const keptCount: number = 0;
 
 /** Infrastructure spend this month, in EUR. TODO(E09): replaced by a live snapshot from /stats. */
 export const infraCostMonth = 0;

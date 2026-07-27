@@ -268,10 +268,24 @@ test.describe("gauge next-slot dock", () => {
     expect((await dockState(page)).firstDotBg).not.toBe("rgba(0, 0, 0, 0)");
     await expect(page.locator("#gauge-card span").first()).toHaveText("1");
 
+    // The nav noun agrees with the count. Zero is plural, exactly one is not —
+    // the count only became reachable when the slot dock landed, so "1 PAGES
+    // KEPT" was live until the label was taught to agree.
+    await expect
+      .poll(async () =>
+        (
+          await page.locator("header").first().innerText()
+        ).replace(/\s+/g, " "),
+      )
+      .toContain("1 PAGE KEPT");
+
     // Session-local only. `landing-stats` is untouched, so a reload is back at
     // the honest global baseline — the figure is never fabricated forward.
     await page.reload();
     await expect(page.locator("#gauge-card span").first()).toHaveText("0");
     expect((await dockState(page)).slotIndex).toBe(0);
+    expect(
+      (await page.locator("header").first().innerText()).replace(/\s+/g, " "),
+    ).toContain("0 PAGES KEPT");
   });
 });

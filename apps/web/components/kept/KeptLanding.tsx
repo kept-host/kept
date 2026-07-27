@@ -294,7 +294,11 @@ export default function KeptLanding() {
               <span ref={bind(refs.navCountRef)}>
                 {LIVE_COUNT.toLocaleString()}
               </span>
-              &nbsp;PAGES&nbsp;KEPT
+              &nbsp;
+              <span ref={bind(refs.navLabelRef)}>
+                {LIVE_COUNT === 1 ? "PAGE" : "PAGES"}
+              </span>
+              &nbsp;KEPT
             </div>
           </div>
         </div>
@@ -3221,6 +3225,7 @@ function makeRefs(): EngineRefs {
     barRef: r(),
     loadCountRef: r(),
     navCountRef: r(),
+    navLabelRef: r(),
     hintRef: r(),
     ctaIdleRef: r(),
     ctaLiveRef: r(),

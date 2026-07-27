@@ -61,6 +61,8 @@ export interface EngineRefs {
   barRef: Ref;
   loadCountRef: Ref;
   navCountRef: Ref;
+  /** The noun beside the nav counter; pluralized to agree with it. */
+  navLabelRef: Ref;
   hintRef: Ref;
   ctaIdleRef: Ref;
   ctaLiveRef: Ref;
@@ -442,11 +444,23 @@ export class KeptEngine {
     return tiles;
   }
 
-  // ---------- lifecycle ----------
-  mount() {
+  /**
+   * Write the nav counter and keep its noun in agreement with it. Zero is
+   * plural ("0 PAGES KEPT"); only exactly one is singular. Every site that
+   * moves `this.count` goes through here so the two can never disagree.
+   */
+  private writeCount() {
     const r = this.refs;
     if (r.navCountRef.current)
       r.navCountRef.current.textContent = this.count.toLocaleString();
+    if (r.navLabelRef.current)
+      r.navLabelRef.current.textContent = this.count === 1 ? "PAGE" : "PAGES";
+  }
+
+  // ---------- lifecycle ----------
+  mount() {
+    const r = this.refs;
+    this.writeCount();
     this._mm = (e: MouseEvent) => {
       this.mouse.x = e.clientX / window.innerWidth - 0.5;
       this.mouse.y = e.clientY / window.innerHeight - 0.5;
@@ -565,8 +579,7 @@ export class KeptEngine {
       if (this.count > 0) {
         this.countTimer = setInterval(() => {
           this.count += Math.random() < 0.6 ? 1 : 0;
-          if (r.navCountRef.current)
-            r.navCountRef.current.textContent = this.count.toLocaleString();
+          this.writeCount();
         }, 9000);
       }
     }
@@ -928,8 +941,7 @@ export class KeptEngine {
       if (r.liveSlugBigRef.current)
         r.liveSlugBigRef.current.textContent = this.liveSlug;
       this.count += 1;
-      if (r.navCountRef.current)
-        r.navCountRef.current.textContent = this.count.toLocaleString();
+      this.writeCount();
       // The gauge field follows: a solid dot takes the slot that was pulsing,
       // and the pulse moves on to the next one. Session-local only.
       this.setState({ mintedCount: this.getState().mintedCount + 1 });
