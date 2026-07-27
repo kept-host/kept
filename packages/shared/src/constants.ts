@@ -1,22 +1,18 @@
 // @kept/shared — cross-app constants. Single source of truth; never duplicate these.
-
-/** Cost in EUR to fund one published-page slot (sponsor-a-slot economics, E4). */
-export const SLOT_COST_EUR = 0.01 as const;
+//
+// Deferred enum delta: `PLANS` still carries `supporter` and `SITE_STATUSES` still
+// carries `resting` (see `./enums`). Both are pre-pivot values, but they drive the
+// Drizzle `pgEnum`s in apps/web/lib/db/schema.ts and the committed migration —
+// dropping a Postgres enum value is a migration, not a rename. Owned by E04/E05.
 
 /** Maximum size of a single published page's HTML, in bytes (5 MB). */
 export const MAX_PAGE_BYTES = 5 * 1024 * 1024;
 
-/** Pages a free-plan account may keep concurrently. */
-export const FREE_PAGE_LIMIT = 3 as const;
+/** Pages an account may keep forever, free. */
+export const KEPT_PAGE_LIMIT = 3 as const;
 
-/**
- * Supporter-plan page cap. Placeholder (~15) pending finalized tier sizing (E4).
- * Lives here so raising the cap is a one-line change consumed by both apps.
- */
-export const SUPPORTER_PAGE_LIMIT = 15 as const;
+/** Days a draft stays online before it expires unless it is kept. */
+export const DRAFT_TTL_DAYS = 7 as const;
 
-/** Days an anonymous page serves before it `expired`s (claim window). */
-export const ANON_HOLD_DAYS = 7 as const;
-
-/** Days after expiry an unclaimed page is recoverable before deletion (grace). */
-export const ANON_GRACE_DAYS = 30 as const;
+/** Days after a draft expires that it stays recoverable before deletion. */
+export const DRAFT_GRACE_DAYS = 30 as const;

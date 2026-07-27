@@ -2,6 +2,8 @@
 
 import { type CSSProperties, useEffect, useMemo, useReducer, useRef } from "react";
 
+import { keptCount } from "@/lib/landing-stats";
+
 import {
   KeptEngine,
   type EngineRefs,
@@ -19,8 +21,10 @@ import {
  * modal, notify forms, accordion tab, gauge reveal) is React state.
  */
 
-const LIVE_COUNT = 1284;
-const GAUGE_FUNDED = 1284;
+// Data figures come from the open-books module — never hardcoded here.
+const LIVE_COUNT = keptCount;
+const GAUGE_FUNDED = keptCount;
+// Visual constant: how many dots the field draws, not a number we report.
 const GAUGE_TOTAL = 288;
 
 type UIState = EngineState;
