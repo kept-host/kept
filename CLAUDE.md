@@ -6,15 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**Planning phase.** The repo currently contains only spec documents (`00`–`03` foundation docs, `E*`-prefixed epic PRDs) and a placeholder `package.json`. There is no source code, no monorepo, no working build yet. The first coding task is **E-Foundation** (scaffold the monorepo); every other epic assumes it exists.
+**E00-Foundation is shipped.** The pnpm + Turbo monorepo exists and builds: `apps/web` (Next.js control plane, themed, landing v2 adopted), `apps/edge` (empty deployable Hono Worker), `packages/shared`. Playwright e2e suite is green. **Next epic: `E01-landing-refresh`** — a content pivot of the built landing, not a redesign.
 
-Read `00-README-architecture-index.md` first — it is the entry point and encodes build order, repo structure, and the non-negotiable rules. The numbered docs are the spine; each `E*.md` is a self-contained epic PRD with its own scope, data model, states, acceptance criteria, and a `UI Source` import block.
+Read `.agent/System/00-README-architecture-index.md` first — it is the entry point and the source of truth for build order, repo structure, and the non-negotiable rules. Each `.agent/Tasks/prds/E*.md` is a self-contained epic PRD with its own scope, data model, states, acceptance criteria, and a `UI Source` import block.
 
-Package manager is **pnpm** (`pnpm@10.13.1`). The monorepo will be a pnpm workspace + Turbo.
+Package manager is **pnpm** (`pnpm@10.13.1`).
 
 ## What kept is
 
-Free, reliable, dead-simple static hosting: drop an HTML file → get a `{slug}.kept.host` link that stays online forever. Publish-before-signup, community-funded (Open Collective), AGPL-3.0, single-HTML-file in v1.
+Free, permanent, dead-simple static hosting for humans *and* AI agents: drop an HTML file — or let an agent publish one — and get a `{slug}.kept.host` link. Publish-before-signup, AGPL-3.0, single-HTML-file in v1. **Pro subscriptions fund the free tier; the books are public.**
+
+> **Model pivot (July 2026) — the docs reflect this; parts of the code do not yet.** Donations/Open Collective are **gone**. Every page is either a **draft** (live instantly, 7-day clock) or **kept** (permanent). Free accounts get unlimited drafts + **3 pages kept forever**. Agents publish **keyless** and hand the human a claim link; API keys are Pro.
 
 ## The architecture rule everything depends on
 
@@ -38,8 +40,10 @@ The **KV manifest contract** is the seam: control plane writes `{ siteId, versio
 
 - **Stack:** Next.js + Supabase (Postgres/Auth/Realtime) control plane; Cloudflare Worker (Hono) + R2 + KV + Cache serving; Tailwind v4 (`@theme`) + shadcn (`new-york`, heavily re-themed) + Motion (`motion/react`) + React Three Fiber; fonts Hanken Grotesk (display) / Geist (body) / JetBrains Mono (mono).
 - **Tokens are law.** Design tokens are CSS variables in `globals.css`, exposed to Tailwind via `@theme`, with shadcn pointed at them. Never hardcode a hex — use token classes (`bg-bg`, `text-accent`, `font-display`, `rounded-md`). Theme toggle swaps the variable block; light/dark parity on every screen. shadcn is the behavior/a11y layer, not the look. See `03-frontend-specs.md` §3–4.
-- **`packages/shared` is the single source** for types/enums/constants — e.g. `SLOT_COST_EUR=0.01`, `MAX_PAGE_BYTES`, `FREE_PAGE_LIMIT=3`, `ANON_HOLD_DAYS=7`, `ANON_GRACE_DAYS=30`; site `status` (`live | under_review | quarantined | resting | expired | removed | archived`), `plan` (`free | supporter | premium`), `region` (`auto | eu`).
-- **Page lifecycle:** anonymous pages live 7 days → `expired` (traffic stops) → 30-day grace → delete; claimed pages forever. Archive, don't delete. The `region` field is wired in v1 but EU data residency only activates in E8.
+- **`packages/shared` is the single source** for types/enums/constants — `MAX_PAGE_BYTES`, `FREE_PAGE_LIMIT=3`, `ANON_HOLD_DAYS=7`, `ANON_GRACE_DAYS=30`; site `status`, `plan`, `region` (`auto | eu`) enums; zod schemas; the KV manifest type.
+  - ⚠️ **Pending pivot deltas (not yet applied to code).** `packages/shared` still carries the pre-pivot shape: `SLOT_COST_EUR`, `SUPPORTER_PAGE_LIMIT`, `PLANS = ["free","supporter","premium"]`, and `resting` in the status enum. The target is plans `free | premium` (supporter removed), no `SLOT_COST_EUR`, no `resting`, and draft-vocabulary names (`KEPT_PAGE_LIMIT`, `DRAFT_TTL_DAYS`, `DRAFT_GRACE_DAYS`). Apply these as the epic that needs them lands — don't assume they're already done.
+- **Page model:** every page is a **draft** (`expires_at` set; live instantly; 7-day clock → `expired` → 30-day grace → delete) or **kept** (`expires_at` null; permanent). `isDraft = expires_at != null`. **Keeping** a draft = sign in + attach + clear the clock, within the kept cap. Publishing past the cap **lands as a draft, never a hard error**; demoting a kept page starts a fresh 7-day clock. Archive, don't delete. The `region` field is wired in v1 but EU data residency only activates in **E11**.
+- **Vocabulary:** **draft** and **kept** are product vocabulary — use them consistently in UI copy, code identifiers, and docs.
 - **Writes** (publish/rename/replace/delete/claim) go through route handlers / server actions that (a) write Postgres, (b) upload to R2 via S3 client, (c) update the KV manifest via Cloudflare REST, (d) enqueue scans, then (e) purge the edge cache. The browser never touches R2/KV directly. **Reads** (dashboard/settings) query Postgres directly from server components.
 
 ## Live components (built in code, not static markup)
@@ -47,18 +51,34 @@ The **KV manifest contract** is the seam: control plane writes `{ siteId, versio
 MVP screens are designed in Claude Design (project `da93d30e-94eb-40d4-b3d1-4632870bf056`); the imported markup is the **skin** — each epic *wires it to live data + states*, it does not redesign it. Two things are NOT static stills and must be built in code, mounted into placeholders:
 
 - **The Vessel** (`components/kept/Vessel.tsx`) — R3F, dynamically imported `ssr:false`, behind `<Suspense>` with a static still fallback (also the no-WebGL fallback). Reacts to a `VesselState` context bus (`idle | dragover | minting | scrolling`). Reduced-motion / no-WebGL → static. Loads only on routes that show it (landing, support, 404 cameo).
-- **The capacity gauge** (E4) — real Open Collective data + animation.
+- **The stats dot-field** (E09-open-books) — real open-books data (pages kept, infra cost, uptime) + animation. *(Replaces the old Open Collective funding gauge.)*
 
 ## Build order
 
 ```
-E-Foundation → E-CI → E0 → E1 → E2 → E3 → E4 → E5     (v1 / MVP)
-                                   └──────────────→ E6, E7, E8   (v1.5)
+E00-Foundation ✅ → E01-Landing-Refresh → E02 → E03 → E04 → E05 → E06 → E07 → E08 → E09-open-books   (v1 / launch)
+                                                                        └──→ E10, E11   (v1.5)
 ```
 
-Build **one epic at a time, in order.** Each is shippable and builds on the prior. Several epics carry **open questions** worth resolving before that epic starts (migration tooling for E-Foundation, max page size, cache TTL, reputation provider, MoR billing). Don't silently pick — surface them.
+| Epic | Covers |
+|---|---|
+| `E00-foundation-project-setup` | Scaffold, themed app, empty Worker, Cloudflare/Supabase, shared constants. **Shipped.** |
+| `E01-landing-refresh` | Content pivot of the built landing to the draft/kept + agents model. **Next.** |
+| `E02-cicd-deployment` | GitHub Actions, dev/prod tracks, tag-based releases |
+| `E03-serving-data-plane` | The Worker that serves `*.kept.host` from R2/KV |
+| `E04-anonymous-publish` | API-first publish; drop/paste or agent call → live link + claim link; the 7-day draft |
+| `E05-auth-and-claim` | GitHub + magic-link sign-in; keep a draft forever; swap when at cap |
+| `E06-dashboard-and-management` | Kept pages + drafts; rename/replace/delete; keep/demote; quota |
+| `E07-abuse-and-moderation` | PSL, scanning, reports, status lifecycle, draft expiry/purge, volume governors |
+| `E08-mcp-server` | **Now v1.** Keyless MCP + Skill + copy-paste prompt; the agents wedge |
+| `E09-open-books` | Public `/stats`, the forever promise, landing panel data |
+| `E10-public-gallery`, `E11-premium-tier` | v1.5 |
 
-## CI/CD model (E-CI)
+Build **one epic at a time, in order.** Each is shippable and builds on the prior. **E07 precedes E08**: the abuse pipeline and volume governors must be in place before the keyless agent path opens. **Launch requires E08** — the public story is agents-first.
+
+Several epics carry **open questions** worth resolving before that epic starts (max page size, slug word-list, reputation provider, heuristic ruleset, MoR choice, taxonomy). Don't silently pick — surface them.
+
+## CI/CD model (E02-cicd-deployment)
 
 Protected `develop`/`main`. **Merge = validate, tag = deploy.** Tag patterns: `dev-v*` → dev, `prod-v*` → prod (prod tags must point at `main`). Dev and prod are fully isolated (separate Cloudflare/Supabase resources). Worker deploys via Wrangler; control plane to its own infra.
 
@@ -86,7 +106,7 @@ At the start of a new session, run `/context:load` to load essential project con
 - **`.agent/Style/`** — brand guidelines, UI patterns, design system (frontend projects).
 - **`.agent/SOP/`** — standard operating procedures ("how to add a schema migration", "how to add a page route").
 
-> Note: `.agent/` does not exist yet (planning phase). Run `/context:init` to create it once the monorepo is scaffolded; `/context:update` after significant changes (new deps, architecture changes).
+> Note: `.agent/` exists with `README.md`, `System/`, and `Tasks/`. `Style/` and `SOP/` are not populated yet — brand/UI patterns live in `System/02-design-system.md`. Run `/context:update` after significant changes (new deps, architecture changes).
 
 **Context commands:** `/context:init` (create), `/context:update` (refresh after changes), `/context:load` (load at session start).
 
