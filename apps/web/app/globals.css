@@ -200,10 +200,29 @@
   }
 }
 
+/* keptGaugeSlot: the "next free slot" dot breathing. Glow + brightness only —
+   never scale — so it never reads as a kept-page dot appearing or moving. The
+   dot is a hollow accent ring; a kept page is a solid accent fill. Motion-gated
+   below: under reduced motion it stays a static accent ring. */
+@keyframes keptGaugeSlot {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 50%, transparent);
+    filter: brightness(1);
+  }
+  50% {
+    box-shadow: 0 0 10px 3px color-mix(in srgb, var(--accent) 50%, transparent);
+    filter: brightness(1.55);
+  }
+}
+
 @media (prefers-reduced-motion: no-preference) {
   #gauge-dots [data-on="1"] {
     animation: keptGaugeRipple 3.6s ease-in-out infinite;
     animation-delay: var(--ripple-delay, 0ms);
+  }
+  #gauge-next-slot {
+    animation: keptGaugeSlot 2.4s ease-in-out infinite;
   }
 }
 

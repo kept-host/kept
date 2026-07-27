@@ -52,6 +52,7 @@ const INITIAL: UIState = {
   openTab: "mcp",
   humanPresent: false,
   gaugeRevealed: false,
+  mintedCount: 0,
 };
 
 function reducer(state: UIState, patch: Partial<UIState>): UIState {
@@ -131,13 +132,25 @@ export default function KeptLanding() {
   const skillNum = humanPresent ? "04" : "03";
   const chevron = (id: Tab) => (state.openTab === id ? "180deg" : "0deg");
 
+  // The lit count: the honest global baseline plus whatever this visitor just
+  // minted in this session. `state.mintedCount` is session-local UI state and is
+  // never written back into `landing-stats` — reloading returns to the baseline.
+  const keptNow = Math.min(
+    Math.max(keptCount + state.mintedCount, 0),
+    GAUGE_TOTAL,
+  );
+  // The "next slot": the first dot NOT yet filled. It is the drop affordance —
+  // a pulsing accent ring, deliberately a different kind of thing from a solid
+  // kept-page dot, so "every dot is a page kept online right now" stays true.
+  const nextSlot = Math.min(keptNow, GAUGE_TOTAL - 1);
+
   const gaugeDots = useMemo(() => {
     // One meaning: every lit dot is a page kept online right now. The lit count
     // is the kept count itself, capped at the field size — a dot has no second
     // meaning, and there is no target denominator. Drafts are not drawn.
     // At the launch baseline (0 kept) nothing lights, and the field reads as a
     // calm, deliberately empty grid rather than a broken one.
-    const onCount = Math.min(Math.max(keptCount, 0), GAUGE_TOTAL);
+    const onCount = keptNow;
     const revealed = state.gaugeRevealed;
     const dots = [];
     for (let i = 0; i < GAUGE_TOTAL; i++) {
@@ -170,7 +183,7 @@ export default function KeptLanding() {
       });
     }
     return dots;
-  }, [state.gaugeRevealed]);
+  }, [state.gaugeRevealed, keptNow]);
 
   const tiles = useMemo(() => Array.from({ length: 63 }), []);
 
@@ -1844,26 +1857,60 @@ export default function KeptLanding() {
                     willChange: "transform",
                   }}
                 >
-                  {gaugeDots.map((d, i) => (
-                    <div
-                      key={i}
-                      data-on={d.on ? "1" : undefined}
-                      style={
-                        {
+                  {gaugeDots.map((d, i) =>
+                    i === nextSlot ? (
+                      // The next free slot. A real focusable control, not a
+                      // decorative dot: hover *or* keyboard focus opens the drop
+                      // panel, Enter/Space browses for a file. It never reads as
+                      // a kept page — hollow accent ring, breathing glow.
+                      <button
+                        key={i}
+                        id="gauge-next-slot"
+                        type="button"
+                        ref={bind(refs.gaugeSlotRef)}
+                        onClick={() => e()?.browse()}
+                        aria-label={
+                          keptNow === 0
+                            ? "Drop an HTML file to keep your first page"
+                            : "Drop an HTML file to keep another page"
+                        }
+                        style={{
+                          width: "100%",
                           aspectRatio: "1",
+                          padding: 0,
                           borderRadius: "50%",
-                          background: d.color,
-                          boxShadow: d.glow,
+                          border: "1.5px solid var(--accent)",
+                          background:
+                            "color-mix(in srgb,var(--accent) 30%,transparent)",
+                          cursor: "pointer",
                           opacity: d.op,
                           transform: d.tf,
                           transition:
                             "opacity .55s ease, transform .6s cubic-bezier(.34,1.45,.5,1)",
                           transitionDelay: d.delay,
-                          "--ripple-delay": d.rippleDelay,
-                        } as CSSProperties
-                      }
-                    />
-                  ))}
+                        }}
+                      />
+                    ) : (
+                      <div
+                        key={i}
+                        data-on={d.on ? "1" : undefined}
+                        style={
+                          {
+                            aspectRatio: "1",
+                            borderRadius: "50%",
+                            background: d.color,
+                            boxShadow: d.glow,
+                            opacity: d.op,
+                            transform: d.tf,
+                            transition:
+                              "opacity .55s ease, transform .6s cubic-bezier(.34,1.45,.5,1)",
+                            transitionDelay: d.delay,
+                            "--ripple-delay": d.rippleDelay,
+                          } as CSSProperties
+                        }
+                      />
+                    ),
+                  )}
                 </div>
               </div>
             </div>
@@ -2732,6 +2779,33 @@ export default function KeptLanding() {
             />
           </div>
           <div
+            ref={bind(refs.gaugeDockRef)}
+            aria-hidden
+            style={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "var(--accent)",
+              borderRadius: "50%",
+              opacity: 0,
+              pointerEvents: "none",
+              transition: "opacity .15s ease",
+            }}
+          >
+            <svg
+              style={{ width: "46%", height: "46%" }}
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="#fff"
+              strokeWidth="2.2"
+            >
+              <path d="M12 16V4M8 8l4-4 4 4" />
+              <path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+            </svg>
+          </div>
+          <div
             ref={bind(refs.whyCardRef)}
             onClick={() => e()?.browse()}
             style={{
@@ -3180,6 +3254,8 @@ function makeRefs(): EngineRefs {
     gaugeWrapRef: r(),
     gaugeGridRef: r(),
     gaugeNumRef: r(),
+    gaugeSlotRef: r(),
+    gaugeDockRef: r(),
     whyRef: r(),
     rotWordRef: r(),
     whyLinkRef: r(),
