@@ -2,6 +2,8 @@
 
 import { type CSSProperties, useEffect, useMemo, useReducer, useRef } from "react";
 
+import { DRAFT_TTL_DAYS, KEPT_PAGE_LIMIT } from "@kept/shared";
+
 import { keptCount } from "@/lib/landing-stats";
 
 import {
@@ -207,7 +209,13 @@ export default function KeptLanding() {
               id="nav-divider"
               style={{ width: 1, height: 22, background: "var(--border)" }}
             />
+            {/*
+              Kept-only counter: pages kept forever, right now. Drafts are live
+              but temporary and must never be counted here.
+              TODO(E09): back this with a query over kept pages only.
+            */}
             <div
+              title="pages kept forever, right now"
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -227,7 +235,10 @@ export default function KeptLanding() {
                   animation: "keptLive 2s ease-in-out infinite",
                 }}
               />
-              <span ref={bind(refs.navCountRef)}>1,284</span>&nbsp;PAGES&nbsp;KEPT
+              <span ref={bind(refs.navCountRef)}>
+                {LIVE_COUNT.toLocaleString()}
+              </span>
+              &nbsp;PAGES&nbsp;KEPT
             </div>
           </div>
         </div>
@@ -476,6 +487,19 @@ export default function KeptLanding() {
                   >
                     NO ACCOUNT · DRAG ANYWHERE
                   </span>
+                  <a
+                    href="#agents"
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 12,
+                      color: "var(--text-secondary)",
+                      textDecoration: "none",
+                      borderBottom: "1px solid var(--border)",
+                      paddingBottom: 3,
+                    }}
+                  >
+                    or let your agent do it &rarr;
+                  </a>
                 </div>
                 <div
                   ref={bind(refs.mobileSlotRef)}
@@ -552,8 +576,8 @@ export default function KeptLanding() {
                     textShadow: "0 1px 18px rgba(250,248,244,.9)",
                   }}
                 >
-                  Your page joined the wall on the right — it stays up, no
-                  expiry. Claim it to rename, replace, or manage.
+                  Your page joined the wall on the right — it&rsquo;s live now, a
+                  draft for {DRAFT_TTL_DAYS} days. Keep it to make it permanent.
                 </p>
                 <div
                   style={{
@@ -661,7 +685,7 @@ export default function KeptLanding() {
                       cursor: "pointer",
                     }}
                   >
-                    Claim it to keep &amp; manage &rarr;
+                    Keep it &amp; manage it &rarr;
                   </button>
                   <button
                     onClick={() => e()?.reset()}
@@ -858,7 +882,8 @@ export default function KeptLanding() {
                     <h3 style={howTitle}>Get a link</h3>
                     <p style={howBody}>
                       A live <code style={howCode}>*.kept.host</code> link mints
-                      in seconds. Copy it, QR it, share it.
+                      in seconds &mdash; a draft, live for {DRAFT_TTL_DAYS} days.
+                      Copy it, QR it, share it.
                     </p>
                   </div>
                 </div>
@@ -878,10 +903,10 @@ export default function KeptLanding() {
                       <circle cx="9.5" cy="8" r="4" />
                       <path d="m15 11 2 2 4-4" />
                     </svg>
-                    <h3 style={howTitle}>Claim</h3>
+                    <h3 style={howTitle}>Keep</h3>
                     <p style={howBody}>
-                      Attach it to your account — free, no password — to rename,
-                      replace, or manage it.
+                      Sign in once and keep it &mdash; free, up to{" "}
+                      {KEPT_PAGE_LIMIT} pages, forever.
                     </p>
                   </div>
                 </div>
