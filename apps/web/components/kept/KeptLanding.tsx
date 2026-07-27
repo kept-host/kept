@@ -2010,10 +2010,11 @@ export default function KeptLanding() {
               </p>
               <div style={{ display: "grid", gap: 14 }}>
                 {[
-                  "Unlimited public pages, kept forever",
-                  "Instant link, QR, and live status",
+                  `Unlimited drafts — live instantly, ${DRAFT_TTL_DAYS} days`,
+                  `${KEPT_PAGE_LIMIT} pages kept forever`,
+                  "Instant link, QR, live status",
                   "Claim, rename slug, replace versions",
-                  "Dashboard for all your pages",
+                  "Dashboard for pages & drafts",
                 ].map((f) => (
                   <div key={f} style={freeFeature}>
                     <svg
@@ -2236,6 +2237,17 @@ export default function KeptLanding() {
                     We&rsquo;ll let you know when Pro is ready.
                   </div>
                 )}
+                <p
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 12,
+                    letterSpacing: "0.03em",
+                    color: "var(--text-muted)",
+                    margin: "16px 0 0",
+                  }}
+                >
+                  Pro is what keeps the free tier free.
+                </p>
               </div>
             </div>
           </div>
@@ -2368,15 +2380,28 @@ export default function KeptLanding() {
             <div style={{ display: "flex", gap: 56, flexWrap: "wrap" }}>
               <FooterCol
                 heading="PROJECT"
-                links={["GitHub repo", "Open Collective", "License · AGPL-3.0"]}
+                links={[
+                  { label: "GitHub repo" },
+                  { label: "Stats", href: "/stats" },
+                  { label: "License · AGPL-3.0" },
+                ]}
               />
               <FooterCol
                 heading="DEVELOPERS"
-                links={["MCP server · soon", "CLI · soon", "Docs"]}
+                links={[
+                  { label: "MCP server · soon" },
+                  { label: "CLI · soon" },
+                  { label: "Docs" },
+                ]}
               />
               <FooterCol
                 heading="SAFETY"
-                links={["Report a page", "Acceptable use", "Privacy"]}
+                links={[
+                  { label: "The forever promise", href: "/promise" },
+                  { label: "Report a page" },
+                  { label: "Acceptable use" },
+                  { label: "Privacy" },
+                ]}
               />
             </div>
           </div>
@@ -3382,6 +3407,36 @@ const proIcon = (children: React.ReactNode) => (
 
 const PRO_FEATURES = [
   {
+    title: "More pages kept forever",
+    body: `keep well beyond the free ${KEPT_PAGE_LIMIT}.`,
+    icon: proIcon(
+      <>
+        <rect x="7" y="3" width="14" height="15" rx="2" />
+        <path d="M3 7v12a2 2 0 0 0 2 2h11" />
+      </>,
+    ),
+  },
+  {
+    title: "API keys",
+    body: "agents publish straight to your account.",
+    icon: proIcon(
+      <>
+        <circle cx="7.5" cy="15.5" r="4.5" />
+        <path d="M10.7 12.3 21 2M17 6l3 3" />
+      </>,
+    ),
+  },
+  {
+    title: "Higher agent/MCP volume",
+    body: "room for agents that publish often.",
+    icon: proIcon(
+      <>
+        <path d="M3 20h18" />
+        <path d="M6 20v-6M11 20V8M16 20v-9M21 20V4" />
+      </>,
+    ),
+  },
+  {
     title: "Password-protected pages",
     body: "gate a page behind a password.",
     icon: proIcon(
@@ -3422,18 +3477,34 @@ const PRO_FEATURES = [
     ),
   },
   {
-    title: "More pages & higher limits",
-    body: "higher MCP/agent volume too.",
-    icon: proIcon(<path d="M4 7V4h16v3M9 20h6M12 4v16" />),
-  },
-  {
     title: "Version history & rollback",
     body: "restore a previous version.",
     icon: proIcon(<path d="M3 7l9-4 9 4-9 4-9-4zM3 12l9 4 9-4M3 17l9 4 9-4" />),
   },
+  {
+    title: "EU data residency",
+    body: "pages stored and served from the EU.",
+    icon: proIcon(
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 3a14 14 0 0 0 0 18M3.5 9h17M3.5 15h17" />
+      </>,
+    ),
+  },
 ] as const;
 
-function FooterCol({ heading, links }: { heading: string; links: string[] }) {
+function FooterCol({
+  heading,
+  links,
+}: {
+  heading: string;
+  links: readonly { label: string; href?: string }[];
+}) {
+  // Labels without a live destination render as plain text, never a dead link.
+  const linkStyle: React.CSSProperties = {
+    color: "#A8A096",
+    textDecoration: "none",
+  };
   return (
     <div
       style={{
@@ -3447,15 +3518,17 @@ function FooterCol({ heading, links }: { heading: string; links: string[] }) {
       }}
     >
       <span style={{ color: "#6E6760" }}>{heading}</span>
-      {links.map((l) => (
-        <a
-          key={l}
-          href="#top"
-          style={{ color: "#A8A096", textDecoration: "none" }}
-        >
-          {l}
-        </a>
-      ))}
+      {links.map((l) =>
+        l.href ? (
+          <a key={l.label} href={l.href} style={linkStyle}>
+            {l.label}
+          </a>
+        ) : (
+          <span key={l.label} style={linkStyle}>
+            {l.label}
+          </span>
+        ),
+      )}
     </div>
   );
 }
