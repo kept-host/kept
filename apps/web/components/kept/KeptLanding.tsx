@@ -1,6 +1,13 @@
 "use client";
 
-import { type CSSProperties, useEffect, useMemo, useReducer, useRef } from "react";
+import {
+  type CSSProperties,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 
 import { DRAFT_TTL_DAYS, KEPT_PAGE_LIMIT } from "@kept/shared";
 
@@ -28,6 +35,12 @@ const LIVE_COUNT = keptCount;
 const GAUGE_FUNDED = keptCount;
 // Visual constant: how many dots the field draws, not a number we report.
 const GAUGE_TOTAL = 288;
+
+// The shareable artifact: the one line a human pastes into their agent. Single
+// source for both the rendered text and the clipboard payload so the two can
+// never drift. E08 finalizes the wording — keep it a one-string edit.
+const AGENT_PROMPT =
+  "Publish this HTML with kept (https://kept.host/agents): call the MCP tool `publish_page`, then give me the live link and the claim link.";
 
 type UIState = EngineState;
 
@@ -89,6 +102,28 @@ export default function KeptLanding() {
   }, []);
 
   const e = () => engineRef.current;
+
+  // ---- copy-paste agent prompt (the only interactive bit outside the engine) ----
+  const [promptCopied, setPromptCopied] = useState(false);
+  const promptCopyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (promptCopyTimer.current) clearTimeout(promptCopyTimer.current);
+    },
+    [],
+  );
+  const copyPrompt = () => {
+    // Insecure contexts and denied permissions must not throw — the prompt text
+    // stays on screen and selectable either way.
+    try {
+      void navigator.clipboard?.writeText(AGENT_PROMPT).catch(() => {});
+    } catch {
+      /* noop */
+    }
+    setPromptCopied(true);
+    if (promptCopyTimer.current) clearTimeout(promptCopyTimer.current);
+    promptCopyTimer.current = setTimeout(() => setPromptCopied(false), 1700);
+  };
 
   // ---- derived render values (match the prototype's renderVals) ----
   const humanPresent = state.humanPresent;
@@ -1043,12 +1078,77 @@ export default function KeptLanding() {
                       maxWidth: "46ch",
                     }}
                   >
-                    AI agents generate HTML all day. Give it a home. Connect
-                    kept&rsquo;s <b style={{ color: "var(--text)" }}>MCP server</b>{" "}
-                    to Claude, ChatGPT, Cursor — any MCP host — and your agent
-                    publishes a page to your account and gets back a live link.
-                    Free, with your account.
+                    AI agents generate HTML all day. Give it a home. Your agent
+                    publishes with zero setup &mdash; no key, no account &mdash;
+                    and gets back a live link plus a claim link for you. One
+                    click makes it yours, forever.
                   </p>
+                  <div data-reveal style={{ maxWidth: 560, marginBottom: 28 }}>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 12,
+                        marginBottom: 9,
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontFamily: "var(--font-mono)",
+                          fontSize: 11,
+                          letterSpacing: "0.08em",
+                          textTransform: "uppercase",
+                          color: "var(--text-muted)",
+                        }}
+                      >
+                        Paste this to your agent
+                      </span>
+                      <span
+                        role="status"
+                        aria-live="polite"
+                        style={{
+                          fontFamily: "var(--font-mono)",
+                          fontSize: 11,
+                          letterSpacing: "0.06em",
+                          color: "var(--live)",
+                        }}
+                      >
+                        {promptCopied ? "Copied to clipboard" : ""}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={copyPrompt}
+                        aria-label="Copy the agent prompt to your clipboard"
+                        style={{
+                          marginLeft: "auto",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 7,
+                          fontFamily: "var(--font-mono)",
+                          fontSize: 11,
+                          letterSpacing: "0.06em",
+                          background: "var(--surface)",
+                          color: "var(--text)",
+                          border: "1px solid var(--border)",
+                          borderRadius: "var(--r-pill)",
+                          padding: "5px 12px",
+                          cursor: "pointer",
+                        }}
+                      >
+                        {promptCopied ? "COPIED" : "COPY"}
+                      </button>
+                    </div>
+                    <p
+                      style={{
+                        ...codeBlock,
+                        fontSize: 12,
+                        whiteSpace: "pre-wrap",
+                        overflowWrap: "anywhere",
+                      }}
+                    >
+                      {AGENT_PROMPT}
+                    </p>
+                  </div>
                   <div
                     data-reveal
                     style={{
@@ -1101,6 +1201,19 @@ export default function KeptLanding() {
                       </span>
                     </div>
                   </div>
+                  <p
+                    data-reveal
+                    style={{
+                      fontSize: 13,
+                      lineHeight: 1.6,
+                      color: "var(--text-muted)",
+                      margin: "0 0 24px",
+                      maxWidth: "52ch",
+                    }}
+                  >
+                    Power path: API keys publish straight into your account
+                    &mdash; part of Pro.
+                  </p>
                   <div data-reveal style={{ maxWidth: 460 }}>
                     {state.agentNotify !== "success" ? (
                       <>
@@ -1377,7 +1490,8 @@ export default function KeptLanding() {
                             }}
                           >
                             Add kept to any MCP host — Claude, Cursor, ChatGPT.
-                            Drop this into your MCP config:
+                            No token, no account. Drop this into your MCP
+                            config:
                           </p>
                           <pre style={codeBlock}>
                             <span style={{ color: "#7C7468" }}>{"{"}</span>
@@ -1398,17 +1512,7 @@ export default function KeptLanding() {
                             <span style={{ color: "#8FBF8F" }}>
                               &quot;@kept/mcp&quot;
                             </span>
-                            {"],\n    "}
-                            <span style={{ color: "#9B8CFF" }}>&quot;env&quot;</span>
-                            {": { "}
-                            <span style={{ color: "#9B8CFF" }}>
-                              &quot;KEPT_TOKEN&quot;
-                            </span>
-                            {": "}
-                            <span style={{ color: "#8FBF8F" }}>
-                              &quot;sk-kept-…&quot;
-                            </span>
-                            {" }\n  }\n"}
+                            {"]\n  }\n"}
                             <span style={{ color: "#7C7468" }}>{"}"}</span>
                           </pre>
                           <p
@@ -1426,9 +1530,19 @@ export default function KeptLanding() {
                                 color: "var(--accent)",
                               }}
                             >
-                              kept.publish_page
+                              kept.publish_page(html)
                             </code>{" "}
-                            and gets back a live link.
+                            and gets back{" "}
+                            <code
+                              style={{
+                                fontFamily: "var(--font-mono)",
+                                color: "var(--accent)",
+                              }}
+                            >
+                              {`{ live_url, claim_url, expires_in: "${DRAFT_TTL_DAYS}d" }`}
+                            </code>
+                            . The page is live at once as a draft; open the
+                            claim link to keep it forever.
                           </p>
                         </div>
                       </div>
@@ -1548,7 +1662,7 @@ export default function KeptLanding() {
                               Publish an HTML file to kept and
                             </div>
                             <div style={{ paddingLeft: 14 }}>
-                              return the permanent live link.
+                              return the live link and the claim link.
                             </div>
                             <div style={{ color: "var(--text)" }}>---</div>
                             <div style={{ marginTop: 6 }}>
