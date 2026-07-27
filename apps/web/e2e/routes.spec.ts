@@ -81,4 +81,34 @@ test.describe("stub routes", () => {
     await expect(page.getByText(/we announce the sunset/)).toBeVisible();
     expect(errors, `console errors: ${errors.join(" | ")}`).toEqual([]);
   });
+
+  test("/promise reports the same zero baseline vocabulary as /stats", async ({
+    page,
+  }) => {
+    await page.goto("/promise");
+
+    // The wind-down promise is what replaced the donation ask; neither the
+    // funding vocabulary nor an unearned uptime figure may appear here.
+    const bodyText = await page.evaluate(() => document.body.innerText ?? "");
+    expect(bodyText).not.toMatch(/Open Collective/i);
+    expect(bodyText).not.toMatch(/donat/i);
+    expect(bodyText).not.toMatch(/supporter/i);
+    expect(bodyText).not.toMatch(/100%/);
+  });
+
+  test("both marketing routes link back to the landing page", async ({
+    page,
+  }) => {
+    for (const route of ["/stats", "/promise"]) {
+      await page.goto(route);
+      const back = page.getByRole("link", { name: /Back to kept/ });
+      await expect(back).toHaveCount(1);
+      await expect(back).toHaveAttribute("href", "/");
+
+      // The link actually navigates — the landing page is the destination.
+      await back.click();
+      await expect(page).toHaveURL(/\/$/);
+      await expect(page).toHaveTitle("kept");
+    }
+  });
 });
