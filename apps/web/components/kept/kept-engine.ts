@@ -222,6 +222,14 @@ export class KeptEngine {
 
   // timers / listeners
   raf = 0;
+  /**
+   * One-shot rAF chains (the count-up and the tile reveal) run outside the main
+   * `raf` loop, so `unmount()` cannot cancel them by clearing a single handle.
+   * They are tracked here and cancelled together — under React StrictMode the
+   * discarded first engine would otherwise keep painting into detached nodes.
+   * Use `this.chain()` rather than calling requestAnimationFrame directly.
+   */
+  private auxRafs = new Set<number>();
   mintTimer?: ReturnType<typeof setTimeout>;
   loadTimer?: ReturnType<typeof setInterval>;
   countTimer?: ReturnType<typeof setInterval>;
@@ -584,8 +592,22 @@ export class KeptEngine {
       }
     }
   }
+  /**
+   * Schedule a self-rescheduling rAF step whose handle stays cancellable.
+   * The callback returns true to continue, false when the animation is done.
+   */
+  private chain(step: (t: number) => boolean) {
+    const run = (t: number) => {
+      this.auxRafs.delete(id);
+      if (step(t)) this.chain(step);
+    };
+    const id = requestAnimationFrame(run);
+    this.auxRafs.add(id);
+  }
   unmount() {
     cancelAnimationFrame(this.raf);
+    for (const id of this.auxRafs) cancelAnimationFrame(id);
+    this.auxRafs.clear();
     clearTimeout(this.mintTimer);
     clearInterval(this.loadTimer);
     clearInterval(this.countTimer);
@@ -684,13 +706,12 @@ export class KeptEngine {
       return;
     }
     const start = performance.now();
-    const step = (t: number) => {
+    this.chain((t) => {
       const p = Math.min(1, (t - start) / dur);
       const e = 1 - Math.pow(1 - p, 3);
       el.textContent = Math.round(target * e).toLocaleString();
-      if (p < 1) requestAnimationFrame(step);
-    };
-    requestAnimationFrame(step);
+      return p < 1;
+    });
   }
   setTab(id: Tab) {
     this.agManual = true;
@@ -785,7 +806,7 @@ export class KeptEngine {
     const delays = kids.map(
       (t, i) => 200 + (i % cols) * 36 + Math.floor(i / cols) * 68,
     );
-    const step = () => {
+    this.chain(() => {
       const now = performance.now();
       let done = true;
       for (let i = 0; i < kids.length; i++) {
@@ -801,14 +822,13 @@ export class KeptEngine {
           (0.94 + 0.06 * e).toFixed(3) +
           ")";
       }
-      if (!done) requestAnimationFrame(step);
-      else
+      if (done)
         kids.forEach((t) => {
           t.style.transform = "none";
           t.style.opacity = "1";
         });
-    };
-    requestAnimationFrame(step);
+      return !done;
+    });
   }
   setupReveal() {
     const scope = this.refs.rootRef.current || document;
