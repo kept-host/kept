@@ -1,15 +1,16 @@
 name: CI
 
-# Validate-on-merge only: install -> typecheck -> lint -> build across the
-# workspace. NO deploy here. Tag-based dev/prod release automation (Railway for
-# apps/web, Wrangler for apps/edge) is owned by epic E-CI and lives in separate
-# workflows.
+# Validate-only: typecheck -> lint -> build -> e2e across the workspace.
+# NO deploy here. "Merge = validate, tag = deploy" — tag-based dev/prod release
+# automation lives in separate workflows and owns all cloud credentials. This
+# workflow runs on fork PRs, so it must never reference a deploy secret or an
+# `environment:`.
 
 on:
   push:
-    branches: ["main"]
+    branches: ["develop", "main"]
   pull_request:
-    branches: ["main"]
+    branches: ["develop", "main"]
 
 # Cancel superseded runs on the same ref to save CI minutes.
 concurrency:
@@ -21,31 +22,16 @@ permissions:
 
 jobs:
   validate:
-    name: Typecheck / Lint / Build
+    name: Typecheck / Lint / Build / Test
     runs-on: ubuntu-latest
-    # Node 22 across the board: apps/edge uses wrangler 4.x which requires
-    # Node >=22. apps/web + packages/shared run fine on 22 too, so a single
-    # version keeps the Turbo graph (lint/typecheck/build dependsOn ^build)
-    # intact in one job rather than splitting the workspace across runners.
-    env:
-      NODE_VERSION: "22"
     steps:
+      # Must precede the local composite action below: `uses: ./...` can only
+      # resolve once the repository is already on disk.
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10.13.1
-
-      - name: Setup Node ${{ env.NODE_VERSION }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Setup workspace
+        uses: ./.github/actions/setup
 
       - name: Typecheck
         run: pnpm typecheck
@@ -55,3 +41,16 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      # Playwright boots `next dev` itself via the config's `webServer`. The app
+      # needs no environment to boot today: the only process.env read in app
+      # source is DATABASE_URL inside lib/db, which nothing imports yet, so no
+      # placeholder env is supplied here. When E04 lands a DB-backed suite this
+      # step gains an ephemeral database branch — see task 005.
+      - name: Install Playwright browsers
+        run: pnpm --filter @kept/web exec playwright install --with-deps chromium
+
+      - name: Test
+        run: pnpm test
+        env:
+          CI: "true"
