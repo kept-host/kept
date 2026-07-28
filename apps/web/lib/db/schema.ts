@@ -27,8 +27,9 @@ export const planEnum = pgEnum("plan", PLANS);
 export const regionEnum = pgEnum("region", REGIONS);
 
 // ── profiles ─────────────────────────────────────────────────────────────────
-// A user profile. `id` mirrors the Supabase `auth.users` id (Auth is owned by
-// the Supabase JS client); FK to auth.users is added in E2 alongside auth flows.
+// A user profile. Auth is self-hosted Better Auth, whose own tables live in this
+// same database, so there is no external identity provider to mirror. E05 wires
+// the FK from `id` to Better Auth's user table alongside the auth flows.
 export const profiles = pgTable("profiles", {
   id: uuid("id").primaryKey().defaultRandom(),
   handle: text("handle"),

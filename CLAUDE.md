@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**E00-Foundation is shipped.** The pnpm + Turbo monorepo exists and builds: `apps/web` (Next.js control plane, themed, landing v2 adopted), `apps/edge` (empty deployable Hono Worker), `packages/shared`. Playwright e2e suite is green. **Next epic: `E01-landing-refresh`** — a content pivot of the built landing, not a redesign.
+**E00-Foundation and E01-Landing-Refresh are complete.** The pnpm + Turbo monorepo exists and builds: `apps/web` (Next.js control plane, themed, landing pivoted to the draft/kept + agents model), `apps/edge` (empty deployable Hono Worker), `packages/shared`. Playwright e2e suite is green (30 tests). E01 is not yet merged to `main`. **Current epic: `E02-cicd-deployment`** — tag-driven release pipeline, plus the Supabase → Neon cutover the pipeline could not be written around.
 
 Read `.agent/System/00-README-architecture-index.md` first — it is the entry point and the source of truth for build order, repo structure, and the non-negotiable rules. Each `.agent/Tasks/prds/E*.md` is a self-contained epic PRD with its own scope, data model, states, acceptance criteria, and a `UI Source` import block.
 
@@ -28,17 +28,17 @@ publish/manage (apps/web) ──writes──▶  R2 (files) + KV (manifest)
 visitor ──▶ {slug}.kept.host (apps/edge) ─────┘──▶ page
 ```
 
-- **`apps/web`** — CONTROL PLANE. Next.js (App Router, RSC, TS) on its own infra (Railway). Landing, dashboard, auth, publish/manage APIs, cron, Supabase. *Writes* pages/settings.
+- **`apps/web`** — CONTROL PLANE. Next.js (App Router, RSC, TS) on its own infra (Railway). Landing, dashboard, auth, publish/manage APIs, cron, Neon Postgres. *Writes* pages/settings.
 - **`apps/edge`** — DATA PLANE. Hono Worker on Cloudflare serving `*.kept.host` from R2 + KV + Cache. Nothing else. *Reads* only.
 - **`packages/shared`** — types, enums (status/plan/region), constants, zod schemas, the KV manifest type. Imported by **both** apps.
 
-**The hard rule: the serve path is 100% Cloudflare and never depends on the control plane.** `apps/edge` may import `packages/shared` but **never** `apps/web`, and serving never calls back to the control plane. A dashboard/Supabase/`apps/web` outage cannot take a hosted page offline. Enforce this in every change.
+**The hard rule: the serve path is 100% Cloudflare and never depends on the control plane.** `apps/edge` may import `packages/shared` but **never** `apps/web`, and serving never calls back to the control plane. A dashboard/database/`apps/web` outage cannot take a hosted page offline. Enforce this in every change.
 
 The **KV manifest contract** is the seam: control plane writes `{ siteId, versionId, status, region, ownerId, updatedAt }` keyed by `<slug>`; the Worker only reads it. R2 layout is `sites/{siteId}/{versionId}/index.html` — keyed by `siteId` not slug, so renaming a slug is a KV-only change (no file move).
 
 ## Locked decisions (don't drift)
 
-- **Stack:** Next.js + Supabase (Postgres/Auth/Realtime) control plane; Cloudflare Worker (Hono) + R2 + KV + Cache serving; Tailwind v4 (`@theme`) + shadcn (`new-york`, heavily re-themed) + Motion (`motion/react`) + React Three Fiber; fonts Hanken Grotesk (display) / Geist (body) / JetBrains Mono (mono).
+- **Stack:** Next.js (Railway) + **Neon** Postgres control plane, with **Better Auth** v1.6.x self-hosted (Drizzle adapter, users in the same Neon database) and **Resend** for magic-link email — both wired in E05; Cloudflare Worker (Hono) + R2 + KV + Cache serving; Tailwind v4 (`@theme`) + shadcn (`new-york`, heavily re-themed) + Motion (`motion/react`) + React Three Fiber; fonts Hanken Grotesk (display) / Geist (body) / JetBrains Mono (mono).
 - **Tokens are law.** Design tokens are CSS variables in `globals.css`, exposed to Tailwind via `@theme`, with shadcn pointed at them. Never hardcode a hex — use token classes (`bg-bg`, `text-accent`, `font-display`, `rounded-md`). Theme toggle swaps the variable block; light/dark parity on every screen. shadcn is the behavior/a11y layer, not the look. See `03-frontend-specs.md` §3–4.
 - **`packages/shared` is the single source** for types/enums/constants — `MAX_PAGE_BYTES`, `KEPT_PAGE_LIMIT=3`, `DRAFT_TTL_DAYS=7`, `DRAFT_GRACE_DAYS=30`; site `status`, `plan`, `region` (`auto | eu`) enums; zod schemas; the KV manifest type. The landing must never hardcode a `3` or a `7` where a constant exists.
   - ⚠️ **One pivot delta still pending.** E01 renamed the constants to draft/kept vocabulary and deleted `SLOT_COST_EUR` / `SUPPORTER_PAGE_LIMIT`. Still outstanding: `PLANS` carries `supporter` and `SITE_STATUSES` carries `resting`. Both drive `pgEnum` in `apps/web/lib/db/schema.ts` and are baked into the committed migration `apps/web/drizzle/0000_nasty_moonstone.sql`, so dropping a value is a **Postgres enum migration, not a rename** — owned by E04/E05. Target: plans `free | premium`, no `resting`.
@@ -62,9 +62,9 @@ E00-Foundation ✅ → E01-Landing-Refresh → E02 → E03 → E04 → E05 → E
 
 | Epic | Covers |
 |---|---|
-| `E00-foundation-project-setup` | Scaffold, themed app, empty Worker, Cloudflare/Supabase, shared constants. **Shipped.** |
-| `E01-landing-refresh` | Content pivot of the built landing to the draft/kept + agents model. **Next.** |
-| `E02-cicd-deployment` | GitHub Actions, dev/prod tracks, tag-based releases |
+| `E00-foundation-project-setup` | Scaffold, themed app, empty Worker, Cloudflare + Postgres, shared constants. **Shipped.** |
+| `E01-landing-refresh` | Content pivot of the built landing to the draft/kept + agents model. **Complete** (unmerged). |
+| `E02-cicd-deployment` | GitHub Actions, dev/prod tracks, tag-based releases; Supabase → Neon cutover. **Current.** |
 | `E03-serving-data-plane` | The Worker that serves `*.kept.host` from R2/KV |
 | `E04-anonymous-publish` | API-first publish; drop/paste or agent call → live link + claim link; the 7-day draft |
 | `E05-auth-and-claim` | GitHub + magic-link sign-in; keep a draft forever; swap when at cap |
@@ -80,7 +80,7 @@ Several epics carry **open questions** worth resolving before that epic starts (
 
 ## CI/CD model (E02-cicd-deployment)
 
-Protected `develop`/`main`. **Merge = validate, tag = deploy.** Tag patterns: `dev-v*` → dev, `prod-v*` → prod (prod tags must point at `main`). Dev and prod are fully isolated (separate Cloudflare/Supabase resources). Worker deploys via Wrangler; control plane to its own infra.
+Protected `develop`/`main`. **Merge = validate, tag = deploy.** Tag patterns: `dev-v*` → dev, `prod-v*` → prod (prod tags must point at `main`). Dev and prod are fully isolated (separate Cloudflare resources and Neon branches — prod is the root branch, dev a persistent branch; dev serves from `*.kept-dev.xyz`). Worker deploys via Wrangler; control plane to Railway.
 
 ---
 

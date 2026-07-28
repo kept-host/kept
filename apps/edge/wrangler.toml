@@ -2,7 +2,7 @@
 #
 # This Worker serves published pages at `{slug}.kept.host` from R2 (files) + KV
 # (manifest). It reads those two stores ONLY — never the control plane (apps/web),
-# never Supabase. Real routing/serving logic lands in epic E0; task 004 ships an
+# never the database. Real routing/serving logic lands in epic E0; task 004 ships an
 # empty skeleton that returns a placeholder/404.
 #
 # BINDING CONTRACT (soft contract with task 005 + task 008 `.env.example`):
