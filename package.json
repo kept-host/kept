@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "description": "kept — anonymous-first page hosting (monorepo root)",
-  "license": "ISC",
+  "license": "AGPL-3.0-only",
   "packageManager": "pnpm@10.13.1",
   "engines": {
     "node": ">=22"
