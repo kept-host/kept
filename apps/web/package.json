@@ -14,7 +14,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
-    "smoke:cf": "tsx scripts/smoke-cloudflare.ts"
+    "smoke:cf": "tsx scripts/smoke-cloudflare.ts",
+    "smoke:release": "tsx scripts/smoke-release.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
