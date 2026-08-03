@@ -5,9 +5,10 @@
 // enforced by the root ESLint `no-restricted-imports` guard.
 //
 // Pipeline (E03): host→slug → Cache API → KV lookup → status branch → R2 fetch →
-// headers + cache. Steps 1 (host→slug, reserved labels), 3 (the single KV read)
-// and 4 (the status branch) are live; the R2 fetch lands in task 003, so a
-// `live` manifest still falls through to the branded 404 for now.
+// headers + cache. Steps 1 (host→slug, reserved labels), 3 (the single KV read),
+// 4 (the status branch) and 5–6 (path→key + the single R2 read) are live. The
+// Cache API layer (task 005) and the uniform security headers (task 006) are the
+// remaining seams.
 
 import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
@@ -17,6 +18,7 @@ import type { KvManifest } from "@kept/shared";
 import type { Env } from "./env";
 import { resolveHost } from "./host";
 import { readManifest } from "./manifest";
+import { fetchObject } from "./r2";
 import { renderSystemPage, type SystemPage } from "./system-pages";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -91,11 +93,46 @@ app.all("*", async (c) => {
   // no `expires_at` here and no date arithmetic anywhere in the Worker —
   // `expired` is a status the control plane writes, not one the edge computes.
   switch (lookup.manifest.status) {
-    case "live":
-      // Steps 5–7 (task 003): sites/{siteId}/{versionId}/{path} out of R2, then
-      // headers + cache. Until that lands, a live manifest resolves to the
-      // branded 404 rather than pretending to serve.
+    case "live": {
+      // Steps 5–6: path → key → the single R2 read. `r2.ts` owns the traversal
+      // guard and the key shape; this branch only turns the outcome into a
+      // response. Step 7 (cache) is task 005; the security headers that wrap
+      // every response are task 006.
+      const fetched = await fetchObject(
+        c.env.KEPT_R2,
+        lookup.manifest,
+        url.pathname,
+        c.req.header("if-none-match"),
+      );
+
+      if (fetched.kind === "object") {
+        // Streamed straight from R2 — never buffered through `arrayBuffer()`,
+        // because Worker memory is not the place to hold a whole page.
+        // `Content-Type` is the Worker's own; `ETag` is R2's, so the next
+        // request can be conditional.
+        return new Response(fetched.object.body, {
+          status: 200,
+          headers: {
+            "Content-Type": fetched.contentType,
+            ETag: fetched.object.httpEtag,
+          },
+        });
+      }
+
+      if (fetched.kind === "notModified") {
+        // The conditional matched inside R2's `onlyIf`, so no body crossed the
+        // wire. Still exactly one R2 operation.
+        return new Response(null, {
+          status: 304,
+          headers: { ETag: fetched.etag },
+        });
+      }
+
+      // `rejected` (guarded-off path) and `missing` (manifest pointing at an
+      // object never written, or already purged) are the same answer, and the
+      // offending path is never echoed back.
       return systemPage(c, "notFound");
+    }
     case "under_review":
     case "quarantined":
       return systemPage(c, "suspended");
