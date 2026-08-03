@@ -166,9 +166,18 @@ Two consequences that matter mid-incident:
 - **Every rollback permanently lengthens the chain** and consumes two slots of
   the 10-branch allowance. Three rollbacks and the project is close to the cap.
 
-To actually reclaim the slots you must **reparent** the restored branch back onto
-`production` (Neon console → branch → Reparent) and only then delete the orphaned
-ancestors. Do this as scheduled cleanup after the incident, never during it.
+Reclaiming those slots means breaking the descendant relationship first —
+reparenting the restored branch back onto `production`, then deleting the
+orphaned ancestors. **Treat that path as unverified.** The drill confirmed the
+deletion failure but did not exercise a reparent: the branch object exposes a
+`parent_id`, and Neon documents branch reparenting, but neither the CLI (`neonctl
+branches` has no `reparent` subcommand) nor a writable API field was confirmed
+during the drill. Establish the exact procedure on a throwaway branch **before**
+you need it, not during an incident.
+
+Practical impact: budget the branch cap assuming rollbacks are effectively
+permanent until someone does that cleanup. The drill itself left the project at
+4 of 10.
 
 ### Re-syncing a drifted dev branch
 
