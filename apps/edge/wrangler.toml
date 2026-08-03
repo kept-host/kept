@@ -2,40 +2,63 @@
 #
 # This Worker serves published pages at `{slug}.kept.host` from R2 (files) + KV
 # (manifest). It reads those two stores ONLY — never the control plane (apps/web),
-# never Supabase. Real routing/serving logic lands in epic E0; task 004 ships an
+# never the database. Real routing/serving logic lands in epic E03; E00 shipped an
 # empty skeleton that returns a placeholder/404.
 #
-# BINDING CONTRACT (soft contract with task 005 + task 008 `.env.example`):
-#   - R2 bucket binding:  KEPT_R2  → auto-kept-sites-dev (v1-active, region "auto")
-#   - KV namespace binding: KEPT_KV → kept-manifest-dev
-# An EU-residency bucket (eu-kept-sites-dev) also exists; its Worker binding
-# (KEPT_R2_EU) is added in E8 when region="eu" routing activates — the v1 skeleton
-# reads neither store yet (E0 wires reads), so it stays unbound here for now.
+# ENVIRONMENT ISOLATION (E02 task 002)
+# There are NO top-level `r2_buckets` / `kv_namespaces` / `routes`. Every store and
+# every route lives inside `[env.dev]` or `[env.prod]`. A bare `wrangler deploy`
+# with no `--env` therefore cannot reach *any* store — that failure is deliberate.
+# Always deploy with an explicit `--env dev` or `--env prod`.
+#
+# BINDING CONTRACT (shared with `.env.example` and the smoke scripts):
+#   - R2 bucket binding:    KEPT_R2  → auto-kept-sites-dev | auto-kept-sites
+#   - KV namespace binding: KEPT_KV  → kept-manifest-dev   | kept-manifest
+# EU-residency buckets (`eu-kept-sites-dev` / `eu-kept-sites`) exist but stay
+# UNBOUND in both environments. `KEPT_R2_EU` is added in E11 when region="eu"
+# routing activates. No speculative binding.
 
 name = "kept-edge"
 main = "src/index.ts"
 compatibility_date = "2026-06-24"
 compatibility_flags = ["nodejs_compat"]
 
-# Serve every first-level subdomain of kept.host. Zone + wildcard DNS are
-# provisioned in task 005; apex `kept.host` and `www`/`app`/`api`/`assets` route
-# to the control plane, not here (reserved labels handled in E0).
-# routes = [
-#   { pattern = "*.kept.host/*", zone_name = "kept.host" }
-# ]
-
-# R2 bucket holding `sites/{siteId}/{versionId}/{path}` objects (default region).
-[[r2_buckets]]
-binding = "KEPT_R2"
-bucket_name = "auto-kept-sites-dev"
-# preview_bucket_name = "auto-kept-sites-preview"
-
-# KV namespace holding the per-slug manifest (see @kept/shared KvManifest).
-# Paste the "kept-manifest-dev" namespace ID below.
-[[kv_namespaces]]
-binding = "KEPT_KV"
-id = "fd5c0c7fbd9147f4849f65d59cdcd14c"
-# preview_id = "REPLACE_WITH_PREVIEW_KV_NAMESPACE_ID"
-
 [observability]
 enabled = true
+
+# ---------------------------------------------------------------------------
+# dev — `*.kept-dev.xyz`, a first-level wildcard covered by free Universal SSL.
+# ---------------------------------------------------------------------------
+
+[env.dev]
+name = "kept-edge-dev"
+routes = [
+  { pattern = "*.kept-dev.xyz/*", zone_name = "kept-dev.xyz" }
+]
+
+[[env.dev.r2_buckets]]
+binding = "KEPT_R2"
+bucket_name = "auto-kept-sites-dev"
+
+[[env.dev.kv_namespaces]]
+binding = "KEPT_KV"
+id = "fd5c0c7fbd9147f4849f65d59cdcd14c"
+
+# ---------------------------------------------------------------------------
+# prod — `*.kept.host`. Apex `kept.host` and the reserved `www`/`app`/`api`/
+# `assets` labels route to the control plane, not here (handled in E03).
+# ---------------------------------------------------------------------------
+
+[env.prod]
+name = "kept-edge-prod"
+routes = [
+  { pattern = "*.kept.host/*", zone_name = "kept.host" }
+]
+
+[[env.prod.r2_buckets]]
+binding = "KEPT_R2"
+bucket_name = "auto-kept-sites"
+
+[[env.prod.kv_namespaces]]
+binding = "KEPT_KV"
+id = "9a7b60ede13646079c3750276f4864be"

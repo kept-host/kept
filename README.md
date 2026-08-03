@@ -7,7 +7,7 @@ deployed apps and one shared package.
 kept/
 ├─ apps/
 │  ├─ web/    CONTROL PLANE — Next.js 15 (App Router, RSC, TS). Landing,
-│  │          dashboard, auth, publish/manage APIs, Supabase + Drizzle.
+│  │          dashboard, auth, publish/manage APIs, Neon Postgres + Drizzle.
 │  │          Writes R2 (files) + KV (manifest). Deploys to Railway.
 │  └─ edge/   DATA PLANE — Hono Worker on Cloudflare. Serves *.kept.host from
 │             R2 + KV and nothing else. Deploys via Wrangler.
@@ -22,11 +22,11 @@ kept/
 Serving is decoupled from the control plane, on purpose:
 
 - `apps/edge` may import `packages/shared`, but **never** `apps/web`.
-- Serving **never** calls back to the control plane or Supabase.
+- Serving **never** calls back to the control plane or the database.
 - Communication is one-directional through data stores: `apps/web` **writes**
   R2 (files) + KV (manifest); `apps/edge` only **reads** them.
 
-A control-plane or Supabase outage must not take a hosted page offline. Do not
+A control-plane or database outage must not take a hosted page offline. Do not
 add a dependency from `apps/edge` to `apps/web` for any reason.
 
 ## Prerequisites
@@ -101,24 +101,31 @@ reference for **every** variable across both apps. To run locally:
 Never commit real secrets — only the placeholder `.env.example` is tracked.
 
 Key variable groups (see `.env.example` for the full set):
-Supabase (URL / anon / service-role), `DATABASE_URL`, Cloudflare R2 S3 creds +
-`R2_BUCKET_AUTO` / `R2_BUCKET_EU`, `CLOUDFLARE_API_TOKEN` + `KV_NAMESPACE_ID`,
-GitHub OAuth, and `NEXT_PUBLIC_APP_URL`. `sites.region` defaults to `auto`; the
-EU bucket is wired but dormant until E8.
+Neon `DATABASE_URL` (pooled, runtime) + `MIGRATION_DATABASE_URL` (direct, for
+`drizzle-kit`), Cloudflare R2 S3 creds + `R2_BUCKET_AUTO` / `R2_BUCKET_EU`,
+`CLOUDFLARE_API_TOKEN` + `KV_NAMESPACE_ID`, `NEXT_PUBLIC_APP_URL`, and the
+reserved-but-empty auth slots (`BETTER_AUTH_*`, `GITHUB_CLIENT_*`,
+`RESEND_API_KEY`, `EMAIL_FROM`) that **E05** fills in. `sites.region` defaults to
+`auto`; the EU bucket is wired but dormant until E11.
 
-## Cloudflare + Supabase provisioning (reproducing the prod track)
+## Cloudflare + Neon provisioning (reproducing the prod track)
 
 - **Cloudflare (task 005):** `kept.host` zone with wildcard DNS `*.kept.host`
   (Universal SSL covers first-level subdomains); one R2 bucket
   (`auto-kept-sites-dev`, default jurisdiction) + a KV namespace
   (`kept-manifest-dev`); S3 credentials for control-plane writes. Bindings are
   declared in `apps/edge/wrangler.toml` (`KEPT_R2`, `KEPT_KV`). The EU-residency
-  R2 bucket is added in E8.
-- **Supabase (task 006):** Postgres reachable from `apps/web` via the typed
-  Drizzle client; core tables (`profiles`, `sites` incl. `region`,
-  `site_versions`) created via `drizzle-kit` migrations; the Supabase JS client
-  is retained for Auth + Realtime; GitHub OAuth + email magic-link providers
-  configured at the project level (flows/UI land in E2).
+  R2 bucket is added in E11.
+- **Neon (task 006):** Postgres reachable from `apps/web` via the typed Drizzle
+  client; core tables (`profiles`, `sites` incl. `region`, `site_versions`)
+  created via `drizzle-kit` migrations. Neon exposes two hostnames for the same
+  database, differing by a `-pooler` infix: use the **pooled** URL at runtime
+  (`DATABASE_URL`) and the **direct** URL for migrations
+  (`MIGRATION_DATABASE_URL`) — DDL and advisory locks fail on the pooler.
+  Prod is the Neon root branch; dev is a persistent branch of it. Auth is
+  **self-hosted Better Auth** with its tables in the same database, and
+  magic-link email goes through **Resend** — neither is built yet; both land in
+  **E05** (GitHub OAuth app + Resend key are the external prerequisites).
 
 ### Cloudflare smoke test (R2 + KV)
 
@@ -136,8 +143,8 @@ It performs a trivial write/read against R2 and KV and prints PASS/FAIL.
 > automation (protected branches, environments, promotion) is owned by epic
 > **E-CI**. The targets and commands below are the scaffold E-CI builds on.
 
-**apps/web -> Railway** (control-plane host; flagged open question, confirm
-before E-CI). Railway builds the Next.js app from this monorepo
+**apps/web -> Railway** (control-plane host; **confirmed** — two environments,
+region `europe-west4`). Railway builds the Next.js app from this monorepo
 (`pnpm install && pnpm --filter @kept/web build`, start `pnpm --filter @kept/web start`).
 Deploy automation will use a `RAILWAY_TOKEN` repo/environment secret.
 

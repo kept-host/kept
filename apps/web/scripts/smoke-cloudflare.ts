@@ -7,7 +7,8 @@
  * the serve-path contract from one side: `apps/web` WRITES R2 + KV; `apps/edge`
  * reads them (never the reverse). See epic "one-way serve-path rule".
  *
- * Reusable by CI/ops (task 008 / E-CI), not a throwaway. Reads all config from
+ * The R2/KV round-trip logic lives in ./lib/smoke-stores and is shared with
+ * scripts/smoke-release.ts (E02 task 008). Reads all config from
  * apps/web/.env.local — no secrets are hardcoded or printed.
  *
  *   Run:  pnpm --filter @kept/web smoke:cf
@@ -17,156 +18,17 @@
  * scope; see Notes in 005.md).
  */
 import { config } from "dotenv";
-import { AwsClient } from "aws4fetch";
+
+import {
+  CF_API,
+  line,
+  requireEnv,
+  smokeKv,
+  smokeR2,
+  type StoreResult,
+} from "./lib/smoke-stores";
 
 config({ path: ".env.local" });
-
-const CF_API = "https://api.cloudflare.com/client/v4";
-
-type StoreResult = { name: string; pass: boolean; detail: string };
-
-function requireEnv(name: string): string {
-  const v = process.env[name];
-  if (!v || v.trim() === "") {
-    throw new Error(
-      `Missing ${name}. Set it in apps/web/.env.local (see .env.example).`,
-    );
-  }
-  return v.trim();
-}
-
-/** Short, secret-free banner per check. */
-function line(r: StoreResult): string {
-  return `${r.pass ? "PASS" : "FAIL"}  ${r.name.padEnd(10)} ${r.detail}`;
-}
-
-/**
- * R2 control-plane round-trip via the S3-compatible API (aws4fetch SigV4).
- * Writes a tiny object to the AUTO bucket, reads it back, asserts byte-equality,
- * then deletes it. Cleanup runs even if an assertion fails.
- */
-async function smokeR2(): Promise<StoreResult> {
-  const accountId = requireEnv("R2_ACCOUNT_ID");
-  const accessKeyId = requireEnv("R2_ACCESS_KEY_ID");
-  const secretAccessKey = requireEnv("R2_SECRET_ACCESS_KEY");
-  const bucket = requireEnv("R2_BUCKET_AUTO");
-
-  const endpoint = `https://${accountId}.r2.cloudflarestorage.com`;
-  const aws = new AwsClient({
-    accessKeyId,
-    secretAccessKey,
-    service: "s3",
-    region: "auto",
-  });
-
-  const key = `__smoke__/${Date.now()}-${crypto.randomUUID()}.txt`;
-  const url = `${endpoint}/${bucket}/${key}`;
-  const payload = `kept-r2-smoke ${crypto.randomUUID()}`;
-
-  try {
-    const put = await aws.fetch(url, {
-      method: "PUT",
-      body: payload,
-      headers: { "content-type": "text/plain" },
-    });
-    if (!put.ok) {
-      return {
-        name: "R2",
-        pass: false,
-        detail: `PUT failed (HTTP ${put.status}) on bucket "${bucket}"`,
-      };
-    }
-
-    const get = await aws.fetch(url, { method: "GET" });
-    if (!get.ok) {
-      return {
-        name: "R2",
-        pass: false,
-        detail: `GET failed (HTTP ${get.status})`,
-      };
-    }
-    const readBack = await get.text();
-    if (readBack !== payload) {
-      return {
-        name: "R2",
-        pass: false,
-        detail: "round-trip mismatch (bytes read != bytes written)",
-      };
-    }
-
-    return {
-      name: "R2",
-      pass: true,
-      detail: `round-trip OK on bucket "${bucket}"`,
-    };
-  } finally {
-    // Best-effort cleanup; never throw from here.
-    await aws.fetch(url, { method: "DELETE" }).catch(() => undefined);
-  }
-}
-
-/**
- * KV control-plane round-trip via the Cloudflare REST API (Workers KV Storage).
- * PUT a key, GET it back, assert equality, then DELETE. Token needs
- * "Workers KV Storage: Edit".
- */
-async function smokeKv(): Promise<StoreResult> {
-  const accountId = requireEnv("R2_ACCOUNT_ID"); // same Cloudflare account
-  const namespaceId = requireEnv("KV_NAMESPACE_ID");
-  const token = requireEnv("CLOUDFLARE_API_TOKEN");
-
-  const base = `${CF_API}/accounts/${accountId}/storage/kv/namespaces/${namespaceId}/values`;
-  const key = `__smoke__:${Date.now()}-${crypto.randomUUID()}`;
-  const value = `kept-kv-smoke ${crypto.randomUUID()}`;
-  const auth = { authorization: `Bearer ${token}` };
-  const url = `${base}/${encodeURIComponent(key)}`;
-
-  try {
-    const put = await fetch(url, {
-      method: "PUT",
-      headers: { ...auth, "content-type": "text/plain" },
-      body: value,
-    });
-    if (!put.ok) {
-      const hint =
-        put.status === 403 || put.status === 401
-          ? ' — token likely missing "Workers KV Storage: Edit"'
-          : "";
-      return {
-        name: "KV",
-        pass: false,
-        detail: `PUT failed (HTTP ${put.status})${hint}`,
-      };
-    }
-
-    const get = await fetch(url, { method: "GET", headers: auth });
-    if (!get.ok) {
-      return {
-        name: "KV",
-        pass: false,
-        detail: `GET failed (HTTP ${get.status})`,
-      };
-    }
-    const readBack = await get.text();
-    if (readBack !== value) {
-      return {
-        name: "KV",
-        pass: false,
-        detail: "round-trip mismatch (value read != value written)",
-      };
-    }
-
-    return {
-      name: "KV",
-      pass: true,
-      detail: `round-trip OK on namespace ${namespaceId.slice(0, 6)}…`,
-    };
-  } finally {
-    await fetch(url, { method: "DELETE", headers: auth }).catch(
-      () => undefined,
-    );
-  }
-}
 
 /**
  * Best-effort zone + wildcard DNS verification.

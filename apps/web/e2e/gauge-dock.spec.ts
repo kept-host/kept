@@ -254,6 +254,17 @@ test.describe("gauge next-slot dock", () => {
   test("keyboard focus reaches the slot and opens the same panel", async ({
     page,
   }) => {
+    // Arm the file-chooser interception up front. Playwright turns CDP's
+    // `Page.setInterceptFileChooser` on lazily and fire-and-forget, the moment
+    // the first `filechooser` listener is attached — so attaching it inline
+    // right before the key press races the key event itself. When it loses,
+    // the chooser opens un-intercepted and no event *ever* arrives (~30% of
+    // runs measured; a second press always succeeded, proving the app fired
+    // the input click both times). Attaching here means every round-trip
+    // below has long since flushed it.
+    const choosers: unknown[] = [];
+    page.on("filechooser", (c) => choosers.push(c));
+
     await page.goto("/");
 
     // The slot follows the left column's last control in DOM order, so it is a
@@ -275,9 +286,12 @@ test.describe("gauge next-slot dock", () => {
     expect((await dockState(page)).slotOpacity).toBe("1");
 
     // Enter activates the file browse, so a keyboard user can actually publish.
-    const chooser = page.waitForEvent("filechooser", { timeout: 5_000 });
+    // Re-assert focus first: the reads above are lag-insensitive (the engine
+    // lerps at ~0.14/frame, so they keep passing for ~1s after any change), and
+    // pressing Enter at nothing is indistinguishable from a broken handler.
+    await expect(page.getByRole("button", { name: SLOT_LABEL })).toBeFocused();
     await page.keyboard.press("Enter");
-    expect(await chooser).toBeTruthy();
+    await expect.poll(() => choosers.length, { timeout: 10_000 }).toBe(1);
   });
 
   test("a mint fills the slot and moves the pulse to the next one, without touching the baseline", async ({

@@ -7,13 +7,15 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "test": "pnpm test:e2e",
     "test:e2e": "playwright test",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
-    "smoke:cf": "tsx scripts/smoke-cloudflare.ts"
+    "smoke:cf": "tsx scripts/smoke-cloudflare.ts",
+    "smoke:release": "tsx scripts/smoke-release.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
@@ -27,8 +29,6 @@
     "@radix-ui/react-switch": "^1.2.6",
     "@radix-ui/react-tabs": "^1.1.13",
     "@radix-ui/react-tooltip": "^1.2.8",
-    "@supabase/ssr": "^0.12.0",
-    "@supabase/supabase-js": "^2.108.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "drizzle-orm": "^0.45.2",

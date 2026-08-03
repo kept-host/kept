@@ -1,16 +1,18 @@
 /**
- * drizzle-kit config (task 006).
+ * drizzle-kit config.
  *
  * Schema is the single source of truth; `drizzle-kit generate` emits versioned
  * SQL into `drizzle/`, and `drizzle-kit migrate` applies them.
  *
- * DATABASE_URL (loaded from .env.local) is the Supabase connection-pooler URL in
- * Transaction mode (port 6543), which is correct for serverless runtime but does
- * NOT support the prepared statements / multi-statement DDL that migrations need.
- * For migrations we therefore use the pooler's Session mode on the same host
- * (port 5432). Set MIGRATION_DATABASE_URL to override explicitly (e.g. a direct
- * db.<ref>.supabase.co:5432 connection); otherwise we derive it from
- * DATABASE_URL by switching 6543 → 5432.
+ * Postgres is Neon. Neon exposes two hostnames for the same database:
+ *   - pooled  ep-xxx-pooler.<region>.aws.neon.tech  (PgBouncer, transaction mode)
+ *   - direct  ep-xxx.<region>.aws.neon.tech
+ * They share a port — the difference is the `-pooler` infix, NOT the port number.
+ *
+ * Migrations MUST use the direct hostname: transaction-mode pooling does not
+ * support the session-scoped advisory locks and multi-statement DDL that
+ * drizzle-kit needs. Set MIGRATION_DATABASE_URL explicitly (this is what CI
+ * does); otherwise we derive it from DATABASE_URL by stripping `-pooler`.
  */
 import { config } from "dotenv";
 import { defineConfig } from "drizzle-kit";
@@ -24,11 +26,17 @@ function getMigrationUrl(): string {
   const url = process.env.DATABASE_URL;
   if (!url) {
     throw new Error(
-      "Missing DATABASE_URL. Set the Supabase Postgres connection string in apps/web/.env.local.",
+      "Missing MIGRATION_DATABASE_URL and DATABASE_URL. Set the Neon connection string in apps/web/.env.local (see .env.example).",
     );
   }
-  // Pooler Transaction mode (6543) → Session mode (5432) for migrations.
-  return url.replace(":6543/", ":5432/");
+
+  if (!url.includes("-pooler.")) return url;
+
+  console.warn(
+    "[drizzle] MIGRATION_DATABASE_URL is unset and DATABASE_URL points at the Neon pooler.\n" +
+      "[drizzle] Deriving the direct URL by stripping `-pooler`. Set MIGRATION_DATABASE_URL explicitly in CI.",
+  );
+  return url.replace("-pooler.", ".");
 }
 
 export default defineConfig({

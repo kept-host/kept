@@ -1,0 +1,31 @@
+name: Setup workspace
+description: >-
+  pnpm 10.13.1, Node 22 with pnpm cache, and a frozen-lockfile install. The
+  single preamble shared by every kept workflow.
+
+  NOTE: this action deliberately does NOT check out the repository. A local
+  action referenced as `./.github/actions/setup` can only be resolved once the
+  repo is already on disk, so the caller must run actions/checkout first — and
+  therefore the caller also owns `fetch-depth` (0 when a job walks ancestry,
+  e.g. asserting a prod tag descends from main).
+
+runs:
+  using: composite
+  steps:
+    - name: Install pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        version: 10.13.1
+
+    # Node 22 across the board: apps/edge uses wrangler 4.x which requires
+    # Node >=22. apps/web + packages/shared run fine on 22 too, so a single
+    # version keeps the whole Turbo graph resolvable in one job.
+    - name: Setup Node 22
+      uses: actions/setup-node@v4
+      with:
+        node-version: "22"
+        cache: pnpm
+
+    - name: Install dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile
