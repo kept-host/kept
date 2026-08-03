@@ -132,11 +132,52 @@ npx neonctl branches restore <prod-branch> prerelease-<tag> \
   --preserve-under-name prod_pre_rollback
 ```
 
-Neon **automatically preserves the target's pre-restore state** as a new branch;
-`--preserve-under-name` only names it. Connection strings do not change, so no
-secret rotation is needed — but **open connections are briefly interrupted**, so
-restart the Railway service afterwards. Point-in-time works too
-(`<source>@2026-08-03T10:00:00Z`), bounded by the history window below.
+**`--preserve-under-name` is mandatory here, not cosmetic.** Restoring a branch
+that has children fails outright:
+
+```
+ERROR: Branch has children, preserve_under_name is required
+```
+
+On the prod path the branch being restored **always** has at least one child —
+the `prerelease-$TAG` branch this procedure restores from. So a plain
+`neonctl branches restore` will always fail during a real rollback. Verified by
+drill on 2026-08-03.
+
+Connection strings do not change, so no secret rotation is needed — but **open
+connections are briefly interrupted**, so restart the Railway service afterwards.
+Point-in-time works too (`<source>@2026-08-03T10:00:00Z`), bounded by the history
+window below.
+
+**Restore rewrites the branch lineage.** It does not merely copy data back: the
+backup branches become **ancestors** of the restored branch. Measured before and
+after a real drill:
+
+```
+before:  production → dev → drill-backup
+after:   production → dev-prerestore → drill-backup → dev
+```
+
+Two consequences that matter mid-incident:
+
+- **You cannot delete those branches afterwards.** Neon refuses:
+  `cannot delete branch that has children`. They are load-bearing ancestors of
+  the branch you just restored, for as long as it exists.
+- **Every rollback permanently lengthens the chain** and consumes two slots of
+  the 10-branch allowance. Three rollbacks and the project is close to the cap.
+
+Reclaiming those slots means breaking the descendant relationship first —
+reparenting the restored branch back onto `production`, then deleting the
+orphaned ancestors. **Treat that path as unverified.** The drill confirmed the
+deletion failure but did not exercise a reparent: the branch object exposes a
+`parent_id`, and Neon documents branch reparenting, but neither the CLI (`neonctl
+branches` has no `reparent` subcommand) nor a writable API field was confirmed
+during the drill. Establish the exact procedure on a throwaway branch **before**
+you need it, not during an incident.
+
+Practical impact: budget the branch cap assuming rollbacks are effectively
+permanent until someone does that cleanup. The drill itself left the project at
+4 of 10.
 
 ### Re-syncing a drifted dev branch
 
@@ -166,6 +207,12 @@ ones manually once the release has been stable for a week.**
 ```bash
 npx neonctl branches delete prerelease-<old-tag> --project-id <project-id>
 ```
+
+⚠ **This deletion only works for branches that were never restored _from_.** A
+`prerelease-*` branch used in a rollback becomes an ancestor of the live branch
+and cannot be deleted — see "Restore rewrites the branch lineage" above. Reparent
+first, then delete. Budget for this: a project that has rolled back twice is
+carrying four undeletable branches out of ten until someone reparents.
 
 Note `branches delete` has **no `--force`/`--yes`** flag. Do not script it blind.
 
