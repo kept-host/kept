@@ -1,6 +1,17 @@
 "use client";
 
-import { type CSSProperties, useEffect, useMemo, useReducer, useRef } from "react";
+import {
+  type CSSProperties,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
+
+import { DRAFT_TTL_DAYS, KEPT_PAGE_LIMIT } from "@kept/shared";
+
+import { infraCostMonth, keptCount, uptime } from "@/lib/landing-stats";
 
 import {
   KeptEngine,
@@ -19,9 +30,16 @@ import {
  * modal, notify forms, accordion tab, gauge reveal) is React state.
  */
 
-const LIVE_COUNT = 1284;
-const GAUGE_FUNDED = 1284;
+// Data figures come from the open-books module — never hardcoded here.
+const LIVE_COUNT = keptCount;
+// Visual constant: how many dots the field draws, not a number we report.
 const GAUGE_TOTAL = 288;
+
+// The shareable artifact: the one line a human pastes into their agent. Single
+// source for both the rendered text and the clipboard payload so the two can
+// never drift. E08 finalizes the wording — keep it a one-string edit.
+const AGENT_PROMPT =
+  "Publish this HTML with kept (https://kept.host/agents): call the MCP tool `publish_page`, then give me the live link and the claim link.";
 
 type UIState = EngineState;
 
@@ -34,6 +52,7 @@ const INITIAL: UIState = {
   openTab: "mcp",
   humanPresent: false,
   gaugeRevealed: false,
+  mintedCount: 0,
 };
 
 function reducer(state: UIState, patch: Partial<UIState>): UIState {
@@ -67,7 +86,7 @@ export default function KeptLanding() {
   useEffect(() => {
     const engine = new KeptEngine(
       refs,
-      { liveCount: LIVE_COUNT, gaugeFunded: GAUGE_FUNDED },
+      { liveCount: LIVE_COUNT },
       () => stateRef.current,
       (patch, cb) => {
         // keep the engine's synchronous reads coherent within a frame
@@ -84,6 +103,28 @@ export default function KeptLanding() {
 
   const e = () => engineRef.current;
 
+  // ---- copy-paste agent prompt (the only interactive bit outside the engine) ----
+  const [promptCopied, setPromptCopied] = useState(false);
+  const promptCopyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (promptCopyTimer.current) clearTimeout(promptCopyTimer.current);
+    },
+    [],
+  );
+  const copyPrompt = () => {
+    // Insecure contexts and denied permissions must not throw — the prompt text
+    // stays on screen and selectable either way.
+    try {
+      void navigator.clipboard?.writeText(AGENT_PROMPT).catch(() => {});
+    } catch {
+      /* noop */
+    }
+    setPromptCopied(true);
+    if (promptCopyTimer.current) clearTimeout(promptCopyTimer.current);
+    promptCopyTimer.current = setTimeout(() => setPromptCopied(false), 1700);
+  };
+
   // ---- derived render values (match the prototype's renderVals) ----
   const humanPresent = state.humanPresent;
   const mcpNum = humanPresent ? "02" : "01";
@@ -91,37 +132,58 @@ export default function KeptLanding() {
   const skillNum = humanPresent ? "04" : "03";
   const chevron = (id: Tab) => (state.openTab === id ? "180deg" : "0deg");
 
+  // The lit count: the honest global baseline plus whatever this visitor just
+  // minted in this session. `state.mintedCount` is session-local UI state and is
+  // never written back into `landing-stats` — reloading returns to the baseline.
+  const keptNow = Math.min(
+    Math.max(keptCount + state.mintedCount, 0),
+    GAUGE_TOTAL,
+  );
+  // The "next slot": the first dot NOT yet filled. It is the drop affordance —
+  // a pulsing accent ring, deliberately a different kind of thing from a solid
+  // kept-page dot, so "every dot is a page kept online right now" stays true.
+  const nextSlot = Math.min(keptNow, GAUGE_TOTAL - 1);
+
   const gaugeDots = useMemo(() => {
-    const funded = GAUGE_FUNDED;
-    const onCount = Math.round((funded / 2000) * GAUGE_TOTAL);
+    // One meaning: every lit dot is a page kept online right now. The lit count
+    // is the kept count itself, capped at the field size — a dot has no second
+    // meaning, and there is no target denominator. Drafts are not drawn.
+    // At the launch baseline (0 kept) nothing lights, and the field reads as a
+    // calm, deliberately empty grid rather than a broken one.
+    const onCount = keptNow;
     const revealed = state.gaugeRevealed;
     const dots = [];
     for (let i = 0; i < GAUGE_TOTAL; i++) {
       const col = i % 24,
         row = (i / 24) | 0;
-      const first = i === 0;
       const dist = Math.hypot(col, row * 1.7);
-      const on = !first && i < onCount;
+      const lit = i < onCount;
+      // The first kept page anchors the field: brighter, statically glowing,
+      // and the origin the ripple wave expands from. With nothing kept there
+      // is no anchor — the grid is uniformly unlit.
+      const anchor = lit && i === 0;
       dots.push({
-        color: first
+        color: anchor
           ? "#FFFFFF"
-          : on
+          : lit
             ? "var(--accent)"
             : "rgba(255,255,255,0.09)",
-        glow: first
+        glow: anchor
           ? "0 0 14px 4px rgba(139,109,255,.85), 0 0 3px 1px rgba(255,255,255,.9)"
           : "none",
         op: revealed ? 1 : 0,
-        tf: revealed ? (first ? "scale(1.5)" : "scale(1)") : "scale(.2)",
+        tf: revealed ? (anchor ? "scale(1.5)" : "scale(1)") : "scale(.2)",
         delay: revealed ? ((dist * 26) | 0) + "ms" : "0ms",
-        // Funded dots ripple once revealed; phase = distance to the anchor, so
-        // the glow wave expands outward from the top-left anchor dot.
-        on: revealed && on,
+        // Lit dots ripple once revealed; phase = distance to the anchor, so the
+        // glow wave expands outward from the top-left. The anchor keeps its own
+        // static glow instead. At zero nothing carries data-on and the ripple
+        // simply has nothing to animate.
+        on: revealed && lit && !anchor,
         rippleDelay: ((dist * 90) | 0) + "ms",
       });
     }
     return dots;
-  }, [state.gaugeRevealed]);
+  }, [state.gaugeRevealed, keptNow]);
 
   const tiles = useMemo(() => Array.from({ length: 63 }), []);
 
@@ -203,7 +265,13 @@ export default function KeptLanding() {
               id="nav-divider"
               style={{ width: 1, height: 22, background: "var(--border)" }}
             />
+            {/*
+              Kept-only counter: pages kept forever, right now. Drafts are live
+              but temporary and must never be counted here.
+              TODO(E09): back this with a query over kept pages only.
+            */}
             <div
+              title="pages kept forever, right now"
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -223,7 +291,14 @@ export default function KeptLanding() {
                   animation: "keptLive 2s ease-in-out infinite",
                 }}
               />
-              <span ref={bind(refs.navCountRef)}>1,284</span>&nbsp;PAGES&nbsp;KEPT
+              <span ref={bind(refs.navCountRef)}>
+                {LIVE_COUNT.toLocaleString()}
+              </span>
+              &nbsp;
+              <span ref={bind(refs.navLabelRef)}>
+                {LIVE_COUNT === 1 ? "PAGE" : "PAGES"}
+              </span>
+              &nbsp;KEPT
             </div>
           </div>
         </div>
@@ -432,7 +507,7 @@ export default function KeptLanding() {
                   Every square is a real page someone is keeping online right
                   now.{" "}
                   <b style={{ color: "var(--text)" }}>The glowing one is yours</b>{" "}
-                  &mdash; drop a file to claim it.
+                  &mdash; drop a file to make it yours.
                 </p>
                 <div
                   style={{
@@ -472,6 +547,19 @@ export default function KeptLanding() {
                   >
                     NO ACCOUNT · DRAG ANYWHERE
                   </span>
+                  <a
+                    href="#agents"
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 12,
+                      color: "var(--text-secondary)",
+                      textDecoration: "none",
+                      borderBottom: "1px solid var(--border)",
+                      paddingBottom: 3,
+                    }}
+                  >
+                    or let your agent do it &rarr;
+                  </a>
                 </div>
                 <div
                   ref={bind(refs.mobileSlotRef)}
@@ -548,8 +636,8 @@ export default function KeptLanding() {
                     textShadow: "0 1px 18px rgba(250,248,244,.9)",
                   }}
                 >
-                  Your page joined the wall on the right — it stays up, no
-                  expiry. Claim it to rename, replace, or manage.
+                  Your page joined the wall on the right — it&rsquo;s live now, a
+                  draft for {DRAFT_TTL_DAYS} days. Keep it to make it permanent.
                 </p>
                 <div
                   style={{
@@ -657,7 +745,7 @@ export default function KeptLanding() {
                       cursor: "pointer",
                     }}
                   >
-                    Claim it to keep &amp; manage &rarr;
+                    Keep it &amp; manage it &rarr;
                   </button>
                   <button
                     onClick={() => e()?.reset()}
@@ -854,7 +942,8 @@ export default function KeptLanding() {
                     <h3 style={howTitle}>Get a link</h3>
                     <p style={howBody}>
                       A live <code style={howCode}>*.kept.host</code> link mints
-                      in seconds. Copy it, QR it, share it.
+                      in seconds &mdash; a draft, live for {DRAFT_TTL_DAYS} days.
+                      Copy it, QR it, share it.
                     </p>
                   </div>
                 </div>
@@ -874,10 +963,10 @@ export default function KeptLanding() {
                       <circle cx="9.5" cy="8" r="4" />
                       <path d="m15 11 2 2 4-4" />
                     </svg>
-                    <h3 style={howTitle}>Claim</h3>
+                    <h3 style={howTitle}>Keep</h3>
                     <p style={howBody}>
-                      Attach it to your account — free, no password — to rename,
-                      replace, or manage it.
+                      Sign in once and keep it &mdash; free, up to{" "}
+                      {KEPT_PAGE_LIMIT} pages, forever.
                     </p>
                   </div>
                 </div>
@@ -898,8 +987,9 @@ export default function KeptLanding() {
                     </svg>
                     <h3 style={howTitle}>Kept forever</h3>
                     <p style={howBody}>
-                      It stays up — no expiry, no rot. Permanent by default, from
-                      the moment it mints.
+                      Once kept, there&rsquo;s no expiry and no rot. Nothing to
+                      renew, no login needed to keep it up, and we never delete
+                      it quietly.
                     </p>
                   </div>
                 </div>
@@ -1005,12 +1095,77 @@ export default function KeptLanding() {
                       maxWidth: "46ch",
                     }}
                   >
-                    AI agents generate HTML all day. Give it a home. Connect
-                    kept&rsquo;s <b style={{ color: "var(--text)" }}>MCP server</b>{" "}
-                    to Claude, ChatGPT, Cursor — any MCP host — and your agent
-                    publishes a page to your account and gets back a live link.
-                    Free, with your account.
+                    AI agents generate HTML all day. Give it a home. Your agent
+                    publishes with zero setup &mdash; no key, no account &mdash;
+                    and gets back a live link plus a claim link for you. One
+                    click makes it yours, forever.
                   </p>
+                  <div data-reveal style={{ maxWidth: 560, marginBottom: 28 }}>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 12,
+                        marginBottom: 9,
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontFamily: "var(--font-mono)",
+                          fontSize: 11,
+                          letterSpacing: "0.08em",
+                          textTransform: "uppercase",
+                          color: "var(--text-muted)",
+                        }}
+                      >
+                        Paste this to your agent
+                      </span>
+                      <span
+                        role="status"
+                        aria-live="polite"
+                        style={{
+                          fontFamily: "var(--font-mono)",
+                          fontSize: 11,
+                          letterSpacing: "0.06em",
+                          color: "var(--live)",
+                        }}
+                      >
+                        {promptCopied ? "Copied to clipboard" : ""}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={copyPrompt}
+                        aria-label="Copy the agent prompt to your clipboard"
+                        style={{
+                          marginLeft: "auto",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 7,
+                          fontFamily: "var(--font-mono)",
+                          fontSize: 11,
+                          letterSpacing: "0.06em",
+                          background: "var(--surface)",
+                          color: "var(--text)",
+                          border: "1px solid var(--border)",
+                          borderRadius: "var(--r-pill)",
+                          padding: "5px 12px",
+                          cursor: "pointer",
+                        }}
+                      >
+                        {promptCopied ? "COPIED" : "COPY"}
+                      </button>
+                    </div>
+                    <p
+                      style={{
+                        ...codeBlock,
+                        fontSize: 12,
+                        whiteSpace: "pre-wrap",
+                        overflowWrap: "anywhere",
+                      }}
+                    >
+                      {AGENT_PROMPT}
+                    </p>
+                  </div>
                   <div
                     data-reveal
                     style={{
@@ -1063,6 +1218,19 @@ export default function KeptLanding() {
                       </span>
                     </div>
                   </div>
+                  <p
+                    data-reveal
+                    style={{
+                      fontSize: 13,
+                      lineHeight: 1.6,
+                      color: "var(--text-muted)",
+                      margin: "0 0 24px",
+                      maxWidth: "52ch",
+                    }}
+                  >
+                    Power path: API keys publish straight into your account
+                    &mdash; part of Pro.
+                  </p>
                   <div data-reveal style={{ maxWidth: 460 }}>
                     {state.agentNotify !== "success" ? (
                       <>
@@ -1339,7 +1507,8 @@ export default function KeptLanding() {
                             }}
                           >
                             Add kept to any MCP host — Claude, Cursor, ChatGPT.
-                            Drop this into your MCP config:
+                            No token, no account. Drop this into your MCP
+                            config:
                           </p>
                           <pre style={codeBlock}>
                             <span style={{ color: "#7C7468" }}>{"{"}</span>
@@ -1360,17 +1529,7 @@ export default function KeptLanding() {
                             <span style={{ color: "#8FBF8F" }}>
                               &quot;@kept/mcp&quot;
                             </span>
-                            {"],\n    "}
-                            <span style={{ color: "#9B8CFF" }}>&quot;env&quot;</span>
-                            {": { "}
-                            <span style={{ color: "#9B8CFF" }}>
-                              &quot;KEPT_TOKEN&quot;
-                            </span>
-                            {": "}
-                            <span style={{ color: "#8FBF8F" }}>
-                              &quot;sk-kept-…&quot;
-                            </span>
-                            {" }\n  }\n"}
+                            {"]\n  }\n"}
                             <span style={{ color: "#7C7468" }}>{"}"}</span>
                           </pre>
                           <p
@@ -1388,9 +1547,19 @@ export default function KeptLanding() {
                                 color: "var(--accent)",
                               }}
                             >
-                              kept.publish_page
+                              kept.publish_page(html)
                             </code>{" "}
-                            and gets back a live link.
+                            and gets back{" "}
+                            <code
+                              style={{
+                                fontFamily: "var(--font-mono)",
+                                color: "var(--accent)",
+                              }}
+                            >
+                              {`{ live_url, claim_url, expires_in: "${DRAFT_TTL_DAYS}d" }`}
+                            </code>
+                            . The page is live at once as a draft; open the
+                            claim link to keep it forever.
                           </p>
                         </div>
                       </div>
@@ -1510,7 +1679,7 @@ export default function KeptLanding() {
                               Publish an HTML file to kept and
                             </div>
                             <div style={{ paddingLeft: 14 }}>
-                              return the permanent live link.
+                              return the live link and the claim link.
                             </div>
                             <div style={{ color: "var(--text)" }}>---</div>
                             <div style={{ marginTop: 6 }}>
@@ -1618,7 +1787,7 @@ export default function KeptLanding() {
                     marginBottom: 18,
                   }}
                 >
-                  Kept alive by the community
+                  Open books
                 </div>
                 <div
                   style={{
@@ -1630,31 +1799,39 @@ export default function KeptLanding() {
                   }}
                 >
                   <span ref={bind(refs.gaugeNumRef)}>0</span>
-                  <span
-                    style={{
-                      color: "#6E6760",
-                      fontSize: "0.5em",
-                      fontWeight: 600,
-                    }}
-                  >
-                    {" "}
-                    / 2,000
-                  </span>
                 </div>
                 <p
                   style={{
                     fontSize: 16,
                     lineHeight: 1.6,
                     color: "#A8A096",
-                    margin: "18px 0 28px",
+                    margin: "18px 0 20px",
                     maxWidth: "38ch",
                   }}
                 >
-                  Free hosting is funded by donations. Every dot is a page the
-                  community is keeping online right now.
+                  Every dot is a page kept online right now. Pro pages fund the
+                  free ones — and the books are public.
                 </p>
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: "8px 24px",
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 12,
+                    color: "#A8A096",
+                    margin: "0 0 28px",
+                  }}
+                >
+                  <span>
+                    infra cost this month · &euro;{infraCostMonth.toFixed(2)}
+                  </span>
+                  <span>
+                    uptime · {uptime === null ? "not yet measured" : `${uptime}%`}
+                  </span>
+                </div>
                 <a
-                  href="#pricing"
+                  href="/stats"
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
@@ -1669,7 +1846,7 @@ export default function KeptLanding() {
                     padding: "13px 22px",
                   }}
                 >
-                  Help keep more pages free <span>&rarr;</span>
+                  See the math <span>&rarr;</span>
                 </a>
               </div>
               <div ref={bind(refs.gaugeWrapRef)} style={{ position: "relative" }}>
@@ -1684,26 +1861,60 @@ export default function KeptLanding() {
                     willChange: "transform",
                   }}
                 >
-                  {gaugeDots.map((d, i) => (
-                    <div
-                      key={i}
-                      data-on={d.on ? "1" : undefined}
-                      style={
-                        {
+                  {gaugeDots.map((d, i) =>
+                    i === nextSlot ? (
+                      // The next free slot. A real focusable control, not a
+                      // decorative dot: hover *or* keyboard focus opens the drop
+                      // panel, Enter/Space browses for a file. It never reads as
+                      // a kept page — hollow accent ring, breathing glow.
+                      <button
+                        key={i}
+                        id="gauge-next-slot"
+                        type="button"
+                        ref={bind(refs.gaugeSlotRef)}
+                        onClick={() => e()?.browse()}
+                        aria-label={
+                          keptNow === 0
+                            ? "Drop an HTML file to keep your first page"
+                            : "Drop an HTML file to keep another page"
+                        }
+                        style={{
+                          width: "100%",
                           aspectRatio: "1",
+                          padding: 0,
                           borderRadius: "50%",
-                          background: d.color,
-                          boxShadow: d.glow,
+                          border: "1.5px solid var(--accent)",
+                          background:
+                            "color-mix(in srgb,var(--accent) 30%,transparent)",
+                          cursor: "pointer",
                           opacity: d.op,
                           transform: d.tf,
                           transition:
                             "opacity .55s ease, transform .6s cubic-bezier(.34,1.45,.5,1)",
                           transitionDelay: d.delay,
-                          "--ripple-delay": d.rippleDelay,
-                        } as CSSProperties
-                      }
-                    />
-                  ))}
+                        }}
+                      />
+                    ) : (
+                      <div
+                        key={i}
+                        data-on={d.on ? "1" : undefined}
+                        style={
+                          {
+                            aspectRatio: "1",
+                            borderRadius: "50%",
+                            background: d.color,
+                            boxShadow: d.glow,
+                            opacity: d.op,
+                            transform: d.tf,
+                            transition:
+                              "opacity .55s ease, transform .6s cubic-bezier(.34,1.45,.5,1)",
+                            transitionDelay: d.delay,
+                            "--ripple-delay": d.rippleDelay,
+                          } as CSSProperties
+                        }
+                      />
+                    ),
+                  )}
                 </div>
               </div>
             </div>
@@ -1760,8 +1971,9 @@ export default function KeptLanding() {
               <div style={whyKicker}>PERMANENT BY DEFAULT</div>
               <h3 style={whyTitle}>No expiry, ever</h3>
               <p style={whyBody}>
-                Anonymous pages are real pages. They don&rsquo;t time out,
-                don&rsquo;t require a login to stay up, and never silently vanish.
+                Kept pages don&rsquo;t time out, don&rsquo;t need a login to stay
+                up, and never silently vanish. Drafts are honest too: {DRAFT_TTL_DAYS}{" "}
+                days, clearly labeled.
               </p>
             </div>
             <div data-reveal data-delay="90">
@@ -1769,15 +1981,16 @@ export default function KeptLanding() {
               <h3 style={whyTitle}>Nothing to lock you in</h3>
               <p style={whyBody}>
                 The whole platform is open. Self-host it, fork it, audit it. Your
-                pages aren&rsquo;t hostage to one company&rsquo;s runway.
+                pages aren&rsquo;t hostage to one company staying in business.
               </p>
             </div>
             <div data-reveal data-delay="180">
-              <div style={whyKicker}>OPEN BOOKS</div>
-              <h3 style={whyTitle}>Funding you can see</h3>
+              <div style={whyKicker}>COSTS IN PUBLIC</div>
+              <h3 style={whyTitle}>Math you can check</h3>
               <p style={whyBody}>
-                Infra cost, donations, and runway are public. When we say
-                &ldquo;free forever,&rdquo; you can check our math.
+                Infra costs and uptime are public. Pro subscriptions fund the
+                free tier. When we say &ldquo;free forever,&rdquo; you can check
+                the math.
               </p>
             </div>
           </div>
@@ -1848,10 +2061,11 @@ export default function KeptLanding() {
               </p>
               <div style={{ display: "grid", gap: 14 }}>
                 {[
-                  "Unlimited public pages, kept forever",
-                  "Instant link, QR, and live status",
-                  "Claim, rename slug, replace versions",
-                  "Dashboard for all your pages",
+                  `Unlimited drafts — live instantly, ${DRAFT_TTL_DAYS} days`,
+                  `${KEPT_PAGE_LIMIT} pages kept forever`,
+                  "Instant link, QR, live status",
+                  "Keep, rename slug, replace versions",
+                  "Dashboard for pages & drafts",
                 ].map((f) => (
                   <div key={f} style={freeFeature}>
                     <svg
@@ -2074,6 +2288,17 @@ export default function KeptLanding() {
                     We&rsquo;ll let you know when Pro is ready.
                   </div>
                 )}
+                <p
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 12,
+                    letterSpacing: "0.03em",
+                    color: "var(--text-muted)",
+                    margin: "16px 0 0",
+                  }}
+                >
+                  Pro is what keeps the free tier free.
+                </p>
               </div>
             </div>
           </div>
@@ -2206,15 +2431,28 @@ export default function KeptLanding() {
             <div style={{ display: "flex", gap: 56, flexWrap: "wrap" }}>
               <FooterCol
                 heading="PROJECT"
-                links={["GitHub repo", "Open Collective", "License · AGPL-3.0"]}
+                links={[
+                  { label: "GitHub repo" },
+                  { label: "Stats", href: "/stats" },
+                  { label: "License · AGPL-3.0" },
+                ]}
               />
               <FooterCol
                 heading="DEVELOPERS"
-                links={["MCP server · soon", "CLI · soon", "Docs"]}
+                links={[
+                  { label: "MCP server · soon" },
+                  { label: "CLI · soon" },
+                  { label: "Docs" },
+                ]}
               />
               <FooterCol
                 heading="SAFETY"
-                links={["Report a page", "Acceptable use", "Privacy"]}
+                links={[
+                  { label: "The forever promise", href: "/promise" },
+                  { label: "Report a page" },
+                  { label: "Acceptable use" },
+                  { label: "Privacy" },
+                ]}
               />
             </div>
           </div>
@@ -2545,6 +2783,35 @@ export default function KeptLanding() {
             />
           </div>
           <div
+            ref={bind(refs.gaugeDockRef)}
+            aria-hidden
+            style={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "var(--accent)",
+              // A rounded box, not a disc: it sits BESIDE the pulsing slot dot
+              // rather than on top of it, so it must not read as another dot.
+              borderRadius: 12,
+              opacity: 0,
+              pointerEvents: "none",
+              transition: "opacity .15s ease",
+            }}
+          >
+            <svg
+              style={{ width: "46%", height: "46%" }}
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="#fff"
+              strokeWidth="2.2"
+            >
+              <path d="M12 16V4M8 8l4-4 4 4" />
+              <path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+            </svg>
+          </div>
+          <div
             ref={bind(refs.whyCardRef)}
             onClick={() => e()?.browse()}
             style={{
@@ -2775,7 +3042,7 @@ export default function KeptLanding() {
                   margin: 0,
                 }}
               >
-                Claim this page
+                Keep this page
               </h3>
               <button
                 onClick={() => e()?.closeAuth()}
@@ -2804,8 +3071,8 @@ export default function KeptLanding() {
               <b ref={bind(refs.authSlugRef)} style={{ color: "var(--text)" }}>
                 your-page.kept.host
               </b>{" "}
-              to your account. It stays exactly where it is — claiming just lets
-              you manage it.
+              to your account. It stays exactly where it is — keeping it stops
+              the {DRAFT_TTL_DAYS}-day draft clock and puts it in your dashboard.
             </p>
             <button style={authGithub}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
@@ -2960,6 +3227,7 @@ function makeRefs(): EngineRefs {
     barRef: r(),
     loadCountRef: r(),
     navCountRef: r(),
+    navLabelRef: r(),
     hintRef: r(),
     ctaIdleRef: r(),
     ctaLiveRef: r(),
@@ -2993,6 +3261,8 @@ function makeRefs(): EngineRefs {
     gaugeWrapRef: r(),
     gaugeGridRef: r(),
     gaugeNumRef: r(),
+    gaugeSlotRef: r(),
+    gaugeDockRef: r(),
     whyRef: r(),
     rotWordRef: r(),
     whyLinkRef: r(),
@@ -3220,6 +3490,36 @@ const proIcon = (children: React.ReactNode) => (
 
 const PRO_FEATURES = [
   {
+    title: "More pages kept forever",
+    body: `keep well beyond the free ${KEPT_PAGE_LIMIT}.`,
+    icon: proIcon(
+      <>
+        <rect x="7" y="3" width="14" height="15" rx="2" />
+        <path d="M3 7v12a2 2 0 0 0 2 2h11" />
+      </>,
+    ),
+  },
+  {
+    title: "API keys",
+    body: "agents publish straight to your account.",
+    icon: proIcon(
+      <>
+        <circle cx="7.5" cy="15.5" r="4.5" />
+        <path d="M10.7 12.3 21 2M17 6l3 3" />
+      </>,
+    ),
+  },
+  {
+    title: "Higher agent/MCP volume",
+    body: "room for agents that publish often.",
+    icon: proIcon(
+      <>
+        <path d="M3 20h18" />
+        <path d="M6 20v-6M11 20V8M16 20v-9M21 20V4" />
+      </>,
+    ),
+  },
+  {
     title: "Password-protected pages",
     body: "gate a page behind a password.",
     icon: proIcon(
@@ -3260,18 +3560,34 @@ const PRO_FEATURES = [
     ),
   },
   {
-    title: "More pages & higher limits",
-    body: "higher MCP/agent volume too.",
-    icon: proIcon(<path d="M4 7V4h16v3M9 20h6M12 4v16" />),
-  },
-  {
     title: "Version history & rollback",
     body: "restore a previous version.",
     icon: proIcon(<path d="M3 7l9-4 9 4-9 4-9-4zM3 12l9 4 9-4M3 17l9 4 9-4" />),
   },
+  {
+    title: "EU data residency",
+    body: "pages stored and served from the EU.",
+    icon: proIcon(
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 3a14 14 0 0 0 0 18M3.5 9h17M3.5 15h17" />
+      </>,
+    ),
+  },
 ] as const;
 
-function FooterCol({ heading, links }: { heading: string; links: string[] }) {
+function FooterCol({
+  heading,
+  links,
+}: {
+  heading: string;
+  links: readonly { label: string; href?: string }[];
+}) {
+  // Labels without a live destination render as plain text, never a dead link.
+  const linkStyle: React.CSSProperties = {
+    color: "#A8A096",
+    textDecoration: "none",
+  };
   return (
     <div
       style={{
@@ -3285,15 +3601,17 @@ function FooterCol({ heading, links }: { heading: string; links: string[] }) {
       }}
     >
       <span style={{ color: "#6E6760" }}>{heading}</span>
-      {links.map((l) => (
-        <a
-          key={l}
-          href="#top"
-          style={{ color: "#A8A096", textDecoration: "none" }}
-        >
-          {l}
-        </a>
-      ))}
+      {links.map((l) =>
+        l.href ? (
+          <a key={l.label} href={l.href} style={linkStyle}>
+            {l.label}
+          </a>
+        ) : (
+          <span key={l.label} style={linkStyle}>
+            {l.label}
+          </span>
+        ),
+      )}
     </div>
   );
 }

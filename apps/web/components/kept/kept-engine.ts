@@ -30,6 +30,13 @@ export interface EngineState {
   openTab: Tab;
   humanPresent: boolean;
   gaugeRevealed: boolean;
+  /**
+   * Pages this visitor minted in *this* session. Session-local UI state only —
+   * it lights the next gauge slot so the field reflects the drop that just
+   * happened. Never persisted, and never written back into `landing-stats`,
+   * whose zero is the honest global pre-launch baseline.
+   */
+  mintedCount: number;
 }
 
 export interface EngineRefs {
@@ -54,6 +61,8 @@ export interface EngineRefs {
   barRef: Ref;
   loadCountRef: Ref;
   navCountRef: Ref;
+  /** The noun beside the nav counter; pluralized to agree with it. */
+  navLabelRef: Ref;
   hintRef: Ref;
   ctaIdleRef: Ref;
   ctaLiveRef: Ref;
@@ -87,6 +96,10 @@ export interface EngineRefs {
   gaugeWrapRef: Ref;
   gaugeGridRef: Ref;
   gaugeNumRef: Ref;
+  /** The pulsing "next slot" dot in the gauge grid — the tile's dock target. */
+  gaugeSlotRef: Ref;
+  /** Tile layer shown while docked: a lit accent disc over that slot. */
+  gaugeDockRef: Ref;
   whyRef: Ref;
   rotWordRef: Ref;
   whyLinkRef: Ref;
@@ -130,6 +143,15 @@ interface WhyResult {
   expanded: boolean;
 }
 
+interface GaugeResult {
+  pose: Pose;
+  active: boolean;
+  /** How docked onto the next-slot dot the tile is, 0→1. */
+  dock: number;
+  /** Docked *and* opened into the full drop panel (hover or keyboard focus). */
+  expanded: boolean;
+}
+
 interface SectionResult {
   pose: Pose;
   active: boolean;
@@ -137,8 +159,11 @@ interface SectionResult {
 }
 
 export interface EngineProps {
+  /**
+   * Pages kept forever, right now. Drives the nav counter and the open-books
+   * gauge number — both report the same figure, so there is only one prop.
+   */
   liveCount: number;
-  gaugeFunded: number;
 }
 
 export class KeptEngine {
@@ -171,12 +196,15 @@ export class KeptEngine {
 
   // scroll-choreography section snapshots
   agState: AgentResult | null = null;
-  gaugeState: SectionResult | null = null;
+  gaugeState: GaugeResult | null = null;
   whyState: WhyResult | null = null;
   prState: SectionResult | null = null;
   ftState: SectionResult | null = null;
 
   whyIconOn = false;
+  gaugeDockOn = false;
+  /** Keyboard focus is on the next-slot dot — opens the panel exactly like hover. */
+  gaugeFocus = false;
   anyExpanded = false;
   prLock = 0;
   ftLock = 0;
@@ -205,6 +233,8 @@ export class KeptEngine {
   private _dragDepth = 0;
   private _enter?: () => void;
   private _leaveT?: () => void;
+  private _slotFocus?: () => void;
+  private _slotBlur?: () => void;
   private _rs?: () => void;
   private _mq?: MediaQueryList;
   private _mqh?: (e: MediaQueryListEvent) => void;
@@ -221,7 +251,9 @@ export class KeptEngine {
     this.setState = setState;
     this.reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     this.isMobile = window.matchMedia("(max-width: 820px)").matches;
-    this.count = props.liveCount || 1284;
+    // Never `||` — a zero kept count is the real launch baseline and must
+    // render as 0, not fall through to a made-up figure.
+    this.count = props.liveCount;
     this.tiles = this.buildTiles();
   }
 
@@ -412,11 +444,23 @@ export class KeptEngine {
     return tiles;
   }
 
-  // ---------- lifecycle ----------
-  mount() {
+  /**
+   * Write the nav counter and keep its noun in agreement with it. Zero is
+   * plural ("0 PAGES KEPT"); only exactly one is singular. Every site that
+   * moves `this.count` goes through here so the two can never disagree.
+   */
+  private writeCount() {
     const r = this.refs;
     if (r.navCountRef.current)
       r.navCountRef.current.textContent = this.count.toLocaleString();
+    if (r.navLabelRef.current)
+      r.navLabelRef.current.textContent = this.count === 1 ? "PAGE" : "PAGES";
+  }
+
+  // ---------- lifecycle ----------
+  mount() {
+    const r = this.refs;
+    this.writeCount();
     this._mm = (e: MouseEvent) => {
       this.mouse.x = e.clientX / window.innerWidth - 0.5;
       this.mouse.y = e.clientY / window.innerHeight - 0.5;
@@ -460,6 +504,22 @@ export class KeptEngine {
       tl.addEventListener("mouseenter", this._enter);
       tl.addEventListener("mouseleave", this._leaveT);
     }
+    // Keyboard parity for the gauge dock: focusing the next-slot dot opens the
+    // drop panel exactly like hovering the docked tile does. Centre it first so
+    // the choreography has a sane geometry to dock into regardless of where the
+    // browser's own focus scroll landed.
+    const gs = r.gaugeSlotRef.current;
+    if (gs) {
+      this._slotFocus = () => {
+        this.gaugeFocus = true;
+        gs.scrollIntoView({ block: "center" });
+      };
+      this._slotBlur = () => {
+        this.gaugeFocus = false;
+      };
+      gs.addEventListener("focus", this._slotFocus);
+      gs.addEventListener("blur", this._slotBlur);
+    }
     this.cardRefs = [r.card0Ref, r.card1Ref, r.card2Ref, r.card3Ref];
     if (this.reduced || this.isMobile) {
       const pad = this.isMobile ? "70px 0" : "130px 0";
@@ -480,10 +540,10 @@ export class KeptEngine {
         as.style.padding = pad;
       }
       setTimeout(() => this.applyAccordion(this.getState().openTab, null), 0);
-      if (this.reduced && r.gaugeNumRef.current)
-        r.gaugeNumRef.current.textContent = (
-          this.props.gaugeFunded ?? 1284
-        ).toLocaleString();
+      // Reduced motion never runs the rAF loop, so nothing would ever trip the
+      // scroll-driven reveal — the dot field (and with it the next-slot dot)
+      // would stay at opacity 0 forever. Reveal it statically instead.
+      if (this.reduced) this.revealGauge();
     }
     this.paintThumbs();
     this.revealTiles();
@@ -513,11 +573,15 @@ export class KeptEngine {
     this.runLoader();
     if (!this.reduced) {
       this.tick();
-      this.countTimer = setInterval(() => {
-        this.count += Math.random() < 0.6 ? 1 : 0;
-        if (r.navCountRef.current)
-          r.navCountRef.current.textContent = this.count.toLocaleString();
-      }, 9000);
+      // Ambient drift is only honest once real pages exist. At the zero
+      // baseline there is nothing to tick up, and inventing one would be a
+      // fabricated number.
+      if (this.count > 0) {
+        this.countTimer = setInterval(() => {
+          this.count += Math.random() < 0.6 ? 1 : 0;
+          this.writeCount();
+        }, 9000);
+      }
     }
   }
   unmount() {
@@ -549,6 +613,11 @@ export class KeptEngine {
     if (tl) {
       if (this._enter) tl.removeEventListener("mouseenter", this._enter);
       if (this._leaveT) tl.removeEventListener("mouseleave", this._leaveT);
+    }
+    const gs = this.refs.gaugeSlotRef.current;
+    if (gs) {
+      if (this._slotFocus) gs.removeEventListener("focus", this._slotFocus);
+      if (this._slotBlur) gs.removeEventListener("blur", this._slotBlur);
     }
   }
 
@@ -589,18 +658,31 @@ export class KeptEngine {
   toggleSkill = () => this.setTab("skill");
   downloadSkill = () => this.doDownloadSkill();
 
+  /**
+   * The figure the open-books gauge reports: the honest global baseline plus
+   * whatever this visitor just minted in this session. Never the drifting nav
+   * counter, and never written back to `landing-stats`.
+   */
+  gaugeTotal() {
+    return this.props.liveCount + this.getState().mintedCount;
+  }
   revealGauge() {
     if (this._gaugeRevealed) return;
     this._gaugeRevealed = true;
     this.setState({ gaugeRevealed: true });
+    // The gauge reports the open-books figure, not the drifting nav counter.
     this.countUp(
       this.refs.gaugeNumRef.current,
-      this.props.gaugeFunded ?? 1284,
-      1400,
+      this.gaugeTotal(),
+      this.reduced ? 0 : 1400,
     );
   }
   countUp(el: HTMLElement | null, target: number, dur: number) {
     if (!el) return;
+    if (dur <= 0) {
+      el.textContent = target.toLocaleString();
+      return;
+    }
     const start = performance.now();
     const step = (t: number) => {
       const p = Math.min(1, (t - start) / dur);
@@ -859,8 +941,16 @@ export class KeptEngine {
       if (r.liveSlugBigRef.current)
         r.liveSlugBigRef.current.textContent = this.liveSlug;
       this.count += 1;
-      if (r.navCountRef.current)
-        r.navCountRef.current.textContent = this.count.toLocaleString();
+      this.writeCount();
+      // The gauge field follows: a solid dot takes the slot that was pulsing,
+      // and the pulse moves on to the next one. Session-local only.
+      this.setState({ mintedCount: this.getState().mintedCount + 1 });
+      if (this._gaugeRevealed)
+        this.countUp(
+          r.gaugeNumRef.current,
+          this.gaugeTotal(),
+          this.reduced ? 0 : 900,
+        );
       this.applyPhase("live");
     }, wait);
   }
@@ -934,7 +1024,8 @@ export class KeptEngine {
     pose = fRes.pose;
     this.ftState = fRes;
     this.whyIconOn = wRes.active && wRes.iconAmt > 0.5 && !wRes.expanded;
-    this.anyExpanded = !!wRes.expanded;
+    this.gaugeDockOn = gRes.active && gRes.dock > 0.5 && !gRes.expanded;
+    this.anyExpanded = !!wRes.expanded || !!gRes.expanded;
     this.prLock = prRes.lock || 0;
     this.ftLock = fRes.lock || 0;
     this.agentLock = agRes.lock;
@@ -1047,7 +1138,11 @@ export class KeptEngine {
     }
     const t = this.ease(Math.max(0, Math.min(1, (p - TOUR_END) / (1 - TOUR_END))));
     const start = { cx: ar.right - 110, cy: ar.top + 95, w: 140, h: 140, rot: 0 };
-    const exit = this.transit(r.gaugeNumRef, W, H, H * 0.6);
+    // Head for the dot field, not the big number. The number is a one-glyph
+    // span at the left column's left edge, so centring on it (then clamping to
+    // 130px) parked the tile against the viewport's left edge for the whole
+    // approach and dragged it across the left column's text.
+    const exit = this.transit(r.gaugeGridRef, W, H, H * 0.6);
     return {
       pose: this.blend(start, exit, t),
       lock: 0,
@@ -1059,37 +1154,104 @@ export class KeptEngine {
       hi: null,
     };
   }
-  computeGauge(entry: Pose, W: number, H: number): SectionResult {
+  computeGauge(entry: Pose, W: number, H: number): GaugeResult {
     const r = this.refs;
     const wrap = r.gaugeWrapRef.current,
-      num = r.gaugeNumRef.current;
-    if (!wrap || !num || this.reduced) return { pose: entry, active: false };
+      slot = r.gaugeSlotRef.current;
+    if (!wrap || !slot || this.reduced)
+      return { pose: entry, active: false, dock: 0, expanded: false };
     const gr = wrap.getBoundingClientRect();
     if (!this._gaugeRevealed && gr.top < H * 0.85) this.revealGauge();
     const clamp = (v: number) => Math.max(0, Math.min(1, v));
-    if (gr.top > H * 0.92) return { pose: entry, active: false };
-    const numRow = num.parentElement || num;
-    const nr = numRow.getBoundingClientRect();
-    const s = Math.max(72, Math.min(104, nr.height * 1.25));
-    const park = {
-      cx: nr.right + 26 + s / 2,
-      cy: nr.top + nr.height / 2,
+    if (gr.top > H * 0.92)
+      return { pose: entry, active: false, dock: 0, expanded: false };
+    // Dock BESIDE the pulsing "next slot" dot, on its left — not on top of it.
+    // Covering the dot meant hiding the very thing the dock points at; landing
+    // alongside keeps both visible, so the pulse still reads as "your next
+    // slot" while the box reads as "drop here". It renders as a rounded box
+    // (see gaugeDockRef), deliberately not a disc, so it is never mistaken for
+    // another dot in the field.
+    const dr = slot.getBoundingClientRect();
+    const s = Math.max(36, Math.min(40, dr.width * 2.6));
+    const dx = dr.left + dr.width / 2,
+      dy = dr.top + dr.height / 2;
+    // Sit clear of the dot: half the dot + a 10px gap + half the box.
+    const GAP = 10;
+    const parkCx = dx - dr.width / 2 - GAP - s / 2;
+    const park = { cx: parkCx, cy: dy, w: s, h: s, rot: 0 };
+    const a = clamp((H * 0.6 - gr.top) / (0.28 * H));
+    // Hold the dock until the card's top edge has cleared the viewport. The
+    // exit blends diagonally down-left toward #why's rotating word; starting it
+    // while the card is still 90% on screen dragged the tile straight across
+    // the left column's cost/uptime line.
+    const out = clamp((H * 0.02 - gr.top) / (0.22 * H));
+    let pose: Pose,
+      dock = 0;
+    if (a < 1) {
+      pose = this.blend(entry, park, this.ease(a));
+      dock = a;
+    } else if (out <= 0) {
+      pose = park;
+      dock = 1;
+    } else {
+      // Go straight from the upload box to #why's link icon. Blending through
+      // `transit()` here re-inflated the tile into the full drop box on the way
+      // out, so the sequence read upload → drop box → link instead of
+      // upload → link.
+      const exit = this.whyIconPose() ?? this.transit(r.rotWordRef, W, H, H * 0.52);
+      pose = this.blend(park, exit, this.ease(out));
+      dock = 1 - out;
+    }
+    // Hover, mouse proximity, or keyboard focus on the slot dot expands the
+    // dock into the real drop panel — the same one #why opens — so a page can
+    // actually be published from here. Focus alone is enough: a keyboard user
+    // never generates the pointer proximity the mouse path relies on.
+    // Proximity counts against BOTH the dot and the box beside it — they are
+    // one affordance, and the pointer approaching either should open it.
+    const near = this.mouseRaw
+      ? Math.hypot(this.mouseRaw.x - dx, this.mouseRaw.y - dy) < 48 ||
+        Math.hypot(this.mouseRaw.x - parkCx, this.mouseRaw.y - dy) < 48
+      : false;
+    let expanded = false;
+    if (
+      (this.hover || near || this.gaugeFocus) &&
+      (dock > 0.55 || this.gaugeFocus)
+    ) {
+      const cw = 300,
+        ch = 290;
+      // Grow from the box, which is where the pointer actually is.
+      const cx = Math.min(
+          W - cw / 2 - 20,
+          Math.max(cw / 2 + 20, parkCx + cw / 2 - s / 2),
+        ),
+        cy = Math.min(
+          H - ch / 2 - 20,
+          Math.max(ch / 2 + 20, dy + ch / 2 + 14),
+        );
+      pose = { cx, cy, w: cw, h: ch, rot: 0 };
+      expanded = true;
+      dock = 1;
+    }
+    return { pose, active: true, dock, expanded };
+  }
+  /**
+   * The #why link-icon pose. Shared so the gauge can exit straight into it:
+   * routing the gauge exit through `transit()` first inflated the tile to a
+   * 128px card — the drop box briefly reappearing between the upload box and
+   * the link icon. Both callers reading one pose removes that intermediate.
+   */
+  whyIconPose(): Pose | null {
+    const word = this.refs.rotWordRef.current;
+    if (!word) return null;
+    const wr = word.getBoundingClientRect();
+    const s = Math.max(36, wr.height * 0.42);
+    return {
+      cx: wr.right + s / 2 + 16,
+      cy: wr.top + wr.height * 0.54,
       w: s,
       h: s,
       rot: 0,
     };
-    const a = clamp((H * 0.6 - gr.top) / (0.28 * H));
-    const out = clamp((H * 0.12 - gr.top) / (0.22 * H));
-    let pose: Pose;
-    if (a < 1) pose = this.blend(entry, park, this.ease(a));
-    else if (out <= 0) pose = park;
-    else
-      pose = this.blend(
-        park,
-        this.transit(r.rotWordRef, W, H, H * 0.52),
-        this.ease(out),
-      );
-    return { pose, active: true };
   }
   computeWhy(entry: Pose, W: number, H: number): WhyResult {
     const r = this.refs;
@@ -1102,10 +1264,10 @@ export class KeptEngine {
       return { pose: entry, active: false, iconAmt: 0, expanded: false };
     const wr = word.getBoundingClientRect();
     const clamp = (v: number) => Math.max(0, Math.min(1, v));
-    const s = Math.max(36, wr.height * 0.42);
-    const ix = wr.right + s / 2 + 16,
-      iy = wr.top + wr.height * 0.54;
-    const icon = { cx: ix, cy: iy, w: s, h: s, rot: 0 };
+    const icon = this.whyIconPose()!;
+    const s = icon.w;
+    const ix = icon.cx,
+      iy = icon.cy;
     const a = clamp((H * 0.62 - wr.top) / (0.3 * H));
     const out = clamp((H * 0.16 - wr.top) / (0.2 * H));
     const near = this.mouseRaw
@@ -1312,7 +1474,9 @@ export class KeptEngine {
       if (this.anyExpanded) {
         tile.style.boxShadow =
           "0 0 0 1.5px var(--accent),0 22px 64px rgba(40,30,20,.26)";
-      } else if (this.whyIconOn) {
+      } else if (this.whyIconOn || this.gaugeDockOn) {
+        // Docked on a gauge slot / morphed into the #why chain link: a tight
+        // accent ring plus glow, so it reads as "this dot is lit and active".
         tile.style.boxShadow =
           "0 0 0 1.4px var(--accent),0 0 16px 3px rgba(109,74,255,.35)";
       } else if ((this.ftLock || 0) > 0.5) {
@@ -1435,13 +1599,24 @@ export class KeptEngine {
   applyGaugeVisuals() {
     const r = this.refs;
     const w = this.whyState || ({} as WhyResult);
+    const g = this.gaugeState || ({} as GaugeResult);
     const phase = this.getState().phase;
     const iconOn = !!w.active && w.iconAmt > 0.5 && !w.expanded;
+    // Docked on the gauge slot, either as the lit disc or opened into the panel.
+    const gaugeOn = !!g.active && (g.dock || 0) > 0.5;
+    const gaugeDisc = gaugeOn && !g.expanded;
+    // The box now lands BESIDE the pulsing dot rather than over it, so the dot
+    // stays visible throughout — it is the thing the box points at, and it is
+    // the focusable control whose focus ring must remain visible.
+    const gslot = r.gaugeSlotRef.current;
+    if (gslot) gslot.style.opacity = this._gaugeRevealed ? "1" : "0";
+    const gdock = r.gaugeDockRef.current;
+    if (gdock) gdock.style.opacity = gaugeDisc ? "1" : "0";
     const link = r.whyLinkRef.current;
     if (link) link.style.opacity = iconOn ? "1" : "0";
     const ld = r.whyLiveDotRef.current;
     if (ld) ld.style.opacity = iconOn && phase === "live" ? "1" : "0";
-    const wcOn = !!w.expanded && phase === "idle";
+    const wcOn = (!!w.expanded || !!g.expanded) && phase === "idle";
     const wcard = r.whyCardRef.current;
     if (wcard) {
       wcard.style.opacity = wcOn ? "1" : "0";
@@ -1462,8 +1637,11 @@ export class KeptEngine {
     const dk = r.darkIdleRef.current;
     if (dk) dk.style.opacity = phase === "idle" ? (ft.lock || 0).toFixed(3) : "0";
     const inner = r.tileInnerRef.current;
-    if (inner) inner.style.borderRadius = iconOn ? "50%" : "14px";
-    if (iconOn) {
+    if (inner)
+      // #why's link icon is a disc; the gauge dock is a rounded box so it never
+      // reads as another dot in the field.
+      inner.style.borderRadius = iconOn ? "50%" : gaugeDisc ? "12px" : "14px";
+    if (iconOn || gaugeDisc) {
       const idle = r.slotIdleRef.current;
       if (idle) idle.style.opacity = "0";
     }
