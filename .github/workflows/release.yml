@@ -1,0 +1,288 @@
+name: Release
+
+# Prod release pipeline (E02 task 007). Mirrors `deploy-dev.yml`; the diff
+# between the two is exactly: tag-source guard, reviewer approval, Neon backup
+# branch, GitHub Release. Nothing else. That duplication is intentional — the
+# divergence IS the safety mechanism and must stay obvious to a reader, so do
+# not fold the two into one parameterized reusable workflow.
+#
+# TRIGGERS — `prod-v*` tags only. No branch trigger and no `workflow_dispatch`
+# shortcut into prod: the guard below is only meaningful if the tag is the only
+# way in.
+#
+# ORDERING — guard -> validate -> backup -> migrate -> edge -> web -> smoke ->
+# release. Never reorder.
+#   * The Worker (apps/edge) READS KV + R2 only and never touches the database,
+#     so a new Worker version is safe against both the old and the new schema.
+#     That is why it deploys early.
+#   * apps/web is the only surface that depends on the new schema, so it goes
+#     last, after `migrate` has applied it.
+#   * `edge` and `web` are deliberately NOT transactional. A failure at `web`
+#     must leave `*.kept.host` serving — the serve path never depends on the
+#     control plane, including mid-deploy.
+#   * `release` is last so a red smoke never leaves a green Release entry behind.
+
+on:
+  push:
+    tags: ["prod-v*"]
+
+# One prod release at a time. `cancel-in-progress: false`: a run paused at the
+# reviewer gate, or mid-migration, must never be killed by a newer tag.
+concurrency:
+  group: release-prod
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. guard — a `prod-v*` tag MUST point at a commit reachable from `main`.
+  # This fails. It does not warn, skip, or auto-correct.
+  # ---------------------------------------------------------------------------
+  guard:
+    name: Guard — tag must descend from main
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # `fetch-depth: 0` is load-bearing: `git merge-base --is-ancestor` on a
+      # shallow clone reports garbage, because the grafted history has no path
+      # back to main. The checkout ref is a tag, so `origin/main` is not
+      # fetched by default either — hence the explicit fetch below.
+      #
+      # The composite setup action cannot own this: it deliberately does not
+      # check out (a local `./.github/...` action only resolves once the repo is
+      # on disk), so every caller runs `actions/checkout` itself and owns
+      # `fetch-depth`. This job needs no Node, so it skips the setup action.
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Assert tag commit is an ancestor of main
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error title=Prod tag is not on main::Tag '${TAG}' points at ${GITHUB_SHA}, which is not reachable from origin/main. Prod releases must be cut from main. Delete the tag, merge to main, and re-tag."
+            exit 1
+          fi
+          echo "OK — tag '${TAG}' (${GITHUB_SHA}) is reachable from origin/main."
+
+  # ---------------------------------------------------------------------------
+  # 2. validate — the same gate `ci.yml` runs, against the tagged commit.
+  # ---------------------------------------------------------------------------
+  validate:
+    name: Typecheck / Lint / Build / Test
+    needs: guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup workspace
+        uses: ./.github/actions/setup
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Build
+        run: pnpm build
+
+      - name: Install Playwright browsers
+        run: pnpm --filter @kept/web exec playwright install --with-deps chromium
+
+      - name: Test
+        run: pnpm test
+        env:
+          CI: "true"
+
+  # ---------------------------------------------------------------------------
+  # 3. backup — the first job bound to `environment: prod`, so this is where the
+  # run visibly PAUSES for the environment's required reviewer. That reviewer
+  # rule IS the manual approval gate; there is deliberately no hand-rolled
+  # "wait for approval" step anywhere in this file.
+  #
+  # Neon branches are instant and copy-on-write, so a pre-migrate branch off the
+  # project's default (root) branch costs effectively nothing. It is the
+  # rollback mechanism — "restore from branch" — so it is NOT skippable and
+  # carries NO `continue-on-error`. If the branch cannot be created, the
+  # migration does not run.
+  # ---------------------------------------------------------------------------
+  backup:
+    name: Neon backup branch (gated)
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: prod
+    permissions:
+      contents: read
+    steps:
+      - name: Install neonctl
+        run: npm install -g neonctl@2
+
+      # Named `prerelease-$TAG` so the branch is trivially traceable to the
+      # release that created it. `--parent` is omitted: neonctl branches off the
+      # project's default (root) branch, which is exactly what we want.
+      # Retention/cleanup is a runbook decision (task 010), not an automated
+      # deletion here.
+      - name: Create prerelease-${{ github.ref_name }}
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ vars.NEON_PROJECT_ID }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          args=(branches create --name "prerelease-${TAG}")
+          # neonctl can only infer the project when the account holds exactly
+          # one. Pass it explicitly when the var is set, rather than passing an
+          # empty --project-id.
+          if [ -n "${NEON_PROJECT_ID}" ]; then
+            args+=(--project-id "${NEON_PROJECT_ID}")
+          fi
+          neonctl "${args[@]}"
+
+  # ---------------------------------------------------------------------------
+  # 4. migrate — forward-only Drizzle migrations against the prod Neon root
+  # branch, behind the approval already granted at `backup`.
+  # ---------------------------------------------------------------------------
+  migrate:
+    name: Migrate (Neon root branch)
+    needs: backup
+    runs-on: ubuntu-latest
+    environment: prod
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup workspace
+        uses: ./.github/actions/setup
+
+      # MIGRATION_DATABASE_URL must be the DIRECT Neon host (no `-pooler.`
+      # infix). The pooled endpoint is PgBouncer in transaction mode and fails
+      # on DDL and advisory locks. Task 001 removed the old port-rewrite
+      # heuristic, so a pooled URL supplied here fails loudly, mid-release.
+      - name: Run migrations
+        run: pnpm --filter @kept/web db:migrate
+        env:
+          MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+
+  # ---------------------------------------------------------------------------
+  # 5. edge — schema-agnostic, so it lands before the control plane.
+  # ---------------------------------------------------------------------------
+  edge:
+    name: Deploy Worker (prod)
+    needs: migrate
+    runs-on: ubuntu-latest
+    environment: prod
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup workspace
+        uses: ./.github/actions/setup
+
+      # Uses the workspace's own lockfile-pinned wrangler via the existing
+      # `deploy:prod` script — `wrangler deploy --env prod`. `--env prod` is not
+      # optional: wrangler.toml has no top-level bindings, so a bare deploy
+      # cannot reach a store.
+      - name: wrangler deploy --env prod
+        run: pnpm --filter @kept/edge deploy:prod
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+  # ---------------------------------------------------------------------------
+  # 6. web — depends on the new schema, so it is last of the deploy steps.
+  # ---------------------------------------------------------------------------
+  web:
+    name: Deploy control plane (prod)
+    needs: edge
+    runs-on: ubuntu-latest
+    environment: prod
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup workspace
+        uses: ./.github/actions/setup
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli@4
+
+      # RAILWAY_TOKEN is an ENVIRONMENT-scoped project token, so the target
+      # environment is implied by the credential and `--environment` is neither
+      # needed nor accepted here. The service is still explicit: each track has
+      # its own service.
+      - name: railway up
+        run: railway up --ci --service "$RAILWAY_SERVICE_ID"
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
+
+  # ---------------------------------------------------------------------------
+  # 7. smoke — gates the Release. A red smoke means no Release entry.
+  # ---------------------------------------------------------------------------
+  smoke:
+    name: Smoke (prod)
+    needs: web
+    runs-on: ubuntu-latest
+    environment: prod
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup workspace
+        uses: ./.github/actions/setup
+
+      # Byte-identical script to the dev track. Prod does not run Serverless, so
+      # a cold-start 502 is not expected here, but the script's 502/503/504
+      # backoff is harmless and shared — dev and prod differ only in the values
+      # handed to the same code path.
+      - name: Run release smoke test
+        run: pnpm --filter @kept/web smoke:release
+        env:
+          SMOKE_WEB_URL: ${{ vars.SMOKE_WEB_URL }}
+          SMOKE_EDGE_URL: ${{ vars.SMOKE_EDGE_URL }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_AUTO: ${{ vars.R2_BUCKET_AUTO }}
+          KV_NAMESPACE_ID: ${{ vars.KV_NAMESPACE_ID }}
+          # The POOLED runtime URL — the smoke probe checks what the running
+          # app uses, not the direct migration endpoint.
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+  # ---------------------------------------------------------------------------
+  # 8. release — `contents: write` is scoped to THIS job only, not the workflow.
+  # ---------------------------------------------------------------------------
+  release:
+    name: GitHub Release
+    needs: smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # `--verify-tag` refuses to invent a tag if the ref somehow vanished.
+      - name: Create release from tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" --title "$TAG" --generate-notes --verify-tag
