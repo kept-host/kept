@@ -1,0 +1,222 @@
+name: Deploy dev
+
+# Dev release pipeline (E02 task 006). The rehearsal for `release.yml`.
+#
+# TRIGGERS — "merge = validate, tag = deploy". There is deliberately NO branch
+# push trigger: merging to `develop` runs `ci.yml` and deploys nothing. Dev is
+# reached only by cutting a `dev-v*` tag or by dispatching a ref by hand.
+# Dev is intentionally NOT guarded on branch source — fast iteration is the
+# point of the dev track. Only `prod-v*` is guarded (see release.yml).
+#
+# ORDERING — validate -> migrate -> edge -> web -> smoke. Never reorder.
+#   * The Worker (apps/edge) READS KV + R2 only and never touches the database,
+#     so a new Worker version is safe against both the old and the new schema.
+#     That is why it deploys early.
+#   * apps/web is the only surface that depends on the new schema, so it goes
+#     last, after `migrate` has actually applied it.
+#   * `edge` and `web` are deliberately NOT transactional. A failure at `web`
+#     must leave `*.kept-dev.xyz` serving — the serve path never depends on the
+#     control plane, including mid-deploy. There is no rollback-on-failure step
+#     here on purpose; unwinding a half-deploy is a runbook action (task 010).
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Ref to deploy (branch, tag or SHA). Defaults to the ref this workflow was dispatched from."
+        required: false
+        type: string
+  push:
+    tags: ["dev-v*"]
+
+# One dev deploy at a time. `cancel-in-progress: false`: a half-applied
+# migration or a half-finished `railway up` must never be killed mid-flight.
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # `inputs` is an empty context on a tag push, so this collapses to the tag
+  # ref there and to the dispatch input (or the dispatched ref) otherwise.
+  # A literal expression default on the input itself is not possible — the
+  # `github` context is not available inside `on:`.
+  DEPLOY_REF: ${{ inputs.ref || github.ref }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. validate — the same gate `ci.yml` runs, against the exact ref being
+  # deployed. Same scripts, not a forked command list.
+  # ---------------------------------------------------------------------------
+  validate:
+    name: Typecheck / Lint / Build / Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # Must precede the local composite action: `uses: ./...` only resolves
+      # once the repo is on disk. The caller therefore owns `fetch-depth` too.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_REF }}
+
+      - name: Setup workspace
+        uses: ./.github/actions/setup
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Build
+        run: pnpm build
+
+      - name: Install Playwright browsers
+        run: pnpm --filter @kept/web exec playwright install --with-deps chromium
+
+      - name: Test
+        run: pnpm test
+        env:
+          CI: "true"
+
+  # ---------------------------------------------------------------------------
+  # 2. migrate — forward-only Drizzle migrations against the persistent dev Neon
+  # branch. No backup branch on dev (that is a prod-only safety, see
+  # release.yml); if the dev branch drifts, a human runs
+  # `neonctl branches reset dev --parent`. Automating that in a deploy workflow
+  # would be a data-loss button with no confirmation.
+  # ---------------------------------------------------------------------------
+  migrate:
+    name: Migrate (Neon dev branch)
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_REF }}
+
+      - name: Setup workspace
+        uses: ./.github/actions/setup
+
+      # MIGRATION_DATABASE_URL must be the DIRECT Neon host (no `-pooler.`
+      # infix). The pooled endpoint is PgBouncer in transaction mode and fails
+      # on DDL and advisory locks. Task 001 removed the old port-rewrite
+      # heuristic, so a pooled URL supplied here fails loudly rather than being
+      # silently "corrected".
+      - name: Run migrations
+        run: pnpm --filter @kept/web db:migrate
+        env:
+          MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+
+  # ---------------------------------------------------------------------------
+  # 3. edge — schema-agnostic, so it lands before the control plane.
+  # ---------------------------------------------------------------------------
+  edge:
+    name: Deploy Worker (dev)
+    needs: migrate
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_REF }}
+
+      - name: Setup workspace
+        uses: ./.github/actions/setup
+
+      # Uses the workspace's own lockfile-pinned wrangler (apps/edge devDep)
+      # via the existing `deploy:dev` script — `wrangler deploy --env dev`.
+      # cloudflare/wrangler-action would install a second, unpinned wrangler
+      # alongside it, so CI could deploy with a different version than local.
+      # `--env dev` is not optional: wrangler.toml has no top-level bindings,
+      # so a bare deploy cannot reach a store.
+      - name: wrangler deploy --env dev
+        run: pnpm --filter @kept/edge deploy:dev
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+  # ---------------------------------------------------------------------------
+  # 4. web — depends on the new schema, so it is last. Railway builds from
+  # railway.json at the repo root (Railpack, turbo build --filter=@kept/web).
+  # ---------------------------------------------------------------------------
+  web:
+    name: Deploy control plane (dev)
+    needs: edge
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_REF }}
+
+      - name: Setup workspace
+        uses: ./.github/actions/setup
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli@4
+
+      # RAILWAY_TOKEN is an ENVIRONMENT-scoped project token, so the target
+      # environment is implied by the credential and `--environment` is neither
+      # needed nor accepted here. The dev token physically cannot reach prod.
+      # The service is still explicit: dev and prod are two separate services.
+      - name: railway up
+        run: railway up --ci --service "$RAILWAY_SERVICE_ID"
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
+
+  # ---------------------------------------------------------------------------
+  # 5. smoke — the release assertion. A red smoke fails the workflow.
+  # ---------------------------------------------------------------------------
+  smoke:
+    name: Smoke (dev)
+    needs: web
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_REF }}
+
+      - name: Setup workspace
+        uses: ./.github/actions/setup
+
+      # The dev Railway service runs with Serverless enabled, and Railway
+      # documents that the FIRST request to a slept service may return 502
+      # while it wakes. `smoke:release` already warms and retries on
+      # 502/503/504 with bounded backoff and asserts immediately on every other
+      # status, so a cold start is not a false red and a genuine 500 is not
+      # masked. Do not wrap this step in a shell retry loop — that would also
+      # retry the real failures.
+      - name: Run release smoke test
+        run: pnpm --filter @kept/web smoke:release
+        env:
+          SMOKE_WEB_URL: ${{ vars.SMOKE_WEB_URL }}
+          SMOKE_EDGE_URL: ${{ vars.SMOKE_EDGE_URL }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_AUTO: ${{ vars.R2_BUCKET_AUTO }}
+          KV_NAMESPACE_ID: ${{ vars.KV_NAMESPACE_ID }}
+          # The POOLED runtime URL — the smoke probe checks what the running
+          # app uses, not the direct migration endpoint.
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
