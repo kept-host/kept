@@ -17,6 +17,12 @@
 # EU-residency buckets (`eu-kept-sites-dev` / `eu-kept-sites`) exist but stay
 # UNBOUND in both environments. `KEPT_R2_EU` is added in E11 when region="eu"
 # routing activates. No speculative binding.
+#
+# VARS CONTRACT (E03 task 001) — plain config strings, never secrets, never a
+# third binding. They exist so one code path serves both domains without a
+# `NODE_ENV` fork or a hostname literal (E02's locked decision):
+#   - KEPT_BASE_DOMAIN  the serving suffix (no leading dot, no scheme)
+#   - KEPT_APEX_ORIGIN  control-plane origin that reserved labels 301 to
 
 name = "kept-edge"
 main = "src/index.ts"
@@ -36,6 +42,10 @@ routes = [
   { pattern = "*.kept-dev.xyz/*", zone_name = "kept-dev.xyz" }
 ]
 
+[env.dev.vars]
+KEPT_BASE_DOMAIN = "kept-dev.xyz"
+KEPT_APEX_ORIGIN = "https://kept-dev.xyz"
+
 [[env.dev.r2_buckets]]
 binding = "KEPT_R2"
 bucket_name = "auto-kept-sites-dev"
@@ -45,8 +55,9 @@ binding = "KEPT_KV"
 id = "fd5c0c7fbd9147f4849f65d59cdcd14c"
 
 # ---------------------------------------------------------------------------
-# prod — `*.kept.host`. Apex `kept.host` and the reserved `www`/`app`/`api`/
-# `assets` labels route to the control plane, not here (handled in E03).
+# prod — `*.kept.host`. The apex `kept.host` is not matched by this route, but
+# `www.kept.host` IS; the reserved `www`/`app`/`api`/`assets` labels are 301'd to
+# `KEPT_APEX_ORIGIN` by the Worker itself (src/host.ts) rather than by config.
 # ---------------------------------------------------------------------------
 
 [env.prod]
@@ -54,6 +65,10 @@ name = "kept-edge-prod"
 routes = [
   { pattern = "*.kept.host/*", zone_name = "kept.host" }
 ]
+
+[env.prod.vars]
+KEPT_BASE_DOMAIN = "kept.host"
+KEPT_APEX_ORIGIN = "https://kept.host"
 
 [[env.prod.r2_buckets]]
 binding = "KEPT_R2"
