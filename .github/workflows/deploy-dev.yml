@@ -174,8 +174,11 @@ jobs:
       # environment is implied by the credential and `--environment` is neither
       # needed nor accepted here. The dev token physically cannot reach prod.
       # The service is still explicit: dev and prod are two separate services.
+      # Not a bare `railway up`: the CLI exits on its log stream, not the build,
+      # so a dropped stream reports failure on a deploy that succeeded. The
+      # script falls back to polling the deployment's real state. See its header.
       - name: railway up
-        run: railway up --ci --service "$RAILWAY_SERVICE_ID"
+        run: .github/scripts/railway-deploy.sh
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}

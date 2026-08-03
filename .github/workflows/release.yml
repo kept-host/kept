@@ -225,8 +225,12 @@ jobs:
       # environment is implied by the credential and `--environment` is neither
       # needed nor accepted here. The service is still explicit: each track has
       # its own service.
+      # Not a bare `railway up`: the CLI exits on its log stream, not the build,
+      # so a dropped stream reports failure on a deploy that succeeded. On the
+      # prod path that is worse than noise — it would invite a rerun that races
+      # a live deployment. The script polls the deployment's real state instead.
       - name: railway up
-        run: railway up --ci --service "$RAILWAY_SERVICE_ID"
+        run: .github/scripts/railway-deploy.sh
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
