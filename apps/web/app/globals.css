@@ -160,20 +160,13 @@
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
-   Landing keyframes (frontend-specs §6/§7). keptFloat drives the static Vessel
-   idle bob; keptLive is the live-dot pulse. Both are applied via motion-safe:
-   so reduced-motion users see them static.
-   ───────────────────────────────────────────────────────────────────────── */
-@keyframes keptFloat {
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(-10px);
-  }
-}
+   Landing keyframes. keptLive is the live-dot pulse, applied via motion-safe:
+   so reduced-motion users see it static.
 
+   A `keptFloat` idle-bob used to sit here for an R3F Vessel component that was
+   never built. Nothing referenced it, so it is gone; the landing's motion is
+   driven imperatively by components/kept/kept-engine.ts.
+   ───────────────────────────────────────────────────────────────────────── */
 @keyframes keptLive {
   0%,
   100% {
