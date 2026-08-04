@@ -323,55 +323,96 @@ function mascotSvg(mood: MascotMood): string {
   const lit = dim ? "var(--m-lit-dim)" : "var(--m-lit)";
   const body = dim ? "var(--m-body-dim)" : "var(--m-body)";
   const deep = dim ? "var(--m-deep-dim)" : "var(--m-deep)";
-  const gradId = `mg-${mood}`;
+  const id = (part: string) => `m${part}-${mood}`;
 
-  // Eyes: open ellipses that blink, or closed arcs when asleep.
+  /* The body outline: a rounded SQUARE, not a blob.
+     Box 30..120 x 26..110 with a ~30px corner, so ~30px of straight edge
+     survives top and bottom and ~24px down each side. That surviving straight
+     run is the whole silhouette — take it away (corner radius → half the side)
+     and the character collapses into a ball, which is the single fastest way to
+     lose the likeness. Corner control points are pulled slightly past circular
+     for a squircle transition rather than a visible arc-to-line seam. */
+  const shape =
+    "M60 26 L90 26 C107 26 120 39 120 56 L120 80 C120 97 107 110 90 110 L60 110 C43 110 30 97 30 80 L30 56 C30 39 43 26 60 26 Z";
+
+  // Eyes: tall ovals that blink, or closed arcs when asleep.
   const eyes = dim
-    ? `<path d="M54 63 Q60 69 66 63" fill="none" stroke="var(--m-face)" stroke-width="3" stroke-linecap="round"/>
-     <path d="M84 63 Q90 69 96 63" fill="none" stroke="var(--m-face)" stroke-width="3" stroke-linecap="round"/>`
-    : `<ellipse class="m-eye" cx="60" cy="64" rx="5.8" ry="7" fill="var(--m-face)"/>
-     <ellipse class="m-eye" cx="90" cy="64" rx="5.8" ry="7" fill="var(--m-face)"/>`;
+    ? `<path d="M51 64 Q58 70 65 64" fill="none" stroke="var(--m-face)" stroke-width="3.2" stroke-linecap="round"/>
+     <path d="M85 64 Q92 70 99 64" fill="none" stroke="var(--m-face)" stroke-width="3.2" stroke-linecap="round"/>`
+    : `<ellipse class="m-eye" cx="58" cy="64" rx="6.4" ry="7.8" fill="var(--m-face)"/>
+     <ellipse class="m-eye" cx="92" cy="64" rx="6.4" ry="7.8" fill="var(--m-face)"/>`;
+
+  /* Hands get three short fingers. At this size they are only a few pixels, but
+     without them the hand reads as a lollipop on a stick and the whole character
+     drops to stick-figure. */
+  const handDown = (x: number, y: number) =>
+    `<circle cx="${x}" cy="${y}" r="4.2" fill="var(--m-limb)"/>
+     <path d="M${x - 3.2} ${y + 2.4} l-1.2 3 M${x} ${y + 4} l0 3.4 M${x + 3.2} ${y + 2.4} l1.2 3"
+       stroke="var(--m-limb)" stroke-width="2.2" stroke-linecap="round" fill="none"/>`;
 
   // The waving arm is its own group so the CSS can rotate it about the shoulder.
   const rightArm =
     mood === "wave"
       ? `<g class="m-arm-wave">
-       <path d="M112 70 C126 60 132 46 129 34" fill="none" stroke="var(--m-limb)" stroke-width="5" stroke-linecap="round"/>
-       <circle cx="129" cy="32" r="5.4" fill="var(--m-limb)"/>
-       <path d="M126 26 v-4 M132 26 v-3.5" stroke="var(--m-limb)" stroke-width="2.6" stroke-linecap="round"/>
+       <path d="M113 72 C126 62 132 47 130 36" fill="none" stroke="var(--m-limb)" stroke-width="4.8" stroke-linecap="round"/>
+       <circle cx="130" cy="33" r="4.8" fill="var(--m-limb)"/>
+       <path d="M126.2 30 l-1.6-5.4 M130.4 28.6 l0.2-5.8 M134.4 30.2 l2-5"
+         stroke="var(--m-limb)" stroke-width="2.4" stroke-linecap="round" fill="none"/>
      </g>`
-      : `<path d="M116 78 C127 89 130 101 127 111" fill="none" stroke="var(--m-limb)" stroke-width="5" stroke-linecap="round"/>
-     <circle cx="127" cy="113" r="5" fill="var(--m-limb)"/>`;
+      : `<path d="M118 82 C129 94 132 107 129 118" fill="none" stroke="var(--m-limb)" stroke-width="4.4" stroke-linecap="round"/>
+     ${handDown(129, 120)}`;
 
   // Amber status badge, only on the reviewed state. Filled with the page
   // background so it reads as a pip sitting in front of the body.
   const badge =
     mood === "locked"
       ? `<g>
-       <circle cx="120" cy="100" r="16" fill="var(--bg)" stroke="var(--warning)" stroke-width="2"/>
-       <rect x="114" y="99" width="12" height="8.5" rx="2" fill="none" stroke="var(--warning)" stroke-width="2"/>
-       <path d="M117 99 V96 a3 3 0 0 1 6 0 V99" fill="none" stroke="var(--warning)" stroke-width="2"/>
+       <circle cx="121" cy="99" r="16" fill="var(--bg)" stroke="var(--warning)" stroke-width="2"/>
+       <rect x="115" y="98" width="12" height="8.5" rx="2" fill="none" stroke="var(--warning)" stroke-width="2"/>
+       <path d="M118 98 V95 a3 3 0 0 1 6 0 V98" fill="none" stroke="var(--warning)" stroke-width="2"/>
      </g>`
       : "";
 
-  return `<svg class="mascot${dim ? " m-asleep" : ""}" viewBox="0 0 150 158" role="img" aria-hidden="true" focusable="false">
+  return `<svg class="mascot${dim ? " m-asleep" : ""}" viewBox="0 0 150 170" role="img" aria-hidden="true" focusable="false">
   <defs>
-    <linearGradient id="${gradId}" x1="0" y1="0" x2="0.7" y2="1">
+    <linearGradient id="${id("g")}" x1="0.12" y1="0" x2="0.88" y2="1">
       <stop offset="0" stop-color="${lit}"/>
+      <stop offset="0.58" stop-color="${body}"/>
       <stop offset="1" stop-color="${body}"/>
     </linearGradient>
+    <!-- Bevel. A soft white bloom off the top-left, which is what separates a
+         lit volume from a flat swatch. Neutral white/black so one definition
+         works in both themes. -->
+    <radialGradient id="${id("h")}" cx="0.32" cy="0.24" r="0.78">
+      <stop offset="0" stop-color="#fff" stop-opacity="${dim ? 0.10 : 0.20}"/>
+      <stop offset="0.55" stop-color="#fff" stop-opacity="${dim ? 0.02 : 0.04}"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </radialGradient>
+    <!-- Occlusion in the lower-right, opposite the bloom. -->
+    <radialGradient id="${id("s")}" cx="0.8" cy="0.84" r="0.62">
+      <stop offset="0" stop-color="#000" stop-opacity="${dim ? 0.07 : 0.13}"/>
+      <stop offset="1" stop-color="#000" stop-opacity="0"/>
+    </radialGradient>
+    <!-- A hard-edged ellipse reads as a sticker. Contact shadows are diffuse. -->
+    <filter id="${id("b")}" x="-60%" y="-160%" width="220%" height="420%">
+      <feGaussianBlur stdDeviation="3.6"/>
+    </filter>
   </defs>
-  <ellipse class="m-cast" cx="75" cy="149" rx="41" ry="6.5"/>
+  <ellipse class="m-cast" cx="75" cy="158" rx="40" ry="6.5" filter="url(#${id("b")})"/>
   <g class="m-body">
-    <path d="M66 106 L62 143" fill="none" stroke="var(--m-limb)" stroke-width="5" stroke-linecap="round"/>
-    <path d="M86 106 L91 143" fill="none" stroke="var(--m-limb)" stroke-width="5" stroke-linecap="round"/>
-    <path d="M34 78 C23 89 20 101 23 111" fill="none" stroke="var(--m-limb)" stroke-width="5" stroke-linecap="round"/>
-    <circle cx="23" cy="113" r="5" fill="var(--m-limb)"/>
+    <path d="M67 106 L62 150" fill="none" stroke="var(--m-limb)" stroke-width="4.4" stroke-linecap="round"/>
+    <path d="M62 150 l-5.5 1.4" fill="none" stroke="var(--m-limb)" stroke-width="4.2" stroke-linecap="round"/>
+    <path d="M85 106 L91 150" fill="none" stroke="var(--m-limb)" stroke-width="4.4" stroke-linecap="round"/>
+    <path d="M91 150 l5.5 1.4" fill="none" stroke="var(--m-limb)" stroke-width="4.2" stroke-linecap="round"/>
+    <path d="M32 82 C21 94 18 107 21 118" fill="none" stroke="var(--m-limb)" stroke-width="4.4" stroke-linecap="round"/>
+    ${handDown(21, 120)}
     ${rightArm}
-    <rect x="35" y="30" width="88" height="84" rx="28" fill="${deep}"/>
-    <rect x="31" y="26" width="88" height="84" rx="28" fill="url(#${gradId})"/>
+    <path d="${shape}" fill="${deep}" transform="translate(5,6)"/>
+    <path d="${shape}" fill="url(#${id("g")})"/>
+    <path d="${shape}" fill="url(#${id("h")})"/>
+    <path d="${shape}" fill="url(#${id("s")})"/>
     ${eyes}
-    <path d="M67 78 Q75 86 83 78" fill="none" stroke="var(--m-face)" stroke-width="3.4" stroke-linecap="round"/>
+    <path d="M66 79 Q75 88 84 79" fill="none" stroke="var(--m-face)" stroke-width="3.6" stroke-linecap="round"/>
     ${badge}
   </g>
 </svg>`;
