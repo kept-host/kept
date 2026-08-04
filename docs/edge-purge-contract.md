@@ -144,9 +144,100 @@ For a takedown that genuinely cannot wait 60 seconds, the escalation is to delet
 the R2 object as well — the Worker's `missing` branch then serves the branded 404
 regardless of what the cached manifest says.
 
-## 7. What E03 does and does not do
+## 7. The slug pointer object — a HARD write-side obligation
+
+**This section is not optional and not a nice-to-have.** The Worker already
+reads the object described here (`apps/edge/src/manifest.ts`, task 007). Nothing
+writes it yet, so the fallback is currently inert: every probe misses and every
+path returns exactly what it returned before. **E04 must start writing it, or
+the first-read-after-publish 404 that this whole mechanism exists to prevent
+stays unprevented.**
+
+### 7.1 Why it has to exist
+
+KV is eventually consistent — a freshly written manifest can take up to ~60s to
+be readable at every colo. The person most likely to open a link within that
+window is the person who just published it. So on a **true KV miss** the Worker
+performs **one** R2 `get` (R2 is strongly read-after-write consistent) before
+falling through to the branded 404.
+
+R2 is keyed by `siteId` — `sites/{siteId}/{versionId}/{path}` — and that is a
+locked decision, because it is what makes a rename a KV-only write with no file
+move. It also means **a KV miss leaves the Worker with no way to address the
+object**: the slug alone cannot produce a key. A slug-addressable pointer is
+therefore the only shape this fallback can take.
+
+### 7.2 The object
+
+```
+key:          slugs/{slug}.json
+content-type: application/json
+body:         the KV manifest value, byte-identical
+```
+
+```json
+{
+  "siteId": "…",
+  "versionId": "…",
+  "status": "live",
+  "region": "auto",
+  "ownerId": "…" ,
+  "updatedAt": 1770000000000
+}
+```
+
+Same bucket as the page objects (`KEPT_R2`), same schema (`kvManifestSchema` in
+`@kept/shared`) — the Worker validates the pointer with the exact same parser it
+uses on the KV value, and an unparseable pointer is simply a branded 404.
+
+### 7.3 The ordering rules — the part that is easy to get wrong
+
+**The pointer must be at least as fresh as KV at every instant.** The Worker
+reads it precisely when KV cannot answer, so a stale pointer is a page that
+serves content the control plane already changed.
+
+| Write | Order | Why |
+| --- | --- | --- |
+| Publish / replace / any manifest change | **R2 object → `slugs/{slug}.json` → KV** | The pointer must be readable before the KV entry exists, or the propagation window is not covered at all |
+| Rename `old` → `new` | write `slugs/{new}.json` → write KV `new` → **delete `slugs/{old}.json`** → delete KV `old` | Same rule applied twice: create pointer-first, remove pointer-first |
+| Delete / hard delete | **delete `slugs/{slug}.json` → delete KV `{slug}`** | Reverse of publish. Deleting KV first leaves a window where the Worker misses KV, finds the pointer, and **resurrects a deleted page** |
+| Status flip (`under_review`, `quarantined`, `removed`, `expired`) | **write `slugs/{slug}.json` → write KV** | A moderation flip that updates KV but not the pointer leaves a `live` pointer that serves the page whenever KV misses |
+
+Stated as one rule, which is the version to remember:
+
+> **Every KV manifest write is preceded by an identical pointer write. Every KV
+> manifest delete is preceded by a pointer delete. There is no manifest mutation
+> that touches KV and not the pointer.**
+
+This is the same shape as the purge rule in §5 ("if the KV manifest for a slug
+is written, purge that slug") and belongs in the same code path. A write helper
+that does *pointer → KV → purge* in that order satisfies both sections at once,
+and is the recommended way to implement it.
+
+### 7.4 Cost, and what the Worker will not do
+
+- The probe is **one `get`**. No retry, no `list`, no loop, no second KV read.
+- Budget: **1 KV + ≤2 R2** on a cold fallback (pointer probe + object), **1 KV +
+  1 R2** on the normal cold path, **0 + 0** on a cache hit.
+- A slug that fails the Worker's shape check never reaches either store, so an
+  invalid label still costs zero operations.
+- A page served *through* the fallback is cached with the short
+  `s-maxage=60` — not the year-long `LIVE_CACHE_CONTROL` — because the manifest
+  it came from is provisional until KV catches up.
+- The Worker **never writes** the pointer, never deletes it, and never calls the
+  control plane. Writing it is entirely a control-plane job.
+
+### 7.5 Cleanup
+
+The pointer is one small JSON object per live slug. It is deleted by the delete
+path above, so there is nothing to garbage-collect in the normal case. If a
+divergence audit is ever wanted, the authority is Postgres — never an R2 `list`.
+
+## 8. What E03 does and does not do
 
 - **Does:** set the headers, key the cache by the bare URL, skip the cache for
-  `suspended`/`expired`/`304`/non-`GET`, and write this contract down.
-- **Does not:** call `purge_cache`, write KV, write R2, or contact the control
-  plane in any way. The serve path is 100% Cloudflare and stays that way.
+  `suspended`/`expired`/`304`/non-`GET`, read `slugs/{slug}.json` on a KV miss,
+  and write this contract down.
+- **Does not:** call `purge_cache`, write KV, write R2 (**including the pointer
+  object in §7**), or contact the control plane in any way. The serve path is
+  100% Cloudflare and stays that way.

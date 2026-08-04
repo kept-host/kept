@@ -44,18 +44,40 @@ export const LIVE_CACHE_CONTROL = "public, max-age=60, s-maxage=31536000";
 export const NO_STORE_CACHE_CONTROL = "no-store";
 
 /**
+ * Short edge caching: one minute, nothing in the visitor's own browser.
+ *
+ * Used by the two classes of response that are only provisionally right, both
+ * tied to the same 60-second horizon:
+ *
+ * - the branded 404 (`notFound`) — a slug that 404s today may be published
+ *   tomorrow, and a year-long negative entry would outlive the purge the publish
+ *   path fires. It also bounds the cost of bot traffic against random
+ *   subdomains, where each miss costs a KV read and a task 007 R2 probe.
+ * - a page served through task 007's pointer fallback — the manifest came from
+ *   R2 because KV had not caught up yet. KV's propagation window is seconds, and
+ *   `MANIFEST_KV_CACHE_TTL_SECONDS` is 60, so within a minute the KV path takes
+ *   over and its answer is the authoritative one. Storing a fallback-served page
+ *   for a year would freeze a manifest read from the *older* of the two copies —
+ *   including, in the worst case, one that was mid-status-flip.
+ */
+export const SHORT_EDGE_CACHE_CONTROL = "public, max-age=0, s-maxage=60";
+
+/**
+ * `Cache-Control` for a page served through the KV-miss pointer fallback.
+ *
+ * NOT `LIVE_CACHE_CONTROL` — see `SHORT_EDGE_CACHE_CONTROL`.
+ */
+export const FALLBACK_CACHE_CONTROL = SHORT_EDGE_CACHE_CONTROL;
+
+/**
  * `Cache-Control` per system page.
  *
- * - `notFound` — short edge caching (`s-maxage=60`) bounds the cost of bot
- *   traffic against random subdomains, where each miss costs a KV read and (per
- *   task 007) an R2 probe. It stays short because a slug that 404s today may be
- *   published tomorrow, and a year-long negative entry would outlive the purge
- *   the publish path fires.
+ * - `notFound` — `SHORT_EDGE_CACHE_CONTROL`; see there for why.
  * - `suspended` / `expired` — `no-store`, and never written to the Cache API at
  *   all (see `storeResponse`). A cached quarantine is a moderation failure.
  */
 const SYSTEM_PAGE_CACHE_CONTROL: Record<SystemPage, string> = {
-  notFound: "public, max-age=0, s-maxage=60",
+  notFound: SHORT_EDGE_CACHE_CONTROL,
   suspended: NO_STORE_CACHE_CONTROL,
   expired: NO_STORE_CACHE_CONTROL,
 };

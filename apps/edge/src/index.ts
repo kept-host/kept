@@ -4,11 +4,11 @@
 // import @kept/shared but NEVER @kept/web — the one-way serve-path rule is
 // enforced by the root ESLint `no-restricted-imports` guard.
 //
-// Pipeline (E03): host→slug → Cache API → KV lookup → status branch → R2 fetch →
-// headers + cache. Steps 1 (host→slug, reserved labels), 2 + 7 (the Cache API
-// lookup and the `waitUntil` store), 3 (the single KV read), 4 (the status
-// branch), 5–6 (path→key + the single R2 read) and the uniform security headers
-// are all live.
+// Pipeline (E03): host→slug → Cache API → KV lookup (+ the miss-only R2 pointer
+// probe) → status branch → R2 fetch → headers + cache. Steps 1 (host→slug,
+// reserved labels), 2 + 7 (the Cache API lookup and the `waitUntil` store), 3
+// (the single KV read and the fallback), 4 (the status branch), 5–6 (path→key +
+// the single R2 read) and the uniform security headers are all live.
 //
 // EVERY response in this file is built by `headers.ts`'s `buildResponse` — there
 // is deliberately no bare `new Response(...)`, no `c.html()` and no
@@ -20,6 +20,7 @@ import { Hono, type Context } from "hono";
 import type { KvManifest } from "@kept/shared";
 
 import {
+  FALLBACK_CACHE_CONTROL,
   LIVE_CACHE_CONTROL,
   NO_STORE_CACHE_CONTROL,
   lookupCached,
@@ -30,7 +31,7 @@ import {
 import type { Env } from "./env";
 import { buildResponse } from "./headers";
 import { resolveHost } from "./host";
-import { readManifest } from "./manifest";
+import { resolveManifest } from "./manifest";
 import { fetchObject } from "./r2";
 import { renderSystemPage, type SystemPage } from "./system-pages";
 
@@ -88,14 +89,22 @@ async function serveSlug(
   slug: string,
   pathname: string,
 ): Promise<Response> {
-  // Step 3: the single KV read. A miss and a malformed/half-written manifest are
-  // the same answer — nothing is published at this address. Task 007 adds the
-  // direct R2 probe that covers KV's eventual-consistency window before this
-  // falls through.
-  const lookup = await readManifest(c.env.KEPT_KV, slug);
+  // Step 3: the single KV read, plus — ONLY on a miss — the single R2 probe of
+  // `slugs/{slug}.json` that covers KV's eventual-consistency window, so the
+  // person who just published does not open their own link and see a 404.
+  // `manifest.ts` owns which outcomes open that probe; a malformed manifest is
+  // not one of them. Either way, nothing servable here is still the branded 404.
+  const lookup = await resolveManifest(c.env.KEPT_KV, c.env.KEPT_R2, slug);
   if (lookup.kind === "unservable") {
     return systemPage(c, "notFound");
   }
+
+  // A manifest read through the fallback is provisional — KV has not caught up
+  // yet — so the page it produces gets the short edge TTL rather than the
+  // year-long one. See `SHORT_EDGE_CACHE_CONTROL`. System pages are unaffected:
+  // their policy is already short (`notFound`) or `no-store`.
+  const pageCacheControl =
+    lookup.source === "kv" ? LIVE_CACHE_CONTROL : FALLBACK_CACHE_CONTROL;
 
   // Step 4: the status branch. A TOTAL SWITCH, not an if-chain — see
   // `unhandledManifestStatus`.
@@ -130,7 +139,7 @@ async function serveSlug(
           headers: {
             "Content-Type": fetched.contentType,
             ETag: fetched.object.httpEtag,
-            "Cache-Control": LIVE_CACHE_CONTROL,
+            "Cache-Control": pageCacheControl,
           },
         });
       }
@@ -149,7 +158,7 @@ async function serveSlug(
           kind: "user-page",
           headers: {
             ETag: fetched.etag,
-            "Cache-Control": LIVE_CACHE_CONTROL,
+            "Cache-Control": pageCacheControl,
           },
         });
       }
