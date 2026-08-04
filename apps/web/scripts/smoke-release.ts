@@ -19,17 +19,20 @@
  * dev and prod differ only in the values handed to the same code path.
  *
  * ---------------------------------------------------------------------------
- * SCOPE — what this probe does NOT prove
+ * SCOPE — what this probe proves, and what it still does not (E03 task 009)
  *
- * TODO(E04): replace with the publish → {slug}.kept.host → 200 canary.
+ * PROVEN as of E03: the serving data plane **serves**. The edge assertion below
+ * fetches a real page out of R2 via the Worker and asserts status, body bytes,
+ * `Content-Type`, `ETag` and the conditional 304 — not merely that something
+ * well-formed answers on the route.
  *
- * The thing the epic ultimately wants proven is that a *published page is
- * served*. That is impossible today: `apps/edge` returns a placeholder until
- * E03 and there is no publish path until E04. So the edge assertion below is
- * honest about being a *reachability* check — "something well-formed answers on
- * the route" — and is NOT a serve check. When E04 lands, replace `smokeEdge`
- * with: publish a fixture page through the control plane, GET it back from the
- * edge hostname, assert 200 + body equality, then delete it.
+ * TODO(E04): the *publish* half. The page it asserts is the canary from
+ * `scripts/seed-edge-canary.ts`, written into R2 + KV by hand, because there is
+ * no publish path until E04. What is still unproven is that a page published
+ * *through the control plane* reaches those stores in the right shape. When E04
+ * lands, replace the seeded fixture with: publish a fixture page through the
+ * publish API, assert the same things here, then delete it. The assertions in
+ * `smokeEdge` do not change — only where the fixture comes from.
  * ---------------------------------------------------------------------------
  */
 import { setTimeout as sleep } from "node:timers/promises";
@@ -37,6 +40,12 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { config } from "dotenv";
 import postgres from "postgres";
 
+import { requireUrl } from "./lib/cli-args";
+import {
+  canaryHtml,
+  canarySlug,
+  CANARY_CONTENT_TYPE,
+} from "./lib/edge-canary";
 import {
   line,
   requireEnv,
@@ -68,48 +77,18 @@ function pass(name: string, detail: string): StoreResult {
   return { name, pass: true, detail };
 }
 
-/** `--flag value`, `--flag=value`, then the env fallback. */
-function readOption(flag: string, envName: string): string | undefined {
-  const argv = process.argv.slice(2);
-  const inline = argv.find((a) => a.startsWith(`--${flag}=`));
-  if (inline) {
-    const v = inline.slice(flag.length + 3).trim();
-    if (v !== "") return v;
-  }
-  const i = argv.indexOf(`--${flag}`);
-  if (i !== -1) {
-    const v = argv[i + 1];
-    if (v && !v.startsWith("--")) return v.trim();
-  }
-  const fromEnv = process.env[envName];
-  return fromEnv && fromEnv.trim() !== "" ? fromEnv.trim() : undefined;
-}
-
-function requireUrl(flag: string, envName: string): string {
-  const raw = readOption(flag, envName);
-  if (!raw) {
-    throw new Error(`Missing target URL. Pass --${flag} <url> or set ${envName}.`);
-  }
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    throw new Error(`Invalid URL for --${flag}/${envName}: "${raw}"`);
-  }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error(`--${flag}/${envName} must be http(s): "${raw}"`);
-  }
-  return url.toString();
-}
-
 /** Single bounded GET. Rejects on DNS/TLS/connection failure or timeout. */
-async function get(url: string, deadline: number): Promise<Response> {
+async function get(
+  url: string,
+  deadline: number,
+  headers: Record<string, string> = {},
+): Promise<Response> {
   const remaining = deadline - Date.now();
   if (remaining <= 0) throw new Error("overall deadline exceeded");
   return fetch(url, {
     method: "GET",
     redirect: "follow",
-    headers: { "user-agent": "kept-smoke-release" },
+    headers: { "user-agent": "kept-smoke-release", ...headers },
     signal: AbortSignal.timeout(Math.min(REQUEST_TIMEOUT_MS, remaining)),
   });
 }
@@ -174,31 +153,101 @@ async function smokeWeb(baseUrl: string, deadline: number): Promise<StoreResult>
 }
 
 /**
- * Edge reachability. ANY well-formed HTTP response from the Worker passes — the
- * placeholder/404 `apps/edge` returns until E03 counts. What must fail is
- * "nothing is answering on this route": a DNS or TLS failure, or a Cloudflare
- * origin error (52x/530), which is exactly what you get when the zone is live
- * but no Worker is bound to the route.
+ * Edge SERVE check: the deployed Worker must return the canary page out of R2.
  *
- * TODO(E04): this is reachability, not serving. See the scope note at the top.
+ * Asserts, in one cold GET plus one conditional GET:
+ *   200 · exact body bytes · `Content-Type` · an `ETag` · 304 on revalidation.
+ *
+ * The 304 leg is not decoration. E03 task 008 caught the Worker forwarding a
+ * browser's quoted `If-None-Match` straight into R2, which made every
+ * revalidation of a cached page 404 — a permanent page looking deleted the
+ * moment a visitor's browser checked on it. A test suite catches that once; this
+ * catches it on every deploy.
+ *
+ * A 404 here almost always means the canary fixture is missing rather than the
+ * Worker being broken, so the failure text says how to re-seed it.
+ *
+ * EACH request carries its OWN unique query string, and that is load-bearing.
+ * Live pages are served `s-maxage=31536000`, and the edge cache answers a repeat
+ * GET — and synthesises the 304 for a conditional one — without the Worker
+ * running at all (observed on dev: `cf-cache-status: HIT`). A post-deploy smoke
+ * that hit the cache would pass on a year-old entry and never touch the version
+ * just deployed, and the conditional leg would be testing Cloudflare's cache
+ * rather than the Worker's `If-None-Match` handling — which is precisely the
+ * mistake E03 task 008 caught in its own test suite. A fresh URL forces the real
+ * pipeline every time: cache miss → KV → R2. The Worker keys the cache on the
+ * whole URL and resolves the R2 key from the path only, so the query changes
+ * nothing else.
  */
 async function smokeEdge(edgeUrl: string, deadline: number): Promise<StoreResult> {
   const name = "edge";
+  const slug = canarySlug(edgeUrl);
+  const expected = canaryHtml(slug);
+
+  const freshUrl = (): string => {
+    const u = new URL(edgeUrl);
+    u.searchParams.set("smoke", crypto.randomUUID());
+    return u.toString();
+  };
+
   let res: Response;
   try {
-    res = await get(edgeUrl, deadline);
+    res = await get(freshUrl(), deadline);
   } catch (err) {
     return fail(name, `GET ${edgeUrl} — no HTTP response, DNS/TLS/connection (${errText(err)})`);
   }
-  await drain(res);
 
   if (res.status >= 520) {
+    await drain(res);
     return fail(
       name,
       `GET ${edgeUrl} → HTTP ${res.status} — Cloudflare origin error; no Worker is answering this route`,
     );
   }
-  return pass(name, `GET ${edgeUrl} → HTTP ${res.status} (Worker route reachable)`);
+  if (res.status !== 200) {
+    await drain(res);
+    return fail(
+      name,
+      `GET ${edgeUrl} → HTTP ${res.status} (expected 200). If 404, the canary fixture is missing: ` +
+        `pnpm --filter @kept/web seed:canary --edge-url ${edgeUrl}`,
+    );
+  }
+
+  const contentType = res.headers.get("content-type") ?? "";
+  const etag = res.headers.get("etag");
+  const body = await res.text();
+
+  if (body !== expected) {
+    return fail(
+      name,
+      `GET ${edgeUrl} → 200 but body is not the canary page (${body.length}B vs ${expected.length}B expected) — re-seed with seed:canary`,
+    );
+  }
+  if (contentType !== CANARY_CONTENT_TYPE) {
+    return fail(name, `GET ${edgeUrl} → 200 but Content-Type is "${contentType}"`);
+  }
+  if (!etag) {
+    return fail(name, `GET ${edgeUrl} → 200 with no ETag; revalidation cannot work`);
+  }
+
+  let conditional: Response;
+  try {
+    conditional = await get(freshUrl(), deadline, { "if-none-match": etag });
+  } catch (err) {
+    return fail(name, `conditional GET ${edgeUrl} — no HTTP response (${errText(err)})`);
+  }
+  await drain(conditional);
+  if (conditional.status !== 304) {
+    return fail(
+      name,
+      `conditional GET ${edgeUrl} (If-None-Match: ${etag}) → HTTP ${conditional.status}, expected 304`,
+    );
+  }
+
+  return pass(
+    name,
+    `GET ${edgeUrl} → 200 "${slug}" canary, ${body.length}B, ${contentType}, ETag ${etag}; revalidate → 304`,
+  );
 }
 
 /**
@@ -264,7 +313,9 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   console.log(`\nSMOKE PASS — ${results.length}/${results.length} assertions`);
-  console.log("      NOTE: edge check is reachability only; see TODO(E04).");
+  console.log(
+    "      NOTE: the edge check serves a HAND-SEEDED canary; the publish path is still unproven (TODO(E04)).",
+  );
   process.exit(0);
 }
 

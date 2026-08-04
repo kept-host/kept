@@ -19,6 +19,9 @@
     "dev": {
       "cache": false,
       "persistent": true
+    },
+    "@kept/shared#build": {
+      "outputs": []
     }
   }
 }

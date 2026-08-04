@@ -10,14 +10,18 @@
     "deploy:prod": "wrangler deploy --env prod",
     "cf-typegen": "wrangler types --env dev",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p test/tsconfig.json"
   },
   "dependencies": {
     "@kept/shared": "workspace:*",
     "hono": "^4.12.27"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.20.1",
     "@cloudflare/workers-types": "^4.20260624.1",
+    "vitest": "^4.1.10",
     "wrangler": "^4.104.0"
   }
 }

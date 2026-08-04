@@ -6,12 +6,22 @@ import { z } from "zod";
 /**
  * Lifecycle status of a site.
  * - `live`         — serving content.
- * - `under_review` — held pending moderation (E5).
- * - `quarantined`  — flagged/suspended, no content served (E5).
- * - `resting`      — funding degradation, temporarily not served (E4).
- * - `expired`      — anonymous claim window elapsed; traffic stopped (E1/E5).
+ * - `under_review` — held pending moderation (E07).
+ * - `quarantined`  — flagged/suspended, no content served (E07).
+ * - `resting`      — RETIRED pre-pivot funding-degradation state. See the note
+ *                    below; it is not a serving status.
+ * - `expired`      — draft clock elapsed; traffic stopped (clock set by E04,
+ *                    enforced by E07's expiry jobs).
  * - `removed`      — taken down by owner/moderation.
- * - `archived`     — archive-don't-delete cold state (E4 degradation ladder).
+ * - `archived`     — archive-don't-delete cold state (E07). Never written to KV.
+ *
+ * ⚠️ `resting` here — and `supporter` in `PLANS` below — are pre-pivot values
+ * that survive only because these tuples drive the Drizzle `pgEnum`s in
+ * apps/web/lib/db/schema.ts and are baked into the committed migration
+ * apps/web/drizzle/0000_nasty_moonstone.sql. Dropping a Postgres enum value is a
+ * **migration, not a rename**, and it is owned by E04/E05. Do not delete them
+ * here. The serving contract already excludes `resting`: it is absent from
+ * `MANIFEST_STATUSES` (./kv-manifest), which is a plain tuple driving no pgEnum.
  */
 export const SITE_STATUSES = [
   "live",
@@ -35,7 +45,7 @@ export type Plan = (typeof PLANS)[number];
 /**
  * Data residency region for a site's files.
  * - `auto` — default bucket (v1).
- * - `eu`   — EU-jurisdiction bucket (activates in E8, no migration needed).
+ * - `eu`   — EU-jurisdiction bucket (activates in E11, no migration needed).
  */
 export const REGIONS = ["auto", "eu"] as const;
 
