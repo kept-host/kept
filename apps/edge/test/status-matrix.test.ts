@@ -8,8 +8,9 @@
 
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { MANIFEST_STATUSES } from "@kept/shared";
+import { MANIFEST_STATUSES, SITE_STATUSES } from "@kept/shared";
 
+import { MANIFEST_KV_CACHE_TTL_SECONDS } from "../src/manifest";
 import {
   countingEnv,
   describeCounts,
@@ -46,6 +47,30 @@ describe("manifest status matrix", () => {
       [...SERVING_STATUSES].sort(),
       "MANIFEST_STATUSES changed — every branch below must be reviewed, not just re-listed",
     ).toEqual([...MANIFEST_STATUSES].sort());
+  });
+
+  it("leaves SITE_STATUSES — the pgEnum-bearing tuple — untouched", () => {
+    // `SITE_STATUSES` is NOT `MANIFEST_STATUSES`. It drives the Drizzle
+    // `pgEnum` in apps/web/lib/db/schema.ts and is baked into the committed
+    // migration drizzle/0000_nasty_moonstone.sql, so removing a value from it —
+    // `resting`, the retired pre-pivot funding state, being the obvious
+    // candidate while reading this file — is a POSTGRES ENUM MIGRATION, not a
+    // rename. That work is owned by E04/E05.
+    //
+    // E03 has no business editing it, and the serving contract already excludes
+    // `resting` by leaving it out of `MANIFEST_STATUSES`. Pinning the exact
+    // tuple here means an "obvious tidy-up" from the edge side fails a test
+    // instead of producing a schema that no longer matches the deployed
+    // database.
+    expect(
+      [...SITE_STATUSES],
+      "SITE_STATUSES drives a Postgres enum and a committed migration — changing it from E03 desynchronises the schema from the deployed database. Dropping `resting` is E04/E05's migration to write.",
+    ).toEqual(["live", "under_review", "quarantined", "resting", "expired", "removed", "archived"]);
+
+    expect(
+      MANIFEST_STATUSES.includes("resting" as (typeof MANIFEST_STATUSES)[number]),
+      "and `resting` must stay out of the SERVING contract regardless — the Worker has no branch for it",
+    ).toBe(false);
   });
 
   for (const status of SERVING_STATUSES) {
@@ -87,6 +112,35 @@ describe("manifest status matrix", () => {
 
     expect(counts.kvGet, `the cold-request budget is one KV read — ${describeCounts(counts)}`).toBe(1);
     expect(counts.kvKeys, "the KV key is the bare slug, never a prefixed or suffixed form").toEqual(["status-live"]);
+  });
+
+  it("passes cacheTtl from the exported constant, not a literal", async () => {
+    // INVISIBLE FROM EVERY OTHER ANGLE. `cacheTtl` places the manifest in
+    // Cloudflare's own KV edge cache, so it is the primary lever on KV read
+    // cost — and it is also the propagation floor for a moderation status flip,
+    // because a KV *write* does not invalidate a `cacheTtl` entry. Dropping it,
+    // or hardcoding a number here that drifts from
+    // `MANIFEST_KV_CACHE_TTL_SECONDS`, changes both of those and changes
+    // nothing a response can show: same status, same headers, same bytes.
+    //
+    // The key-only counter could not see this, which is why `kvOptions` exists.
+    // Asserted against the exported constant rather than against `60`, so
+    // deliberately retuning the value stays a one-line change while silently
+    // losing the option does not.
+    const { env: counted, counts } = countingEnv();
+    await evictFromCache(requestFor("status-live"));
+    await dispatchText(requestFor("status-live"), counted);
+
+    expect(counts.kvGet, `fixture sanity: exactly one KV read to inspect — ${describeCounts(counts)}`).toBe(1);
+    expect(
+      counts.kvOptions[0],
+      `the KV read must ask for text and carry cacheTtl=MANIFEST_KV_CACHE_TTL_SECONDS. Without it every cold request in a colo pays a fresh KV read; with a different number the documented moderation-propagation floor is wrong. — ${describeCounts(counts)}`,
+    ).toEqual({ type: "text", cacheTtl: MANIFEST_KV_CACHE_TTL_SECONDS });
+
+    expect(
+      MANIFEST_KV_CACHE_TTL_SECONDS,
+      "60s is Cloudflare's minimum accepted cacheTtl, and it sits at the minimum on purpose: moderation latency outranks KV read cost. Raising it raises the worst-case delay before a quarantine takes effect.",
+    ).toBe(60);
   });
 
   it("reads KV exactly once for a non-live status and never touches R2", async () => {
