@@ -115,7 +115,7 @@ const USER_PAGE_CSP = [
 /**
  * kept's own markup gets a far stricter policy, because it has no reason to
  * permit anything remote: `system-pages.ts` bundles its CSS inline, draws the
- * vessel in CSS, inlines its SVG, loads no font and runs no script. So
+ * mascot as inline SVG, inlines its icons, loads no font and runs no script. So
  * everything is denied by default and exactly one hole is opened — the inline
  * `<style>` block — with no `script-src` grant at all. If a future edit to a
  * system page needs script, this line is where it has to be argued for.
