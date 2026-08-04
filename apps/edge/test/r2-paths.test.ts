@@ -13,7 +13,10 @@
 // parser never lets through — it is the layer that has to hold if a path ever
 // arrives un-normalized.
 
+import { env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
+
+import { REGIONS } from "@kept/shared";
 
 import { MAX_REQUEST_PATH_BYTES, resolvePath } from "../src/r2";
 import {
@@ -225,5 +228,81 @@ describe("R2 key construction and the traversal guard", () => {
         });
       });
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The `region` field — E11's data-residency seam, wired in v1 and inert until
+// then (task 003, `selectBucket`).
+//
+// No fixture seeded `region: "eu"` before this group, so the seam was entirely
+// unexercised: `Env` has exactly two store bindings in E03 and `selectBucket`
+// returns the one bucket it is given whatever the region says. That is a
+// deliberate choice, not an oversight — a manifest field arriving ahead of the
+// deployed Worker (E11 flipping a site to `eu` while an older Worker is still
+// live in some colo) must never take a published page offline. Which means the
+// failure mode here is silent: an `eu` manifest that stopped serving would look
+// like an ordinary 404 to the only person who noticed.
+//
+// So the tests below assert the inert behaviour explicitly, and the last one is
+// a tripwire that fires when E11 actually binds the second bucket.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("the region seam (E11), inert in E03", () => {
+  beforeAll(async () => {
+    await seedSite("region-eu", { region: "eu" });
+    await seedSite("region-auto", { region: "auto" });
+  });
+
+  for (const region of REGIONS) {
+    it(`serves a manifest with region "${region}" from KEPT_R2 today`, async () => {
+      const slug = `region-${region}`;
+      const { env: counted, counts } = countingEnv();
+      // Cold: a cache hit costs zero R2 reads and would make the key assertion
+      // below vacuous. The Cache API is not rolled back between tests.
+      await evictFromCache(requestFor(slug));
+      const { response, text } = await dispatchText(requestFor(slug), counted);
+
+      expect(
+        response.status,
+        `region "${region}" must still serve. A region value the deployed Worker has no bucket for must fall back to KEPT_R2, never take the page offline. Got ${describeResponse(response, text)}`,
+      ).toBe(200);
+      expect(text, "the region must not change which bytes are served").toBe(pageHtml(slug));
+      expect(counts.r2Get, `still exactly one R2 read — ${describeCounts(counts)}`).toBe(1);
+      expect(
+        counts.r2Keys,
+        `the key shape is region-independent: sites/{siteId}/{versionId}/{path}. R2 layout is keyed by siteId, not by jurisdiction — ${describeCounts(counts)}`,
+      ).toEqual([`sites/site-${slug}/v1/index.html`]);
+    });
+  }
+
+  it("makes an eu page byte-identical to an auto page, headers included", async () => {
+    // The seam must be invisible to a visitor in v1. If `eu` ever starts
+    // answering differently — a different cache policy, a different content
+    // type, a redirect to a regional host — that is E11 landing, and it lands
+    // with this test updated rather than by accident.
+    const eu = await dispatchText(requestFor("region-eu"));
+    const auto = await dispatchText(requestFor("region-auto"));
+
+    expect(eu.response.status, "both regions serve 200 in E03").toBe(auto.response.status);
+    expect(
+      eu.response.headers.get("cache-control"),
+      "an eu page must carry the same cache policy as an auto page — nothing about residency changes edge caching in v1",
+    ).toBe(auto.response.headers.get("cache-control"));
+    expect(
+      eu.response.headers.get("content-type"),
+      "and the same Worker-owned content type",
+    ).toBe(auto.response.headers.get("content-type"));
+  });
+
+  it("has no EU bucket bound yet — a tripwire for E11", () => {
+    // `selectBucket` ignores its region argument BECAUSE there is nothing else
+    // to return. The moment a second bucket is bound, that function has to grow
+    // a branch or every `eu` site silently keeps serving from the wrong
+    // jurisdiction — which is a compliance failure that no status code shows.
+    // Binding `KEPT_R2_EU` therefore fails here first.
+    expect(
+      Object.prototype.hasOwnProperty.call(env, "KEPT_R2_EU"),
+      "KEPT_R2_EU is now bound. `selectBucket` in src/r2.ts still returns the default bucket for every region — wire the branch and update this test together, or eu-flagged sites serve from the wrong jurisdiction with no visible symptom.",
+    ).toBe(false);
   });
 });
