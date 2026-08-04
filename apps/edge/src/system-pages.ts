@@ -11,14 +11,15 @@
 // Google Fonts `<link>`.
 //
 // The illustration is NOT the design file's. That file drew a frosted-glass
-// vessel holding an orb; it was replaced by the kept mascot (`mascotSvg()`)
-// on all three pages. If the design file is ever re-imported, do not restore
+// vessel holding an orb; it was replaced by the kept mascot (`mascot()`, art
+// in mascot-asset.ts) on all three pages. If the design file is ever re-imported, do not restore
 // the vessel — it is retired everywhere, including in apps/web.
 //
 // ZERO EXTERNAL REQUESTS. No `<link>`, no remote font, no remote image, no
-// `fetch` at render time. The mascot and the icons are inline SVG. An external
-// asset on the 404 path would be both a per-request cost and a dependency, and
-// this epic's premise is that the serve path depends on nothing.
+// `fetch` at render time. The icons are inline SVG and the mascot travels as a
+// base64 data: URI inside the bundle. An external asset on the 404 path would be
+// both a per-request cost and a dependency, and this epic's premise is that the
+// serve path depends on nothing.
 //
 // The retired third state — the funding-degradation page that the pre-pivot
 // product used — has no template, no union member, and no code path here. The
@@ -27,12 +28,14 @@
 // into drizzle/0000_nasty_moonstone.sql, and its removal is owned by E04/E05.
 //
 // The design file has no `expired` panel. The PRD asks for a dimmed reading on
-// the expired-draft page, which the mascot carries as its `asleep` mood: the
-// same character, drained of accent, eyes closed, breathing slower. Sleeping
-// rather than absent, because the draft is recoverable for another
-// DRAFT_GRACE_DAYS and the picture should not say "deleted".
+// the expired-draft page, which is the mascot's `dim` mood: the same artwork
+// drained by a CSS filter rather than a second asset. Drained rather than
+// absent, because the draft is recoverable for another DRAFT_GRACE_DAYS and the
+// picture should not say "deleted".
 
 import { DRAFT_GRACE_DAYS, DRAFT_TTL_DAYS } from "@kept/shared";
+
+import { MASCOT_DATA_URI } from "./mascot-asset";
 
 export type SystemPage = "notFound" | "suspended" | "expired";
 
@@ -83,12 +86,12 @@ interface SystemPageSpec {
    Light is the default; the dark block is the same token set remapped, so the
    pages have full contrast parity either way a visitor's OS is set.
 
-   Composite values (the mascot's faces) were pre-computed here because the
-   design file expressed them with `color-mix()`, which we do not want on the
-   error path for older browsers. The derivation is noted beside each.
+   `--mascot` is the artwork itself, carried as a data: URI so one definition
+   serves every page and both colour schemes.
    ─────────────────────────────────────────────────────────────────────────── */
 const TOKENS_CSS = `
 :root{
+  --mascot:url("${MASCOT_DATA_URI}");
   --bg:#FAF8F4;              /* --bg */
   --surface:#FFFFFF;         /* --surface */
   --surface-sunken:#F2EFE9;  /* --surface-sunken */
@@ -104,22 +107,6 @@ const TOKENS_CSS = `
   --r-md:12px;               /* --r-md */
   --r-lg:16px;               /* --r-lg */
   --r-pill:999px;            /* --r-pill */
-  /* Mascot. The lit face is --accent raised toward white, the deep face is the
-     offset "side" of the form. Both derive from --accent so the character stays
-     on-brand if the accent ever moves. */
-  --m-lit:#8B6DFF;           /* --accent + 22% #fff */
-  --m-body:#6D4AFF;          /* --accent */
-  --m-deep:#5334E6;          /* --accent - 12% (the side/underside face) */
-  /* Face sits ON the violet body, so it stays near-black in both themes. */
-  --m-face:#1E1633;
-  /* Limbs sit on the PAGE, so they track the background, not the body. */
-  --m-limb:#1E1633;
-  /* Dimmed variant for the expired draft — the same form, drained of accent. */
-  --m-lit-dim:#CFC7E8;
-  --m-body-dim:#B4A8D8;
-  --m-deep-dim:#9C8DC4;
-  /* cast shadow, from the warm rgb the elevation tokens use */
-  --m-cast:rgba(40,30,20,0.18);
 }
 @media (prefers-color-scheme:dark){
   :root{
@@ -135,18 +122,6 @@ const TOKENS_CSS = `
     --on-accent:#131210;       /* dark --bg */
     --shadow-sm:0 1px 2px rgba(0,0,0,0.3);   /* dark --shadow-sm */
     --shadow-md:0 4px 16px rgba(0,0,0,0.4);  /* dark --shadow-md */
-    --m-lit:#A791FF;           /* dark --accent + 22% #fff */
-    --m-body:#8B6DFF;          /* dark --accent, lifted */
-    --m-deep:#6D4AFF;          /* light --accent reads as the shaded face here */
-    /* The face still sits on the violet body, so it stays dark for contrast. */
-    --m-face:#131210;          /* dark --bg */
-    /* The limbs sit on the dark page. Near-black would vanish, taking the
-       character's silhouette with it, so they invert to the warm light tone. */
-    --m-limb:#A8A096;          /* dark --text-secondary */
-    --m-lit-dim:#3A3550;
-    --m-body-dim:#2C2840;
-    --m-deep-dim:#221F33;
-    --m-cast:rgba(0,0,0,0.5);
   }
 }
 `;
@@ -227,42 +202,26 @@ h1{
   font-family:"JetBrains Mono",ui-monospace,monospace; /* --font-mono */
   font-size:11px;letter-spacing:0.05em;color:var(--text-secondary);margin:22px 0 0;
 }
-/* The mascot — the brand character, drawn as inline SVG so it costs no request.
-   Geometry lives in mascotSvg(); everything here is colour and motion.
+/* The mascot. Author-supplied artwork, inlined as a data: URI — see
+   mascot-asset.ts for why it is base64 and how to regenerate it.
 
-   Motion budget is deliberately small (design system: playful-restraint over
-   whimsy). Three loops, all decorative, all cancelled by the reduced-motion
-   block below: the body breathes, its shadow answers the breath, and one arm
-   waves on the 404 only. The blink is the single moment of "aliveness" and is
-   rare on purpose — a fast blink reads as a twitch. */
+   Applied as a background-image rather than an <img> so these pages keep their
+   absolute no-src rule. Deliberately NOT animated: a bobbing, blinking, waving
+   version was built and cut. The height comes from the source asset's 799x894
+   aspect, so a future re-crop cannot silently squash the character. */
 .stage{display:flex;align-items:center;justify-content:center;margin-bottom:18px}
-.mascot{width:150px;height:auto;overflow:visible}
-.m-body{animation:m-float 4.6s ease-in-out infinite}
-.m-cast{
-  fill:var(--m-cast);
-  transform-box:fill-box;transform-origin:center;
-  animation:m-cast 4.6s ease-in-out infinite;
+.mascot{
+  width:170px;aspect-ratio:799/894;
+  background:var(--mascot) center/contain no-repeat;
 }
-/* The eyes scale about their own centres, so the lids appear to close from
-   both edges rather than the shape collapsing upward. */
-.m-eye{transform-box:fill-box;transform-origin:center;animation:m-blink 7.2s infinite}
-.m-arm-wave{transform-box:view-box;transform-origin:108px 68px;animation:m-wave 3.4s ease-in-out infinite}
-/* The expired draft holds still — a sleeping character that bobbed would read
-   as awake. It keeps only the slowest breath. */
-.m-asleep .m-body{animation:m-float-calm 7.5s ease-in-out infinite}
-.m-asleep .m-cast{animation:m-cast-calm 7.5s ease-in-out infinite}
-.m-asleep .m-eye{animation:none}
-@keyframes m-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-7px)}}
-@keyframes m-float-calm{0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)}}
-@keyframes m-cast{0%,100%{transform:scaleX(1);opacity:.85}50%{transform:scaleX(.88);opacity:.55}}
-@keyframes m-cast-calm{0%,100%{transform:scaleX(1);opacity:.7}50%{transform:scaleX(.93);opacity:.55}}
-@keyframes m-blink{0%,92%,100%{transform:scaleY(1)}95%{transform:scaleY(.12)}}
-@keyframes m-wave{
-  0%,55%,100%{transform:rotate(0deg)}
-  65%{transform:rotate(-17deg)}
-  75%{transform:rotate(7deg)}
-  85%{transform:rotate(-11deg)}
-}
+/* The expired draft is drained rather than redrawn — one asset, two readings.
+   A plain filter, not a transition: the page looks the same at first paint as
+   it does forever after. */
+.m-dim{filter:grayscale(0.5) opacity(0.5)}
+/* The reviewed state keeps an amber pip, because "under review" is the one
+   thing here the artwork cannot say by itself. */
+.m-pip{position:relative;display:flex;align-items:center;justify-content:center}
+.m-pip svg{position:absolute;right:2px;bottom:26px}
 @keyframes pop{0%{transform:translateY(8px);opacity:0}100%{transform:translateY(0);opacity:1}}
 /* Reduced motion is mandatory (design system §6): every animation has a static
    equivalent. These pages' motion is decorative, so the equivalent is "none". */
@@ -304,118 +263,35 @@ function apexHost(apexOrigin: string): string {
    ─────────────────────────────────────────────────────────────────────────── */
 
 type MascotMood =
-  /** 404 — upright and waving. Nothing is wrong; there is just nothing here. */
-  | "wave"
-  /** 451 — arms down, amber lock badge. Sober, not alarmed. */
+  /** 404 — the character as drawn. Nothing is wrong; there is just nothing here. */
+  | "plain"
+  /** 451 — same artwork, amber lock pip. Sober, not alarmed. */
   | "locked"
-  /** 410 — dimmed and eyes closed. The draft is resting, not destroyed. */
-  | "asleep";
+  /** 410 — same artwork, drained. The draft is resting, not destroyed. */
+  | "dim";
 
 /**
  * Render the mascot.
  *
- * `aria-hidden` throughout: the character carries no information the copy does
- * not already state, so a screen reader should skip it entirely rather than
- * announce a decorative graphic.
+ * One asset, three readings — the artwork is identical in all of them and only
+ * the treatment differs, so the character cannot drift between pages.
+ *
+ * `aria-hidden`: it carries no information the copy does not already state, so
+ * a screen reader should skip it rather than announce a decorative graphic.
  */
-function mascotSvg(mood: MascotMood): string {
-  const dim = mood === "asleep";
-  const lit = dim ? "var(--m-lit-dim)" : "var(--m-lit)";
-  const body = dim ? "var(--m-body-dim)" : "var(--m-body)";
-  const deep = dim ? "var(--m-deep-dim)" : "var(--m-deep)";
-  const id = (part: string) => `m${part}-${mood}`;
-
-  /* The body outline: a rounded SQUARE, not a blob.
-     Box 30..120 x 26..110 with a ~30px corner, so ~30px of straight edge
-     survives top and bottom and ~24px down each side. That surviving straight
-     run is the whole silhouette — take it away (corner radius → half the side)
-     and the character collapses into a ball, which is the single fastest way to
-     lose the likeness. Corner control points are pulled slightly past circular
-     for a squircle transition rather than a visible arc-to-line seam. */
-  const shape =
-    "M60 26 L90 26 C107 26 120 39 120 56 L120 80 C120 97 107 110 90 110 L60 110 C43 110 30 97 30 80 L30 56 C30 39 43 26 60 26 Z";
-
-  // Eyes: tall ovals that blink, or closed arcs when asleep.
-  const eyes = dim
-    ? `<path d="M51 64 Q58 70 65 64" fill="none" stroke="var(--m-face)" stroke-width="3.2" stroke-linecap="round"/>
-     <path d="M85 64 Q92 70 99 64" fill="none" stroke="var(--m-face)" stroke-width="3.2" stroke-linecap="round"/>`
-    : `<ellipse class="m-eye" cx="58" cy="64" rx="6.4" ry="7.8" fill="var(--m-face)"/>
-     <ellipse class="m-eye" cx="92" cy="64" rx="6.4" ry="7.8" fill="var(--m-face)"/>`;
-
-  /* Hands get three short fingers. At this size they are only a few pixels, but
-     without them the hand reads as a lollipop on a stick and the whole character
-     drops to stick-figure. */
-  const handDown = (x: number, y: number) =>
-    `<circle cx="${x}" cy="${y}" r="4.2" fill="var(--m-limb)"/>
-     <path d="M${x - 3.2} ${y + 2.4} l-1.2 3 M${x} ${y + 4} l0 3.4 M${x + 3.2} ${y + 2.4} l1.2 3"
-       stroke="var(--m-limb)" stroke-width="2.2" stroke-linecap="round" fill="none"/>`;
-
-  // The waving arm is its own group so the CSS can rotate it about the shoulder.
-  const rightArm =
-    mood === "wave"
-      ? `<g class="m-arm-wave">
-       <path d="M113 72 C126 62 132 47 130 36" fill="none" stroke="var(--m-limb)" stroke-width="4.8" stroke-linecap="round"/>
-       <circle cx="130" cy="33" r="4.8" fill="var(--m-limb)"/>
-       <path d="M126.2 30 l-1.6-5.4 M130.4 28.6 l0.2-5.8 M134.4 30.2 l2-5"
-         stroke="var(--m-limb)" stroke-width="2.4" stroke-linecap="round" fill="none"/>
-     </g>`
-      : `<path d="M118 82 C129 94 132 107 129 118" fill="none" stroke="var(--m-limb)" stroke-width="4.4" stroke-linecap="round"/>
-     ${handDown(129, 120)}`;
-
-  // Amber status badge, only on the reviewed state. Filled with the page
-  // background so it reads as a pip sitting in front of the body.
-  const badge =
+function mascot(mood: MascotMood): string {
+  const cls = ["mascot", mood === "dim" ? "m-dim" : "", mood === "locked" ? "m-pip" : ""]
+    .filter(Boolean)
+    .join(" ");
+  const pip =
     mood === "locked"
-      ? `<g>
-       <circle cx="121" cy="99" r="16" fill="var(--bg)" stroke="var(--warning)" stroke-width="2"/>
-       <rect x="115" y="98" width="12" height="8.5" rx="2" fill="none" stroke="var(--warning)" stroke-width="2"/>
-       <path d="M118 98 V95 a3 3 0 0 1 6 0 V98" fill="none" stroke="var(--warning)" stroke-width="2"/>
-     </g>`
+      ? `<svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true" focusable="false">
+       <circle cx="17" cy="17" r="16" fill="var(--bg)" stroke="var(--warning)" stroke-width="2"/>
+       <rect x="11" y="16" width="12" height="8.5" rx="2" fill="none" stroke="var(--warning)" stroke-width="2"/>
+       <path d="M14 16 V13 a3 3 0 0 1 6 0 V16" fill="none" stroke="var(--warning)" stroke-width="2"/>
+     </svg>`
       : "";
-
-  return `<svg class="mascot${dim ? " m-asleep" : ""}" viewBox="0 0 150 170" role="img" aria-hidden="true" focusable="false">
-  <defs>
-    <linearGradient id="${id("g")}" x1="0.12" y1="0" x2="0.88" y2="1">
-      <stop offset="0" stop-color="${lit}"/>
-      <stop offset="0.58" stop-color="${body}"/>
-      <stop offset="1" stop-color="${body}"/>
-    </linearGradient>
-    <!-- Bevel. A soft white bloom off the top-left, which is what separates a
-         lit volume from a flat swatch. Neutral white/black so one definition
-         works in both themes. -->
-    <radialGradient id="${id("h")}" cx="0.32" cy="0.24" r="0.78">
-      <stop offset="0" stop-color="#fff" stop-opacity="${dim ? 0.10 : 0.20}"/>
-      <stop offset="0.55" stop-color="#fff" stop-opacity="${dim ? 0.02 : 0.04}"/>
-      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
-    </radialGradient>
-    <!-- Occlusion in the lower-right, opposite the bloom. -->
-    <radialGradient id="${id("s")}" cx="0.8" cy="0.84" r="0.62">
-      <stop offset="0" stop-color="#000" stop-opacity="${dim ? 0.07 : 0.13}"/>
-      <stop offset="1" stop-color="#000" stop-opacity="0"/>
-    </radialGradient>
-    <!-- A hard-edged ellipse reads as a sticker. Contact shadows are diffuse. -->
-    <filter id="${id("b")}" x="-60%" y="-160%" width="220%" height="420%">
-      <feGaussianBlur stdDeviation="3.6"/>
-    </filter>
-  </defs>
-  <ellipse class="m-cast" cx="75" cy="158" rx="40" ry="6.5" filter="url(#${id("b")})"/>
-  <g class="m-body">
-    <path d="M67 106 L62 150" fill="none" stroke="var(--m-limb)" stroke-width="4.4" stroke-linecap="round"/>
-    <path d="M62 150 l-5.5 1.4" fill="none" stroke="var(--m-limb)" stroke-width="4.2" stroke-linecap="round"/>
-    <path d="M85 106 L91 150" fill="none" stroke="var(--m-limb)" stroke-width="4.4" stroke-linecap="round"/>
-    <path d="M91 150 l5.5 1.4" fill="none" stroke="var(--m-limb)" stroke-width="4.2" stroke-linecap="round"/>
-    <path d="M32 82 C21 94 18 107 21 118" fill="none" stroke="var(--m-limb)" stroke-width="4.4" stroke-linecap="round"/>
-    ${handDown(21, 120)}
-    ${rightArm}
-    <path d="${shape}" fill="${deep}" transform="translate(5,6)"/>
-    <path d="${shape}" fill="url(#${id("g")})"/>
-    <path d="${shape}" fill="url(#${id("h")})"/>
-    <path d="${shape}" fill="url(#${id("s")})"/>
-    ${eyes}
-    <path d="M66 79 Q75 88 84 79" fill="none" stroke="var(--m-face)" stroke-width="3.6" stroke-linecap="round"/>
-    ${badge}
-  </g>
-</svg>`;
+  return `<div class="${cls}" role="img" aria-hidden="true">${pip}</div>`;
 }
 
 /* ───────────────────────────────────────────────────────────────────────────
@@ -425,7 +301,7 @@ function mascotSvg(mood: MascotMood): string {
 function notFoundBody(apexOrigin: string): string {
   const apex = esc(apexOrigin);
   return `<div class="panel">
-  <div class="stage">${mascotSvg("wave")}</div>
+  <div class="stage">${mascot("plain")}</div>
   <div class="meta">404 · nothing kept here</div>
   <h1>There&rsquo;s nothing at this link.</h1>
   <p class="lede">No page lives at this address — it may never have been published, or the link is mistyped. The good news: making one takes seconds.</p>
@@ -439,7 +315,7 @@ function notFoundBody(apexOrigin: string): string {
 function suspendedBody(apexOrigin: string): string {
   const apex = esc(apexOrigin);
   return `<div class="panel">
-  <div class="stage">${mascotSvg("locked")}</div>
+  <div class="stage">${mascot("locked")}</div>
   <div class="meta">Under review</div>
   <h1>This page is paused while we review it.</h1>
   <p class="lede">It is temporarily not serving its content while a person takes a look. <b>Nothing has been deleted.</b> If this is your page, you can appeal — a person will read it and reply.</p>
@@ -454,7 +330,7 @@ function suspendedBody(apexOrigin: string): string {
 function expiredBody(apexOrigin: string): string {
   const apex = esc(apexOrigin);
   return `<div class="panel">
-  <div class="stage">${mascotSvg("asleep")}</div>
+  <div class="stage">${mascot("dim")}</div>
   <div class="meta">Draft · not kept</div>
   <h1>This draft wasn&rsquo;t kept.</h1>
   <p class="lede">Every page starts as a draft that stays online for ${DRAFT_TTL_DAYS} days. That window passed without anyone keeping this one, so it stopped serving. <b>It is not gone.</b></p>
