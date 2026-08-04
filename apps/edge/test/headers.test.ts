@@ -27,6 +27,24 @@ import {
 } from "./fixtures";
 import { env } from "cloudflare:test";
 
+/**
+ * Split a CSP into `directive → source list`, or `null` when the directive is
+ * absent.
+ *
+ * Substring matching is not good enough for the directives below: `toContain
+ * ("connect-src")` passes for `connect-src 'self' https:`, which is precisely
+ * the loosening these tests exist to catch. The source list has to be compared
+ * as a whole.
+ */
+function cspSources(csp: string | null, directive: string): string[] | null {
+  if (csp === null) return null;
+  for (const part of csp.split(";")) {
+    const tokens = part.trim().split(/\s+/).filter(Boolean);
+    if (tokens[0] === directive) return tokens.slice(1);
+  }
+  return null;
+}
+
 /** One live request of every response class the serve path can produce. */
 interface ResponseCase {
   name: string;
@@ -263,6 +281,25 @@ describe("security headers (task 006)", () => {
     ).not.toBe(system.headers.get("content-security-policy"));
   });
 
+  it("keeps connect-src on the 304 too, so a revalidation cannot loosen it", async () => {
+    // A cache rewrites its stored headers from the 304's. If the 304 dropped
+    // `connect-src`, the page already in the browser's cache would fall back to
+    // whatever `default-src` allows for the rest of its life at that origin.
+    // The sibling test above proves the 304's CSP is IDENTICAL to the 200's;
+    // this one proves the directive that matters survives that identity, so a
+    // future edit that loosens both in lockstep still fails here.
+    await evictFromCache(requestFor("hdr-live"));
+    const notModified = await dispatch(
+      requestFor("hdr-live", "/", { headers: { "If-None-Match": liveEtag } }),
+    );
+
+    expect(notModified.status, `expected a Worker-built 304, got ${describeResponse(notModified)}`).toBe(304);
+    expect(
+      cspSources(notModified.headers.get("content-security-policy"), "connect-src"),
+      "the 304 must carry the same `connect-src 'self'` the 200 does",
+    ).toEqual(["'self'"]);
+  });
+
   it("does not conflict with the task 005 Cache-Control policy", async () => {
     const live = await dispatch(requestFor("hdr-live"));
     const suspended = await dispatch(requestFor("hdr-suspended"));
@@ -271,5 +308,120 @@ describe("security headers (task 006)", () => {
       "public, max-age=60, s-maxage=31536000",
     );
     expect(suspended.headers.get("cache-control"), "the header builder must not overwrite no-store").toBe("no-store");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The five directives that protect KEPT ITSELF from a page kept is hosting.
+//
+// The rest of the user-page CSP is deliberately permissive — `'unsafe-inline'`,
+// `'unsafe-eval'` and `https:` on every passive subresource — because v1's
+// product is a single self-contained HTML file and the isolation that matters
+// comes from the per-slug origin, not from sanitising the author's own body.
+// That permissiveness makes the five directives below the WHOLE of the policy's
+// security value, and each is asserted on its own so that loosening exactly one
+// names itself in the failure output rather than hiding inside a bulk compare.
+//
+// `connect-src 'self'` is the load-bearing one, and it is the one with a
+// counter-intuitive justification, so it gets the longest note.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("the user-page CSP directives that protect kept (task 006)", () => {
+  let csp: string | null = null;
+
+  beforeAll(async () => {
+    await seedSite("csp-live");
+    const response = await dispatch(requestFor("csp-live"));
+    expect(response.status, `fixture sanity: expected the 200 content branch, got ${describeResponse(response)}`).toBe(
+      200,
+    );
+    csp = response.headers.get("content-security-policy");
+  });
+
+  it("carries a Content-Security-Policy on served user content at all", () => {
+    expect(csp, "a page of a stranger's HTML must never be served without a CSP").toBeTruthy();
+  });
+
+  it("pins connect-src to 'self', which is what blocks a credentialed fetch at the control plane", () => {
+    // THE DIRECTIVE THIS WHOLE FILE EXISTS FOR.
+    //
+    // A hosted page runs on `{slug}.kept.host` — a different origin, but the
+    // same registrable domain as the control plane. Without this directive it
+    // can run:
+    //
+    //   fetch('https://kept.host/api/…', { credentials: 'include' })
+    //
+    // and the browser SENDS that request with the visitor's session cookies.
+    // CORS does not stop it: CORS governs whether the page may READ the
+    // response, not whether the request is issued — so a state-changing
+    // endpoint is hit regardless of what the response headers say. `connect-src
+    // 'self'` is what stops the request leaving in the first place.
+    //
+    // Exact-match, not `toContain`: `connect-src 'self' https:` still blocks
+    // nothing, and is exactly the edit someone makes when a publisher asks why
+    // their page cannot call a third-party API. That is a product decision with
+    // a security cost, and it must not be able to land silently.
+    expect(
+      cspSources(csp, "connect-src"),
+      "connect-src must be exactly ['self']. Loosening it lets a hosted page fire a credentialed fetch/XHR/WebSocket/sendBeacon at the control plane — CORS blocks the read, not the request.",
+    ).toEqual(["'self'"]);
+  });
+
+  it("pins frame-ancestors to 'none', so a hosted page can never be framed", () => {
+    // Both directions at once: kept cannot frame a hosted page (no dashboard
+    // iframe preview — it has to be a screenshot), and no hosted page can frame
+    // another to build a clickjacking surface on the same domain.
+    expect(
+      cspSources(csp, "frame-ancestors"),
+      "frame-ancestors must be exactly ['none']. Anything else — including 'self', which permits framing by another kept.host page — reopens clickjacking on kept's own domain.",
+    ).toEqual(["'none'"]);
+  });
+
+  it("pins form-action to 'self', so a hosted page cannot POST at the control plane", () => {
+    // A form submission is a top-level navigation and carries cookies, so it is
+    // the non-JS twin of the `connect-src` hole.
+    expect(
+      cspSources(csp, "form-action"),
+      "form-action must be exactly ['self']. Anything else lets a hosted page aim a credentialed POST at the control plane or at a look-alike collector.",
+    ).toEqual(["'self'"]);
+  });
+
+  it("pins base-uri to 'self', so a hosted page cannot rewrite its own resolution base", () => {
+    expect(
+      cspSources(csp, "base-uri"),
+      "base-uri must be exactly ['self']. An injected <base> rewrites every relative URL on the page, which turns the permissive passive directives into a general redirection primitive.",
+    ).toEqual(["'self'"]);
+  });
+
+  it("pins object-src to 'none', so no plugin content loads", () => {
+    expect(
+      cspSources(csp, "object-src"),
+      "object-src must be exactly ['none'] — <object>/<embed> content is not covered by the script directives and has no legitimate use in a v1 single-file page.",
+    ).toEqual(["'none'"]);
+  });
+
+  it("does not let default-src stand in for the five directives above", () => {
+    // A future tidy-up ("default-src already covers it") is the realistic way
+    // these get lost, and it does NOT cover them: `frame-ancestors`,
+    // `form-action` and `base-uri` are not fetch directives and never fall back
+    // to `default-src` at all, so deleting them means NO policy rather than the
+    // default one.
+    for (const directive of ["connect-src", "object-src", "base-uri", "form-action", "frame-ancestors"]) {
+      expect(
+        cspSources(csp, directive),
+        `${directive} must be stated explicitly. frame-ancestors/form-action/base-uri do not inherit from default-src, so removing them removes the protection entirely. CSP was: ${csp}`,
+      ).not.toBeNull();
+    }
+  });
+
+  it("still permits the inline style and script a single-file page is made of", () => {
+    // The counterweight. If someone "fixes" this file by tightening everything,
+    // this test says what the policy is NOT allowed to do: v1 pages are inline
+    // by definition and a strict script-src breaks every one of them.
+    expect(cspSources(csp, "script-src"), "script-src must permit the page's own inline script").toContain(
+      "'unsafe-inline'",
+    );
+    expect(cspSources(csp, "style-src"), "style-src must permit the page's own inline style").toContain(
+      "'unsafe-inline'",
+    );
   });
 });
