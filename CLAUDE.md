@@ -142,8 +142,9 @@ Criticism is welcome — say when I'm wrong or might be wrong. Flag better appro
 - **NO OVER-ENGINEERING** — no needless abstractions/factories/middleware where a simple function works. Build "working," not "enterprise."
 - **NO MIXED CONCERNS** — keep validation out of API handlers, DB queries out of UI components, etc.
 - **NO RESOURCE LEAKS** — close connections, clear timeouts, remove listeners, clean up file handles.
-- **ALWAYS RUN `pnpm tsc --noEmit`** before claiming any task complete (zero TypeScript errors).
-- **ALWAYS RUN `pnpm lint`** before claiming any task complete (zero ESLint errors; warnings OK).
+- **ALWAYS RUN `pnpm typecheck`** before claiming any task complete (zero TypeScript errors). Not `pnpm tsc --noEmit` — there is no root `tsconfig.json`, so that command prints tsc's help and verifies nothing. `pnpm typecheck` runs `turbo run typecheck` across every workspace, which is the real gate.
+- **ALWAYS RUN `pnpm lint`** before claiming any task complete (zero ESLint errors; warnings OK). This maps to `turbo run lint`. If a wrapper or proxy reports errors that `pnpm exec eslint .` inside the workspace does not, trust the workspace — the repo's flat config is authoritative.
+- **Node ≥22 is required** (`engines` and `.nvmrc` both say so). Wrangler will not run on Node 20, so `apps/edge` cannot build or test there. Use `nvm use` at the repo root.
 
 ## Other conventions
 
