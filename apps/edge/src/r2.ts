@@ -73,15 +73,30 @@ export type PathResolution =
   | { kind: "path"; path: string }
   | { kind: "rejected" };
 
+/**
+ * Why a `missing` happened. The OUTCOME is identical — `index.ts` renders the
+ * branded 404 for both, and must keep doing so — but the two are not the same
+ * event: `notFound` is the expected case (a manifest pointing at an object never
+ * written or already purged), while `storeError` means the store call itself
+ * threw and the page may well exist.
+ *
+ * This field exists because collapsing every throw into a bare `missing` is what
+ * let a `TypeError` from a quoted `If-None-Match` masquerade as "page deleted"
+ * on every conditional request, invisibly. A `storeError` is logged; a
+ * `notFound` is not.
+ */
+export type MissingReason = "notFound" | "storeError";
+
 export type ObjectFetch =
   | { kind: "object"; object: R2ObjectBody; contentType: string }
   | { kind: "notModified"; etag: string }
-  | { kind: "missing" }
+  | { kind: "missing"; reason: MissingReason }
   | { kind: "rejected" };
 
 const REJECTED_PATH: PathResolution = { kind: "rejected" };
 const REJECTED: ObjectFetch = { kind: "rejected" };
-const MISSING: ObjectFetch = { kind: "missing" };
+const NOT_FOUND: ObjectFetch = { kind: "missing", reason: "notFound" };
+const STORE_ERROR: ObjectFetch = { kind: "missing", reason: "storeError" };
 
 /**
  * Resolve a request pathname to the path portion of an R2 key, or reject it.
@@ -130,6 +145,62 @@ export function resolvePath(pathname: string): PathResolution {
 }
 
 /**
+ * A parsed `If-None-Match`. `any` is the `*` form; `etags` holds BARE etags in
+ * the shape `R2Object.etag` uses; `none` means there is nothing to condition on.
+ */
+type Conditional =
+  | { kind: "none" }
+  | { kind: "any" }
+  | { kind: "etags"; etags: string[] };
+
+const NO_CONDITION: Conditional = { kind: "none" };
+const ANY_REPRESENTATION: Conditional = { kind: "any" };
+
+/** `"abc"` or `W/"abc"` → `abc`. Anything else is taken verbatim. */
+const ETAG_TOKEN = /^(?:W\/)?"(.*)"$/;
+
+/**
+ * Parse `If-None-Match` into what R2's `onlyIf` actually accepts.
+ *
+ * THIS IS NOT COSMETIC. `etagDoesNotMatch` wants the BARE etag — the value of
+ * `R2Object.etag`, not `R2Object.httpEtag`. We answer with `httpEtag`, which is
+ * quoted, so the browser sends those exact quoted bytes back, and workerd
+ * rejects a quoted conditional with `TypeError: Conditional ETag should not be
+ * quoted`. Forwarding the header raw therefore turned EVERY revalidation of a
+ * cached page into a branded 404 — a permanent page looking deleted the moment a
+ * visitor's browser checked on it. Unquote here, once, at the boundary.
+ *
+ * A weak etag (`W/"abc"`) is unwrapped and compared like a strong one: `If-None-
+ * Match` is defined to use weak comparison anyway, and R2 only ever mints strong
+ * etags, so the two forms are the same value with different clothing.
+ *
+ * A LIST (`"a", "b"`) keeps every entry. Splitting on `,` is the pragmatic
+ * parse; an etag may legally contain a comma, but R2's never do (they are hex
+ * digests), and a mis-split can only fail the match and re-send a full 200 — the
+ * answer that is always safe.
+ *
+ * Neither a list nor `*` can be pushed into `onlyIf` (the type says
+ * `etagDoesNotMatch` accepts an array, but workerd rejects one at runtime:
+ * "the provided value is not of type 'string'"), so both are evaluated after the
+ * fetch — see `fetchObject`.
+ */
+function parseIfNoneMatch(header: string): Conditional {
+  const value = header.trim();
+  if (value === "") return NO_CONDITION;
+  if (value === "*") return ANY_REPRESENTATION;
+
+  const etags: string[] = [];
+  for (const part of value.split(",")) {
+    const token = part.trim();
+    if (token === "") continue;
+    const unquoted = ETAG_TOKEN.exec(token)?.[1];
+    etags.push(unquoted ?? token);
+  }
+
+  return etags.length > 0 ? { kind: "etags", etags } : NO_CONDITION;
+}
+
+/**
  * Pick the bucket a manifest's `region` points at.
  *
  * v1 writes `auto` and only `auto` is bound. E11 SEAM: `eu` selects a second,
@@ -150,8 +221,13 @@ function selectBucket(bucket: R2Bucket, _region: Region): R2Bucket {
  * and it is why a traversal in `path` would cross a tenant boundary rather than
  * just 404.
  *
- * `ifNoneMatch` is pushed down into R2's `onlyIf` so a matching conditional
- * costs no body transfer, and the whole thing stays one operation.
+ * `ifNoneMatch` is parsed by `parseIfNoneMatch` — the header's quoted, weak and
+ * comma-separated forms all become the bare etags R2 wants — and pushed down
+ * into `onlyIf`, so a matching conditional costs no body transfer and the whole
+ * thing stays one operation.
+ *
+ * Nothing throws out of here: every outcome, including an unexpected store
+ * failure, is a value the caller can render.
  */
 export async function fetchObject(
   bucket: R2Bucket,
@@ -169,25 +245,56 @@ export async function fetchObject(
 
   const key = `sites/${manifest.siteId}/${manifest.versionId}/${resolved.path}`;
 
+  const conditional =
+    ifNoneMatch === undefined ? NO_CONDITION : parseIfNoneMatch(ifNoneMatch);
+
+  // The single-etag form — what a browser revalidating a page actually sends —
+  // is pushed into `onlyIf`, so a match costs no body transfer. A list or `*`
+  // cannot go down there (see `parseIfNoneMatch`) and is settled below instead.
+  const pushedDown =
+    conditional.kind === "etags" && conditional.etags.length === 1
+      ? conditional.etags[0]
+      : undefined;
+
   let object: R2ObjectBody | R2Object | null;
   try {
     object = await selectBucket(bucket, manifest.region).get(
       key,
-      ifNoneMatch ? { onlyIf: { etagDoesNotMatch: ifNoneMatch } } : undefined,
+      pushedDown === undefined
+        ? undefined
+        : { onlyIf: { etagDoesNotMatch: pushedDown } },
     );
-  } catch {
-    // A binding-level failure is the same answer as a missing object: a branded
-    // page, not a 500.
-    return MISSING;
+  } catch (error) {
+    // A binding-level failure ends the same way as a missing object — a branded
+    // page, not a 500 — but it is NOT the same event, so it is logged and
+    // carries `storeError`. An unexplained throw silently rendering "nothing
+    // kept here" is precisely how the quoted-`If-None-Match` bug hid.
+    console.error("[edge] r2.get failed", key, error);
+    return STORE_ERROR;
   }
 
   // A manifest pointing at a `versionId` whose object was never written, or was
   // already purged, is the common case here — not an exceptional one.
-  if (object === null) return MISSING;
+  if (object === null) return NOT_FOUND;
 
   // R2 answers a failed `onlyIf` precondition with a bodyless `R2Object`: the
   // client already holds this version.
   if (!("body" in object)) {
+    return { kind: "notModified", etag: object.httpEtag };
+  }
+
+  // The conditionals `onlyIf` could not carry, settled here against the object
+  // we already hold: `*` matches because a representation exists at all, and a
+  // list matches on any member. `object.etag` is the BARE etag, which is the
+  // shape `parseIfNoneMatch` produces. Still exactly one R2 operation — the cost
+  // is a body we fetched and must now discard rather than leave dangling, and
+  // `cancel` is never allowed to become a throw out of this function.
+  if (
+    pushedDown === undefined &&
+    (conditional.kind === "any" ||
+      (conditional.kind === "etags" && conditional.etags.includes(object.etag)))
+  ) {
+    await object.body.cancel().catch(() => {});
     return { kind: "notModified", etag: object.httpEtag };
   }
 
