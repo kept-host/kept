@@ -7,11 +7,15 @@
 // Pipeline (E03): host→slug → Cache API → KV lookup → status branch → R2 fetch →
 // headers + cache. Steps 1 (host→slug, reserved labels), 2 + 7 (the Cache API
 // lookup and the `waitUntil` store), 3 (the single KV read), 4 (the status
-// branch) and 5–6 (path→key + the single R2 read) are live. The uniform security
-// headers (task 006) are the remaining seam.
+// branch), 5–6 (path→key + the single R2 read) and the uniform security headers
+// are all live.
+//
+// EVERY response in this file is built by `headers.ts`'s `buildResponse` — there
+// is deliberately no bare `new Response(...)`, no `c.html()` and no
+// `c.redirect()` here, so a branch added by a later epic cannot ship without the
+// security header set.
 
 import { Hono, type Context } from "hono";
-import type { ContentfulStatusCode } from "hono/utils/http-status";
 
 import type { KvManifest } from "@kept/shared";
 
@@ -24,6 +28,7 @@ import {
   type WaitUntil,
 } from "./cache";
 import type { Env } from "./env";
+import { buildResponse } from "./headers";
 import { resolveHost } from "./host";
 import { readManifest } from "./manifest";
 import { fetchObject } from "./r2";
@@ -42,15 +47,21 @@ const SERVABLE_METHODS = new Set(["GET", "HEAD"]);
  * owns the bindings and passes the value down.
  *
  * `Cache-Control` comes from `cache.ts`'s policy table rather than from the
- * branch that chose the page, so no branch can invent its own caching.
+ * branch that chose the page, so no branch can invent its own caching. The
+ * `kept-own` kind picks the strict CSP: this markup is ours, not a stranger's.
  */
-function systemPage(c: AppContext, page: SystemPage) {
+function systemPage(c: AppContext, page: SystemPage): Response {
   const { body, status } = renderSystemPage(page, {
     apexOrigin: c.env.KEPT_APEX_ORIGIN,
   });
-  c.header("Cache-Control", systemPageCacheControl(page));
-  c.status(status as ContentfulStatusCode);
-  return c.html(body);
+  return buildResponse(body, {
+    status,
+    kind: "kept-own",
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": systemPageCacheControl(page),
+    },
+  });
 }
 
 /**
@@ -113,8 +124,9 @@ async function serveSlug(
         // because Worker memory is not the place to hold a whole page.
         // `Content-Type` is the Worker's own; `ETag` is R2's, so the next
         // request can be conditional.
-        return new Response(fetched.object.body, {
+        return buildResponse(fetched.object.body, {
           status: 200,
+          kind: "user-page",
           headers: {
             "Content-Type": fetched.contentType,
             ETag: fetched.object.httpEtag,
@@ -127,8 +139,14 @@ async function serveSlug(
         // The conditional matched inside R2's `onlyIf`, so no body crossed the
         // wire. Still exactly one R2 operation. Never stored: a 304 has no body
         // to cache, and the entry it revalidates is already in the cache.
-        return new Response(null, {
+        //
+        // `user-page`, NOT `kept-own`, even though the 304 carries no body: a
+        // cache updates its stored headers from the 304's, so serving the strict
+        // CSP here would retroactively re-apply it to the user page already in
+        // the browser's cache and break it on the next view.
+        return buildResponse(null, {
           status: 304,
+          kind: "user-page",
           headers: {
             ETag: fetched.etag,
             "Cache-Control": LIVE_CACHE_CONTROL,
@@ -180,8 +198,9 @@ app.all("*", async (c) => {
   // Step 0: method gate, ahead of everything. A static serving plane answers
   // reads only, and an unsupported method must cost zero KV and zero R2 reads.
   if (!SERVABLE_METHODS.has(c.req.method)) {
-    return new Response(null, {
+    return buildResponse(null, {
       status: 405,
+      kind: "kept-own",
       headers: {
         Allow: "GET, HEAD",
         "Cache-Control": NO_STORE_CACHE_CONTROL,
@@ -195,11 +214,15 @@ app.all("*", async (c) => {
 
   if (resolved.kind === "reserved") {
     // Control-plane label: permanent redirect to the apex, path + query
-    // preserved (the fragment is client-side and never reaches the Worker).
-    return c.redirect(
-      `${c.env.KEPT_APEX_ORIGIN}${url.pathname}${url.search}`,
-      301,
-    );
+    // preserved (the fragment is client-side and never reaches the Worker). A
+    // redirect, never a proxy — the serve path does not fetch the control plane.
+    return buildResponse(null, {
+      status: 301,
+      kind: "kept-own",
+      headers: {
+        Location: `${c.env.KEPT_APEX_ORIGIN}${url.pathname}${url.search}`,
+      },
+    });
   }
 
   // `invalid` — a host outside this environment's base domain, a multi-label
