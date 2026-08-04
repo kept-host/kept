@@ -140,6 +140,16 @@ export const SERVING_STATUSES: readonly ManifestStatus[] = [
 export interface StoreCounts {
   kvGet: number;
   kvKeys: string[];
+  /**
+   * The OPTIONS bag of every `KEPT_KV.get` — `args[1]`, not `args[0]`.
+   *
+   * Recorded separately because `cacheTtl` is invisible in the key: dropping it
+   * (or hardcoding a different number than `MANIFEST_KV_CACHE_TTL_SECONDS`)
+   * changes the KV read cost and the moderation-propagation floor while leaving
+   * every status, header and byte of every response identical. Nothing else in
+   * this suite could notice.
+   */
+  kvOptions: unknown[];
   r2Get: number;
   r2Keys: string[];
   /** Any other method touched on either binding, e.g. a stray `head` or `list`. */
@@ -147,7 +157,14 @@ export interface StoreCounts {
 }
 
 function emptyCounts(): StoreCounts {
-  return { kvGet: 0, kvKeys: [], r2Get: 0, r2Keys: [], otherCalls: [] };
+  return {
+    kvGet: 0,
+    kvKeys: [],
+    kvOptions: [],
+    r2Get: 0,
+    r2Keys: [],
+    otherCalls: [],
+  };
 }
 
 /** Zero a counter in place, so one test can measure two consecutive requests. */
@@ -155,6 +172,7 @@ export function resetCounts(counts: StoreCounts): void {
   const fresh = emptyCounts();
   counts.kvGet = fresh.kvGet;
   counts.kvKeys = fresh.kvKeys;
+  counts.kvOptions = fresh.kvOptions;
   counts.r2Get = fresh.r2Get;
   counts.r2Keys = fresh.r2Keys;
   counts.otherCalls = fresh.otherCalls;
@@ -163,7 +181,7 @@ export function resetCounts(counts: StoreCounts): void {
 /** Human-readable dump used in every read-count failure message. */
 export function describeCounts(counts: StoreCounts): string {
   return [
-    `KV.get x${counts.kvGet} ${JSON.stringify(counts.kvKeys)}`,
+    `KV.get x${counts.kvGet} ${JSON.stringify(counts.kvKeys)} opts=${JSON.stringify(counts.kvOptions)}`,
     `R2.get x${counts.r2Get} ${JSON.stringify(counts.r2Keys)}`,
     counts.otherCalls.length ? `other: ${JSON.stringify(counts.otherCalls)}` : "other: none",
   ].join(" | ");
@@ -207,6 +225,7 @@ export function countingEnv(base: Env = env): { env: Env; counts: StoreCounts } 
     if (method === "get" || method === "getWithMetadata") {
       counts.kvGet += 1;
       counts.kvKeys.push(String(args[0]));
+      counts.kvOptions.push(args[1]);
     } else {
       counts.otherCalls.push(`KV.${method}`);
     }
