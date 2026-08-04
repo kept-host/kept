@@ -21,6 +21,13 @@ keys defined in E02 task 004 (`dev` / `prod` environments).
 and R2. It does not call the control plane or the database. A broken dashboard is
 not a serving outage and must not be treated as one.
 
+**This is measured, not asserted.** On 2026-08-04 the dev Railway service was
+**stopped** — not slept — for eleven minutes while `*.kept-dev.xyz` was probed.
+The control plane returned Railway's `502 Application failed to respond`
+throughout; the hosted page kept returning 200 with byte-identical content, on
+cache-busted URLs that forced the full Worker pipeline (KV read + R2 read) rather
+than a cache hit. Branded 404s and reserved-label 301s answered too. See §8.
+
 ## 2. Ordering, and why it matters
 
 Deploy order is `backup → migrate → edge → web`. **Rollback runs in reverse:
@@ -248,7 +255,86 @@ git merge-base --is-ancestor <sha> origin/main && echo OK || echo "NOT on main"
 `gh release delete <tag>` removes a Release entry if one was created. Reusing a
 tag that already produced a Release requires deleting the Release first.
 
-## 7. What is not automated
+## 7. The release smoke and its canary fixture
+
+`pnpm --filter @kept/web smoke:release` is what both deploy workflows run after a
+deploy. Since E03 its edge assertion is a **serve** check, not a reachability
+check: it fetches a real page out of R2 through the Worker and asserts 200, exact
+body bytes, `Content-Type`, an `ETag`, and a 304 on revalidation.
+
+That page is a hand-seeded **canary**, because there is no publish path until
+E04. It lives at the first label of `SMOKE_EDGE_URL` (dev: `smoke`, i.e.
+`https://smoke.kept-dev.xyz/`), and if it is missing the smoke fails with a 404
+and prints the re-seed command:
+
+```bash
+# seed / re-seed (idempotent; writes R2 object -> slug pointer -> KV manifest)
+pnpm --filter @kept/web seed:canary --edge-url "$SMOKE_EDGE_URL"
+
+pnpm --filter @kept/web seed:canary --edge-url "$SMOKE_EDGE_URL" --status quarantined
+pnpm --filter @kept/web seed:canary --edge-url "$SMOKE_EDGE_URL" --remove
+```
+
+It reads the same `R2_*` / `KV_NAMESPACE_ID` / `CLOUDFLARE_API_TOKEN` values the
+smoke does, so it targets whichever environment those point at. It does **not**
+purge — after a re-seed that changes bytes or status, purge the slug's URL forms
+yourself (`docs/edge-purge-contract.md` §4).
+
+Two things worth knowing before debugging a red smoke:
+
+- **Every smoke request carries a unique query string.** Live pages are served
+  `s-maxage=31536000`, and the edge cache will answer a repeat GET — and
+  synthesise the 304 — without the Worker running at all. Without the buster a
+  post-deploy smoke could pass entirely on a cached entry and never touch the
+  version just deployed.
+- **`ETag` comes back weak** (`W/"…"`) through Cloudflare even though R2 mints a
+  strong one. The Worker unquotes and unwraps `W/` before handing it to R2, which
+  is what makes the 304 leg pass; that path had a real bug in E03 and the smoke
+  now guards it on every deploy.
+
+## 8. Stopping the dev control plane (and the independence drill)
+
+Railway's CLI has no "stop this service" verb; the GraphQL API does. Both
+mutations below are **dev only** — the token is the dev project token.
+
+```bash
+# the active deployment id
+curl -sS https://backboard.railway.com/graphql/v2 \
+  -H "Project-Access-Token: $RAILWAY_TOKEN" -H "Content-Type: application/json" \
+  -d '{"query":"query($i:DeploymentListInput!){deployments(input:$i,first:5){edges{node{id status createdAt canRedeploy}}}}","variables":{"i":{"serviceId":"<service>","environmentId":"<environment>"}}}'
+
+# stop it (the service goes to CRASHED and the domain returns 502)
+… -d '{"query":"mutation($id:String!){deploymentStop(id:$id)}","variables":{"id":"<deployment>"}}'
+
+# bring it back — this creates a NEW deployment and the old id goes REMOVED
+… -d '{"query":"mutation($id:String!){deploymentRedeploy(id:$id){id status}}","variables":{"id":"<deployment>"}}'
+```
+
+Two gotchas learned the hard way on 2026-08-04:
+
+- Railway's API sits behind Cloudflare and answers a default Python/urllib
+  user-agent with `403 error code: 1010`. Send a normal `User-Agent`.
+- **`deploymentRedeploy` rebuilds** (`BUILDING` → `DEPLOYING`, ~65 s on dev) and
+  the old deployment id is retired. Do not assume a stop is instantly reversible:
+  budget a build, and never run this against prod.
+
+**Drill result, 2026-08-04** (closes the item E02 task 010 deferred, which had
+only ever observed a *slept* service):
+
+| Time (UTC) | Event |
+| --- | --- |
+| 06:21:21 | Baseline: `/api/health` 200; canary 200, sha `3da72c56…` |
+| 06:21:22 | `deploymentStop` → `true` |
+| 06:21:38 | Control plane 502 `Application failed to respond`; deployment `CRASHED` by 06:21:58 |
+| 06:22:13–06:22:34 | Canary 200 on three cache-busted GETs (KV + R2 each time), 0.17–0.25 s, identical sha; plain URL 200 in ~0.10 s; unknown slug → branded 404; `www` → 301 |
+| 06:31:32 | `deploymentRedeploy` → new deployment, `BUILDING` |
+| 06:32:39 | `/api/health` 200 again; deployment `SUCCESS` at 06:33:32 |
+
+Serving was unaffected for the entire outage. If this ever fails, something on
+the serve path is calling the control plane and that is a design bug, not a
+config problem.
+
+## 9. What is not automated
 
 Everything here is manual, on purpose. No workflow will ever do these for you:
 

@@ -144,6 +144,34 @@ For a takedown that genuinely cannot wait 60 seconds, the escalation is to delet
 the R2 object as well — the Worker's `missing` branch then serves the branded 404
 regardless of what the cached manifest says.
 
+### Measured on dev, 2026-08-04 (E03 task 009) — the floor is a ceiling, not a wall
+
+The 60-second figure above is the documented worst case. It was measured against
+the deployed dev Worker and the real KV namespace, and **the observed lag is
+sub-second**:
+
+- A cold GET populated the colo's KV cache with `status: live`. Five seconds
+  later (and again at twenty seconds, both well inside the 60-second `cacheTtl`
+  window) the manifest was rewritten to `quarantined` and the URL purged. The
+  edge answered **451 within ~0.4 s of the KV write** — 149 ms and 163 ms after
+  the purge call returned — in both runs.
+- The full status matrix (`live → under_review → quarantined → expired →
+  removed → live`) flipped within 0–1 s of each write, purge included.
+
+So on current Cloudflare KV a write appears to invalidate the cached value
+rather than waiting the `cacheTtl` out. **Do not rewrite the guidance above on
+the strength of that.** The measurement is one colo (FRA), one namespace, one
+account, and Cloudflare documents up to 60 seconds; a moderation UI that promises
+instant darkness is still wrong, and an acceptance test that asserts a flip is
+visible on the very next request is still flaky by design. Treat sub-second as
+the common case and 60 seconds as the number you owe the operator.
+
+**What is NOT sub-second:** anything still in the Cache API. Measured in the same
+run — with the manifest already flipped and the purge not yet issued, the edge
+kept serving the old cached page. That is the intended design (a cache hit costs
+zero store reads), and it is why §5 is mandatory: **the purge, not the KV write,
+is what makes a flip visible.**
+
 ## 7. The slug pointer object — a HARD write-side obligation
 
 **This section is not optional and not a nice-to-have.** The Worker already
@@ -226,6 +254,15 @@ and is the recommended way to implement it.
   it came from is provisional until KV catches up.
 - The Worker **never writes** the pointer, never deletes it, and never calls the
   control plane. Writing it is entirely a control-plane job.
+
+**Verified live on dev, 2026-08-04 (E03 task 009).** A slug was seeded with
+object + pointer + KV, then its **KV key was deleted** to force the miss path.
+The page kept serving 200 — and served it with `s-maxage=60`, not the year-long
+`LIVE_CACHE_CONTROL`, which is the observable signature of a response that came
+through the pointer rather than through KV. The fallback works against the real
+stores; it is inert in production only because nothing writes the pointer yet.
+`apps/web/scripts/seed-edge-canary.ts` implements the §7.3 write ordering and is
+the reference for E04.
 
 ### 7.5 Cleanup
 
