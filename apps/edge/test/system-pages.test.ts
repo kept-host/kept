@@ -102,7 +102,7 @@ function expectSelfContained(label: string, html: string, apexOrigin: string): v
   // assertion: they all need `src`. There is no legitimate `src=` on these pages.
   expect(
     /\bsrc\s*=/i.test(html),
-    `${label} contains a src= attribute. A system page loads no remote script, image, frame or media — the mascot and the icons are inline SVG.`,
+    `${label} contains a src= attribute. A system page loads no remote script, image, frame or media — the icons are inline SVG and the mascot is an inlined data: URI.`,
   ).toBe(false);
   expect(
     /\bsrcset\s*=/i.test(html),
@@ -124,11 +124,13 @@ function expectSelfContained(label: string, html: string, apexOrigin: string): v
   // `url(#id)` is a same-document fragment reference — an SVG paint server,
   // mask, clip path or filter defined in the very same bytes. It is resolved
   // against the document, never dereferenced over the network, so it cannot be
-  // an external request. The mascot's body gradient is exactly this. Excusing
-  // it is the same call the `absoluteUrls` helper makes for `xmlns`: a rule
-  // that flagged it would pressure a future author into deleting a legitimate
-  // attribute, or into flattening artwork to dodge the linter. Everything that
-  // CAN reach the network is still forbidden.
+  // an external request. Nothing currently renders one — the mascot became a
+  // raster data: URI and the lock pip has no paint server — so this arm is
+  // unexercised today. It stays because the moment anyone adds an SVG gradient,
+  // mask or filter back, a rule without it would pressure them into deleting a
+  // legitimate attribute or flattening artwork to dodge the linter. Same call
+  // the `absoluteUrls` helper makes for `xmlns`. Everything that CAN reach the
+  // network is still forbidden.
   for (const url of cssUrls(html)) {
     expect(
       url.startsWith("data:") || url.startsWith("#"),
