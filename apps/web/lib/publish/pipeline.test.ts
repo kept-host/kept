@@ -293,6 +293,63 @@ test(
 );
 
 test(
+  "dedup drill: a deleted page is never deduped onto — republishing mints a new one",
+  { skip: skipLive },
+  async () => {
+    const { eq } = await import("drizzle-orm");
+    const { db } = await import("../db/index");
+    const { sites } = await import("../db/schema");
+    const { deletePage } = await import("./anon-manage");
+    const { publishPage } = await import("./pipeline");
+    const { pointerKey } = await import("../storage/manifest");
+    const { r2Store } = await import("../storage/r2");
+
+    const html = pageHtml(runId());
+    const who = publisher("203.0.113.60");
+
+    const first = await publishPage({ html }, who);
+    assert.equal(first.ok, true, first.ok ? "" : JSON.stringify(first.body));
+    if (!first.ok) return;
+    created.add(first.body.slug);
+
+    // Task 006's delete ARCHIVES: the row keeps its `expires_at` and its
+    // `anon_token_hash`, so it still matches every other clause of the dedup
+    // predicate. `status = 'live'` is the only thing excluding it.
+    const deleted = await deletePage(first.body.anonToken);
+    assert.equal(deleted.ok, true, deleted.ok ? "" : JSON.stringify(deleted.body));
+
+    const [archived] = await db.select().from(sites).where(eq(sites.slug, first.body.slug));
+    assert.ok(archived);
+    assert.equal(archived.status, "archived");
+    assert.ok(archived.expiresAt && archived.expiresAt > new Date(), "still unexpired");
+    assert.ok(archived.anonTokenHash, "the token hash is retained for late recovery");
+
+    // Identical bytes, same publisher, immediately after the delete.
+    const second = await publishPage({ html }, who);
+    assert.equal(second.ok, true, second.ok ? "" : JSON.stringify(second.body));
+    if (!second.ok) return;
+    created.add(second.body.slug);
+
+    // A NEW page, not `deduped: true` pointing at a link that 404s.
+    assert.equal(second.body.deduped, false);
+    assert.notEqual(second.body.slug, first.body.slug);
+
+    // …and a real publish happened behind it: the deduped path writes no
+    // manifest at all, so the pointer for the new slug is the proof.
+    assert.notEqual(
+      await r2Store().get(pointerKey(second.body.slug)),
+      null,
+      "a republish after a delete must write a manifest, not reuse the archived row",
+    );
+
+    const [minted] = await db.select().from(sites).where(eq(sites.slug, second.body.slug));
+    assert.ok(minted);
+    assert.notEqual(minted.id, archived.id);
+    assert.equal(minted.status, "live");
+  },
+);
+
+test(
   "rollback drill: an injected KV failure leaves no orphan object, pointer or row",
   { skip: skipLive },
   async () => {
