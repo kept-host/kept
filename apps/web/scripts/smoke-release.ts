@@ -48,6 +48,7 @@ import { publishResponseSchema } from "@kept/shared";
 import { config } from "dotenv";
 import postgres from "postgres";
 
+import { KV_REPURGE_DELAY_MS } from "../lib/storage/manifest";
 import { requireEnv, requireUrl } from "./lib/cli-args";
 import {
   canaryHtml,
@@ -66,15 +67,28 @@ config({ path: ".env.local" });
 /** Per-request cap. A hung socket must not hold a release open. */
 const REQUEST_TIMEOUT_MS = 15_000;
 /**
- * Whole-run cap, including warm retries and the publish canary's serve poll.
- * The publish leg is sequential after the parallel ones and can spend up to
- * `PUBLISH_SERVE_TIMEOUT_MS` waiting for a brand-new page to answer.
+ * Whole-run cap, including warm retries, the publish canary's serve poll and its
+ * takedown poll. The publish leg is sequential after the parallel ones and can
+ * spend up to `PUBLISH_SERVE_TIMEOUT_MS` waiting for a brand-new page to answer
+ * and then up to `PUBLISH_GONE_TIMEOUT_MS` waiting for the deleted one to stop.
+ *
+ * The takedown poll is why this is minutes rather than seconds: a delete cannot
+ * be observed faster than the edge's KV read cache lets it be observed
+ * (`KV_REPURGE_DELAY_MS`), and asserting it any sooner would only re-green the
+ * bug this check exists for.
  */
-const OVERALL_DEADLINE_MS = 180_000;
+const OVERALL_DEADLINE_MS = 300_000;
 
 /** How long a page published seconds ago gets to serve before this is a failure. */
 const PUBLISH_SERVE_TIMEOUT_MS = 30_000;
 const PUBLISH_SERVE_INTERVAL_MS = 1_500;
+
+/**
+ * How long a DELETED page gets to stop serving on its BARE url before this is a
+ * failure — the re-purge window plus slack for it to land.
+ */
+const PUBLISH_GONE_TIMEOUT_MS = KV_REPURGE_DELAY_MS + 25_000;
+const PUBLISH_GONE_INTERVAL_MS = 3_000;
 
 /**
  * Railway runs the dev service with Serverless enabled (task 003) and documents
@@ -419,7 +433,57 @@ async function smokePublish(webUrl: string, deadline: number): Promise<StoreResu
 
   const body = await served.text();
   const contentType = served.headers.get("content-type") ?? "";
+
+  // ── populate the BARE url's cache entry before deleting ────────────────────
+  // Every probe above carries `?smoke=<uuid>`, so none of them touched the cache
+  // entry a real visitor creates. That is deliberate for the serve check — and
+  // it is exactly why this smoke could pass a build in which DELETE left the page
+  // serving forever. The one GET below puts the page in the Cache API under
+  // `s-maxage=31536000`, which is the state the takedown check needs to mean
+  // anything.
+  await drain(await get(liveUrl, deadline).catch(() => new Response(null)));
+
   const cleanupError = await cleanup();
+
+  // ── the takedown check ─────────────────────────────────────────────────────
+  // NO QUERY STRING. A cache-busting probe always reaches the Worker and would
+  // report the delete as instantly effective while the url everyone else uses
+  // keeps serving: `purge_cache` empties the Cache API but not the Worker's KV
+  // read cache, so the first request after the purge can re-read the pre-delete
+  // manifest and re-store the page for a year (contract §6). These probes are
+  // themselves that traffic — if the control plane does not purge a second time,
+  // this loop runs out its deadline on a 200 and the release fails.
+  if (!cleanupError) {
+    const goneDeadline = Date.now() + PUBLISH_GONE_TIMEOUT_MS;
+    let stillServing = true;
+    let lastError = "";
+    let sawResponse = false;
+    while (Date.now() < goneDeadline) {
+      try {
+        const attempt = await get(liveUrl, deadline);
+        await drain(attempt);
+        sawResponse = true;
+        if (attempt.status !== 200) {
+          stillServing = false;
+          break;
+        }
+      } catch (err) {
+        // A network blip is not proof the page is gone. Keep polling — but do
+        // not let a run that never got an answer be reported as "still serving".
+        lastError = errText(err);
+      }
+      await sleep(PUBLISH_GONE_INTERVAL_MS);
+    }
+    if (stillServing) {
+      const seconds = Math.round(PUBLISH_GONE_TIMEOUT_MS / 1000);
+      return fail(
+        name,
+        sawResponse
+          ? `deleted ${slug} but GET ${liveUrl} still returned 200 after ${seconds}s — the edge is serving a deleted page and will keep doing so until it is purged by hand`
+          : `deleted ${slug} but GET ${liveUrl} never answered within ${seconds}s (${lastError || "no response"}) — the takedown could not be confirmed`,
+      );
+    }
+  }
 
   if (body !== html) {
     return fail(
@@ -441,7 +505,7 @@ async function smokePublish(webUrl: string, deadline: number): Promise<StoreResu
 
   return pass(
     name,
-    `POST /api/publish → 201 "${slug}", ${body.length}B served at ${minted.host}, then deleted`,
+    `POST /api/publish → 201 "${slug}", ${body.length}B served at ${minted.host}, then deleted and confirmed gone at the bare url`,
   );
 }
 

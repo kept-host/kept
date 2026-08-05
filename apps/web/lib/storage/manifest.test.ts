@@ -26,7 +26,11 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { config } from "dotenv";
 
-import { kvManifestSchema, type KvManifest } from "@kept/shared";
+import {
+  kvManifestSchema,
+  MANIFEST_KV_CACHE_TTL_SECONDS,
+  type KvManifest,
+} from "@kept/shared";
 
 // The KV client is imported here — and ONLY here outside `manifest.ts` — to
 // force the KV miss the two drills are built around. `eslint.config.mjs`
@@ -34,8 +38,10 @@ import { kvManifestSchema, type KvManifest } from "@kept/shared";
 // manifest through it.
 import { kvStore } from "./kv";
 import {
+  KV_REPURGE_DELAY_MS,
   pointerKey,
   removeManifest,
+  repurgeAfterKvPropagation,
   slugPurgeUrls,
   writeManifest,
 } from "./manifest";
@@ -129,6 +135,30 @@ test("pointer key and purge URLs match the contract", () => {
     restoreEnv("KEPT_BASE_DOMAIN", prior);
   }
 });
+
+test("the re-purge delay clears the edge's KV read cache twice over", () => {
+  // The bound the second purge rests on, asserted against the number the Worker
+  // actually passes to `KEPT_KV.get`. At the moment a manifest changes the
+  // colo's KV entry has at most one `cacheTtl` of life left, and the single
+  // stale read it permits refreshes it by at most one more — so anything below
+  // 2× is a re-purge that can fire while the edge is still able to answer with
+  // the pre-change manifest, which is the bug it exists to close.
+  assert.ok(
+    KV_REPURGE_DELAY_MS > 2 * MANIFEST_KV_CACHE_TTL_SECONDS * 1000,
+    `KV_REPURGE_DELAY_MS (${KV_REPURGE_DELAY_MS}ms) must exceed twice the edge's KV cacheTtl (${MANIFEST_KV_CACHE_TTL_SECONDS}s)`,
+  );
+});
+
+test(
+  "the re-purge is a real purge, not a scheduled no-op",
+  { skip: skipLive },
+  async () => {
+    // Same endpoint, same credentials, same URL forms as the first purge — run
+    // with a zero delay so the assertion is about the call, not the clock.
+    const result = await repurgeAfterKvPropagation(SLUG, slugPurgeUrls(SLUG), 0);
+    assert.equal(result.ok, true, result.ok ? "" : result.error);
+  },
+);
 
 test("an invalid manifest fails at the validate step, before either store", async () => {
   const result = await writeManifest("abc12345", {
@@ -279,5 +309,116 @@ test(
     // The stores are correct even though the edge is stale — that is the whole
     // justification for not rolling back.
     assert.equal(await kvStore().get(SLUG), result.ok ? result.value : null);
+  },
+);
+
+test(
+  "delete drill with NO forced miss: a live KV entry must not let the edge re-cache the deleted page",
+  { skip: skipLive },
+  async () => {
+    // ⚠️ THE DRILL EVERY OTHER DELETE TEST IN THIS REPO SKIPS PAST. All of them
+    // — here, in `lib/publish/anon-manage.test.ts` and in
+    // `e2e/pointer-ordering.spec.ts` — delete the KV key BY HAND first, to force
+    // the pointer path. That is the right way to prove the §7.3 ordering, and it
+    // is also why none of them could see this bug: by the time the delete runs,
+    // KV is already empty, so the edge cannot answer with a stale manifest and
+    // the Cache API has nothing to re-cache.
+    //
+    // The production failure needs the opposite setup: a live KV entry, a
+    // POPULATED Cache API entry, and a delete through the ordinary path.
+    // `purge_cache` empties the Cache API but not the Worker's KV read cache, so
+    // the next request re-reads the pre-delete manifest and re-stores the
+    // deleted page under `s-maxage=31536000`. With one purge that is permanent;
+    // the assertion below is simply that it ends.
+    //
+    // ⚠️ WHAT THIS DRILL CANNOT PROVE, stated so nobody trusts it further than
+    // it goes. Run from a laptop, the KV delete and the probes usually leave from
+    // the SAME colo, and the delete's invalidation reaches the read cache
+    // sub-second — so the loop below normally exits on the first probe and would
+    // stay green with the re-purge removed. The window opens reliably only when
+    // the deleting control plane is in a different region from the reader, which
+    // is the deployed shape and not this one. The gate that actually fails on a
+    // regression is the takedown poll in `scripts/smoke-release.ts`, which runs
+    // against the deployed control plane after every release. This drill's job
+    // is the coverage no other test here has — a delete with KV LIVE — plus a
+    // ceiling on how long a deleted page may serve.
+    const r2 = r2Store();
+    const siteId = `e04-repurge-${crypto.randomUUID().slice(0, 8)}`;
+    const slug = `d${crypto.randomUUID().replace(/-/g, "").slice(0, 7)}`;
+    const key = `sites/${siteId}/v1/index.html`;
+    const url = `https://${slug}.${process.env.KEPT_BASE_DOMAIN}/`;
+    const marker = "repurge-drill";
+
+    const probeOnce = async () => {
+      const res = await fetch(url, { redirect: "manual" });
+      return {
+        status: res.status,
+        cacheControl: res.headers.get("cache-control") ?? "",
+        body: await res.text(),
+      };
+    };
+
+    try {
+      await r2.put(key, pageHtml(marker), "text/html; charset=utf-8");
+      const written = await writeManifest(
+        slug,
+        kvManifestSchema.parse({
+          siteId,
+          versionId: "v1",
+          status: "live",
+          region: "auto",
+          ownerId: null,
+          updatedAt: Date.now(),
+        }),
+      );
+      assert.equal(written.ok, true, written.ok ? "" : `${written.step}: ${written.error}`);
+
+      // Serve it FROM KV before deleting, and insist on it: `s-maxage=31536000`
+      // is the signature of the KV path, `s-maxage=60` of the pointer fallback.
+      // The distinction is the whole drill. A 200 served through the pointer
+      // leaves the colo's KV read cache holding a MISS, so the delete looks
+      // instantaneous and the test passes without touching the bug — which is
+      // precisely how this failure hid behind a green suite.
+      const serveDeadline = Date.now() + PROPAGATION_WINDOW_MS;
+      let live = await probeOnce();
+      while (
+        !(live.status === 200 && live.cacheControl.includes("s-maxage=31536000")) &&
+        Date.now() < serveDeadline
+      ) {
+        await sleep(PROBE_INTERVAL_MS);
+        live = await probeOnce();
+      }
+      assert.equal(live.status, 200, "the page must be serving before it is deleted");
+      assert.match(live.body, new RegExp(marker));
+      assert.match(
+        live.cacheControl,
+        /s-maxage=31536000\b/,
+        "the page must be served from KV — a pointer-served 200 does not arm this drill",
+      );
+
+      const removed = await removeManifest(slug);
+      assert.equal(removed.ok, true, removed.ok ? "" : `${removed.step}: ${removed.error}`);
+      assert.ok(removed.ok && removed.purge.ok);
+      assert.equal(await kvStore().get(slug), null);
+      assert.equal(await r2.get(pointerKey(slug)), null);
+
+      // Poll continuously — the probes ARE the traffic that re-poisons the cache
+      // after the first purge, which is exactly what a real visitor does. Under
+      // a single purge this loop never exits: the page serves 200 forever.
+      const deadline = Date.now() + KV_REPURGE_DELAY_MS + 30_000;
+      let seen = await probeOnce();
+      while (seen.status === 200 && Date.now() < deadline) {
+        await sleep(PROBE_INTERVAL_MS);
+        seen = await probeOnce();
+      }
+      assert.notEqual(
+        seen.status,
+        200,
+        `a deleted page was still serving ${Math.round((Date.now() - deadline + KV_REPURGE_DELAY_MS + 30_000) / 1000)}s after the delete — the re-purge never corrected the entry the edge re-cached from a stale KV read`,
+      );
+    } finally {
+      await removeManifest(slug).catch(() => undefined);
+      await r2.delete(key).catch(() => undefined);
+    }
   },
 );

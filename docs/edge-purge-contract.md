@@ -144,6 +144,32 @@ For a takedown that genuinely cannot wait 60 seconds, the escalation is to delet
 the R2 object as well — the Worker's `missing` branch then serves the branded 404
 regardless of what the cached manifest says.
 
+### The tail does not end on its own — CORRECTION, 2026-08-05
+
+"Up to 60 seconds later" above is wrong for anything the Worker caches with
+`LIVE_CACHE_CONTROL`, and the error is not a detail. Walk it through:
+
+1. the purge empties the Cache API entry;
+2. the next request misses, and the Worker re-reads KV — from the colo's KV read
+   cache, so it gets the **pre-change** manifest;
+3. the Worker serves that stale answer and stores it under `s-maxage=31536000`;
+4. **nothing expires it, and while it answers no further KV read ever happens.**
+
+So a single purge converts a bounded propagation window into a *permanent* stale
+edge. Observed on deployed dev with `DELETE /api/sites/:token`: KV key gone,
+pointer gone, a cache-busting URL 404ing — and the live URL still serving 200
+minutes later, having been re-cached three seconds after the delete.
+
+**The control plane therefore purges twice**: once immediately, and again after
+`2 × MANIFEST_KV_CACHE_TTL_SECONDS` (`KV_REPURGE_DELAY_MS` in
+`apps/web/lib/storage/manifest.ts`). The factor of two is the bound, not padding —
+the colo's KV entry has at most one `cacheTtl` of life left when the change lands,
+and the one stale read it permits refreshes it by at most another. One stale read
+per purge is the most that is possible, which is why one retry is enough.
+
+Restated for anyone sizing a UI or a test: a change is effective in **seconds** in
+the common case and **up to ~2 minutes** in the worst case, not 60 seconds.
+
 ### Measured on dev, 2026-08-04 (E03 task 009) — the floor is a ceiling, not a wall
 
 The 60-second figure above is the documented worst case. It was measured against

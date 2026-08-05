@@ -10,10 +10,15 @@
 // `KEPT_R2.get` for the pointer probe. No retry loop, no second KV key, no
 // `list`, no waiting.
 
-import { kvManifestSchema, type KvManifest } from "@kept/shared";
+import {
+  kvManifestSchema,
+  MANIFEST_KV_CACHE_TTL_SECONDS,
+  type KvManifest,
+} from "@kept/shared";
 
 /**
- * `cacheTtl` for the KV read, in seconds.
+ * `cacheTtl` for the KV read, in seconds. Defined in `@kept/shared` and
+ * re-exported here so the Worker's callers and tests keep one import site.
  *
  * This is the primary lever on KV read cost. It places the value in
  * Cloudflare's KV edge cache — a second, much cheaper layer beneath the Cache
@@ -26,8 +31,11 @@ import { kvManifestSchema, type KvManifest } from "@kept/shared";
  * A moderator quarantining a page can wait up to this long even after the
  * purge-by-URL that task 005 specifies. That is why it sits at the minimum
  * rather than somewhere cheaper — moderation latency outranks KV read cost.
+ *
+ * It is also why the control plane purges TWICE — see
+ * `apps/web/lib/storage/manifest.ts`.
  */
-export const MANIFEST_KV_CACHE_TTL_SECONDS = 60;
+export { MANIFEST_KV_CACHE_TTL_SECONDS };
 
 /**
  * The slug-addressable manifest pointer probed on a KV miss.

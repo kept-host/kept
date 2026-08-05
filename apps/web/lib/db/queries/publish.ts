@@ -69,12 +69,24 @@ export interface DedupHit {
  * The dedup probe, and the token rotation that goes with it, in ONE transaction.
  *
  * THE PREDICATE IS PINNED — `publisher_hash = ? AND content_hash = ? AND
- * expires_at > now()` — and is scoped per publisher on purpose. Byte-identical
- * HTML from two different publishers produces two pages with two tokens:
- * nobody is ever handed a stranger's page, or delete rights over it, because
- * their bytes happened to match. A global-by-hash variant is not a fallback, it
- * is a different and wrong feature. `expires_at > now()` also excludes kept
- * pages for free, since keeping (E05) nulls the clock.
+ * expires_at > now() AND status = 'live'` — and is scoped per publisher on
+ * purpose. Byte-identical HTML from two different publishers produces two pages
+ * with two tokens: nobody is ever handed a stranger's page, or delete rights
+ * over it, because their bytes happened to match. A global-by-hash variant is
+ * not a fallback, it is a different and wrong feature. `expires_at > now()` also
+ * excludes kept pages for free, since keeping (E05) nulls the clock.
+ *
+ * ⚠️ `status = 'live'` IS LOAD-BEARING, and was missing until task 006's delete
+ * gave this table a row that matches everything else. A dedup hit is answered
+ * with `deduped: true` and the EXISTING `live_url`, so it may only ever return a
+ * page that actually serves — and `live` is the only status that does: the
+ * Worker's status switch answers `under_review`, `quarantined`, `expired` and
+ * `removed` with a system page, and `archived` is never in KV at all (E03;
+ * `MANIFEST_STATUSES`). `archiveSite` deliberately leaves `expires_at` and
+ * `anon_token_hash` intact for E05's late recovery and E07's grace sweep, so
+ * without this clause a publish → delete → identical re-publish matched the
+ * archived row and handed the caller a 404ing link plus a success body, writing
+ * no manifest. Deduping onto a dead page is worse than minting a new one.
  *
  * ⚠️ WHY THE TOKEN ROTATES. `sites.anon_token_hash` stores a digest, so the
  * ORIGINAL raw token is unrecoverable from this database — by design, and that
@@ -106,6 +118,10 @@ export async function claimDedupCandidate(input: {
           eq(sites.publisherHash, input.publisherHash),
           eq(sites.contentHash, input.contentHash),
           gt(sites.expiresAt, sql`now()`),
+          // Typed by the `site_status` pgEnum, which is generated from
+          // `SITE_STATUSES` — a value that is not in the shared enum does not
+          // compile. Same literal, same reason, as the insert below.
+          eq(sites.status, "live"),
         ),
       )
       .orderBy(desc(sites.createdAt))

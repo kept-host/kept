@@ -21,6 +21,9 @@
  *   rename (E06):       writeManifest(new) → removeManifest(old)
  *   status flip (E07):  writeManifest(slug, { ...manifest, status })
  *
+ * …where "purge" is TWO purges, the second one delayed. One is not enough and
+ * the reason is not obvious — see `repurgeAfterKvPropagation`.
+ *
  * The R2 *page object* write is the caller's (E04 task 005) and happens BEFORE
  * `writeManifest`; this helper never touches `sites/{siteId}/{versionId}/…`.
  * E06 and E07 express their rows as calls to the two functions below — if they
@@ -36,7 +39,13 @@
  * validate the environment on every call (see `./env`); hoisting one into a
  * const would pin a rotated credential for the life of the process.
  */
-import { kvManifestSchema, type KvManifest } from "@kept/shared";
+import { setTimeout as sleep } from "node:timers/promises";
+
+import {
+  kvManifestSchema,
+  MANIFEST_KV_CACHE_TTL_SECONDS,
+  type KvManifest,
+} from "@kept/shared";
 
 import { servingBaseDomain } from "./env";
 import { kvStore } from "./kv";
@@ -95,6 +104,62 @@ function message(err: unknown): string {
 }
 
 /**
+ * How long after a successful purge the SECOND purge is issued.
+ *
+ * TWICE the edge's KV `cacheTtl`, plus five seconds of slack, and the factor of
+ * two is the proof rather than padding. At the moment a manifest changes, the
+ * colo's KV entry has between 0 and `MANIFEST_KV_CACHE_TTL_SECONDS` of life
+ * left, so the one stale read can happen as late as T+ttl and refreshes the
+ * entry to T+2·ttl. Past that the next KV read is authoritative.
+ */
+export const KV_REPURGE_DELAY_MS = (2 * MANIFEST_KV_CACHE_TTL_SECONDS + 5) * 1000;
+
+/**
+ * The SECOND purge — issued once the edge's KV read cache can no longer answer
+ * with the pre-change manifest.
+ *
+ * ⚠️ ONE PURGE IS NOT ENOUGH, and contract §6 understates why. `purge_cache`
+ * empties the Cache API but does NOT reach the Worker's KV read cache
+ * (`cacheTtl: MANIFEST_KV_CACHE_TTL_SECONDS`). So the first request after a
+ * purge re-reads the OLD manifest, and the Worker stores that old response under
+ * `LIVE_CACHE_CONTROL` — `s-maxage=31536000`. §6 calls this a "60-second tail",
+ * but the tail never ends: nothing expires the re-stored entry, and while it
+ * answers, no further KV read ever happens to correct it. One purge therefore
+ * converts a bounded propagation window into a PERMANENT stale edge.
+ *
+ * Measured on deployed dev, 2026-08-05, `DELETE /api/sites/:token`: the KV key
+ * and the pointer were both gone and a cache-busting URL 404'd, yet three
+ * seconds after the delete the live URL was a cache MISS serving 200 with
+ * `s-maxage=31536000` — the purge had landed and the deleted page had just been
+ * re-cached for a year. It was still serving 200 minutes later, while its
+ * `/index.html` form (purged, never re-requested, so never re-poisoned) 404'd.
+ *
+ * Only ONE stale read is possible per purge, which is what makes a single retry
+ * sufficient rather than a loop: once the response is back in the Cache API it
+ * answers every request, so nothing refreshes the KV entry again.
+ *
+ * Exported for the drill in `./manifest.test.ts`, which calls it with a zero
+ * delay. `ref: false` so a pending re-purge never holds a process open. It does
+ * NOT survive a restart or a redeploy — the durable, queue-backed retry contract
+ * §3 asks for is E07's.
+ */
+export async function repurgeAfterKvPropagation(
+  slug: string,
+  urls: readonly string[],
+  delayMs: number = KV_REPURGE_DELAY_MS,
+): Promise<PurgeResult> {
+  await sleep(delayMs, undefined, { ref: false });
+
+  const result = await purgeUrls(urls);
+  if (!result.ok) {
+    console.error(
+      `[kept] re-purge FAILED for slug "${slug}" — ${result.error}. URLs: ${urls.join(", ")}. The first purge succeeded, so the edge may be serving a response re-cached from a stale KV read; replay this purge (contract §6).`,
+    );
+  }
+  return result;
+}
+
+/**
  * Purge both URL forms of a slug, and NEVER throw. By the time this runs the
  * stores already agree; only the edge is stale, and contract §3 is explicit that
  * a failed purge is logged, alerted and retried — not rolled back and not
@@ -118,7 +183,22 @@ async function purgeSlug(slug: string): Promise<PurgeResult> {
     console.error(
       `[kept] purge FAILED for slug "${slug}" — ${result.error}. URLs: ${urls.join(", ")}. The write succeeded; the edge stays stale until this is retried (contract §3).`,
     );
+    // No re-purge: the first call never reached Cloudflare, so a second on the
+    // same broken configuration would only log the same failure twice. Contract
+    // §3's retry is the operator's, and E07 owns making it durable.
+    return result;
   }
+
+  // Floating BY DESIGN — see `repurgeAfterKvPropagation`. A delete must not
+  // block for two minutes, and contract §3 forbids a purge from failing the
+  // operation it follows. The `.catch` is not decoration: this promise is
+  // unawaited, `purgeUrls` re-reads the environment on every call, and an
+  // unhandled rejection takes the whole Node process down.
+  void repurgeAfterKvPropagation(slug, urls).catch((err: unknown) => {
+    console.error(
+      `[kept] re-purge THREW for slug "${slug}" — ${message(err)}. The edge may be serving a response re-cached from a stale KV read; replay this purge (contract §6).`,
+    );
+  });
   return result;
 }
 
