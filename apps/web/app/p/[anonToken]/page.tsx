@@ -30,9 +30,9 @@ import { DraftChip } from "@/components/kept/draft-chip";
 import { PagePreview } from "@/components/kept/page-preview";
 import { QrCode } from "@/components/kept/qr";
 import { keptCount } from "@/lib/landing-stats";
-import { resolveAnonToken, type AnonSite } from "@/lib/publish/anon-token";
+import { resolveAnonToken } from "@/lib/publish/anon-token";
 import { liveUrl } from "@/lib/publish/pipeline";
-import { pageObjectKey, r2Store } from "@/lib/storage/r2";
+import { readPreviewHtml } from "@/lib/publish/preview";
 import { ResultScreen } from "./result-screen";
 
 /** `postgres-js` needs TCP sockets and `aws4fetch` signs with Node's crypto. */
@@ -48,38 +48,6 @@ export const metadata: Metadata = {
   referrer: "no-referrer",
 };
 
-/**
- * Bytes of published HTML the preview will inline. `MAX_PAGE_BYTES` is 5 MB and
- * this markup is serialized into the RSC payload of every render, so a page
- * above this cap gets the card without the render rather than a slow screen.
- */
-const PREVIEW_MAX_BYTES = 256 * 1024;
-
-/**
- * The page's own bytes, for the preview — read from R2, which is the authority
- * on them, rather than from the edge (whose hosted-page CSP forbids framing
- * anyway; see `components/kept/page-preview.tsx`).
- *
- * BEST EFFORT BY DESIGN. A preview is worth zero outages: if the object read
- * fails or the store is unconfigured, the screen still renders with everything
- * that actually matters — the URL, the clock and the four actions.
- */
-async function readPreviewHtml(site: AnonSite): Promise<string | null> {
-  if (!site.currentVersionId) return null;
-  if (site.sizeBytes !== null && site.sizeBytes > PREVIEW_MAX_BYTES) return null;
-
-  try {
-    return await r2Store().get(pageObjectKey(site.id, site.currentVersionId));
-  } catch (err) {
-    console.error(
-      `[kept] result: preview read failed for site ${site.id} (slug "${site.slug}") — ${
-        err instanceof Error ? err.message : String(err)
-      }. Rendering the screen without it.`,
-    );
-    return null;
-  }
-}
-
 export default async function ResultPage({
   params,
 }: {
@@ -94,7 +62,7 @@ export default async function ResultPage({
   if (!site) notFound();
 
   const url = liveUrl(site.slug);
-  const html = await readPreviewHtml(site);
+  const html = await readPreviewHtml(site, "result");
 
   return (
     <div className="flex min-h-dvh flex-col bg-bg">
