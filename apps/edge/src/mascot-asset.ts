@@ -16,7 +16,7 @@
 //   cwebp -q 82 -resize 320 0 -alpha_q 90 mascot.png -o mascot.webp
 //   node -e 'process.stdout.write(require("fs").readFileSync("mascot.webp").toString("base64"))'
 //
-// 320px wide renders the ~160px display size at 2x. WebP with alpha is
+// 320px wide renders the 170px display size at ~1.9x. WebP with alpha is
 // supported by every browser that supports the Cache API this Worker uses.
 // Keep it under ~25 KB base64; past that, drop the width before the quality.
 

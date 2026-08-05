@@ -252,8 +252,9 @@ function apexHost(apexOrigin: string): string {
    The mascot.
 
    One function, three moods, so the character cannot drift between the pages
-   that use it. Drawn as inline SVG rather than a raster asset because these
-   pages are forbidden from making any external request — an <img src> here
+   that use it. The artwork is a raster asset, inlined as a base64 data: URI
+   (mascot-asset.ts) and applied with CSS background-image, because these pages
+   are forbidden from making any external request — a fetched <img src> here
    would be both a second round-trip on the error path and a dependency, and
    the whole premise of this epic is that the serve path depends on nothing.
 
