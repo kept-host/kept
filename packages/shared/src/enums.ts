@@ -8,26 +8,26 @@ import { z } from "zod";
  * - `live`         — serving content.
  * - `under_review` — held pending moderation (E07).
  * - `quarantined`  — flagged/suspended, no content served (E07).
- * - `resting`      — RETIRED pre-pivot funding-degradation state. See the note
- *                    below; it is not a serving status.
  * - `expired`      — draft clock elapsed; traffic stopped (clock set by E04,
  *                    enforced by E07's expiry jobs).
  * - `removed`      — taken down by owner/moderation.
  * - `archived`     — archive-don't-delete cold state (E07). Never written to KV.
  *
- * ⚠️ `resting` here — and `supporter` in `PLANS` below — are pre-pivot values
- * that survive only because these tuples drive the Drizzle `pgEnum`s in
- * apps/web/lib/db/schema.ts and are baked into the committed migration
- * apps/web/drizzle/0000_nasty_moonstone.sql. Dropping a Postgres enum value is a
- * **migration, not a rename**, and it is owned by E04/E05. Do not delete them
- * here. The serving contract already excludes `resting`: it is absent from
- * `MANIFEST_STATUSES` (./kv-manifest), which is a plain tuple driving no pgEnum.
+ * There is deliberately **no `draft` status**. Draft-ness is derived —
+ * `sites.expires_at != null` — so a draft and a kept page share the `live`
+ * status and the same serving path. See apps/web/lib/db/schema.ts.
+ *
+ * ⚠️ This tuple drives the Drizzle `pgEnum` in apps/web/lib/db/schema.ts, so a
+ * value may only be added or removed here together with a generated migration
+ * that rewrites the `site_status` Postgres type — dropping an enum value is a
+ * migration, not a rename. E04 did exactly that to retire the last pre-pivot
+ * status. `supporter` in `PLANS` below is the remaining pre-pivot value and is
+ * E05's to remove, with its own migration — do not delete it here.
  */
 export const SITE_STATUSES = [
   "live",
   "under_review",
   "quarantined",
-  "resting",
   "expired",
   "removed",
   "archived",

@@ -267,7 +267,7 @@ type MascotMood =
   | "plain"
   /** 451 — same artwork, amber lock pip. Sober, not alarmed. */
   | "locked"
-  /** 410 — same artwork, drained. The draft is resting, not destroyed. */
+  /** 410 — same artwork, drained. The draft has lapsed, not been destroyed. */
   | "dim";
 
 /**

@@ -8,6 +8,13 @@
       "when": 1782323355858,
       "tag": "0000_nasty_moonstone",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1785929003974,
+      "tag": "0001_publish_columns_and_status_enum",
+      "breakpoints": true
     }
   ]
 }
