@@ -22,10 +22,11 @@ export default [
   // edge for up to a year, or a deleted page resurrected through the pointer.
   // The exemptions are the helper itself, the client's own module, the smoke
   // re-export (whose probes write a `__smoke__:` key, never a manifest), and the
-  // two DRILL FILES — which must delete a KV key BY HAND to force the miss that
-  // makes the pointer ordering observable at all. Neither drill writes a
-  // manifest through the client; `anon-manage.test.ts` uses it to force the miss
-  // its delete drill depends on, exactly as `manifest.test.ts` does.
+  // three DRILL FILES — which must delete a KV key BY HAND to force the miss
+  // that makes the pointer ordering observable at all. None of them writes a
+  // manifest through the client: `anon-manage.test.ts` and
+  // `e2e/pointer-ordering.spec.ts` use it to force the miss their delete drills
+  // depend on, exactly as `manifest.test.ts` does.
   {
     files: ["**/*.{ts,tsx,mts,cts}"],
     ignores: [
@@ -33,6 +34,7 @@ export default [
       "lib/storage/manifest.test.ts",
       "lib/storage/kv.ts",
       "lib/publish/anon-manage.test.ts",
+      "e2e/pointer-ordering.spec.ts",
       "scripts/lib/smoke-stores.ts",
     ],
     rules: {

@@ -19,24 +19,32 @@
  * dev and prod differ only in the values handed to the same code path.
  *
  * ---------------------------------------------------------------------------
- * SCOPE — what this probe proves, and what it still does not (E03 task 009)
+ * SCOPE — what this probe proves, end to end (E03 task 009, E04 task 010)
  *
- * PROVEN as of E03: the serving data plane **serves**. The edge assertion below
- * fetches a real page out of R2 via the Worker and asserts status, body bytes,
+ * THE SERVE HALF (E03): the serving data plane **serves**. `smokeEdge` fetches a
+ * real page out of R2 via the Worker and asserts status, body bytes,
  * `Content-Type`, `ETag` and the conditional 304 — not merely that something
- * well-formed answers on the route.
+ * well-formed answers on the route. Its fixture is the hand-seeded canary from
+ * `scripts/seed-edge-canary.ts`, which stays: it is a FIXED slug with fixed
+ * bytes, so it can assert byte equality and a stable `ETag` across deploys, and
+ * it keeps the serve assertion independent of the control plane being up.
  *
- * TODO(E04): the *publish* half. The page it asserts is the canary from
- * `scripts/seed-edge-canary.ts`, written into R2 + KV by hand, because there is
- * no publish path until E04. What is still unproven is that a page published
- * *through the control plane* reaches those stores in the right shape. When E04
- * lands, replace the seeded fixture with: publish a fixture page through the
- * publish API, assert the same things here, then delete it. The assertions in
- * `smokeEdge` do not change — only where the fixture comes from.
+ * THE PUBLISH HALF (E04): `smokePublish` closes what E03 could only narrow.
+ * There is a publish path now, so the smoke uses it: one page published through
+ * `POST /api/publish` on the deployed control plane, asserted to serve at the
+ * `live_url` the API minted, then deleted through `DELETE /api/sites/:anonToken`.
+ * That is the full write chain — Postgres, R2 object, `slugs/{slug}.json`, KV,
+ * purge — proven against the deployment that was just released, on every deploy.
+ * It leaves nothing behind: a smoke that accumulates pages stops being runnable.
+ *
+ * There is deliberately NO hostname literal in either half. The canary's slug is
+ * derived from `--edge-url`; the published page's host comes back in the API
+ * response and is checked against the slug the same response returned.
  * ---------------------------------------------------------------------------
  */
 import { setTimeout as sleep } from "node:timers/promises";
 
+import { publishResponseSchema } from "@kept/shared";
 import { config } from "dotenv";
 import postgres from "postgres";
 
@@ -57,8 +65,16 @@ config({ path: ".env.local" });
 
 /** Per-request cap. A hung socket must not hold a release open. */
 const REQUEST_TIMEOUT_MS = 15_000;
-/** Whole-run cap, including warm retries. */
-const OVERALL_DEADLINE_MS = 120_000;
+/**
+ * Whole-run cap, including warm retries and the publish canary's serve poll.
+ * The publish leg is sequential after the parallel ones and can spend up to
+ * `PUBLISH_SERVE_TIMEOUT_MS` waiting for a brand-new page to answer.
+ */
+const OVERALL_DEADLINE_MS = 180_000;
+
+/** How long a page published seconds ago gets to serve before this is a failure. */
+const PUBLISH_SERVE_TIMEOUT_MS = 30_000;
+const PUBLISH_SERVE_INTERVAL_MS = 1_500;
 
 /**
  * Railway runs the dev service with Serverless enabled (task 003) and documents
@@ -76,20 +92,31 @@ function pass(name: string, detail: string): StoreResult {
   return { name, pass: true, detail };
 }
 
-/** Single bounded GET. Rejects on DNS/TLS/connection failure or timeout. */
+/** Single bounded request. Rejects on DNS/TLS/connection failure or timeout. */
+async function send(
+  url: string,
+  deadline: number,
+  init: { method: string; headers?: Record<string, string>; body?: string } = {
+    method: "GET",
+  },
+): Promise<Response> {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) throw new Error("overall deadline exceeded");
+  return fetch(url, {
+    ...init,
+    redirect: "follow",
+    headers: { "user-agent": "kept-smoke-release", ...init.headers },
+    signal: AbortSignal.timeout(Math.min(REQUEST_TIMEOUT_MS, remaining)),
+  });
+}
+
+/** The GET case, which is most of them. */
 async function get(
   url: string,
   deadline: number,
   headers: Record<string, string> = {},
 ): Promise<Response> {
-  const remaining = deadline - Date.now();
-  if (remaining <= 0) throw new Error("overall deadline exceeded");
-  return fetch(url, {
-    method: "GET",
-    redirect: "follow",
-    headers: { "user-agent": "kept-smoke-release", ...headers },
-    signal: AbortSignal.timeout(Math.min(REQUEST_TIMEOUT_MS, remaining)),
-  });
+  return send(url, deadline, { method: "GET", headers });
 }
 
 /** Release the socket for a response whose body we are about to discard. */
@@ -250,6 +277,175 @@ async function smokeEdge(edgeUrl: string, deadline: number): Promise<StoreResult
 }
 
 /**
+ * The page the publish canary publishes. UNIQUE PER RUN, deliberately: dedup is
+ * per publisher and per byte content, so a fixed document would come back
+ * `deduped: true` on the second deploy and the smoke would stop exercising a
+ * fresh four-store write. Nothing derives a slug or a host from it — the API
+ * mints those and hands them back.
+ */
+function publishCanaryHtml(runId: string): string {
+  return [
+    "<!doctype html>",
+    '<html lang="en">',
+    "<head>",
+    '<meta charset="utf-8">',
+    `<title>kept publish canary — ${runId}</title>`,
+    "</head>",
+    "<body>",
+    `<h1>kept-publish-canary ${runId}</h1>`,
+    "<p>Published through POST /api/publish by the release smoke, asserted at the",
+    " edge, and deleted again in the same run. If you are reading this on a live",
+    " page, a smoke run failed to clean up after itself.</p>",
+    "</body>",
+    "</html>",
+    "",
+  ].join("\n");
+}
+
+/**
+ * PUBLISH → SERVE → DELETE, through the control plane that was just deployed.
+ *
+ * This is the half `smokeEdge` cannot cover. The canary it asserts is written
+ * into R2 + KV by hand, so it proves the Worker reads the stores correctly and
+ * says nothing about whether a publish still WRITES them correctly — a broken
+ * pointer write, a missing purge or a botched manifest would leave that check
+ * perfectly green. Here the fixture comes from the API: if the four-store write
+ * regressed, the minted `live_url` does not serve these bytes.
+ *
+ * The whole chain is asserted from the response alone. No hostname literal, no
+ * environment fork: the host is checked against the slug the SAME response
+ * returned, so dev and prod differ only in `--web-url`.
+ *
+ * Runs AFTER the parallel checks, which is load-bearing on dev: `smokeWeb` warms
+ * a slept Railway service through its 502s first, so this POST — which must not
+ * be retried, because a retried publish is a second page — meets a service that
+ * is already awake.
+ */
+async function smokePublish(webUrl: string, deadline: number): Promise<StoreResult> {
+  const name = "publish";
+  const runId = crypto.randomUUID().slice(0, 8);
+  const html = publishCanaryHtml(runId);
+  const publishUrl = new URL("/api/publish", webUrl).toString();
+
+  // A bare POST with an HTML body: no cookie, no auth, no Turnstile — the
+  // literal contract the PRD promises an agent.
+  let res: Response;
+  try {
+    res = await send(publishUrl, deadline, {
+      method: "POST",
+      headers: { "content-type": "text/html" },
+      body: html,
+    });
+  } catch (err) {
+    return fail(name, `POST ${publishUrl} — no HTTP response (${errText(err)})`);
+  }
+
+  if (res.status !== 201) {
+    const detail = (await res.text().catch(() => "")).slice(0, 200);
+    return fail(name, `POST ${publishUrl} → HTTP ${res.status} (expected 201) ${detail}`);
+  }
+
+  // Parsed through the SHARED schema — the same one an agent generates its
+  // client from — so a field that quietly changed shape fails the release.
+  const parsed = publishResponseSchema.safeParse(await res.json().catch(() => null));
+  if (!parsed.success) {
+    return fail(
+      name,
+      `POST ${publishUrl} → 201 but the body is not the publish contract: ${parsed.error.issues
+        .map((issue) => `${issue.path.join(".") || "(root)"} ${issue.message}`)
+        .join("; ")}`,
+    );
+  }
+  const { live_url: liveUrl, slug, anonToken, deduped } = parsed.data;
+
+  const minted = new URL(liveUrl);
+  if (minted.protocol !== "https:") {
+    return fail(name, `POST ${publishUrl} → 201 but live_url is not HTTPS: "${liveUrl}"`);
+  }
+  // The host must be the minted slug on whatever serving domain this track uses.
+  // Checked against the SAME response, which is what keeps the literal out.
+  if (!minted.host.startsWith(`${slug}.`)) {
+    return fail(name, `live_url host "${minted.host}" does not carry the minted slug "${slug}"`);
+  }
+  if (deduped) {
+    return fail(name, `POST ${publishUrl} → 201 but deduped:true — the canary bytes are not unique`);
+  }
+
+  /** Delete on the way out of every branch below. Never leave a page behind. */
+  const cleanup = async (): Promise<string> => {
+    const deleteUrl = new URL(`/api/sites/${anonToken}`, webUrl).toString();
+    try {
+      const del = await send(deleteUrl, deadline, { method: "DELETE" });
+      await drain(del);
+      return del.ok ? "" : `HTTP ${del.status}`;
+    } catch (err) {
+      return errText(err);
+    }
+  };
+
+  // A brand-new page is served through `slugs/{slug}.json` until KV catches up,
+  // so this is expected to answer immediately — the poll is for the network, not
+  // for propagation. Each attempt carries its own query string for the reason
+  // `smokeEdge` documents: the cache must never be what answers a smoke.
+  const serveDeadline = Date.now() + PUBLISH_SERVE_TIMEOUT_MS;
+  let served: Response | null = null;
+  let lastStatus = 0;
+  while (Date.now() < serveDeadline) {
+    const probe = new URL(liveUrl);
+    probe.searchParams.set("smoke", crypto.randomUUID());
+    try {
+      const attempt = await get(probe.toString(), deadline);
+      if (attempt.status === 200) {
+        served = attempt;
+        break;
+      }
+      lastStatus = attempt.status;
+      await drain(attempt);
+    } catch (err) {
+      lastStatus = 0;
+      void err;
+    }
+    await sleep(PUBLISH_SERVE_INTERVAL_MS);
+  }
+
+  if (!served) {
+    const cleanupError = await cleanup();
+    return fail(
+      name,
+      `published ${slug} but GET ${liveUrl} never returned 200 (last: ${lastStatus || "no response"}) — the four-store write or the pointer is broken` +
+        (cleanupError ? `; cleanup also failed (${cleanupError})` : ""),
+    );
+  }
+
+  const body = await served.text();
+  const contentType = served.headers.get("content-type") ?? "";
+  const cleanupError = await cleanup();
+
+  if (body !== html) {
+    return fail(
+      name,
+      `GET ${liveUrl} → 200 but served ${body.length}B, not the ${html.length}B published`,
+    );
+  }
+  if (!contentType.startsWith("text/html")) {
+    return fail(name, `GET ${liveUrl} → 200 with Content-Type "${contentType}"`);
+  }
+  if (cleanupError) {
+    // Not a warning. The next run publishes another one, and a smoke that
+    // accumulates live pages stops being runnable.
+    return fail(
+      name,
+      `published and served ${slug}, but DELETE failed (${cleanupError}) — the page is still live and must be deleted by hand`,
+    );
+  }
+
+  return pass(
+    name,
+    `POST /api/publish → 201 "${slug}", ${body.length}B served at ${minted.host}, then deleted`,
+  );
+}
+
+/**
  * Neon reachability: a trivial `SELECT 1` over the runtime (pooled) URL, which
  * is PgBouncer in transaction mode — hence `prepare: false`, matching
  * lib/db/index.ts. Proves the deployed control plane's database is actually
@@ -300,6 +496,10 @@ async function main(): Promise<void> {
     smokeNeon(),
   ]);
 
+  // Sequential, and last: it publishes a real page, and it wants the control
+  // plane already warmed by `smokeWeb` because its POST must not be retried.
+  results.push(await smokePublish(webUrl, deadline));
+
   for (const r of results) console.log(line(r));
 
   const failed = results.filter((r) => !r.pass);
@@ -313,7 +513,10 @@ async function main(): Promise<void> {
   }
   console.log(`\nSMOKE PASS — ${results.length}/${results.length} assertions`);
   console.log(
-    "      NOTE: the edge check serves a HAND-SEEDED canary; the publish path is still unproven (TODO(E04)).",
+    "      Both halves are covered: the edge check serves the hand-seeded canary,",
+  );
+  console.log(
+    "      and the publish check writes a page through the API, serves it and deletes it.",
   );
   process.exit(0);
 }

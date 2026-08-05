@@ -1,5 +1,12 @@
 import { config } from "dotenv";
-import type { APIRequestContext, Page } from "@playwright/test";
+import {
+  request as apiRequest,
+  type APIRequestContext,
+  type APIResponse,
+  type Page,
+} from "@playwright/test";
+
+import playwrightConfig from "../playwright.config";
 
 /**
  * The gate and the cleanup every spec that publishes for real shares.
@@ -77,6 +84,16 @@ export function trackDrafts(page: Page): Promise<string | null>[] {
   return tokens;
 }
 
+/** Delete one draft through the real anonymous manage API. Best effort. */
+export async function deleteDraft(
+  request: APIRequestContext,
+  token: string,
+): Promise<void> {
+  await request.delete(`/api/sites/${token}`).catch(() => {
+    /* best effort: a failed teardown must not fail the assertion above it */
+  });
+}
+
 /** Delete every tracked draft through the real anonymous manage API. */
 export async function deleteDrafts(
   request: APIRequestContext,
@@ -84,8 +101,70 @@ export async function deleteDrafts(
 ): Promise<void> {
   for (const token of await Promise.all(tokens.splice(0))) {
     if (!token) continue;
-    await request.delete(`/api/sites/${token}`).catch(() => {
-      /* best effort: a failed teardown must not fail the assertion above it */
-    });
+    await deleteDraft(request, token);
   }
+}
+
+/**
+ * The control plane under test, taken from Playwright's own `baseURL` so there
+ * is ONE definition of it. Hooks that cannot take the test-scoped `request`
+ * fixture (`beforeAll` / `afterAll`) build their own context against this.
+ */
+export const controlPlaneUrl: string = (() => {
+  const baseURL = playwrightConfig.use?.baseURL;
+  if (!baseURL) throw new Error("playwright.config.ts must define use.baseURL");
+  return baseURL;
+})();
+
+/** An API context aimed at the control plane, for `beforeAll`/`afterAll`. */
+export function newApiContext(): Promise<APIRequestContext> {
+  return apiRequest.newContext({ baseURL: controlPlaneUrl });
+}
+
+/**
+ * The bare `POST /api/publish` the PRD promises an agent: a `text/html` body and
+ * nothing else — no cookie, no auth header, no Turnstile token. Returns the raw
+ * response so a spec can assert the status, the headers AND the body; only the
+ * caller knows which of those it is testing.
+ *
+ * `headers` exists for the ONE case that needs it: dedup is keyed on a salted
+ * hash of IP + user agent, so a second, distinct publisher identity is a second
+ * `user-agent` from the same machine.
+ */
+export function publishViaApi(
+  request: APIRequestContext,
+  html: string,
+  headers: Record<string, string> = {},
+): Promise<APIResponse> {
+  return request.post("/api/publish", {
+    headers: { "content-type": "text/html", ...headers },
+    data: html,
+  });
+}
+
+/** What one GET of a served page tells us. */
+export interface EdgeProbe {
+  status: number;
+  cacheControl: string;
+  contentType: string;
+  body: string;
+}
+
+/**
+ * One GET of a hosted page, straight off the deployed Worker.
+ *
+ * NO QUERY STRING, EVER. The Worker keys its cache on the whole URL, so a
+ * cache-busting parameter would quietly defeat the purge these probes exist to
+ * observe — the opposite of what `smoke-release.ts` needs, where a fresh URL is
+ * what forces the pipeline. Plain `fetch`, not an `APIRequestContext`, so no
+ * Playwright-side connection reuse or cookie jar is in the picture.
+ */
+export async function probeEdge(url: string): Promise<EdgeProbe> {
+  const res = await fetch(url, { redirect: "manual" });
+  return {
+    status: res.status,
+    cacheControl: res.headers.get("cache-control") ?? "",
+    contentType: res.headers.get("content-type") ?? "",
+    body: await res.text(),
+  };
 }
