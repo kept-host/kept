@@ -15,9 +15,27 @@
  * straight to the DOM through refs (never React state) to stay at 60fps.
  */
 
+import type { PublishError, PublishResponse } from "@kept/shared";
+
+import {
+  checkPageFile,
+  checkPageHtml,
+  LOOKS_LIKE_MARKUP,
+  publishErrorText,
+  publishHtml,
+  type PublishOutcome,
+} from "@/lib/publish/client";
+
 type Ref<T extends HTMLElement = HTMLElement> = { current: T | null };
 
-export type Phase = "idle" | "dragover" | "minting" | "live";
+/**
+ * The tile's visual state machine. `minting` lasts exactly as long as the
+ * publish request is in flight — there is no timer anywhere in this file that
+ * advances it — and `error` is where a failed publish lands, with the API's own
+ * message and a way back to `idle`. Nothing was published when it fails, so
+ * nothing is lost.
+ */
+export type Phase = "idle" | "dragover" | "minting" | "live" | "error";
 export type Tab = "human" | "mcp" | "cli" | "skill" | null;
 export type NotifyState = "idle" | "success" | "error";
 
@@ -56,6 +74,10 @@ export interface EngineRefs {
   liveImgRef: Ref<HTMLImageElement>;
   liveSlugRef: Ref;
   mintSlugRef: Ref;
+  /** The tile's `error` face. */
+  errorRef: Ref;
+  /** Where the API's human-readable failure message is written. */
+  errorTextRef: Ref;
   fileRef: Ref<HTMLInputElement>;
   loaderRef: Ref;
   barRef: Ref;
@@ -166,6 +188,62 @@ export interface EngineProps {
   liveCount: number;
 }
 
+/**
+ * The host the live face shows before anything has been published — the same
+ * string the static markup renders, so the two never disagree. It is a label,
+ * not a destination: every real host comes off the API's `live_url`.
+ */
+const PLACEHOLDER_HOST = "your-page.kept.host";
+
+/**
+ * Which face of the tile each phase shows. A `Record<Phase, …>` rather than a
+ * chain of comparisons on purpose: adding a phase without deciding what it
+ * looks like is then a compile error, not a tile that renders as nothing.
+ */
+const TILE_FACE: Record<Phase, "idle" | "minting" | "live" | "error"> = {
+  idle: "idle",
+  dragover: "idle",
+  minting: "minting",
+  live: "live",
+  error: "error",
+};
+
+/**
+ * The tile's box-shadow per phase. `null` means "left to `slotFx`", which
+ * paints the breathing idle glow every frame. Exhaustive for the same reason
+ * as `TILE_FACE`.
+ */
+const TILE_GLOW: Record<Phase, string | null> = {
+  idle: null,
+  dragover:
+    "0 0 0 2px var(--accent),0 0 80px 18px rgba(109,74,255,.62),0 26px 70px rgba(40,30,20,.22)",
+  minting:
+    "0 0 0 1.5px var(--accent),0 0 56px 12px rgba(109,74,255,.55),0 22px 60px rgba(40,30,20,.2)",
+  live: "0 0 0 2px var(--accent),0 0 50px 8px rgba(109,74,255,.45),0 26px 70px rgba(40,30,20,.28)",
+  error:
+    "0 0 0 1.6px var(--danger),0 0 44px 8px color-mix(in srgb,var(--danger) 34%,transparent),0 22px 60px rgba(40,30,20,.2)",
+};
+
+/** `slotFx`'s idle glow held at mid-pulse, for the reduced-motion still. */
+const IDLE_GLOW_STILL =
+  "0 0 0 1.5px var(--accent),0 0 45px 9px rgba(109,74,255,.45),0 22px 60px rgba(40,30,20,.2)";
+
+/** The host of an absolute URL, or the placeholder if it will not parse. */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return PLACEHOLDER_HOST;
+  }
+}
+
+/** A paste into a field is a paste into that field, never a publish. */
+function isEditable(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el || typeof el.closest !== "function") return false;
+  return !!el.closest("input,textarea,select,[contenteditable]");
+}
+
 export class KeptEngine {
   refs: EngineRefs;
   props: EngineProps;
@@ -187,7 +265,18 @@ export class KeptEngine {
   highlightT = -1;
   highlightOn = 0;
   count: number;
-  liveSlug = "your-page.kept.host";
+  /**
+   * The host shown on the live face. Before anything is published it is the
+   * same placeholder the static markup renders; after a publish it is the host
+   * of the response's `live_url`. The serving domain is per-track
+   * (`kept.host` / `kept-dev.xyz`) and server-only, so it is never rebuilt
+   * here — it is read off the URL the API returned.
+   */
+  liveSlug = PLACEHOLDER_HOST;
+  /** The seven-field contract from the last successful publish. */
+  published: PublishResponse | null = null;
+  /** The message shown on the `error` face. */
+  publishError = "";
   tiles: { img: string; slug: string }[] = [];
 
   cardRefs: Ref[] = [];
@@ -230,7 +319,12 @@ export class KeptEngine {
    * Use `this.chain()` rather than calling requestAnimationFrame directly.
    */
   private auxRafs = new Set<number>();
-  mintTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * The in-flight publish. Aborted on unmount and whenever a new publish
+   * starts, so a resolved-too-late response can never paint into a tile that
+   * has moved on (or been detached under React StrictMode).
+   */
+  private publishAbort?: AbortController;
   loadTimer?: ReturnType<typeof setInterval>;
   countTimer?: ReturnType<typeof setInterval>;
   copyTimer?: ReturnType<typeof setTimeout>;
@@ -238,6 +332,7 @@ export class KeptEngine {
   private _over?: (e: DragEvent) => void;
   private _leave?: (e: DragEvent) => void;
   private _drop?: (e: DragEvent) => void;
+  private _paste?: (e: ClipboardEvent) => void;
   private _dragDepth = 0;
   private _enter?: () => void;
   private _leaveT?: () => void;
@@ -492,8 +587,34 @@ export class KeptEngine {
     this._drop = (e: DragEvent) => {
       e.preventDefault();
       this._dragDepth = 0;
-      this.startMint();
+      const data = e.dataTransfer;
+      if (data && data.files.length > 0) {
+        void this.publishFiles([...data.files]);
+        return;
+      }
+      // A dragged text selection is markup often enough to be worth honouring —
+      // it is the same publish path, with the same validation.
+      const text = data ? data.getData("text/plain") : "";
+      if (LOOKS_LIKE_MARKUP.test(text)) {
+        void this.publish(text);
+        return;
+      }
+      // Nothing publishable came with the drop, so take back the promise the
+      // `dragover` face just made.
+      if (this.getState().phase === "dragover") this.applyPhase("idle");
     };
+    // Paste is publish-equivalent (PRD): the same validation, the same phases,
+    // the same endpoint. `text/plain` deliberately — when a document's source is
+    // copied out of an editor or a chat transcript, the source is the plain
+    // flavour; `text/html` would be the browser's rendering of that code block.
+    this._paste = (e: ClipboardEvent) => {
+      if (isEditable(e.target)) return;
+      const text = e.clipboardData?.getData("text/plain") ?? "";
+      if (!LOOKS_LIKE_MARKUP.test(text)) return;
+      e.preventDefault();
+      void this.publish(text);
+    };
+    window.addEventListener("paste", this._paste);
     const root = r.rootRef.current;
     if (root) {
       root.addEventListener("dragenter", this._over as EventListener);
@@ -608,11 +729,12 @@ export class KeptEngine {
     cancelAnimationFrame(this.raf);
     for (const id of this.auxRafs) cancelAnimationFrame(id);
     this.auxRafs.clear();
-    clearTimeout(this.mintTimer);
+    this.publishAbort?.abort();
     clearInterval(this.loadTimer);
     clearInterval(this.countTimer);
     clearTimeout(this.copyTimer);
     if (this._mm) window.removeEventListener("mousemove", this._mm);
+    if (this._paste) window.removeEventListener("paste", this._paste);
     if (this._rs) window.removeEventListener("resize", this._rs);
     if (this._mq && this._mqh) {
       try {
@@ -646,9 +768,18 @@ export class KeptEngine {
   // ---------- React-bound handlers (invoked from the component) ----------
   browse = () => {
     const p = this.getState().phase;
-    if (p === "idle" || p === "dragover") this.refs.fileRef.current?.click();
+    if (p === "idle" || p === "dragover" || p === "error")
+      this.refs.fileRef.current?.click();
   };
-  onFile = () => this.startMint();
+  onFile = () => {
+    const input = this.refs.fileRef.current;
+    // Copy before clearing: `input.files` is live, and the reset below empties
+    // it. Clearing at all is what makes choosing the SAME file twice fire
+    // `change` twice — which a retry after an error is.
+    const files = input?.files ? [...input.files] : [];
+    if (input) input.value = "";
+    void this.publishFiles(files);
+  };
   openAuth = () => {
     this.setState({ authOpen: true });
     setTimeout(() => {
@@ -658,13 +789,36 @@ export class KeptEngine {
   };
   closeAuth = () => this.setState({ authOpen: false });
   reset = () => {
-    this.liveSlug = "your-page.kept.host";
+    this.liveSlug = PLACEHOLDER_HOST;
+    this.published = null;
+    this.publishError = "";
     this.applyPhase("idle");
+  };
+  /** Back to the drop box from the `error` face — the page can be re-dropped. */
+  dismissError = () => {
+    this.publishError = "";
+    this.applyPhase("idle");
+  };
+  /**
+   * The anonymous manage screen for the draft just published. The token is the
+   * only handle a signed-out publisher has, so this is a real navigation to a
+   * real URL, not a modal: it survives a bookmark and a shared link.
+   */
+  manage = () => {
+    const token = this.published?.anonToken;
+    if (token) window.location.assign(`/p/${encodeURIComponent(token)}`);
+  };
+  /** Open the published page itself. */
+  openLive = () => {
+    const url = this.published?.live_url;
+    if (url) window.open(url, "_blank", "noopener,noreferrer");
   };
   copy = () => {
     try {
       if (navigator.clipboard)
-        navigator.clipboard.writeText("https://" + this.liveSlug);
+        navigator.clipboard.writeText(
+          this.published?.live_url ?? "https://" + this.liveSlug,
+        );
     } catch {
       /* noop */
     }
@@ -876,22 +1030,27 @@ export class KeptEngine {
   applyPhase(phase: Phase) {
     this.setState({ phase });
     const r = this.refs;
+    const face = TILE_FACE[phase];
     const idle = r.slotIdleRef.current,
       mint = r.mintingRef.current,
-      live = r.liveRef.current;
+      live = r.liveRef.current,
+      err = r.errorRef.current;
     if (idle) {
-      idle.style.opacity =
-        phase === "idle" || phase === "dragover" ? "1" : "0";
+      idle.style.opacity = face === "idle" ? "1" : "0";
       idle.style.pointerEvents = phase === "idle" ? "auto" : "none";
       idle.style.background =
         phase === "dragover"
           ? "radial-gradient(120% 120% at 50% 40%,#fff,#E7DEFF)"
           : "radial-gradient(120% 120% at 50% 40%,#fff,#F3EFFF)";
     }
-    if (mint) mint.style.opacity = phase === "minting" ? "1" : "0";
+    if (mint) mint.style.opacity = face === "minting" ? "1" : "0";
     if (live) {
-      live.style.opacity = phase === "live" ? "1" : "0";
-      live.style.pointerEvents = phase === "live" ? "auto" : "none";
+      live.style.opacity = face === "live" ? "1" : "0";
+      live.style.pointerEvents = face === "live" ? "auto" : "none";
+    }
+    if (err) {
+      err.style.opacity = face === "error" ? "1" : "0";
+      err.style.pointerEvents = face === "error" ? "auto" : "none";
     }
     const veil = r.veilRef.current;
     if (veil) veil.style.opacity = phase === "dragover" ? "1" : "0";
@@ -929,50 +1088,122 @@ export class KeptEngine {
   applyGlow() {
     const tile = this.refs.tileRef.current;
     if (!tile) return;
-    const p = this.getState().phase;
-    if (p === "live")
-      tile.style.boxShadow =
-        "0 0 0 2px var(--accent),0 0 50px 8px rgba(109,74,255,.45),0 26px 70px rgba(40,30,20,.28)";
-    else if (p === "dragover")
-      tile.style.boxShadow =
-        "0 0 0 2px var(--accent),0 0 80px 18px rgba(109,74,255,.62),0 26px 70px rgba(40,30,20,.22)";
-    else if (p === "minting")
-      tile.style.boxShadow =
-        "0 0 0 1.5px var(--accent),0 0 56px 12px rgba(109,74,255,.55),0 22px 60px rgba(40,30,20,.2)";
+    const glow = TILE_GLOW[this.getState().phase];
+    // `null` is `idle`, whose breathing glow `slotFx` repaints every frame —
+    // except under reduced motion, where there is no frame loop at all and the
+    // previous phase's glow would otherwise stay on the tile forever.
+    if (glow !== null) tile.style.boxShadow = glow;
+    else if (this.reduced) tile.style.boxShadow = IDLE_GLOW_STILL;
   }
-  startMint() {
+
+  // ---------- publish ----------
+  /**
+   * A drop or a file chooser hands over a list. kept hosts one document per
+   * page, so more than one file is a question the product cannot answer —
+   * say so rather than silently publishing the first.
+   */
+  async publishFiles(files: File[]) {
+    if (files.length === 0) {
+      if (this.getState().phase === "dragover") this.applyPhase("idle");
+      return;
+    }
+    if (files.length > 1) {
+      this.applyError({
+        error: "invalid_request",
+        message:
+          "Drop one HTML file — kept hosts a single document per page. Publish the others separately.",
+      });
+      return;
+    }
+    const file = files[0]!;
+    const invalid = checkPageFile(file);
+    if (invalid) {
+      this.applyError(invalid);
+      return;
+    }
+    let html: string;
+    try {
+      html = await file.text();
+    } catch {
+      this.applyError({
+        error: "invalid_request",
+        message: "That file could not be read. Try choosing it again.",
+      });
+      return;
+    }
+    await this.publish(html);
+  }
+
+  /**
+   * The one publish path: drop, file chooser and paste all arrive here.
+   *
+   * `minting` starts when the request starts and ends when it resolves —
+   * however long that is. There is no timer: the phase IS the request. On
+   * failure the tile lands on `error` with the API's own message and nothing
+   * has been published, so there is nothing to lose.
+   */
+  async publish(html: string) {
     const p = this.getState().phase;
+    // A publish already in flight, or a page already live, owns the tile. Reset
+    // ("publish another") or dismiss the error first.
     if (p === "minting" || p === "live") return;
-    const names = [
-      "sunset-notes", "my-portfolio", "launch-notes", "our-wedding",
-      "field-notes", "recipe-box",
-    ];
-    this.liveSlug = names[Math.floor(Math.random() * names.length)] + ".kept.host";
-    this.applyPhase("minting");
+    const invalid = checkPageHtml(html);
+    if (invalid) {
+      this.applyError(invalid);
+      return;
+    }
     const r = this.refs;
-    if (r.mintSlugRef.current)
-      r.mintSlugRef.current.textContent = "https://" + this.liveSlug;
-    const wait = this.reduced ? 500 : 1700;
-    clearTimeout(this.mintTimer);
-    this.mintTimer = setTimeout(() => {
-      const img = this.drawThumb(0, 2, Date.now() % 99999);
-      if (r.liveImgRef.current) r.liveImgRef.current.src = img;
-      if (r.liveSlugRef.current) r.liveSlugRef.current.textContent = this.liveSlug;
-      if (r.liveSlugBigRef.current)
-        r.liveSlugBigRef.current.textContent = this.liveSlug;
-      this.count += 1;
-      this.writeCount();
-      // The gauge field follows: a solid dot takes the slot that was pulsing,
-      // and the pulse moves on to the next one. Session-local only.
-      this.setState({ mintedCount: this.getState().mintedCount + 1 });
-      if (this._gaugeRevealed)
-        this.countUp(
-          r.gaugeNumRef.current,
-          this.gaugeTotal(),
-          this.reduced ? 0 : 900,
-        );
-      this.applyPhase("live");
-    }, wait);
+    if (r.mintSlugRef.current) r.mintSlugRef.current.textContent = "minting link…";
+    this.applyPhase("minting");
+    this.publishAbort?.abort();
+    const abort = new AbortController();
+    this.publishAbort = abort;
+    const outcome: PublishOutcome = await publishHtml(html, abort.signal);
+    // Unmounted, or superseded by a newer publish: this response is no longer
+    // anyone's. Painting it would write into a tile that has moved on.
+    if (abort.signal.aborted) return;
+    if (!outcome.ok) {
+      this.applyError(outcome.error);
+      return;
+    }
+    this.applyLive(outcome.page);
+  }
+
+  /** The `live` face, resolved entirely from the response. */
+  applyLive(page: PublishResponse) {
+    const r = this.refs;
+    this.published = page;
+    this.publishError = "";
+    this.liveSlug = hostOf(page.live_url);
+    const img = this.drawThumb(0, 2, Date.now() % 99999);
+    if (r.liveImgRef.current) r.liveImgRef.current.src = img;
+    if (r.liveSlugRef.current) r.liveSlugRef.current.textContent = this.liveSlug;
+    if (r.liveSlugBigRef.current)
+      r.liveSlugBigRef.current.textContent = this.liveSlug;
+    this.count += 1;
+    this.writeCount();
+    // The gauge field follows: a solid dot takes the slot that was pulsing,
+    // and the pulse moves on to the next one. Session-local only.
+    this.setState({ mintedCount: this.getState().mintedCount + 1 });
+    if (this._gaugeRevealed)
+      this.countUp(
+        r.gaugeNumRef.current,
+        this.gaugeTotal(),
+        this.reduced ? 0 : 900,
+      );
+    this.applyPhase("live");
+  }
+
+  /**
+   * The `error` face. The message is the API's — it is written to be shown to
+   * a visitor — or the pre-flight's, which uses the same shape so there is one
+   * way to fail.
+   */
+  applyError(error: PublishError) {
+    this.publishError = publishErrorText(error);
+    const el = this.refs.errorTextRef.current;
+    if (el) el.textContent = this.publishError;
+    this.applyPhase("error");
   }
 
   // ---------- scroll choreography ----------
