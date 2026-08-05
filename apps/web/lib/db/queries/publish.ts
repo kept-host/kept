@@ -12,6 +12,7 @@
  * inconsistency with a defined unwind (`deleteSiteCascade`) rather than an
  * object in R2 that nobody can name.
  */
+import type { SiteStatus } from "@kept/shared";
 import { and, desc, eq, gt, sql } from "drizzle-orm";
 
 import { mintSlugCandidate } from "../../publish/slug";
@@ -192,6 +193,159 @@ export async function insertAnonymousDraft(
     }
   }
   throw new SlugUnavailableError();
+}
+
+/**
+ * What a bearer token resolves to. The token itself is never part of this.
+ *
+ * Carries the current content state as well as the identity, because the
+ * replace path needs exactly these three values to put the row back if a store
+ * write fails — one read instead of two, and no window in which they change
+ * between them.
+ */
+export interface AnonSite {
+  id: string;
+  slug: string;
+  status: SiteStatus;
+  ownerId: string | null;
+  currentVersionId: string | null;
+  expiresAt: Date | null;
+  contentHash: string | null;
+  sizeBytes: number | null;
+}
+
+/**
+ * THE ONLY QUERY IN THE REPO THAT READS `sites.anon_token_hash`.
+ *
+ * A single exact match on the digest — there is no `anon_token` column to
+ * compare against, so there is no constant-time comparison to write and none
+ * must be added. Equality against a SHA-256 of a 32-byte CSPRNG token leaks
+ * nothing usable: a timing side channel on a hash comparison only tells an
+ * attacker how many leading bytes of a DIGEST they matched, and inverting that
+ * into a token means inverting SHA-256.
+ *
+ * Takes the HASH, never the raw token — the raw token exists only in the URL and
+ * must not travel down into the query layer (see `lib/publish/anon-token.ts`).
+ */
+export async function findSiteByAnonTokenHash(
+  anonTokenHash: string,
+): Promise<AnonSite | null> {
+  const [site] = await db
+    .select({
+      id: sites.id,
+      slug: sites.slug,
+      status: sites.status,
+      ownerId: sites.ownerId,
+      currentVersionId: sites.currentVersionId,
+      expiresAt: sites.expiresAt,
+      contentHash: sites.contentHash,
+      sizeBytes: sites.sizeBytes,
+    })
+    .from(sites)
+    .where(eq(sites.anonTokenHash, anonTokenHash))
+    .limit(1);
+
+  return site ?? null;
+}
+
+export interface ReplaceVersionInput {
+  siteId: string;
+  versionId: string;
+  r2Key: string;
+  contentHash: string;
+  sizeBytes: number;
+}
+
+/**
+ * Insert the new `site_versions` row for a replace and repoint the site at it —
+ * ONE transaction, because a `current_version_id` that names a row which does
+ * not exist is unservable.
+ *
+ * ⚠️ `expires_at` AND `purge_after` ARE DELIBERATELY UNTOUCHED. The draft clock
+ * belongs to the page, not to its bytes: if re-dropping a file restarted the
+ * seven days, anyone could hold a page forever for free by replacing it once a
+ * week, and "keep it" would stop meaning anything. This looks like an omission
+ * later — it is not. The same reasoning is why the slug and `siteId` are stable
+ * across a replace: it is the same page with new contents.
+ */
+export async function insertReplacementVersion(
+  input: ReplaceVersionInput,
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.insert(siteVersions).values({
+      id: input.versionId,
+      siteId: input.siteId,
+      region: "auto",
+      r2Key: input.r2Key,
+      contentHash: input.contentHash,
+      sizeBytes: input.sizeBytes,
+    });
+    await tx
+      .update(sites)
+      .set({
+        currentVersionId: input.versionId,
+        contentHash: input.contentHash,
+        sizeBytes: input.sizeBytes,
+        updatedAt: new Date(),
+      })
+      .where(eq(sites.id, input.siteId));
+  });
+}
+
+/**
+ * The row half of the replace unwind: drop the new version and put the site row
+ * back where it was. Called only after the stores have been rewound.
+ */
+export async function revertReplacementVersion(input: {
+  siteId: string;
+  versionId: string;
+  previous: { versionId: string | null; contentHash: string | null; sizeBytes: number | null };
+}): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx
+      .update(sites)
+      .set({
+        currentVersionId: input.previous.versionId,
+        contentHash: input.previous.contentHash,
+        sizeBytes: input.previous.sizeBytes,
+        updatedAt: new Date(),
+      })
+      .where(eq(sites.id, input.siteId));
+    await tx.delete(siteVersions).where(eq(siteVersions.id, input.versionId));
+  });
+}
+
+/**
+ * The anonymous delete, in Postgres: ARCHIVE, NEVER DESTROY.
+ *
+ * The row, its versions and the R2 objects all stay; only the status moves, and
+ * `purge_after` — set at publish — is what E07's grace-end job sweeps to do the
+ * hard delete. Keeping the row is also what makes a second delete with the same
+ * token return success instead of a 404: the token still resolves, it just
+ * resolves to a page that is already archived.
+ *
+ * `anon_token_hash` is deliberately NOT cleared, for that idempotency and for
+ * E07/E05's late-recovery path.
+ */
+export async function archiveSite(siteId: string): Promise<void> {
+  await db
+    .update(sites)
+    .set({ status: "archived", updatedAt: new Date() })
+    .where(eq(sites.id, siteId));
+}
+
+/**
+ * Store (or clear) the pre-expiry reminder address. E04 only persists it; E05
+ * owns the cron that sends it.
+ */
+export async function setReminderEmail(
+  siteId: string,
+  email: string | null,
+): Promise<void> {
+  await db
+    .update(sites)
+    .set({ reminderEmail: email, updatedAt: new Date() })
+    .where(eq(sites.id, siteId));
 }
 
 /**

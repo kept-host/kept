@@ -12,9 +12,13 @@
  * all live in `lib/publish/pipeline.ts`, which is callable with no server
  * running. No zod parsing here, no SQL, no store client.
  */
-import { publishErrorSchema, type PublishError } from "@kept/shared";
 import { NextResponse } from "next/server";
 
+import {
+  errorResponse,
+  readPageBody,
+  UnreadableBodyError,
+} from "../../../lib/publish/http";
 import { publishPage, type PublisherContext } from "../../../lib/publish/pipeline";
 
 /**
@@ -26,69 +30,6 @@ export const runtime = "nodejs";
 
 /** Every publish mutates four stores; nothing about it is cacheable. */
 export const dynamic = "force-dynamic";
-
-/** JSON body, multipart form, or a raw HTML payload. */
-const JSON_TYPE = "application/json";
-const MULTIPART_TYPE = "multipart/form-data";
-const HTML_TYPE = "text/html";
-
-class UnreadableBodyError extends Error {}
-
-/** Multipart values arrive as `null` when absent; the schema wants `undefined`. */
-function optionalField(value: FormDataEntryValue | null): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-/**
- * Extract the request body into the shape `publishRequestSchema` validates.
- * Three content types, one shape:
- *
- * - `application/json` — `{ html, turnstileToken?, reminderEmail? }`, the PRD's
- *   canonical body and what the hero and E08 send.
- * - `multipart/form-data` — the same fields; `html` may be a file part, which
- *   is what a dropped `.html` file is.
- * - `text/html` — the raw document as the whole body. Kept deliberately small
- *   and deliberately present: it is the difference between the epic's
- *   "`curl -X POST` with an HTML body" acceptance case working literally and
- *   requiring the caller to JSON-encode a document first.
- */
-async function readBody(request: Request): Promise<unknown> {
-  const contentType = (request.headers.get("content-type") ?? "")
-    .split(";")[0]!
-    .trim()
-    .toLowerCase();
-
-  if (contentType === JSON_TYPE) {
-    try {
-      return await request.json();
-    } catch {
-      throw new UnreadableBodyError("The body is not valid JSON.");
-    }
-  }
-
-  if (contentType === MULTIPART_TYPE) {
-    let form: FormData;
-    try {
-      form = await request.formData();
-    } catch {
-      throw new UnreadableBodyError("The multipart body could not be parsed.");
-    }
-    const html = form.get("html");
-    return {
-      html: html instanceof File ? await html.text() : (optionalField(html) ?? ""),
-      turnstileToken: optionalField(form.get("turnstileToken")),
-      reminderEmail: optionalField(form.get("reminderEmail")),
-    };
-  }
-
-  if (contentType === HTML_TYPE) {
-    return { html: await request.text() };
-  }
-
-  throw new UnreadableBodyError(
-    `Unsupported content type "${contentType || "(none)"}". Send ${JSON_TYPE}, ${MULTIPART_TYPE} or ${HTML_TYPE}.`,
-  );
-}
 
 /**
  * The publisher's identity for dedup and E07's rate limiter.
@@ -106,20 +47,10 @@ function publisherFrom(request: Request): PublisherContext {
   };
 }
 
-function errorResponse(status: number, body: PublishError): NextResponse {
-  const headers: Record<string, string> = { "cache-control": "no-store" };
-  // Machine-readable AND transport-standard: agents are the primary caller and
-  // an error they cannot act on is an infinite retry loop.
-  if (body.retry_after_seconds !== undefined) {
-    headers["retry-after"] = String(body.retry_after_seconds);
-  }
-  return NextResponse.json(publishErrorSchema.parse(body), { status, headers });
-}
-
 export async function POST(request: Request): Promise<NextResponse> {
   let body: unknown;
   try {
-    body = await readBody(request);
+    body = await readPageBody(request);
   } catch (err) {
     if (err instanceof UnreadableBodyError) {
       return errorResponse(400, { error: "invalid_request", message: err.message });

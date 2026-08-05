@@ -82,9 +82,16 @@ export interface PublisherContext {
 
 export type PublishOutcome =
   | { ok: true; status: 201; body: PublishResponse }
-  | { ok: false; status: number; body: PublishError };
+  | PublishFailure;
 
-function fail(status: number, body: PublishError): PublishOutcome {
+/**
+ * The failure half, named because task 006's replace/delete/reminder return
+ * different success bodies but the IDENTICAL failure shape — the error enum is
+ * closed and shared, so every route in the epic fails the same way.
+ */
+export type PublishFailure = { ok: false; status: number; body: PublishError };
+
+export function fail(status: number, body: PublishError): PublishFailure {
   return { ok: false, status, body };
 }
 
@@ -93,8 +100,12 @@ function fail(status: number, body: PublishError): PublishOutcome {
  * branch on, so "the body was 6 MB" and "the body had no `html` field" must
  * never arrive as the same code — an unparseable error is an infinite retry
  * loop.
+ *
+ * Exported because task 006's replace runs the SAME validation as publish and
+ * must return the SAME error shapes for the same bodies; a second mapper would
+ * drift the moment one of them grew a case.
  */
-function requestError(error: z.ZodError): PublishOutcome {
+export function requestError(error: z.ZodError): PublishFailure {
   const htmlIssue = error.issues.find((issue) => issue.path[0] === "html");
 
   if (htmlIssue?.code === "too_small") {
@@ -159,6 +170,14 @@ export type StoreWriteResult =
  *
  * `unwound` reports whether the reverse path completed. `false` means the edge
  * and Postgres may now disagree and a human (or E07's audit) has to look.
+ *
+ * `previousVersionId` IS WHAT MAKES THIS SAFE FOR REPLACE. On a publish there is
+ * nothing behind the new manifest, so a failed write unwinds by REMOVING it. On
+ * a replace there is: the slug was already live, and the pointer this call
+ * overwrote named the previous version. Removing the manifest there would take a
+ * working page dark — a worse outcome than the stale one it replaced — so the
+ * unwind RESTORES the previous manifest instead. Same sequence, same file, one
+ * expression of the ordering.
  */
 export async function writePageAndManifest(args: {
   slug: string;
@@ -167,8 +186,10 @@ export async function writePageAndManifest(args: {
   r2Key: string;
   html: string;
   ownerId: string | null;
+  /** Set by replace only: the version the manifest named before this call. */
+  previousVersionId?: string;
 }): Promise<StoreWriteResult> {
-  const { slug, siteId, versionId, r2Key, html, ownerId } = args;
+  const { slug, siteId, versionId, r2Key, html, ownerId, previousVersionId } = args;
   const r2 = r2Store();
 
   try {
@@ -196,11 +217,16 @@ export async function writePageAndManifest(args: {
   }
 
   // Unwind in reverse. `step: "kv"` means the POINTER IS WRITTEN and must be
-  // removed; `"validate"` and `"pointer"` mean nothing reached a store.
+  // removed (publish) or rewound to the previous version (replace);
+  // `"validate"` and `"pointer"` mean nothing reached a store.
   const unwound = await unwindStores({
     slug,
     r2Key,
     pointerWritten: written.step === "kv",
+    restore:
+      previousVersionId === undefined
+        ? undefined
+        : { ...manifest, versionId: previousVersionId, updatedAt: Date.now() },
   });
   return { ok: false, error: `manifest ${written.step}: ${written.error}`, unwound };
 }
@@ -209,18 +235,24 @@ async function unwindStores(args: {
   slug: string;
   r2Key: string;
   pointerWritten: boolean;
+  /** Replace only: the manifest to put back. Absent ⇒ remove the manifest. */
+  restore?: KvManifest;
 }): Promise<boolean> {
   let clean = true;
 
   if (args.pointerWritten) {
-    // `removeManifest` is the inverse of the whole sequence — pointer, then KV,
-    // then purge — and is safe when the KV key was never written: a KV delete
-    // of an absent key is a no-op.
-    const removed = await removeManifest(args.slug);
-    if (!removed.ok) {
+    // Publish: `removeManifest` is the inverse of the whole sequence — pointer,
+    // then KV, then purge — and is safe when the KV key was never written: a KV
+    // delete of an absent key is a no-op.
+    // Replace: `writeManifest` with the previous version restores the same
+    // ordering forwards, leaving the slug serving the bytes it served before.
+    const rewound = args.restore
+      ? await writeManifest(args.slug, args.restore)
+      : await removeManifest(args.slug);
+    if (!rewound.ok) {
       clean = false;
       console.error(
-        `[kept] ROLLBACK INCOMPLETE — slug "${args.slug}" failed to unwind at the "${removed.step}" step: ${removed.error}. A manifest may still resolve this slug with no row behind it. E07 DIVERGENCE AUDIT: reconcile against Postgres, never against an R2 list (contract §7.5).`,
+        `[kept] ROLLBACK INCOMPLETE — slug "${args.slug}" failed to unwind at the "${rewound.step}" step: ${rewound.error}. A manifest may still resolve this slug with no row behind it. E07 DIVERGENCE AUDIT: reconcile against Postgres, never against an R2 list (contract §7.5).`,
       );
     }
   }
@@ -387,7 +419,8 @@ export async function publishPage(
   return respond({ slug, anonToken, expiresAt, deduped: false });
 }
 
-function internalError(): PublishOutcome {
+/** The generic 5xx. Shared with the anonymous manage routes (task 006). */
+export function internalError(): PublishFailure {
   return fail(500, {
     error: "internal_error",
     message:
