@@ -7,7 +7,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "pnpm test:e2e",
+    "test": "pnpm test:unit && pnpm test:e2e",
+    "test:unit": "tsx --test lib/*/*.test.ts",
     "test:e2e": "playwright test",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
@@ -30,6 +31,7 @@
     "@radix-ui/react-switch": "^1.2.6",
     "@radix-ui/react-tabs": "^1.1.13",
     "@radix-ui/react-tooltip": "^1.2.8",
+    "aws4fetch": "^1.0.20",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "drizzle-orm": "^0.45.2",
@@ -44,6 +46,7 @@
     "react-hook-form": "^7.80.0",
     "sonner": "^2.0.7",
     "tailwind-merge": "^2.6.0",
+    "uqr": "^0.1.3",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -53,7 +56,6 @@
     "@types/node": "^20.17.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
-    "aws4fetch": "^1.0.20",
     "dotenv": "^17.4.2",
     "drizzle-kit": "^0.31.10",
     "eslint-config-next": "^15.5.19",

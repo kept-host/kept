@@ -695,6 +695,7 @@ export default function KeptLanding() {
                       </svg>
                     </button>
                     <button
+                      onClick={() => e()?.openLive()}
                       aria-label="Open"
                       style={{
                         width: 38,
@@ -747,19 +748,15 @@ export default function KeptLanding() {
                   >
                     Keep it &amp; manage it &rarr;
                   </button>
-                  <button
-                    onClick={() => e()?.reset()}
-                    style={{
-                      fontFamily: "var(--font-mono)",
-                      fontSize: 13,
-                      color: "var(--text-secondary)",
-                      background: "none",
-                      border: "none",
-                      cursor: "pointer",
-                      borderBottom: "1px solid var(--border)",
-                      paddingBottom: 3,
-                    }}
-                  >
+                  {/* The anonymous manage screen: copy, QR, the draft
+                      countdown, replace and delete all live there, keyed by the
+                      token the publish response returned. Signed out, that
+                      token is the only handle on this page — so this is a real
+                      URL, not a panel. */}
+                  <button onClick={() => e()?.manage()} style={liveTextAction}>
+                    manage this draft &rarr;
+                  </button>
+                  <button onClick={() => e()?.reset()} style={liveTextAction}>
                     publish another
                   </button>
                 </div>
@@ -2459,7 +2456,11 @@ export default function KeptLanding() {
         </div>
       </footer>
 
-      {/* ===================== THE TRAVELING SLOT ===================== */}
+      {/* ===================== THE TRAVELING SLOT =====================
+          Its four faces carry `data-face` (idle | minting | live | error) —
+          one per `Phase` the engine drives. The engine crossfades them by
+          opacity, which Playwright still counts as "visible", so the e2e suite
+          asserts on `data-face`'s opacity rather than on visible text. */}
       <div
         ref={bind(refs.tileRef)}
         style={{
@@ -2486,6 +2487,7 @@ export default function KeptLanding() {
         >
           <div
             ref={bind(refs.slotIdleRef)}
+            data-face="idle"
             onClick={() => e()?.browse()}
             style={{
               position: "absolute",
@@ -2522,6 +2524,7 @@ export default function KeptLanding() {
           </div>
           <div
             ref={bind(refs.mintingRef)}
+            data-face="minting"
             style={{
               position: "absolute",
               inset: 0,
@@ -2574,6 +2577,7 @@ export default function KeptLanding() {
           </div>
           <div
             ref={bind(refs.liveRef)}
+            data-face="live"
             style={{ position: "absolute", inset: 0, opacity: 0, pointerEvents: "none" }}
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -2645,6 +2649,75 @@ export default function KeptLanding() {
                 your-page.kept.host
               </span>
             </div>
+          </div>
+          {/* The `error` face. Nothing was published when this shows, so the
+              only thing lost is the attempt — the message is the API's own and
+              the button puts the drop box back. */}
+          <div
+            ref={bind(refs.errorRef)}
+            data-face="error"
+            role="alert"
+            style={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 10,
+              padding: "18px 20px",
+              textAlign: "center",
+              border: "1.5px solid var(--danger)",
+              borderRadius: 14,
+              background:
+                "radial-gradient(120% 120% at 50% 40%,var(--surface),color-mix(in srgb,var(--danger) 10%,var(--surface)))",
+              opacity: 0,
+              pointerEvents: "none",
+              overflow: "hidden",
+            }}
+          >
+            <svg
+              width="28"
+              height="28"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="var(--danger)"
+              strokeWidth="1.7"
+              aria-hidden
+            >
+              <path d="M12 9v4M12 17h.01" />
+              <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+            </svg>
+            <div style={{ fontWeight: 600, fontSize: 15, color: "var(--text)" }}>
+              Couldn&rsquo;t keep it
+            </div>
+            <div
+              ref={bind(refs.errorTextRef)}
+              style={{
+                fontSize: 12.5,
+                lineHeight: 1.45,
+                color: "var(--text-secondary)",
+                overflow: "hidden",
+              }}
+            >
+              Nothing was published.
+            </div>
+            <button
+              onClick={() => e()?.dismissError()}
+              style={{
+                fontFamily: "var(--font-display)",
+                fontWeight: 600,
+                fontSize: 13,
+                background: "var(--text)",
+                color: "var(--bg)",
+                border: "none",
+                borderRadius: "var(--r-md)",
+                padding: "9px 16px",
+                cursor: "pointer",
+              }}
+            >
+              Try again
+            </button>
           </div>
           <div
             ref={bind(refs.lockCardRef)}
@@ -3222,6 +3295,8 @@ function makeRefs(): EngineRefs {
     liveImgRef: r<HTMLImageElement>(),
     liveSlugRef: r(),
     mintSlugRef: r(),
+    errorRef: r(),
+    errorTextRef: r(),
     fileRef: r<HTMLInputElement>(),
     loaderRef: r(),
     barRef: r(),
@@ -3281,6 +3356,17 @@ function makeRefs(): EngineRefs {
   };
 }
 
+/** The quiet text actions under the live link — manage, publish another. */
+const liveTextAction: React.CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontSize: 13,
+  color: "var(--text-secondary)",
+  background: "none",
+  border: "none",
+  cursor: "pointer",
+  borderBottom: "1px solid var(--border)",
+  paddingBottom: 3,
+};
 const navLink: React.CSSProperties = {
   color: "var(--text-secondary)",
   textDecoration: "none",

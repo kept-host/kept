@@ -39,16 +39,31 @@ export const slugSchema = z
     "Slug must be lowercase alphanumeric with single hyphens between segments.",
   );
 
-/** Payload to publish (or re-publish) a page. Slug is optional (auto-assigned). */
+/**
+ * The HTML body of a single published page: non-empty, at most `MAX_PAGE_BYTES`.
+ * Shared so the publish endpoint's request schema (./publish) validates bytes
+ * identically instead of restating the cap.
+ */
+export const pageHtmlSchema = z
+  .string()
+  .min(1, "Page is empty.")
+  .refine(
+    (html) => utf8ByteLength(html) <= MAX_PAGE_BYTES,
+    `Page exceeds the ${MAX_PAGE_BYTES}-byte limit.`,
+  );
+
+/**
+ * Payload to publish (or re-publish) a page with a *caller-chosen* slug.
+ *
+ * **Not the shape `POST /api/publish` accepts.** The PRD rules custom slugs out
+ * at publish — the endpoint auto-mints one, and choosing a slug is the rename
+ * path E06 owns. The endpoint's request schema is `publishRequestSchema` in
+ * ./publish, which has no `slug`. This schema is kept for that later
+ * slug-bearing flow; do not wire it into the publish route.
+ */
 export const publishPayloadSchema = z.object({
   /** Raw HTML for the single page (v1 is single-file). */
-  html: z
-    .string()
-    .min(1, "Page is empty.")
-    .refine(
-      (html) => utf8ByteLength(html) <= MAX_PAGE_BYTES,
-      `Page exceeds the ${MAX_PAGE_BYTES}-byte limit.`,
-    ),
+  html: pageHtmlSchema,
   /** Optional desired slug; assigned by the control plane when omitted. */
   slug: slugSchema.optional(),
   /** Data residency; defaults to `auto`. */

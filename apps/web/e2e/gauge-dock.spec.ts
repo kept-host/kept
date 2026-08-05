@@ -1,5 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 
+import { deleteDrafts, SKIP_LIVE_PUBLISH, trackDrafts } from "./live-publish";
+
 /**
  * The open-books gauge's "next free slot" dot, and the traveling drop tile that
  * docks onto it.
@@ -294,9 +296,18 @@ test.describe("gauge next-slot dock", () => {
     await expect.poll(() => choosers.length, { timeout: 10_000 }).toBe(1);
   });
 
+  /**
+   * A mint is a REAL publish since E04 task 007 replaced the simulated one, so
+   * this test needs the dev stores and skips without them. The gate and the
+   * teardown are shared with `publish-flow.spec.ts`; the draft it creates is
+   * deleted through the anonymous manage API at the end.
+   */
   test("a mint fills the slot and moves the pulse to the next one, without touching the baseline", async ({
     page,
+    request,
   }) => {
+    test.skip(!!SKIP_LIVE_PUBLISH, String(SKIP_LIVE_PUBLISH));
+    const drafts = trackDrafts(page);
     await page.goto("/");
     // Bring the field into view first: the number counts up on reveal, so a
     // mint before that has nothing to add to yet.
@@ -341,5 +352,7 @@ test.describe("gauge next-slot dock", () => {
     expect(
       (await page.locator("header").first().innerText()).replace(/\s+/g, " "),
     ).toContain("0 PAGES KEPT");
+
+    await deleteDrafts(request, drafts);
   });
 });

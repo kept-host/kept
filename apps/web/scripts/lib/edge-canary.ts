@@ -16,6 +16,10 @@
  * The manifest is built through `kvManifestSchema` from `@kept/shared` — the
  * exact parser `apps/edge/src/manifest.ts` validates KV with — so a fixture that
  * the Worker would reject cannot be written in the first place.
+ *
+ * The `slugs/{slug}.json` pointer key used to be defined here too. It now lives
+ * with the code that writes it — `lib/storage/manifest.ts` (E04 task 004) — so
+ * the contract §7.3 sequence has exactly one implementation in the repo.
  */
 import {
   kvManifestSchema,
@@ -58,16 +62,6 @@ export function canarySlug(edgeUrl: string): string {
 /** `sites/{siteId}/{versionId}/{path}` — the R2 layout, one definition. */
 export function canaryObjectKey(path = "index.html"): string {
   return `sites/${CANARY_SITE_ID}/${CANARY_VERSION_ID}/${path}`;
-}
-
-/**
- * `slugs/{slug}.json` — the slug pointer the Worker probes on a KV miss
- * (`docs/edge-purge-contract.md` §7). The seeder writes it because the canary
- * must look exactly like a control-plane publish, including the pointer that
- * E04 is obliged to write.
- */
-export function canaryPointerKey(slug: string): string {
-  return `slugs/${slug}.json`;
 }
 
 /**

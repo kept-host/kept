@@ -49,28 +49,22 @@ describe("manifest status matrix", () => {
     ).toEqual([...MANIFEST_STATUSES].sort());
   });
 
-  it("leaves SITE_STATUSES — the pgEnum-bearing tuple — untouched", () => {
+  it("pins SITE_STATUSES — the pgEnum-bearing tuple", () => {
     // `SITE_STATUSES` is NOT `MANIFEST_STATUSES`. It drives the Drizzle
-    // `pgEnum` in apps/web/lib/db/schema.ts and is baked into the committed
-    // migration drizzle/0000_nasty_moonstone.sql, so removing a value from it —
-    // `resting`, the retired pre-pivot funding state, being the obvious
-    // candidate while reading this file — is a POSTGRES ENUM MIGRATION, not a
-    // rename. That work is owned by E04/E05.
+    // `pgEnum` in apps/web/lib/db/schema.ts, so changing it is a POSTGRES ENUM
+    // MIGRATION, not a rename — a value may only be added or removed here
+    // together with a generated migration in apps/web/drizzle/ that rewrites
+    // the `site_status` type. Pinning the exact tuple means an "obvious
+    // tidy-up" fails a test instead of producing a schema that no longer
+    // matches the deployed database.
     //
-    // E03 has no business editing it, and the serving contract already excludes
-    // `resting` by leaving it out of `MANIFEST_STATUSES`. Pinning the exact
-    // tuple here means an "obvious tidy-up" from the edge side fails a test
-    // instead of producing a schema that no longer matches the deployed
-    // database.
+    // E04's migration retired the last pre-pivot status this way. It had never
+    // been in `MANIFEST_STATUSES`, so the serving contract did not move —
+    // which is exactly the property this pair of tests exists to keep visible.
     expect(
       [...SITE_STATUSES],
-      "SITE_STATUSES drives a Postgres enum and a committed migration — changing it from E03 desynchronises the schema from the deployed database. Dropping `resting` is E04/E05's migration to write.",
-    ).toEqual(["live", "under_review", "quarantined", "resting", "expired", "removed", "archived"]);
-
-    expect(
-      MANIFEST_STATUSES.includes("resting" as (typeof MANIFEST_STATUSES)[number]),
-      "and `resting` must stay out of the SERVING contract regardless — the Worker has no branch for it",
-    ).toBe(false);
+      "SITE_STATUSES drives a Postgres enum — changing it without a generated enum-rewrite migration desynchronises the schema from the deployed database.",
+    ).toEqual(["live", "under_review", "quarantined", "expired", "removed", "archived"]);
   });
 
   for (const status of SERVING_STATUSES) {

@@ -19,10 +19,10 @@
  */
 import { config } from "dotenv";
 
+import { requireEnv } from "./lib/cli-args";
 import {
   CF_API,
   line,
-  requireEnv,
   smokeKv,
   smokeR2,
   type StoreResult,

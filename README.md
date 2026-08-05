@@ -147,8 +147,14 @@ Key variable groups (see `.env.example` for the full set):
 - **Neon** — `DATABASE_URL` (pooled, runtime) + `MIGRATION_DATABASE_URL`
   (direct, for `drizzle-kit`).
 - **Cloudflare** — R2 S3 credentials, `R2_BUCKET_AUTO` / `R2_BUCKET_EU`,
-  `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `KV_NAMESPACE_ID`.
-- **App** — `NEXT_PUBLIC_APP_URL`, `NEXT_TELEMETRY_DISABLED`.
+  `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `KV_NAMESPACE_ID`,
+  `CLOUDFLARE_ZONE_ID` (cache purge, per track).
+- **Serving** — `KEPT_BASE_DOMAIN`, the suffix pages are served from
+  (`kept-dev.xyz` / `kept.host`, bare hostname). Mirrors the Worker var of the
+  same name; distinct from `NEXT_PUBLIC_APP_URL`, which is the control plane's
+  own origin.
+- **App** — `NEXT_PUBLIC_APP_URL`, `NEXT_TELEMETRY_DISABLED`,
+  `PUBLISHER_HASH_SALT`.
 - **CI/deploy** — `RAILWAY_TOKEN`, `RAILWAY_SERVICE_ID`, `NEON_API_KEY`,
   `SMOKE_WEB_URL`, `SMOKE_EDGE_URL`.
 - **Reserved but empty** — `BETTER_AUTH_*`, `GITHUB_CLIENT_*`, `RESEND_API_KEY`,
