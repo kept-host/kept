@@ -40,7 +40,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { config } from "dotenv";
 import postgres from "postgres";
 
-import { requireUrl } from "./lib/cli-args";
+import { requireEnv, requireUrl } from "./lib/cli-args";
 import {
   canaryHtml,
   canarySlug,
@@ -48,7 +48,6 @@ import {
 } from "./lib/edge-canary";
 import {
   line,
-  requireEnv,
   smokeKv,
   smokeR2,
   type StoreResult,
