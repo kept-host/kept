@@ -48,10 +48,22 @@ The **KV manifest contract** is the seam: control plane writes `{ siteId, versio
 
 ## Live components (built in code, not static markup)
 
-MVP screens are designed in Claude Design (project `da93d30e-94eb-40d4-b3d1-4632870bf056`); the imported markup is the **skin** — each epic *wires it to live data + states*, it does not redesign it. Two things are NOT static stills and must be built in code, mounted into placeholders:
+MVP screens are designed in Claude Design (project `da93d30e-94eb-40d4-b3d1-4632870bf056`); the imported markup is the **skin** — each epic *wires it to live data + states*, it does not redesign it. One thing is NOT a static still and must be built in code, mounted into a placeholder:
 
-- **The Vessel** (`components/kept/Vessel.tsx`) — R3F, dynamically imported `ssr:false`, behind `<Suspense>` with a static still fallback (also the no-WebGL fallback). Reacts to a `VesselState` context bus (`idle | dragover | minting | scrolling`). Reduced-motion / no-WebGL → static. Loads only on routes that show it (landing, support, 404 cameo).
 - **The stats dot-field** (E09-open-books) — real open-books data (pages kept, infra cost, uptime) + animation. *(Replaces the old Open Collective funding gauge.)*
+
+> **There is no R3F Vessel, and there is no plan for one.** Earlier revisions of
+> this file specified a `components/kept/Vessel.tsx` — React Three Fiber, `ssr:false`,
+> a `VesselState` context bus. It was never built and the decision is withdrawn;
+> `three` / `@react-three/fiber` are not dependencies and must not be added for this.
+> E01 shipped the landing's drop-box choreography imperatively instead, in
+> `apps/web/components/kept/kept-engine.ts` driving `KeptLanding.tsx` — that is the real thing,
+> and it is what any epic touching the hero should extend.
+>
+> Separately, **"vessel" is also the name of a CSS illustration** — the orb drawn with
+> `--vessel-lit` / `--vessel-shade` / `--vessel-shade-dim` on the Worker's branded
+> system pages (`apps/edge/src/system-pages.ts`). That one is real, shipped and
+> tested. Do not delete it while cleaning up references to the component above.
 
 ## Build order
 

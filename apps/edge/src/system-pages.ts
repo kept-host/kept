@@ -5,15 +5,21 @@
 // what a visitor sees when a page is missing, suspended, or an expired draft.
 //
 // Source: `kept System Pages.dc.html` in the Claude Design project
-// da93d30e-94eb-40d4-b3d1-4632870bf056. The markup below is that file's layout,
-// vessel illustration, and type/colour system — stripped of the design-canvas
-// scaffolding (`<x-dc>`, `<sc-if>`, `<sc-for>`, the JS theme toggle, the page
-// tab switcher) and of the Google Fonts `<link>`.
+// da93d30e-94eb-40d4-b3d1-4632870bf056. The layout and type/colour system below
+// are that file's, stripped of the design-canvas scaffolding (`<x-dc>`,
+// `<sc-if>`, `<sc-for>`, the JS theme toggle, the page tab switcher) and of the
+// Google Fonts `<link>`.
+//
+// The illustration is NOT the design file's. That file drew a frosted-glass
+// vessel holding an orb; it was replaced by the kept mascot (`mascot()`, art
+// in mascot-asset.ts) on all three pages. If the design file is ever re-imported, do not restore
+// the vessel — it is retired everywhere, including in apps/web.
 //
 // ZERO EXTERNAL REQUESTS. No `<link>`, no remote font, no remote image, no
-// `fetch` at render time. The vessel is CSS; the icons are inline SVG. An
-// external asset on the 404 path would be both a per-request cost and a
-// dependency, and this epic's premise is that the serve path depends on nothing.
+// `fetch` at render time. The icons are inline SVG and the mascot travels as a
+// base64 data: URI inside the bundle. An external asset on the 404 path would be
+// both a per-request cost and a dependency, and this epic's premise is that the
+// serve path depends on nothing.
 //
 // The retired third state — the funding-degradation page that the pre-pivot
 // product used — has no template, no union member, and no code path here. The
@@ -21,11 +27,15 @@
 // it. The identically-named `SITE_STATUSES` value is a different symbol, baked
 // into drizzle/0000_nasty_moonstone.sql, and its removal is owned by E04/E05.
 //
-// The design file has no `expired` panel. That retired panel's dimmed-orb vessel
-// is the visual the PRD asks for on the expired-draft page ("orb reads dimmed"),
-// so the expired template reuses that illustration with draft/kept copy.
+// The design file has no `expired` panel. The PRD asks for a dimmed reading on
+// the expired-draft page, which is the mascot's `dim` mood: the same artwork
+// drained by a CSS filter rather than a second asset. Drained rather than
+// absent, because the draft is recoverable for another DRAFT_GRACE_DAYS and the
+// picture should not say "deleted".
 
 import { DRAFT_GRACE_DAYS, DRAFT_TTL_DAYS } from "@kept/shared";
+
+import { MASCOT_DATA_URI } from "./mascot-asset";
 
 export type SystemPage = "notFound" | "suspended" | "expired";
 
@@ -76,12 +86,12 @@ interface SystemPageSpec {
    Light is the default; the dark block is the same token set remapped, so the
    pages have full contrast parity either way a visitor's OS is set.
 
-   Composite values (the vessel gradients) were pre-computed here because the
-   design file expressed them with `color-mix()`, which we do not want on the
-   error path for older browsers. The derivation is noted beside each.
+   `--mascot` is the artwork itself, carried as a data: URI so one definition
+   serves every page and both colour schemes.
    ─────────────────────────────────────────────────────────────────────────── */
 const TOKENS_CSS = `
 :root{
+  --mascot:url("${MASCOT_DATA_URI}");
   --bg:#FAF8F4;              /* --bg */
   --surface:#FFFFFF;         /* --surface */
   --surface-sunken:#F2EFE9;  /* --surface-sunken */
@@ -89,9 +99,7 @@ const TOKENS_CSS = `
   --text-secondary:#6B645C;  /* --text-secondary */
   --border:#E5E0D8;          /* --border */
   --accent:#6D4AFF;          /* --accent */
-  --accent-rgb:109,74,255;   /* --accent, as channels for the orb bloom */
   --warning:#E0A33A;         /* --warning */
-  --warning-rgb:224,163,58;  /* --warning, as channels for the icon wash */
   --on-accent:#FFFFFF;       /* shadcn --color-primary-foreground */
   --shadow-sm:0 1px 2px rgba(40,30,20,0.05);   /* --shadow-sm */
   --shadow-md:0 4px 16px rgba(40,30,20,0.08);  /* --shadow-md */
@@ -99,17 +107,6 @@ const TOKENS_CSS = `
   --r-md:12px;               /* --r-md */
   --r-lg:16px;               /* --r-lg */
   --r-pill:999px;            /* --r-pill */
-  /* vessel body, lit face: --surface 92% + #fff  ->  #FFFFFF */
-  --vessel-lit:#FFFFFF;
-  /* vessel body, shaded face: --bg 55% + --accent-soft 45%  ->  #F4F1F9 */
-  --vessel-shade:#F4F1F9;
-  /* dimmed vessel shaded face: --bg 70% + --border 30%  ->  #F4F1EC */
-  --vessel-shade-dim:#F4F1EC;
-  /* dimmed orb: --accent 30% + --surface-sunken 70%  ->  #CABEF0 */
-  --orb-dim:#CABEF0;
-  /* cast shadow, from the warm rgb the elevation tokens use */
-  --vessel-cast:rgba(40,30,20,0.16);
-  --vessel-rim:rgba(255,255,255,0.45);
 }
 @media (prefers-color-scheme:dark){
   :root{
@@ -120,22 +117,11 @@ const TOKENS_CSS = `
     --text-secondary:#A8A096;  /* dark --text-secondary */
     --border:#2A2620;          /* dark --border */
     --accent:#8B6DFF;          /* dark --accent, lifted for legibility */
-    --accent-rgb:139,109,255;  /* dark --accent, as channels */
     /* The dark accent is lifted, which drops white-on-violet to 3.7:1. Flipping
        the button ink to dark --bg restores 5.2:1 — the same ratio light gets. */
     --on-accent:#131210;       /* dark --bg */
     --shadow-sm:0 1px 2px rgba(0,0,0,0.3);   /* dark --shadow-sm */
     --shadow-md:0 4px 16px rgba(0,0,0,0.4);  /* dark --shadow-md */
-    /* dark --surface 92% + #fff  ->  #302D2A */
-    --vessel-lit:#302D2A;
-    /* dark --bg 55% + dark --accent-soft 45%  ->  #1A1623 */
-    --vessel-shade:#1A1623;
-    /* dark --bg 70% + dark --border 30%  ->  #1A1815 */
-    --vessel-shade-dim:#1A1815;
-    /* dark --accent 30% + dark --surface-sunken 70%  ->  #342A54 */
-    --orb-dim:#342A54;
-    --vessel-cast:rgba(0,0,0,0.45);
-    --vessel-rim:rgba(255,255,255,0.10);
   }
 }
 `;
@@ -216,41 +202,26 @@ h1{
   font-family:"JetBrains Mono",ui-monospace,monospace; /* --font-mono */
   font-size:11px;letter-spacing:0.05em;color:var(--text-secondary);margin:22px 0 0;
 }
-/* The vessel — the brand object, drawn in CSS so it costs no request. */
-.stage{position:relative;height:150px;display:flex;align-items:center;justify-content:center;margin-bottom:18px}
-.cast{
-  position:absolute;bottom:24px;width:130px;height:22px;border-radius:50%;
-  background:radial-gradient(ellipse,var(--vessel-cast),transparent 70%);filter:blur(6px);
+/* The mascot. Author-supplied artwork, inlined as a data: URI — see
+   mascot-asset.ts for why it is base64 and how to regenerate it.
+
+   Applied as a background-image rather than an <img> so these pages keep their
+   absolute no-src rule. Deliberately NOT animated: a bobbing, blinking, waving
+   version was built and cut. The height comes from the source asset's 799x894
+   aspect, so a future re-crop cannot silently squash the character. */
+.stage{display:flex;align-items:center;justify-content:center;margin-bottom:18px}
+.mascot{
+  width:170px;aspect-ratio:799/894;
+  background:var(--mascot) center/contain no-repeat;
 }
-.vessel{
-  position:relative;width:92px;height:110px;
-  border-radius:42% 42% 46% 46%/46% 46% 50% 50%;
-  border:1px solid var(--vessel-rim);
-  box-shadow:var(--shadow-md);
-  background:
-    radial-gradient(58% 52% at 50% 58%,rgba(var(--accent-rgb),0.32),transparent 64%),
-    linear-gradient(160deg,var(--vessel-lit),var(--vessel-shade));
-  animation:float 6s ease-in-out infinite;
-}
-.vessel-dim{
-  width:84px;height:100px;opacity:.85;
-  box-shadow:var(--shadow-sm);
-  background:linear-gradient(160deg,var(--vessel-lit),var(--vessel-shade-dim));
-  animation:float-calm 7s ease-in-out infinite;
-}
-.orb{
-  position:absolute;left:50%;top:56%;transform:translate(-50%,-50%);
-  width:18px;height:18px;border-radius:50%;
-  background:var(--surface-sunken);border:1px solid var(--border);
-}
-.orb-dim{top:58%;width:16px;height:16px;background:var(--orb-dim);border:0}
-.lock{
-  width:62px;height:62px;border-radius:50%;margin:0 auto 22px;
-  background:rgba(var(--warning-rgb),0.16);
-  display:flex;align-items:center;justify-content:center;
-}
-@keyframes float{0%,100%{transform:translateY(0) rotate(-3deg)}50%{transform:translateY(-9px) rotate(3deg)}}
-@keyframes float-calm{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+/* The expired draft is drained rather than redrawn — one asset, two readings.
+   A plain filter, not a transition: the page looks the same at first paint as
+   it does forever after. */
+.m-dim{filter:grayscale(0.5) opacity(0.5)}
+/* The reviewed state keeps an amber pip, because "under review" is the one
+   thing here the artwork cannot say by itself. */
+.m-pip{position:relative;display:flex;align-items:center;justify-content:center}
+.m-pip svg{position:absolute;right:2px;bottom:26px}
 @keyframes pop{0%{transform:translateY(8px);opacity:0}100%{transform:translateY(0);opacity:1}}
 /* Reduced motion is mandatory (design system §6): every animation has a static
    equivalent. These pages' motion is decorative, so the equivalent is "none". */
@@ -278,18 +249,61 @@ function apexHost(apexOrigin: string): string {
 }
 
 /* ───────────────────────────────────────────────────────────────────────────
+   The mascot.
+
+   One function, three moods, so the character cannot drift between the pages
+   that use it. Drawn as inline SVG rather than a raster asset because these
+   pages are forbidden from making any external request — an <img src> here
+   would be both a second round-trip on the error path and a dependency, and
+   the whole premise of this epic is that the serve path depends on nothing.
+
+   Construction, back to front: cast shadow, legs, arms, the offset "deep" body
+   that gives the form its side, the lit body, then the face. Limbs are drawn
+   behind the body so they read as emerging from underneath it.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+type MascotMood =
+  /** 404 — the character as drawn. Nothing is wrong; there is just nothing here. */
+  | "plain"
+  /** 451 — same artwork, amber lock pip. Sober, not alarmed. */
+  | "locked"
+  /** 410 — same artwork, drained. The draft is resting, not destroyed. */
+  | "dim";
+
+/**
+ * Render the mascot.
+ *
+ * One asset, three readings — the artwork is identical in all of them and only
+ * the treatment differs, so the character cannot drift between pages.
+ *
+ * `aria-hidden`: it carries no information the copy does not already state, so
+ * a screen reader should skip it rather than announce a decorative graphic.
+ */
+function mascot(mood: MascotMood): string {
+  const cls = ["mascot", mood === "dim" ? "m-dim" : "", mood === "locked" ? "m-pip" : ""]
+    .filter(Boolean)
+    .join(" ");
+  const pip =
+    mood === "locked"
+      ? `<svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true" focusable="false">
+       <circle cx="17" cy="17" r="16" fill="var(--bg)" stroke="var(--warning)" stroke-width="2"/>
+       <rect x="11" y="16" width="12" height="8.5" rx="2" fill="none" stroke="var(--warning)" stroke-width="2"/>
+       <path d="M14 16 V13 a3 3 0 0 1 6 0 V16" fill="none" stroke="var(--warning)" stroke-width="2"/>
+     </svg>`
+      : "";
+  return `<div class="${cls}" role="img" aria-hidden="true">${pip}</div>`;
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
    Templates
    ─────────────────────────────────────────────────────────────────────────── */
 
 function notFoundBody(apexOrigin: string): string {
   const apex = esc(apexOrigin);
   return `<div class="panel">
-  <div class="stage">
-    <div class="cast" aria-hidden="true"></div>
-    <div class="vessel" aria-hidden="true"><span class="orb"></span></div>
-  </div>
+  <div class="stage">${mascot("plain")}</div>
   <div class="meta">404 · nothing kept here</div>
-  <h1>This vessel is empty.</h1>
+  <h1>There&rsquo;s nothing at this link.</h1>
   <p class="lede">No page lives at this address — it may never have been published, or the link is mistyped. The good news: making one takes seconds.</p>
   <div class="acts">
     <a class="btn btn-primary" href="${apex}/">Publish your own page in seconds →</a>
@@ -301,9 +315,7 @@ function notFoundBody(apexOrigin: string): string {
 function suspendedBody(apexOrigin: string): string {
   const apex = esc(apexOrigin);
   return `<div class="panel">
-  <div class="lock" aria-hidden="true">
-    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--warning)" stroke-width="2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
-  </div>
+  <div class="stage">${mascot("locked")}</div>
   <div class="meta">Under review</div>
   <h1>This page is paused while we review it.</h1>
   <p class="lede">It is temporarily not serving its content while a person takes a look. <b>Nothing has been deleted.</b> If this is your page, you can appeal — a person will read it and reply.</p>
@@ -318,9 +330,7 @@ function suspendedBody(apexOrigin: string): string {
 function expiredBody(apexOrigin: string): string {
   const apex = esc(apexOrigin);
   return `<div class="panel">
-  <div class="stage">
-    <div class="vessel vessel-dim" aria-hidden="true"><span class="orb orb-dim"></span></div>
-  </div>
+  <div class="stage">${mascot("dim")}</div>
   <div class="meta">Draft · not kept</div>
   <h1>This draft wasn&rsquo;t kept.</h1>
   <p class="lede">Every page starts as a draft that stays online for ${DRAFT_TTL_DAYS} days. That window passed without anyone keeping this one, so it stopped serving. <b>It is not gone.</b></p>
