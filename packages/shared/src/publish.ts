@@ -95,6 +95,18 @@ export function hashToken(token: string): Promise<string> {
 }
 
 /**
+ * SHA-256 of a page's HTML, hex. What `sites.content_hash` and
+ * `site_versions.content_hash` store, and what the dedup probe matches on.
+ *
+ * Digests the UTF-8 encoding of the string — the exact bytes uploaded to R2 —
+ * so the recorded hash always describes the stored object and never a
+ * re-encoding of it.
+ */
+export function hashContent(html: string): Promise<string> {
+  return sha256Hex(html);
+}
+
+/**
  * Salted SHA-256 of the publisher's client IP and user agent, hex.
  *
  * Feeds the dedup probe (unexpired anonymous draft, same content hash, same

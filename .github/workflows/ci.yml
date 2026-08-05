@@ -42,11 +42,12 @@ jobs:
       - name: Build
         run: pnpm build
 
-      # Playwright boots `next dev` itself via the config's `webServer`. The app
-      # needs no environment to boot today: the only process.env read in app
-      # source is DATABASE_URL inside lib/db, which nothing imports yet, so no
-      # placeholder env is supplied here. When E04 lands a DB-backed suite this
-      # step gains an ephemeral database branch — see task 005.
+      # Playwright boots `next dev` itself via the config's `webServer`. Still no
+      # environment is supplied here, and that is deliberate: E04 task 005's
+      # publish drills hit the real dev Neon branch, R2, KV and Worker, so they
+      # SKIP when the store credentials are absent — which they always are on a
+      # fork PR. The unit suite still runs its pure assertions. The CI-side
+      # publish→serve canary, with an ephemeral database branch, is task 010's.
       - name: Install Playwright browsers
         run: pnpm --filter @kept/web exec playwright install --with-deps chromium
 

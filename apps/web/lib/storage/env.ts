@@ -136,6 +136,28 @@ export function servingBaseDomain(): string {
 }
 
 /**
+ * The control plane's OWN origin — `https://kept.host` in prod, the Railway URL
+ * on dev, `http://localhost:3000` locally. `claim_url` is built from it, and it
+ * is a different value from `servingBaseDomain()`: pages are served from
+ * `{slug}.{KEPT_BASE_DOMAIN}` by the Worker, while `/keep/{anonToken}` is a
+ * control-plane route.
+ *
+ * The one `NEXT_PUBLIC_` variable this module reads, and it is read on the
+ * server like everything else here — it is public because the browser bundle
+ * needs it too, not because this accessor is client-safe. Returned without a
+ * trailing slash so callers concatenate a path unconditionally.
+ */
+export function appOrigin(): string {
+  const env = read({
+    NEXT_PUBLIC_APP_URL: z
+      .string()
+      .trim()
+      .url('expected an absolute origin such as "https://kept.host"'),
+  });
+  return env.NEXT_PUBLIC_APP_URL.replace(/\/+$/, "");
+}
+
+/**
  * Salt for `sites.publisher_hash` (E04 task 001). Not a store credential, but
  * it lives here because the epic's rule is ONE validated env module for the
  * control plane's server-only config — a second accessor is how the two drift.
