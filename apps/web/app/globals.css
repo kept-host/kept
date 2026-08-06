@@ -246,12 +246,21 @@
   #wall {
     width: 340vw !important;
   }
+  /* The wall is centre-absolute and 340vw wide here, so it is a full-bleed
+     backdrop behind the hero copy rather than the right-hand column the 100°
+     desktop scrim makes of it. The old vertical wash bottomed out at 0.52,
+     which put the button row — it spans ~64–75% down the scrim at 360px — on
+     roughly 0.65, and live thumbnails read straight through the controls: the
+     13px --text-secondary labels measured 2.58:1 against the darkest pixel
+     behind that row. Held high across the lower hero instead — the wall stays
+     legible as texture and the same measurement is 4.64:1, past the 4.5:1 AA
+     floor. Tokens, not hex: --bg, so it tracks the theme block. */
   #hero-scrim {
     background: linear-gradient(
       to bottom,
-      rgba(250, 248, 244, 0.94) 0%,
-      rgba(250, 248, 244, 0.8) 46%,
-      rgba(250, 248, 244, 0.52) 100%
+      color-mix(in srgb, var(--bg) 96%, transparent) 0%,
+      color-mix(in srgb, var(--bg) 94%, transparent) 46%,
+      color-mix(in srgb, var(--bg) 90%, transparent) 100%
     ) !important;
   }
   #hero-h1 {

@@ -636,8 +636,13 @@ export default function KeptLanding() {
                     textShadow: "0 1px 18px rgba(250,248,244,.9)",
                   }}
                 >
-                  Your page joined the wall on the right — it&rsquo;s live now, a
-                  draft for {DRAFT_TTL_DAYS} days. Keep it to make it permanent.
+                  {/* No layout claim here. This copy used to say the page
+                      "joined the wall on the right", which is only true above
+                      820px — below it the wall widens to 340vw and sits behind
+                      the text as a full-bleed backdrop, so there is no right. */}
+                  Your page is live — anyone with the link can open it. It&rsquo;s
+                  a draft for {DRAFT_TTL_DAYS} days. Keep it to make it
+                  permanent.
                 </p>
                 <div
                   style={{
@@ -748,17 +753,35 @@ export default function KeptLanding() {
                   >
                     Keep it &amp; manage it &rarr;
                   </button>
-                  {/* The anonymous manage screen: copy, QR, the draft
-                      countdown, replace and delete all live there, keyed by the
-                      token the publish response returned. Signed out, that
-                      token is the only handle on this page — so this is a real
-                      URL, not a panel. */}
-                  <button onClick={() => e()?.manage()} style={liveTextAction}>
-                    manage this draft &rarr;
-                  </button>
-                  <button onClick={() => e()?.reset()} style={liveTextAction}>
-                    publish another
-                  </button>
+                  {/* The two text links wrap as ONE unit. Loose in the row they
+                      broke individually: from 417px the button and "manage this
+                      draft" paired up on line one and orphaned "publish another"
+                      alone underneath it. `flexShrink: 0` stops this group being
+                      squeezed in beside the button instead of wrapping whole;
+                      `maxWidth: "100%"` still lets it stack internally on the
+                      narrowest screens, where the pair cannot fit on one line. */}
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 14,
+                      flexWrap: "wrap",
+                      flexShrink: 0,
+                      maxWidth: "100%",
+                    }}
+                  >
+                    {/* The anonymous manage screen: copy, QR, the draft
+                        countdown, replace and delete all live there, keyed by
+                        the token the publish response returned. Signed out, that
+                        token is the only handle on this page — so this is a real
+                        URL, not a panel. */}
+                    <button onClick={() => e()?.manage()} style={liveTextAction}>
+                      manage this draft &rarr;
+                    </button>
+                    <button onClick={() => e()?.reset()} style={liveTextAction}>
+                      publish another
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
