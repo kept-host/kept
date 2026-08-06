@@ -1,13 +1,45 @@
 import { test, expect, type Page } from "@playwright/test";
+import { config } from "dotenv";
 
 /**
- * Stub route smoke: /dashboard, /auth, /stats and /promise.
+ * Route smoke: the `(app)` gate, /auth, /stats and /promise.
  *
- * These are placeholder shells (the real surfaces land in E2/E3 and E09). We
- * assert they respond OK, render their stable placeholder heading, and produce
- * no console errors — plus, for /stats, that the pre-launch zero baseline is
- * reported honestly rather than filled in with an invented figure.
+ * /stats and /promise are still marketing shells (their live data lands in
+ * E09). We assert they respond OK, render their stable heading, and produce no
+ * console errors — plus, for /stats, that the pre-launch zero baseline is
+ * reported honestly rather than filled in with an invented figure. /auth and
+ * /dashboard are no longer shells at all; see the two describes below.
  */
+config({ path: ".env.local", quiet: true });
+
+/**
+ * Everything `createAuth()` validates before the `(app)` gate can answer.
+ *
+ * The gate redirect looks environment-free — a signed-out visitor has no cookie
+ * to read — but `requireSession()` reaches `auth.api.getSession`, and the first
+ * touch of `auth` constructs the whole Better Auth instance. With the slots
+ * empty that construction throws by design (`lib/storage/env.ts`), so /dashboard
+ * answers 500 and never reaches the redirect. That is a missing OAuth app, not a
+ * broken gate, so the drill skips rather than asserting something weaker and
+ * untrue. Nothing here is mocked to work around it.
+ */
+const AUTH_VARS = [
+  "BETTER_AUTH_SECRET",
+  "GITHUB_CLIENT_ID",
+  "GITHUB_CLIENT_SECRET",
+  "GOOGLE_CLIENT_ID",
+  "GOOGLE_CLIENT_SECRET",
+  "RESEND_API_KEY",
+  "EMAIL_FROM",
+] as const;
+
+const missingAuthVars = AUTH_VARS.filter((name) => !process.env[name]?.trim());
+
+const SKIP_AUTH: string | false =
+  missingAuthVars.length > 0
+    ? `auth credentials absent (${missingAuthVars.join(", ")}) — run locally with apps/web/.env.local`
+    : false;
+
 function trackConsoleErrors(page: Page): string[] {
   const errors: string[] = [];
   page.on("console", (msg) => {
@@ -17,17 +49,41 @@ function trackConsoleErrors(page: Page): string[] {
   return errors;
 }
 
-test.describe("stub routes", () => {
-  test("/dashboard responds and renders its placeholder", async ({ page }) => {
-    const errors = trackConsoleErrors(page);
+/**
+ * /dashboard is no longer a page this suite can just fetch — E05 task 004 put
+ * `app/(app)/layout.tsx` in front of the whole route group, so a signed-out
+ * visitor never renders the placeholder underneath it. What is worth asserting
+ * is the gate's *contract*: it does not merely refuse, it remembers. The path
+ * comes from the `x-kept-pathname` header `middleware.ts` stamps and is put back
+ * on the sign-in URL by `signInHref`, so the visitor resumes where they were
+ * headed instead of being dumped on the landing page. `auth-screen.spec.ts` owns
+ * the other end of that contract — what `/auth` does with the `next` it is given.
+ */
+test.describe("the (app) route gate", () => {
+  test.skip(!!SKIP_AUTH, SKIP_AUTH || undefined);
+
+  test("/dashboard sends a signed-out visitor to sign in, carrying where to resume", async ({
+    page,
+  }) => {
     const res = await page.goto("/dashboard");
     expect(res?.ok()).toBe(true);
+
+    // Landed on the real sign-in screen, not on the gated page.
+    await expect(page).toHaveURL(/\/auth\?/);
+    await expect(
+      page.getByRole("heading", { name: "Sign in to kept" }),
+    ).toBeVisible();
     await expect(
       page.getByRole("heading", { name: "Dashboard placeholder" }),
-    ).toBeVisible();
-    expect(errors, `console errors: ${errors.join(" | ")}`).toEqual([]);
-  });
+    ).toHaveCount(0);
 
+    // Asserted decoded, because the contract is the path — not the exact
+    // percent-encoding the browser chose to keep it in.
+    expect(new URL(page.url()).searchParams.get("next")).toBe("/dashboard");
+  });
+});
+
+test.describe("stub routes", () => {
   // /auth is no longer a stub — E05 task 005 built the real sign-in screen, and
   // `auth-screen.spec.ts` owns it. This keeps only the smoke assertion that
   // belongs with the other route shells: the page answers, and the placeholder
