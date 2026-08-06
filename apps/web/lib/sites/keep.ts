@@ -20,10 +20,11 @@
  * Exactly one branch breaks the Postgres-only rule — the late keep of an
  * `expired` row inside the 30-day grace, where the manifest was removed and
  * bringing the page back means going through `lib/storage/manifest.ts` again.
- * That branch belongs to the route handler (task 008), which composes the store
- * restore and the status flip around `keepSite`. **There are no store calls in
- * this module at all**: no `writeManifest`, no `removeManifest`, no R2, no
- * purge. Keep it that way.
+ * That branch belongs to task 008, which composes the STORE half in
+ * `./anon-keep.ts`; its Postgres half is `restoreAndKeepSite` below, because
+ * SQL lives in this module and not in a composition module. **There are still
+ * no store calls in this module at all**: no `writeManifest`, no
+ * `removeManifest`, no R2, no purge. Keep it that way.
  *
  * THE CAP IS A BRANCH, NOT A GUARD CLAUSE. At `KEPT_PAGE_LIMIT` the page still
  * gets `owner_id`, still loses its `anon_token_hash` and still shows up in the
@@ -257,6 +258,58 @@ export async function keepSite(
       quota: quotaOf(used),
       expiresAt: clocks.expiresAt.toISOString(),
       purgeAfter: clocks.purgeAfter.toISOString(),
+    };
+  });
+}
+
+/**
+ * The Postgres half of task 008's LATE KEEP: bring an `expired` row inside its
+ * grace window back to `live` and attach it to an account, atomically.
+ *
+ * The caller (`./anon-keep.ts`) has already decided this row is eligible —
+ * `status === 'expired'` and `purge_after > now()` — and owns the other half,
+ * the `writeManifest` that puts the slug back in KV. This function must not
+ * reach the store, and does not.
+ *
+ * ⚠️ THE STATUS FLIP RUNS AFTER `keepSite`, NOT BEFORE, AND THE ORDER IS A LOCK
+ * ORDER. Every other write in this module takes the owner's `profiles` row
+ * first and the `sites` row second (`lockOwner` → `lockSite`). Updating the site
+ * before calling `keepSite` would take those two locks in the opposite order, so
+ * a late keep racing an ordinary keep of the SAME page would deadlock. Both
+ * statements commit together, so the transaction's committed state is identical
+ * either way.
+ *
+ * ⚠️ AT THE CAP THE CLOCK IS FRESH, NOT RESUMED (epic open question 1, PRD
+ * recommendation adopted). `keepSite`'s at-cap branch retains the clocks it
+ * finds, and on an expired row those are in the PAST — an `owned_draft` that
+ * expired before it was created. So the fresh `DRAFT_TTL_DAYS` window is
+ * written here and reflected in the returned result, which is why this returns
+ * `KeepResult` rather than leaving the caller to reconcile the two.
+ */
+export async function restoreAndKeepSite(
+  siteId: string,
+  profileId: string,
+): Promise<KeepResult> {
+  return db.transaction(async (tx) => {
+    const result = await keepSite(siteId, profileId, { expectAnonymous: true, tx });
+    const now = new Date();
+
+    if (result.outcome === "kept") {
+      // `keepSite` already nulled both clocks; only the status is left to fix.
+      await tx.update(sites).set({ status: "live", updatedAt: now }).where(eq(sites.id, siteId));
+      return result;
+    }
+
+    const { expiresAt, purgeAfter } = draftClocks(now);
+    await tx
+      .update(sites)
+      .set({ status: "live", expiresAt, purgeAfter, updatedAt: now })
+      .where(eq(sites.id, siteId));
+
+    return {
+      ...result,
+      expiresAt: expiresAt.toISOString(),
+      purgeAfter: purgeAfter.toISOString(),
     };
   });
 }

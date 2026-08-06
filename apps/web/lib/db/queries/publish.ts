@@ -12,7 +12,7 @@
  * inconsistency with a defined unwind (`deleteSiteCascade`) rather than an
  * object in R2 that nobody can name.
  */
-import type { SiteStatus } from "@kept/shared";
+import type { Region, SiteStatus } from "@kept/shared";
 import { and, desc, eq, gt, sql } from "drizzle-orm";
 
 import { mintSlugCandidate } from "../../publish/slug";
@@ -218,14 +218,27 @@ export async function insertAnonymousDraft(
  * replace path needs exactly these three values to put the row back if a store
  * write fails — one read instead of two, and no window in which they change
  * between them.
+ *
+ * `purgeAfter` and `region` are E05 task 008's, and both are load-bearing on
+ * exactly one path — the late keep of an `expired` draft. Without `purgeAfter`,
+ * "expired but still inside the 30-day grace" (keepable) is indistinguishable
+ * from "expired past grace" (a 404 like any other), and the difference decides
+ * whether somebody gets their page back. Without `region` the KV manifest that
+ * restore has to rewrite cannot be built from the row at all — it is a required
+ * field of `kvManifestSchema` — and hardcoding `"auto"` would silently move an
+ * EU page's manifest to the wrong bucket the moment E11 lands. This is a
+ * WIDENING of the one resolver, deliberately, rather than a second read.
  */
 export interface AnonSite {
   id: string;
   slug: string;
   status: SiteStatus;
+  region: Region;
   ownerId: string | null;
   currentVersionId: string | null;
   expiresAt: Date | null;
+  /** End of the post-expiry grace window; null on a kept page. */
+  purgeAfter: Date | null;
   contentHash: string | null;
   sizeBytes: number | null;
 }
@@ -251,9 +264,11 @@ export async function findSiteByAnonTokenHash(
       id: sites.id,
       slug: sites.slug,
       status: sites.status,
+      region: sites.region,
       ownerId: sites.ownerId,
       currentVersionId: sites.currentVersionId,
       expiresAt: sites.expiresAt,
+      purgeAfter: sites.purgeAfter,
       contentHash: sites.contentHash,
       sizeBytes: sites.sizeBytes,
     })
