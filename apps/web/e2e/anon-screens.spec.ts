@@ -2,6 +2,10 @@ import { DRAFT_TTL_DAYS } from "@kept/shared";
 import { test, expect, type Page } from "@playwright/test";
 
 import {
+  DELETE_GRACE_NOTE,
+  REPLACE_CLOCK_NOTE,
+} from "../components/kept/draft-chip";
+import {
   controlPlaneUrl,
   deleteDraft,
   pageHtml,
@@ -171,6 +175,159 @@ test.describe("the anon-token screens", () => {
     await expect(page.getByText("Cleared. No address is stored for this page.")).toBeVisible();
   });
 
+  test("/p — the manage URL is a bearer credential, and the screen treats it as one", async ({
+    page,
+  }) => {
+    await page.goto(`/p/${draft.anonToken}`);
+
+    // A manage link in a search index is somebody else's delete button.
+    await expect(page.locator('meta[name="robots"]')).toHaveAttribute(
+      "content",
+      /noindex/,
+    );
+    await expect(page.locator('meta[name="robots"]')).toHaveAttribute(
+      "content",
+      /nofollow/,
+    );
+    // Without this, every outbound navigation from this document hands the
+    // token to whatever it lands on — including the visitor's own hosted page.
+    await expect(page.locator('meta[name="referrer"]')).toHaveAttribute(
+      "content",
+      "no-referrer",
+    );
+
+    // The one link that leaves the origin opens a new tab and is pinned on
+    // BOTH counts: `noopener` so the opened page cannot reach back through
+    // `window.opener`, `noreferrer` because the document-level policy above is
+    // belt-and-braces for the link that matters most.
+    const open = page.getByRole("link", { name: "Open" });
+    await expect(open).toHaveAttribute("href", draft.live_url);
+    await expect(open).toHaveAttribute("target", "_blank");
+    const rel = (await open.getAttribute("rel")) ?? "";
+    expect(rel.split(/\s+/)).toEqual(expect.arrayContaining(["noopener", "noreferrer"]));
+
+    // The live dot is DATA — it reads the row's status, and this row is live.
+    await expect(page.getByText("Live", { exact: true })).toHaveCount(1);
+
+    // The edge case the PRD names outright: the visitor closes this tab. The
+    // warning has to be on the screen, not in the docs.
+    await expect(
+      page.getByText("This link is the only handle on this page."),
+    ).toBeVisible();
+    await expect(page.getByText(/Bookmark it, or leave an address above/)).toBeVisible();
+
+    // Same guarantees under the dark theme — the status label and the warning
+    // are the two things on this screen a publisher acts on.
+    await page.evaluate(() =>
+      document.documentElement.setAttribute("data-theme", "dark"),
+    );
+    await expect(page.locator('html[data-theme="dark"]')).toHaveCount(1);
+    await expect(page.getByText("Live", { exact: true })).toHaveCount(1);
+    await expect(
+      page.getByText("This link is the only handle on this page."),
+    ).toBeVisible();
+  });
+
+  test("/p — replacing swaps the bytes at the same link and leaves the clock alone", async ({
+    page,
+  }) => {
+    test.setTimeout(60_000);
+
+    await page.goto(`/p/${draft.anonToken}`);
+
+    const chip = page.locator("time");
+    const deadlineBefore = await chip.getAttribute("datetime");
+
+    await page.getByRole("button", { name: "Replace" }).click();
+
+    // The panel says what a replace does and does not do, in words built from
+    // `DRAFT_TTL_DAYS` — the publisher is told before they act, not after.
+    await expect(page.getByText(REPLACE_CLOCK_NOTE)).toBeVisible();
+
+    const replacement = pageHtml(marker());
+    const replaced = page.waitForResponse(
+      (res) => res.url().includes("/replace") && res.request().method() === "POST",
+    );
+    await page.getByLabel("…or paste the HTML").fill(replacement);
+    await page.getByRole("button", { name: "Replace with this" }).click();
+
+    expect((await replaced).status()).toBe(200);
+    await expect(
+      page.getByText("Replaced. The new version is live at the same link."),
+    ).toBeVisible();
+
+    // The screen re-reads the row and the stored bytes, so the preview shows
+    // the version that is actually being served now — not the one dropped
+    // first. A stale frame here is the product's most visible failure: "I
+    // re-dropped my file and nothing changed."
+    await expect(page.locator("iframe")).toHaveAttribute("srcdoc", replacement);
+
+    // …and the URL and the deadline are both untouched. If a replace restarted
+    // the window, a weekly re-drop would hold a page forever for free.
+    await expect(
+      page.getByRole("heading", { level: 1 }),
+    ).toHaveText(new URL(draft.live_url).host);
+    await expect(chip).toHaveAttribute("datetime", deadlineBefore!);
+  });
+
+  test("/p — delete confirms in a real dialog, never window.confirm, and ends in a terminal state", async ({
+    page,
+  }) => {
+    // A native dialog cannot be styled, cannot be tested in-page and is
+    // suppressible by the browser. If one ever fires here this list is
+    // non-empty and the test fails — Playwright would otherwise dismiss it
+    // silently and the assertion below would pass for the wrong reason.
+    const nativeDialogs: string[] = [];
+    page.on("dialog", (dialog) => {
+      nativeDialogs.push(`${dialog.type()}: ${dialog.message()}`);
+      void dialog.dismiss();
+    });
+
+    await page.goto(`/p/${draft.anonToken}`);
+    const host = new URL(draft.live_url).host;
+
+    await page.getByRole("button", { name: "Delete" }).click();
+
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await expect(
+      dialog.getByRole("heading", { name: "Stop serving this page?" }),
+    ).toBeVisible();
+    // The words matter: the page STOPS SERVING, it is not destroyed, and the
+    // grace window would contradict "deleted forever".
+    await expect(dialog.getByText(DELETE_GRACE_NOTE)).toBeVisible();
+
+    // Backing out is a real option, and it leaves everything exactly as it was.
+    await dialog.getByRole("button", { name: "Keep it online" }).click();
+    await expect(dialog).toBeHidden();
+    await expect(page.getByRole("button", { name: "Delete" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Delete" }).click();
+    const stopped = page.waitForResponse(
+      (res) =>
+        res.url().includes(`/api/sites/${draft.anonToken}`) &&
+        res.request().method() === "DELETE",
+    );
+    await page.getByRole("button", { name: "Stop serving it" }).click();
+    expect((await stopped).status()).toBe(200);
+
+    // The terminal state. Everything else on the screen acted on a page that
+    // was still being served, so none of it may stay on offer once it is not.
+    await expect(
+      page.getByRole("heading", { name: `${host} has stopped serving` }),
+    ).toBeVisible();
+    await expect(page.getByText("Not serving")).toBeVisible();
+    await expect(page.getByText(DELETE_GRACE_NOTE)).toBeVisible();
+    for (const control of ["Copy link", "Replace", "Delete", "QR"]) {
+      await expect(page.getByRole("button", { name: control })).toHaveCount(0);
+    }
+
+    expect(
+      nativeDialogs,
+      `a native dialog fired: ${nativeDialogs.join(" | ")}`,
+    ).toEqual([]);
+  });
+
   test("/p — 'Keep it forever' is a real URL, and it lands on the claim page", async ({
     page,
   }) => {
@@ -184,6 +341,41 @@ test.describe("the anon-token screens", () => {
     ).toBeVisible();
     // The claim link the API handed out is the same one the screen links to.
     expect(draft.claim_url.endsWith(`/keep/${draft.anonToken}`)).toBe(true);
+  });
+
+  test("/keep — noindex, no-referrer, and the token appears in no link on the page", async ({
+    page,
+  }) => {
+    await page.goto(`/keep/${draft.anonToken}`);
+
+    await expect(page.locator('meta[name="robots"]')).toHaveAttribute(
+      "content",
+      /noindex/,
+    );
+    await expect(page.locator('meta[name="referrer"]')).toHaveAttribute(
+      "content",
+      "no-referrer",
+    );
+
+    // THE TOKEN IS IN THIS PAGE'S PATH AND MUST BE IN NOTHING ELSE. The claim
+    // link is the one an agent hands to a stranger, so a token that leaked into
+    // an `href` would ride out in a `Referer` — or be copied by anyone who
+    // right-clicks the link to somebody else's page.
+    const hrefs = await page
+      .locator("[href]")
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("href") ?? ""));
+    expect(hrefs.length, "no links were found at all").toBeGreaterThan(0);
+    expect(
+      hrefs.filter((href) => href.includes(draft.anonToken)),
+      "the anon token leaked into a link on the claim page",
+    ).toEqual([]);
+
+    // The hosted page's own address is linked, and pinned like the manage
+    // screen's — `noreferrer` because the destination is the visitor's own
+    // page and the token is in this document's URL.
+    const live = page.getByRole("link", { name: new URL(draft.live_url).host });
+    await expect(live).toHaveAttribute("rel", /noopener/);
+    await expect(live).toHaveAttribute("rel", /noreferrer/);
   });
 
   test("/keep — a stranger with no context can read it, and cannot break anything", async ({
@@ -224,6 +416,57 @@ test.describe("the anon-token screens", () => {
       requests.offOrigin,
       `third-party requests: ${requests.offOrigin.join(", ")}`,
     ).toEqual([]);
+  });
+});
+
+/**
+ * The claim page is required to carry ZERO client behaviour — it is three
+ * things (the page, the clock, one button) and every one of them is rendered on
+ * the server. Turning JavaScript off is the only assertion that actually proves
+ * it: a `"use client"` component that crept in would still render its markup
+ * during SSR and pass every test above.
+ */
+test.describe("the claim page with JavaScript switched off", () => {
+  test.skip(!!SKIP_LIVE_PUBLISH, String(SKIP_LIVE_PUBLISH));
+  test.use({ javaScriptEnabled: false });
+
+  let draft: { anonToken: string; live_url: string };
+  let html: string;
+
+  test.beforeEach(async ({ request }) => {
+    html = pageHtml(marker());
+    const res = await publishViaApi(request, html);
+    expect(res.status(), await res.text()).toBe(201);
+    draft = (await res.json()) as { anonToken: string; live_url: string };
+  });
+
+  test.afterEach(async ({ request }) => {
+    await deleteDraft(request, draft.anonToken);
+  });
+
+  test("renders in full — preview, clock and the one honestly-disabled button", async ({
+    page,
+  }) => {
+    const response = await page.goto(`/keep/${draft.anonToken}`);
+    expect(response?.status()).toBe(200);
+
+    // All three things the screen exists to show, with no hydration involved.
+    await expect(page.locator("iframe")).toHaveAttribute("srcdoc", html);
+    await expect(page.locator("time")).toHaveText(`Draft · ${DRAFT_TTL_DAYS} days left`);
+
+    // `aria-disabled`, not `disabled`, so the control stays focusable and a
+    // keyboard visitor hears the label AND the reason. It has no handler and no
+    // href, so activating it does nothing at all — which is the honest
+    // behaviour until E05 lands, and is exactly as true without JavaScript.
+    const keep = page.getByRole("button", { name: "Keep it forever" });
+    await expect(keep).toHaveAttribute("aria-disabled", "true");
+    // `force` skips Playwright's actionability wait, which `aria-disabled`
+    // makes never resolve — and skipping it is the point: this asserts what
+    // happens when the control IS activated anyway, which is nothing.
+    await keep.click({ force: true });
+    // It did not fake a success, and it did not navigate anywhere.
+    await expect(page).toHaveURL(`/keep/${draft.anonToken}`);
+    await expect(page.getByText(/accounts are not open yet/)).toBeVisible();
   });
 });
 
