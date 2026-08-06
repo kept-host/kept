@@ -114,9 +114,21 @@ test("an unverified provider email reaches neither the account nor its pages", {
     "advanced.database.generateId must mint uuids (D1)",
   );
 
-  await db
-    .insert(schema.profiles)
-    .values({ id: victim.id, email: victimEmail, handle: `victim-${runId}` });
+  // The `profiles` row that `sites.owner_id` references is NOT inserted here.
+  // Task 006's `databaseHooks.user.create.after` already created it as part of
+  // the `createUser` above (see `./bootstrap-profile.ts`), and a second insert
+  // is a duplicate-key violation on the primary key. Asserted rather than
+  // assumed: if that hook is ever removed, this line fails with the reason
+  // instead of the site insert failing on a foreign key.
+  const [victimProfile] = await db
+    .select({ id: schema.profiles.id })
+    .from(schema.profiles)
+    .where(eq(schema.profiles.id, victim.id));
+  assert.equal(
+    victimProfile?.id,
+    victim.id,
+    "profile bootstrap must have given the victim the owner row sites.owner_id points at",
+  );
 
   // Kept, by the only definition of kept-ness: owner set, no clock.
   const inserted = await db
