@@ -1,4 +1,4 @@
-import { DRAFT_TTL_DAYS } from "@kept/shared";
+import { DRAFT_TTL_DAYS, KEPT_PAGE_LIMIT } from "@kept/shared";
 import { test, expect, type Page } from "@playwright/test";
 
 import {
@@ -400,10 +400,15 @@ test.describe("the anon-token screens", () => {
       page.getByRole("link", { name: new URL(draft.live_url).host }),
     ).toHaveAttribute("href", draft.live_url);
 
-    // One button, honestly disabled, with the reason stated next to it (E05).
+    // One button, live since E05 task 009, with the reason stated next to it.
+    // It submits a form rather than following a link: the token is a bearer
+    // credential and must not appear in an href (see `./anon-keep-flow.spec.ts`).
     const keep = page.getByRole("button", { name: "Keep it forever" });
-    await expect(keep).toHaveAttribute("aria-disabled", "true");
-    await expect(page.getByText(/accounts are not open yet/)).toBeVisible();
+    await expect(keep).toBeEnabled();
+    await expect(keep).not.toHaveAttribute("aria-disabled", "true");
+    await expect(
+      page.getByText(new RegExp(`Free accounts keep ${KEPT_PAGE_LIMIT} pages forever`)),
+    ).toBeVisible();
 
     // IT IS NOT THE MANAGE SCREEN. A stranger handed a link must not be one
     // click from deleting somebody's page.
@@ -444,7 +449,7 @@ test.describe("the claim page with JavaScript switched off", () => {
     await deleteDraft(request, draft.anonToken);
   });
 
-  test("renders in full — preview, clock and the one honestly-disabled button", async ({
+  test("renders in full — preview, clock and a keep button that works with no JS", async ({
     page,
   }) => {
     const response = await page.goto(`/keep/${draft.anonToken}`);
@@ -454,19 +459,24 @@ test.describe("the claim page with JavaScript switched off", () => {
     await expect(page.locator("iframe")).toHaveAttribute("srcdoc", html);
     await expect(page.locator("time")).toHaveText(`Draft · ${DRAFT_TTL_DAYS} days left`);
 
-    // `aria-disabled`, not `disabled`, so the control stays focusable and a
-    // keyboard visitor hears the label AND the reason. It has no handler and no
-    // href, so activating it does nothing at all — which is the honest
-    // behaviour until E05 lands, and is exactly as true without JavaScript.
+    // THE POINT OF THIS FILE, after E05 task 009: the keep CTA is a plain
+    // `type="submit"` inside a real `<form>` pointed at a server action, so it
+    // posts and follows the redirect with no client bundle involved. A CTA
+    // wired through `onClick` would pass every other test and be dead here —
+    // which is where a stranger with a blocked script would meet it. Pressing
+    // it needs the auth stack, so the round trip itself is asserted in
+    // `./anon-keep-flow.spec.ts`; what is checked here is the markup that makes
+    // it possible without JavaScript.
     const keep = page.getByRole("button", { name: "Keep it forever" });
-    await expect(keep).toHaveAttribute("aria-disabled", "true");
-    // `force` skips Playwright's actionability wait, which `aria-disabled`
-    // makes never resolve — and skipping it is the point: this asserts what
-    // happens when the control IS activated anyway, which is nothing.
-    await keep.click({ force: true });
-    // It did not fake a success, and it did not navigate anywhere.
-    await expect(page).toHaveURL(`/keep/${draft.anonToken}`);
-    await expect(page.getByText(/accounts are not open yet/)).toBeVisible();
+    const form = keep.locator("xpath=ancestor::form");
+    await expect(keep).toBeEnabled();
+    await expect(keep).toHaveAttribute("type", "submit");
+    await expect(form).toHaveCount(1);
+
+    // AND THE TOKEN IS NOT IN THE FORM. It is a bound server-action argument,
+    // which Next encrypts; a hidden field carrying it would be the easy
+    // implementation and would put a bearer credential in the markup.
+    expect(await form.innerHTML()).not.toContain(draft.anonToken);
   });
 });
 
