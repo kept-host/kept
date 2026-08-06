@@ -1,5 +1,5 @@
 /**
- * `POST /api/sites/:anonToken/replace` — new bytes, same URL.
+ * `POST /api/anon/:anonToken/replace` — new bytes, same URL.
  *
  * THE TOKEN IS A PATH SEGMENT, NOT A QUERY STRING, and that is the security
  * decision this file exists to record. It is a bearer capability: whoever holds

@@ -13,7 +13,7 @@ import {
 
 /**
  * The three anonymous manage routes over the wire — `POST .../replace`,
- * `DELETE /api/sites/:token` and `POST .../reminder` — as an agent or a `curl`
+ * `DELETE /api/anon/:token` and `POST .../reminder` — as an agent or a `curl`
  * user calls them, with no browser anywhere.
  *
  * `anon-screens.spec.ts` drives replace, delete and the reminder through the
@@ -99,12 +99,12 @@ test.describe("the anonymous manage API", () => {
 
     for (const [reason, token] of Object.entries(tokens)) {
       const routes = {
-        replace: await request.post(`/api/sites/${token}/replace`, {
+        replace: await request.post(`/api/anon/${token}/replace`, {
           headers: { "content-type": "application/json" },
           data: { html: pageHtml(marker()) },
         }),
-        delete: await request.delete(`/api/sites/${token}`),
-        reminder: await request.post(`/api/sites/${token}/reminder`, {
+        delete: await request.delete(`/api/anon/${token}`),
+        reminder: await request.post(`/api/anon/${token}/reminder`, {
           headers: { "content-type": "application/json" },
           data: { reminderEmail: "probe@example.com" },
         }),
@@ -148,7 +148,7 @@ test.describe("the anonymous manage API", () => {
     expect((await waitForBody(draft.live_url, original)).status).toBe(200);
 
     const replacement = pageHtml(marker());
-    const res = await request.post(`/api/sites/${draft.anonToken}/replace`, {
+    const res = await request.post(`/api/anon/${draft.anonToken}/replace`, {
       headers: { "content-type": "application/json" },
       data: { html: replacement },
     });
@@ -196,7 +196,7 @@ test.describe("the anonymous manage API", () => {
     // What the `/p` dropzone sends for a dropped `.html`. It reaches the same
     // handler through the same `readPageBody`, so a divergence between the two
     // transports here would be a divergence the console silently inherits.
-    const res = await request.post(`/api/sites/${draft.anonToken}/replace`, {
+    const res = await request.post(`/api/anon/${draft.anonToken}/replace`, {
       multipart: {
         html: {
           name: "replacement.html",
@@ -221,7 +221,7 @@ test.describe("the anonymous manage API", () => {
     const draft = await publish(request, pageHtml(marker()));
 
     const reminder = (body: unknown) =>
-      request.post(`/api/sites/${draft.anonToken}/reminder`, {
+      request.post(`/api/anon/${draft.anonToken}/reminder`, {
         headers: { "content-type": "application/json" },
         data: body,
       });
@@ -262,7 +262,7 @@ test.describe("the anonymous manage API", () => {
     // The reminder body is JSON only: it carries one short field, never a file,
     // and a second parser for it would be a second place for the shape to drift.
     const wrongType = await request.post(
-      `/api/sites/${draft.anonToken}/reminder`,
+      `/api/anon/${draft.anonToken}/reminder`,
       { headers: { "content-type": "text/html" }, data: "reminderEmail=x" },
     );
     expect(wrongType.status(), await wrongType.text()).toBe(400);
@@ -273,7 +273,7 @@ test.describe("the anonymous manage API", () => {
   }) => {
     const draft = await publish(request, pageHtml(marker()));
 
-    const first = await request.delete(`/api/sites/${draft.anonToken}`);
+    const first = await request.delete(`/api/anon/${draft.anonToken}`);
     expect(first.status(), await first.text()).toBe(200);
     expect(await first.json()).toEqual({ ok: true });
 
@@ -281,7 +281,7 @@ test.describe("the anonymous manage API", () => {
     // or a double-clicked button must not see an error for reaching the state
     // it asked for — `deletePage` resolves with `requireLive: false` and
     // short-circuits on `archived` precisely so this holds.
-    const second = await request.delete(`/api/sites/${draft.anonToken}`);
+    const second = await request.delete(`/api/anon/${draft.anonToken}`);
     expect(second.status(), await second.text()).toBe(200);
     expect(await second.json()).toEqual({ ok: true });
 
@@ -289,18 +289,18 @@ test.describe("the anonymous manage API", () => {
     // uses for a token that never existed. Resurrecting an archived page is not
     // a flow that exists, and admitting the page is merely archived would tell
     // a stranger holding a stale link that it was once real.
-    const unknown = await request.post(`/api/sites/${"A".repeat(43)}/replace`, {
+    const unknown = await request.post(`/api/anon/${"A".repeat(43)}/replace`, {
       headers: { "content-type": "application/json" },
       data: { html: pageHtml(marker()) },
     });
     const unknownBody = JSON.stringify(await unknown.json());
 
     const routes = {
-      replace: await request.post(`/api/sites/${draft.anonToken}/replace`, {
+      replace: await request.post(`/api/anon/${draft.anonToken}/replace`, {
         headers: { "content-type": "application/json" },
         data: { html: pageHtml(marker()) },
       }),
-      reminder: await request.post(`/api/sites/${draft.anonToken}/reminder`, {
+      reminder: await request.post(`/api/anon/${draft.anonToken}/reminder`, {
         headers: { "content-type": "application/json" },
         data: { reminderEmail: "probe@example.com" },
       }),

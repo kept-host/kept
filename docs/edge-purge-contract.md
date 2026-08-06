@@ -156,7 +156,7 @@ regardless of what the cached manifest says.
 4. **nothing expires it, and while it answers no further KV read ever happens.**
 
 So a single purge converts a bounded propagation window into a *permanent* stale
-edge. Observed on deployed dev with `DELETE /api/sites/:token`: KV key gone,
+edge. Observed on deployed dev with `DELETE /api/anon/:token`: KV key gone,
 pointer gone, a cache-busting URL 404ing — and the live URL still serving 200
 minutes later, having been re-cached three seconds after the delete.
 

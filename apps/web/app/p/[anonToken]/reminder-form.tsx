@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { saveReminder } from "./manage-client";
 
 /**
- * The optional reminder address — a client of `POST /api/sites/:token/reminder`.
+ * The optional reminder address — a client of `POST /api/anon/:token/reminder`.
  *
  * NOT A SIGNUP WALL, and the copy has to keep proving it. Nothing here creates
  * an account, asks for a password or blocks anything: the page is already live

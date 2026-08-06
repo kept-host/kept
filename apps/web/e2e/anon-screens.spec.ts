@@ -305,7 +305,7 @@ test.describe("the anon-token screens", () => {
     await page.getByRole("button", { name: "Delete" }).click();
     const stopped = page.waitForResponse(
       (res) =>
-        res.url().includes(`/api/sites/${draft.anonToken}`) &&
+        res.url().includes(`/api/anon/${draft.anonToken}`) &&
         res.request().method() === "DELETE",
     );
     await page.getByRole("button", { name: "Stop serving it" }).click();

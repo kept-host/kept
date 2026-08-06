@@ -3,7 +3,7 @@
  * nothing but the bearer token they were handed. E04 task 006.
  *
  * NO HTTP IN THIS FILE, same split as `./pipeline`: the three route handlers
- * under `app/api/sites/[anonToken]/` know about `Request` objects and status
+ * under `app/api/anon/[anonToken]/` know about `Request` objects and status
  * codes, and these functions know about the stores. That is what lets every
  * drill below run with no server.
  *

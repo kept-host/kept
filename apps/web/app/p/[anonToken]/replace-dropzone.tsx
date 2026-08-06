@@ -12,7 +12,7 @@ import { replaceWithFile, replaceWithHtml, type ManageResult } from "./manage-cl
 
 /**
  * Drop or paste new bytes for a page that already exists — the screen's half of
- * `POST /api/sites/:token/replace`.
+ * `POST /api/anon/:token/replace`.
  *
  * TWO WAYS IN, ONE ENDPOINT, because that endpoint already accepts both: a
  * dropped file goes up as `multipart/form-data` and pasted markup as JSON.

@@ -1,5 +1,5 @@
 /**
- * `DELETE /api/sites/:anonToken` — stop serving a page.
+ * `DELETE /api/anon/:anonToken` — stop serving a page.
  *
  * The token is a path segment for the reason written down in
  * `../replace/route.ts`: it is a bearer capability that has to be pasteable, so
