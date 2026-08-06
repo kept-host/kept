@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
 import {
+  DRAFT_TTL_DAYS,
   MAX_PAGE_BYTES,
   publishErrorSchema,
   publishResponseSchema,
@@ -8,6 +9,11 @@ import {
 } from "@kept/shared";
 import { test, expect, type APIRequestContext } from "@playwright/test";
 
+import {
+  isReservedSlug,
+  SLUG_ALPHABET,
+  SLUG_LENGTH,
+} from "../lib/publish/slug";
 import {
   deleteDraft,
   pageHtml,
@@ -52,6 +58,28 @@ const CONTRACT_FIELDS = [
 ] as const;
 
 const marker = () => `e04-010-api-${crypto.randomUUID().slice(0, 8)}`;
+
+/**
+ * The shape a minted slug must have, COMPOSED FROM THE MINTER'S OWN CONSTANTS.
+ * Writing `/^[0-9a-z]{8}$/` here would pass for an alphabet that had quietly
+ * grown an `i`, an `l`, an `o` or a `u` back — the four characters Crockford
+ * base32 drops precisely so a slug survives being read aloud and retyped.
+ */
+const SLUG_SHAPE = new RegExp(`^[${SLUG_ALPHABET}]{${SLUG_LENGTH}}$`);
+
+/** Assert everything that is true of every slug this API ever hands out. */
+function expectWellFormedSlug(slug: string, label: string) {
+  expect(slug, `${label}: length`).toHaveLength(SLUG_LENGTH);
+  expect(slug, `${label}: alphabet`).toMatch(SLUG_SHAPE);
+  // Stated separately from the alphabet regex: these four are the *reason* the
+  // alphabet is what it is, and a spec that only tested the regex would go
+  // green the day somebody "fixed" the alphabet by adding them back.
+  expect(slug, `${label}: ambiguous characters`).not.toMatch(/[ilou]/);
+  // `www`, `api`, `p`, `keep`, `stats`, `dashboard`… — a minted slug that
+  // collides with a reserved label is a page the edge or the control plane
+  // will never serve, handed out as if it worked.
+  expect(isReservedSlug(slug), `${label}: "${slug}" is a reserved label`).toBe(false);
+}
 
 /** Parse a 201 through the frozen schema, failing loudly on any drift. */
 function contract(body: unknown): PublishResponse {
@@ -141,6 +169,131 @@ test.describe("the publish API, as an agent calls it", () => {
     expect(served.status).toBe(200);
     expect(served.body).toBe(html);
     expect(served.contentType).toContain("text/html");
+  });
+
+  test("all three documented content types mint a page, and every slug is well-formed", async ({
+    request,
+  }) => {
+    test.setTimeout(60_000);
+
+    // `lib/publish/http.ts` documents exactly three ways in, for three real
+    // callers: JSON (the hero and E08's MCP tools), multipart (a dropped
+    // `.html` file), and raw `text/html` (the epic's literal `curl` case).
+    // `publish-flow.spec.ts` drives two of them through the browser; nothing
+    // until now proved multipart and JSON answer the same contract over the
+    // wire, which is what an agent author reading the PRD would assume.
+    const jsonHtml = pageHtml(marker());
+    const multipartHtml = pageHtml(marker());
+    const rawHtml = pageHtml(marker());
+
+    const responses = {
+      "application/json": await request.post("/api/publish", {
+        headers: { "content-type": "application/json" },
+        data: { html: jsonHtml },
+      }),
+      "multipart/form-data": await request.post("/api/publish", {
+        multipart: {
+          html: {
+            name: "page.html",
+            mimeType: "text/html",
+            buffer: Buffer.from(multipartHtml),
+          },
+        },
+      }),
+      "text/html": await publishViaApi(request, rawHtml),
+    };
+
+    const slugs: string[] = [];
+    for (const [contentType, res] of Object.entries(responses)) {
+      expect(res.status(), `${contentType}: ${await res.text()}`).toBe(201);
+
+      const fields = (await res.json()) as Record<string, unknown>;
+      const body = contract(fields);
+      published.push(body.anonToken);
+
+      // The SAME seven fields regardless of how the bytes arrived — an agent
+      // that switches transports must not have to switch parsers.
+      expect(Object.keys(fields).sort(), contentType).toEqual([...CONTRACT_FIELDS]);
+      expect(body.deduped, contentType).toBe(false);
+      expectWellFormedSlug(body.slug, contentType);
+      expect(new URL(body.live_url).host, contentType).toBe(
+        `${body.slug}.${servingDomain()}`,
+      );
+      slugs.push(body.slug);
+    }
+
+    // Three distinct documents, so three distinct pages — a shared slug would
+    // mean the minter is not actually random, and dedup does not apply here.
+    expect(new Set(slugs).size, `slugs collided: ${slugs.join(", ")}`).toBe(3);
+  });
+
+  test("a caller-chosen slug is ignored, and no minted URL carries an unset value", async ({
+    request,
+  }) => {
+    // The PRD rules custom slugs out at publish — renaming is E06's. A caller
+    // who sends one anyway must not get it, and must not get an error either:
+    // `publishRequestSchema` has no `slug`, so zod strips the key silently.
+    // Rejecting it would break agents that send a superset body; honouring it
+    // would hand out `api`, `www` or somebody else's slug on request.
+    const chosen = "caller-chosen-slug";
+    const res = await request.post("/api/publish", {
+      headers: { "content-type": "application/json" },
+      data: { html: pageHtml(marker()), slug: chosen },
+    });
+
+    expect(res.status(), await res.text()).toBe(201);
+    const body = contract(await res.json());
+    published.push(body.anonToken);
+
+    expect(body.slug).not.toBe(chosen);
+    expectWellFormedSlug(body.slug, "caller-chosen slug ignored");
+    expect(body.live_url).not.toContain(chosen);
+
+    // Task 003's failure mode, stated as an assertion: a missing
+    // `KEPT_BASE_DOMAIN` or `NEXT_PUBLIC_APP_URL` used to be interpolated
+    // straight into a link, so the publisher was handed
+    // `https://abcd1234.undefined/` and only found out when it did not
+    // resolve. Missing config must fail loudly, never mint a broken URL.
+    for (const [field, url] of Object.entries({
+      live_url: body.live_url,
+      claim_url: body.claim_url,
+    })) {
+      expect(url, field).not.toMatch(/undefined|null|\[object/i);
+      // …and it parses to a real host with a non-empty path, which the string
+      // match alone would not catch for `https:///keep/` — the shape an empty
+      // (rather than absent) base produces.
+      const parsed = new URL(url);
+      expect(parsed.hostname.length, `${field}: ${url}`).toBeGreaterThan(0);
+      expect(parsed.pathname, `${field}: ${url}`).not.toContain("//");
+    }
+    // The live URL's host is checked against the CONFIGURED serving domain
+    // above and in the seven-field test; the claim URL is on the control
+    // plane, which is `localhost` in a local run — so no domain literal here.
+  });
+
+  test("the draft window is DRAFT_TTL_DAYS wide, and says so in the same words", async ({
+    request,
+  }) => {
+    const before = Date.now();
+    const body = await publish(request, pageHtml(marker()));
+    const after = Date.now();
+
+    // The human phrasing is composed from the constant, not typed out — the
+    // one string a publisher reads back off the response.
+    expect(body.expires_in).toBe(`${DRAFT_TTL_DAYS}d`);
+
+    // …and the machine-readable instant agrees with it. Bracketed by the two
+    // clock reads around the request rather than compared to a single `now`,
+    // so the assertion is exact rather than a tolerance guess: the deadline is
+    // DRAFT_TTL_DAYS after some instant during the call, and nothing else.
+    const window = DRAFT_TTL_DAYS * 24 * 60 * 60 * 1000;
+    const expiresAt = new Date(body.expires_at).getTime();
+    expect(expiresAt).toBeGreaterThanOrEqual(before + window);
+    expect(expiresAt).toBeLessThanOrEqual(after + window);
+
+    // `purge_after` (= expires_at + DRAFT_GRACE_DAYS) is deliberately NOT in
+    // the seven-field contract — it is E07's column, not the caller's — so it
+    // is asserted against Postgres in `lib/publish/pipeline.test.ts`, not here.
   });
 
   test("the same bytes from the same publisher converge on one page, with a rotated token", async ({
