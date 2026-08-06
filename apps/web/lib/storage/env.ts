@@ -158,6 +158,109 @@ export function appOrigin(): string {
 }
 
 /**
+ * A slot that is *present but empty* is the normal shape of an unfilled Railway
+ * variable and of every reserved line in `.env.example`. zod sees `""`, which
+ * passes `z.string().optional()` and then silently becomes a broken URL or a
+ * zero-length secret. Collapse it to `undefined` first so `.optional()` means
+ * "absent" and a required field reports itself as missing.
+ */
+function blankAsAbsent<S extends z.ZodTypeAny>(schema: S) {
+  return z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+    schema,
+  );
+}
+
+const absoluteUrl = z
+  .string()
+  .trim()
+  .url('expected an absolute origin such as "https://kept.host"');
+
+/**
+ * Better Auth's own two values (E05 task 003).
+ *
+ * `baseUrl` is the CONTROL PLANE's origin — the one every OAuth redirect URI is
+ * registered against. It is `BETTER_AUTH_URL` when set and `appOrigin()`
+ * otherwise, so a deployment that already carries `NEXT_PUBLIC_APP_URL` needs no
+ * second copy of the same string. It is NEVER `KEPT_BASE_DOMAIN`: the serving
+ * domain has no auth surface and must not appear anywhere in an OAuth config.
+ */
+export function authConfig(): { secret: string; baseUrl: string } {
+  const env = read({
+    BETTER_AUTH_SECRET: blankAsAbsent(
+      z
+        .string()
+        .trim()
+        .min(
+          32,
+          "expected 32+ random bytes — generate one with `openssl rand -base64 32`",
+        ),
+    ),
+    BETTER_AUTH_URL: blankAsAbsent(absoluteUrl.optional()),
+  });
+  return {
+    secret: env.BETTER_AUTH_SECRET,
+    baseUrl: (env.BETTER_AUTH_URL ?? appOrigin()).replace(/\/+$/, ""),
+  };
+}
+
+/**
+ * The GitHub OAuth app (E02 reserved these slots; E05 fills them). Callback:
+ * `{authConfig().baseUrl}/api/auth/callback/github` — registered per track.
+ */
+export function githubOAuth(): { clientId: string; clientSecret: string } {
+  const env = read({
+    GITHUB_CLIENT_ID: blankAsAbsent(nonEmpty),
+    GITHUB_CLIENT_SECRET: blankAsAbsent(nonEmpty),
+  });
+  return { clientId: env.GITHUB_CLIENT_ID, clientSecret: env.GITHUB_CLIENT_SECRET };
+}
+
+/**
+ * The Google OAuth 2.0 Web application client (E05 task 003).
+ *
+ * NEW SLOTS — E02's secret topology reserved `GITHUB_CLIENT_*` and
+ * `RESEND_API_KEY`, but Google was added to E05's scope after that, so
+ * `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` are introduced here and are
+ * per-track like everything else. Redirect URI:
+ * `{authConfig().baseUrl}/api/auth/callback/google`, registered EXACTLY —
+ * Google rejects a mismatch with an opaque error.
+ */
+export function googleOAuth(): { clientId: string; clientSecret: string } {
+  const env = read({
+    GOOGLE_CLIENT_ID: blankAsAbsent(nonEmpty),
+    GOOGLE_CLIENT_SECRET: blankAsAbsent(nonEmpty),
+  });
+  return { clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET };
+}
+
+/**
+ * Resend — the magic-link sender, and (from E05 task 011) the draft-reminder
+ * sender too. ONE accessor for both: the free tier's 100/day ceiling is a single
+ * shared budget, and a second accessor is how two consumers end up believing
+ * they each have their own.
+ *
+ * `from` accepts either `page@kept.host` or `kept <page@kept.host>`; both are
+ * what Resend's API takes, and the domain must be verified in Resend or every
+ * send fails at request time rather than here.
+ */
+export function resendConfig(): { apiKey: string; from: string } {
+  const env = read({
+    RESEND_API_KEY: blankAsAbsent(nonEmpty),
+    EMAIL_FROM: blankAsAbsent(
+      z
+        .string()
+        .trim()
+        .regex(
+          /^(?:[^<>]*<[^@<>\s]+@[^@<>\s]+\.[^@<>\s]+>|[^@<>\s]+@[^@<>\s]+\.[^@<>\s]+)$/,
+          'expected "page@kept.host" or "kept <page@kept.host>"',
+        ),
+    ),
+  });
+  return { apiKey: env.RESEND_API_KEY, from: env.EMAIL_FROM };
+}
+
+/**
  * Salt for `sites.publisher_hash` (E04 task 001). Not a store credential, but
  * it lives here because the epic's rule is ONE validated env module for the
  * control plane's server-only config — a second accessor is how the two drift.

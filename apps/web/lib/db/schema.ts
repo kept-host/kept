@@ -42,8 +42,8 @@ export const regionEnum = pgEnum("region", REGIONS);
 // Better Auth mints TEXT ids out of the box, and its CLI generates `text("id")`
 // columns to match. We override both halves:
 //   1. HERE — every Better Auth id and every FK onto one is `uuid`.
-//   2. In `lib/auth.ts` — `advanced.database.generateId` mints uuids, so the
-//      values the adapter inserts fit these columns.
+//   2. In `lib/auth/index.ts` — `advanced.database.generateId` mints uuids, so
+//      the values the adapter inserts fit these columns.
 // Remove either half and every insert fails on the uuid column. (That failure is
 // the correct one: it is loud, immediate, and cannot corrupt data.)
 //
