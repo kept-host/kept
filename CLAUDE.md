@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**E00-Foundation and E01-Landing-Refresh are complete.** The pnpm + Turbo monorepo exists and builds: `apps/web` (Next.js control plane, themed, landing pivoted to the draft/kept + agents model), `apps/edge` (empty deployable Hono Worker), `packages/shared`. Playwright e2e suite is green (30 tests). E01 is not yet merged to `main`. **Current epic: `E02-cicd-deployment`** — tag-driven release pipeline, plus the Supabase → Neon cutover the pipeline could not be written around.
+**E00 → E04 are complete.** The pnpm + Turbo monorepo builds and ships: `apps/web` (Next.js control plane — themed landing, the publish API, the anonymous result/claim screens), `apps/edge` (the Hono Worker serving `*.kept-dev.xyz` from R2 + KV), `packages/shared`. E04-anonymous-publish is deployed to **dev** at tag `dev-v0.1.5`. Suites green: Playwright 62, `apps/web` unit 40 (`tsx --test`), `apps/edge` vitest 171. **Next epic: `E05-auth-and-claim`** — GitHub + magic-link sign-in, keeping a draft forever, swap at cap. **Prod has never been deployed:** the `prod` GitHub Environment holds zero secrets, `release.yml` has never run, and `develop` → `main` promotion is unexercised.
 
 Read `.agent/System/00-README-architecture-index.md` first — it is the entry point and the source of truth for build order, repo structure, and the non-negotiable rules. Each `.agent/Tasks/prds/E*.md` is a self-contained epic PRD with its own scope, data model, states, acceptance criteria, and a `UI Source` import block.
 
@@ -41,10 +41,11 @@ The **KV manifest contract** is the seam: control plane writes `{ siteId, versio
 - **Stack:** Next.js (Railway) + **Neon** Postgres control plane, with **Better Auth** v1.6.x self-hosted (Drizzle adapter, users in the same Neon database) and **Resend** for magic-link email — both wired in E05; Cloudflare Worker (Hono) + R2 + KV + Cache serving; Tailwind v4 (`@theme`) + shadcn (`new-york`, heavily re-themed) + Motion (`motion/react`) + React Three Fiber; fonts Hanken Grotesk (display) / Geist (body) / JetBrains Mono (mono).
 - **Tokens are law.** Design tokens are CSS variables in `globals.css`, exposed to Tailwind via `@theme`, with shadcn pointed at them. Never hardcode a hex — use token classes (`bg-bg`, `text-accent`, `font-display`, `rounded-md`). Theme toggle swaps the variable block; light/dark parity on every screen. shadcn is the behavior/a11y layer, not the look. See `03-frontend-specs.md` §3–4.
 - **`packages/shared` is the single source** for types/enums/constants — `MAX_PAGE_BYTES`, `KEPT_PAGE_LIMIT=3`, `DRAFT_TTL_DAYS=7`, `DRAFT_GRACE_DAYS=30`; site `status`, `plan`, `region` (`auto | eu`) enums; zod schemas; the KV manifest type. The landing must never hardcode a `3` or a `7` where a constant exists.
-  - ⚠️ **One pivot delta still pending.** E01 renamed the constants to draft/kept vocabulary and deleted `SLOT_COST_EUR` / `SUPPORTER_PAGE_LIMIT`. Still outstanding: `PLANS` carries `supporter` and `SITE_STATUSES` carries `resting`. Both drive `pgEnum` in `apps/web/lib/db/schema.ts` and are baked into the committed migration `apps/web/drizzle/0000_nasty_moonstone.sql`, so dropping a value is a **Postgres enum migration, not a rename** — owned by E04/E05. Target: plans `free | premium`, no `resting`.
+  - ⚠️ **One pivot delta still pending.** E01 renamed the constants to draft/kept vocabulary and deleted `SLOT_COST_EUR` / `SUPPORTER_PAGE_LIMIT`. E04's migration `0001_publish_columns_and_status_enum.sql` dropped `resting` from `site_status` and added `archived`, so `SITE_STATUSES` is now clean (`live | under_review | quarantined | expired | removed | archived`). Still outstanding: **`PLANS` carries `supporter`**. It drives a `pgEnum` in `apps/web/lib/db/schema.ts` baked into a committed migration, so dropping it is a **Postgres enum migration, not a rename** — owned by **E05**. Target: plans `free | premium`.
 - **Page model:** every page is a **draft** (`expires_at` set; live instantly; 7-day clock → `expired` → 30-day grace → delete) or **kept** (`expires_at` null; permanent). `isDraft = expires_at != null`. **Keeping** a draft = sign in + attach + clear the clock, within the kept cap. Publishing past the cap **lands as a draft, never a hard error**; demoting a kept page starts a fresh 7-day clock. Archive, don't delete. The `region` field is wired in v1 but EU data residency only activates in **E11**.
 - **Vocabulary:** **draft** and **kept** are product vocabulary — use them consistently in UI copy, code identifiers, and docs.
 - **Writes** (publish/rename/replace/delete/claim) go through route handlers / server actions that (a) write Postgres, (b) upload to R2 via S3 client, (c) update the KV manifest via Cloudflare REST, (d) enqueue scans, then (e) purge the edge cache. The browser never touches R2/KV directly. **Reads** (dashboard/settings) query Postgres directly from server components.
+  - As built (E04), steps (c) and (e) are **owned solely by `apps/web/lib/storage/manifest.ts`** — `writeManifest` / `removeManifest`, which encode the slug-pointer → KV → purge ordering from `docs/edge-purge-contract.md`. `apps/web/eslint.config.mjs` bans importing `lib/storage/kv` anywhere else, so a direct `kv.put(slug, …)` fails lint. **A purge is two purges**, the second delayed 125 s (`2 × cacheTtl + 5 s`), because `purge_cache` does not reach the Worker's KV read cache — see the "will bite you" list in `.agent/System/06-edge-and-infrastructure.md`.
 
 ## Live components (built in code, not static markup)
 
@@ -68,18 +69,18 @@ MVP screens are designed in Claude Design (project `da93d30e-94eb-40d4-b3d1-4632
 ## Build order
 
 ```
-E00-Foundation ✅ → E01-Landing-Refresh → E02 → E03 → E04 → E05 → E06 → E07 → E08 → E09-open-books   (v1 / launch)
-                                                                        └──→ E10, E11   (v1.5)
+E00 ✅ → E01 ✅ → E02 ✅ → E03 ✅ → E04 ✅ → E05 → E06 → E07 → E08 → E09-open-books   (v1 / launch)
+                                                                └──→ E10, E11   (v1.5)
 ```
 
 | Epic | Covers |
 |---|---|
 | `E00-foundation-project-setup` | Scaffold, themed app, empty Worker, Cloudflare + Postgres, shared constants. **Shipped.** |
-| `E01-landing-refresh` | Content pivot of the built landing to the draft/kept + agents model. **Complete** (unmerged). |
-| `E02-cicd-deployment` | GitHub Actions, dev/prod tracks, tag-based releases; Supabase → Neon cutover. **Current.** |
-| `E03-serving-data-plane` | The Worker that serves `*.kept.host` from R2/KV |
-| `E04-anonymous-publish` | API-first publish; drop/paste or agent call → live link + claim link; the 7-day draft |
-| `E05-auth-and-claim` | GitHub + magic-link sign-in; keep a draft forever; swap when at cap |
+| `E01-landing-refresh` | Content pivot of the built landing to the draft/kept + agents model. **Shipped.** |
+| `E02-cicd-deployment` | GitHub Actions, dev/prod tracks, tag-based releases; Supabase → Neon cutover. **Shipped.** |
+| `E03-serving-data-plane` | The Worker that serves `*.kept.host` from R2/KV. **Shipped** (dev only). |
+| `E04-anonymous-publish` | API-first publish; drop/paste or agent call → live link + claim link; the 7-day draft. **Shipped** to dev at `dev-v0.1.5`. |
+| `E05-auth-and-claim` | GitHub + magic-link sign-in; keep a draft forever; swap when at cap. **Current.** |
 | `E06-dashboard-and-management` | Kept pages + drafts; rename/replace/delete; keep/demote; quota |
 | `E07-abuse-and-moderation` | PSL, scanning, reports, status lifecycle, draft expiry/purge, volume governors |
 | `E08-mcp-server` | **Now v1.** Keyless MCP + Skill + copy-paste prompt; the agents wedge |
