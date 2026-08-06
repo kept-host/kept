@@ -6,13 +6,15 @@
  * drift from the app/zod types. Columns/types mirror the shared zod schemas
  * (`siteSchema`, `profileSchema`) and `PublishPayload`.
  *
- * Core tables only: `profiles`, `sites`, `site_versions`. Per-epic tables
- * (E5 `scans`/`abuse_reports`/`moderation_actions`, E4 `funding_snapshot`) are
- * intentionally NOT created here — they arrive via per-epic migrations.
+ * Core tables only: `profiles`, `sites`, `site_versions`, plus Better Auth's four
+ * tables (E05). Per-epic tables (E07 `scans`/`abuse_reports`/
+ * `moderation_actions`) are intentionally NOT created here — they arrive via
+ * per-epic migrations.
  */
 import { PLANS, REGIONS, SITE_STATUSES } from "@kept/shared";
 import { relations } from "drizzle-orm";
 import {
+  boolean,
   index,
   integer,
   pgEnum,
@@ -28,12 +30,139 @@ export const siteStatusEnum = pgEnum("site_status", SITE_STATUSES);
 export const planEnum = pgEnum("plan", PLANS);
 export const regionEnum = pgEnum("region", REGIONS);
 
+// ── Better Auth (E05) ────────────────────────────────────────────────────────
+// Self-hosted Better Auth v1.6.x through the Drizzle adapter, in this same Neon
+// database — there is no external identity store. These four tables were emitted
+// by `@better-auth/cli generate` and then folded into this file's conventions
+// (timestamptz, snake_case index names) with ONE substantive edit, below.
+//
+// ⚠️⚠️ UUID IDS ARE A DELIBERATE NON-DEFAULT CONFIGURATION. READ BEFORE ADDING
+// ANY BETTER AUTH TABLE. ⚠️⚠️
+//
+// Better Auth mints TEXT ids out of the box, and its CLI generates `text("id")`
+// columns to match. We override both halves:
+//   1. HERE — every Better Auth id and every FK onto one is `uuid`.
+//   2. In `lib/auth.ts` — `advanced.database.generateId` mints uuids, so the
+//      values the adapter inserts fit these columns.
+// Remove either half and every insert fails on the uuid column. (That failure is
+// the correct one: it is loud, immediate, and cannot corrupt data.)
+//
+// WHY: `profiles.id` IS the auth user id — same value, with the FK below to
+// prove it — and `sites.owner_id` is a `uuid` FK onto `profiles.id` that already
+// carries rows. Text ids would have meant either rewriting `sites.owner_id` or
+// carrying a second, competing user identifier and a join on every
+// session→profile resolution. (Epic E05, decision D1.)
+//
+// THE STANDING RULE THIS IMPOSES ON FUTURE WORK: **every Better Auth table added
+// from here on — in any epic, including tables a plugin brings (`organization`,
+// `apikey`, `twoFactor`, …) — must use a `uuid` id and `uuid` FKs.** The CLI will
+// not do this for you; its output must be re-typed before `drizzle-kit generate`
+// runs. A plugin table that lands with a `text("user_id")` breaks the FK graph.
+export const user = pgTable("user", {
+  id: uuid("id").primaryKey(),
+  name: text("name").notNull(),
+  email: text("email").notNull().unique(),
+  emailVerified: boolean("email_verified").default(false).notNull(),
+  image: text("image"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .$onUpdate(() => new Date())
+    .notNull(),
+});
+
+export const session = pgTable(
+  "session",
+  {
+    id: uuid("id").primaryKey(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    token: text("token").notNull().unique(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .$onUpdate(() => new Date())
+      .notNull(),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+  },
+  (table) => [index("session_user_id_idx").on(table.userId)],
+);
+
+// One row per linked identity: `(userId, providerId, accountId)`. THIS is where
+// provider identities live — see the note on `profiles.handle` below.
+export const account = pgTable(
+  "account",
+  {
+    id: uuid("id").primaryKey(),
+    accountId: text("account_id").notNull(),
+    providerId: text("provider_id").notNull(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    accessToken: text("access_token"),
+    refreshToken: text("refresh_token"),
+    idToken: text("id_token"),
+    accessTokenExpiresAt: timestamp("access_token_expires_at", {
+      withTimezone: true,
+    }),
+    refreshTokenExpiresAt: timestamp("refresh_token_expires_at", {
+      withTimezone: true,
+    }),
+    scope: text("scope"),
+    password: text("password"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [index("account_user_id_idx").on(table.userId)],
+);
+
+// Backs both email verification and the magic-link plugin's one-time tokens.
+export const verification = pgTable(
+  "verification",
+  {
+    id: uuid("id").primaryKey(),
+    identifier: text("identifier").notNull(),
+    value: text("value").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [index("verification_identifier_idx").on(table.identifier)],
+);
+
 // ── profiles ─────────────────────────────────────────────────────────────────
-// A user profile. Auth is self-hosted Better Auth, whose own tables live in this
-// same database, so there is no external identity provider to mirror. E05 wires
-// the FK from `id` to Better Auth's user table alongside the auth flows.
+// A user profile. `id` is not merely *derived from* the auth user id — it IS the
+// auth user id, enforced by the FK below. There is deliberately no
+// `.defaultRandom()`: a randomly generated id could never satisfy that FK, so
+// every insert supplies the Better Auth user id explicitly.
+//
+// ⚠️ NO PROVIDER-SPECIFIC COLUMN, EVER. No `github_handle`, no `google_handle`,
+// no `provider`. Linked identities live in Better Auth's `account` table as
+// `(userId, providerId, accountId)` — that is the only place they stay correct
+// across a link and an unlink. A copy here would need backfilling on every link
+// and would silently rot the moment a user unlinks a provider. `handle` is a
+// generic *display* handle, seeded opportunistically from whichever provider
+// signed the user up first and editable by the user in E06; it is presentation,
+// not identity. "Which providers is this user linked to?" queries `account`.
 export const profiles = pgTable("profiles", {
-  id: uuid("id").primaryKey().defaultRandom(),
+  id: uuid("id")
+    .primaryKey()
+    .references(() => user.id, { onDelete: "cascade" }),
   handle: text("handle"),
   email: text("email"),
   plan: planEnum("plan").notNull().default("free"),
@@ -84,6 +213,17 @@ export const sites = pgTable(
     // End of the post-expiry grace window (DRAFT_GRACE_DAYS), after which E07
     // hard-deletes. E04 sets both clocks and indexes them; it enforces neither.
     purgeAfter: timestamp("purge_after", { withTimezone: true }),
+    // When an account FIRST took this page (E05's keep). It is a historical
+    // stamp, not a state flag: it is set on keep and deliberately LEFT SET
+    // through a later demote, because it records when the page stopped being
+    // anonymous — not whether it is kept right now. `kept ⇔ owner_id != null
+    // AND expires_at IS NULL` remains the only definition of kept-ness; never
+    // read this column to answer that question.
+    //
+    // The name is the one piece of pre-pivot `claim` vocabulary E05 retains,
+    // because the PRD's data model specifies it. Do not spread `claim` into any
+    // new identifier — the product word is **keep**.
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
     // Denormalised from the current version so the dedup probe is a single
     // index scan on `sites` and never has to join `site_versions`.
     contentHash: text("content_hash"),
@@ -155,7 +295,34 @@ export const siteVersions = pgTable("site_versions", {
 });
 
 // ── relations ────────────────────────────────────────────────────────────────
-export const profilesRelations = relations(profiles, ({ many }) => ({
+export const userRelations = relations(user, ({ one, many }) => ({
+  sessions: many(session),
+  accounts: many(account),
+  profile: one(profiles, {
+    fields: [user.id],
+    references: [profiles.id],
+  }),
+}));
+
+export const sessionRelations = relations(session, ({ one }) => ({
+  user: one(user, {
+    fields: [session.userId],
+    references: [user.id],
+  }),
+}));
+
+export const accountRelations = relations(account, ({ one }) => ({
+  user: one(user, {
+    fields: [account.userId],
+    references: [user.id],
+  }),
+}));
+
+export const profilesRelations = relations(profiles, ({ one, many }) => ({
+  user: one(user, {
+    fields: [profiles.id],
+    references: [user.id],
+  }),
   sites: many(sites),
 }));
 

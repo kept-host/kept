@@ -20,9 +20,7 @@ import { z } from "zod";
  * ⚠️ This tuple drives the Drizzle `pgEnum` in apps/web/lib/db/schema.ts, so a
  * value may only be added or removed here together with a generated migration
  * that rewrites the `site_status` Postgres type — dropping an enum value is a
- * migration, not a rename. E04 did exactly that to retire the last pre-pivot
- * status. `supporter` in `PLANS` below is the remaining pre-pivot value and is
- * E05's to remove, with its own migration — do not delete it here.
+ * migration, not a rename. The same rule binds every tuple in this file.
  */
 export const SITE_STATUSES = [
   "live",
@@ -36,8 +34,11 @@ export const SITE_STATUSES = [
 export const siteStatusEnum = z.enum(SITE_STATUSES);
 export type SiteStatus = (typeof SITE_STATUSES)[number];
 
-/** Account plan tier. */
-export const PLANS = ["free", "supporter", "premium"] as const;
+/**
+ * Account plan tier. `premium` is the paid Pro tier — a valid value from E05
+ * onward, given meaning by E11. Same migration rule as `SITE_STATUSES` above.
+ */
+export const PLANS = ["free", "premium"] as const;
 
 export const planEnum = z.enum(PLANS);
 export type Plan = (typeof PLANS)[number];
