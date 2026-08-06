@@ -261,6 +261,33 @@ export function resendConfig(): { apiKey: string; from: string } {
 }
 
 /**
+ * The shared secret every scheduled job authenticates with (E05 task 011).
+ *
+ * ONE secret for the whole `/api/cron/*` namespace, which E07 extends with the
+ * expiry sweep and the grace-end purge. A per-job secret would multiply the
+ * rotation surface without changing the trust boundary: any holder of any of
+ * them is already the scheduler.
+ *
+ * Not optional and not blank-tolerant — an unauthenticated cron route is a
+ * mail-sending oracle for anyone who guesses the path, so a deployment with an
+ * empty slot must fail loudly at first call rather than degrade to open.
+ * Per-track like everything else here; never `NEXT_PUBLIC_`.
+ */
+export function cronSecret(): string {
+  return read({
+    CRON_SECRET: blankAsAbsent(
+      z
+        .string()
+        .trim()
+        .min(
+          32,
+          "expected 32+ random bytes — generate one with `openssl rand -base64 32`",
+        ),
+    ),
+  }).CRON_SECRET;
+}
+
+/**
  * Salt for `sites.publisher_hash` (E04 task 001). Not a store credential, but
  * it lives here because the epic's rule is ONE validated env module for the
  * control plane's server-only config — a second accessor is how the two drift.

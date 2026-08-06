@@ -12,7 +12,7 @@
  * per-epic migrations.
  */
 import { PLANS, REGIONS, SITE_STATUSES } from "@kept/shared";
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import {
   boolean,
   index,
@@ -230,6 +230,26 @@ export const sites = pgTable(
     sizeBytes: integer("size_bytes"),
     // Optional "your draft expires soon" address collected on the result screen.
     reminderEmail: text("reminder_email"),
+    // When the single pre-expiry reminder was sent (E05 task 011). NULL means
+    // "not yet sent" and is the ONLY thing that makes "one reminder maximum"
+    // enforceable — the sweep both selects on it and stamps it, so a replayed
+    // or crashed run cannot mail the same publisher twice. It is stamped
+    // *before* the send and cleared again if the send fails, so the failure
+    // mode is "retried next run", never "sent twice".
+    reminderSentAt: timestamp("reminder_sent_at", { withTimezone: true }),
+    // SHA-256 (hex) of the one-time keep token carried by the reminder email —
+    // NEVER the token itself, exactly like `anonTokenHash` above.
+    //
+    // ⚠️ WHY A SECOND TOKEN EXISTS AT ALL. The reminder has to contain a link
+    // the recipient can act on, and the only handle on an anonymous page is a
+    // bearer token. The publisher's original token is unrecoverable from this
+    // database by design, so the sweep cannot re-send it; instead it mints a
+    // fresh token per reminder and stores only its digest here, in the SAME
+    // update that stamps `reminderSentAt`. The raw value exists solely inside
+    // the one email. `lib/publish/anon-token.ts` resolves it through the one
+    // existing resolver — it is a second credential for the same page, not a
+    // second code path — and it is revoked (set NULL) by unsubscribing.
+    reminderKeepTokenHash: text("reminder_keep_token_hash"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -267,6 +287,27 @@ export const sites = pgTable(
       table.publisherHash,
       table.createdAt,
     ),
+    // The reminder sweep's lookup for the one-time keep token in the email.
+    // Unique for the same reason `sites_anon_token_hash_key` is: a token
+    // identifies exactly one page. Many NULLs are permitted under it.
+    uniqueIndex("sites_reminder_keep_token_hash_key").on(
+      table.reminderKeepTokenHash,
+    ),
+    // E05 task 011's due-draft selection, and the shape E07's sweeps should
+    // copy. PARTIAL, not composite: every column in the predicate below is
+    // either constant across the candidate set (`owner_id IS NULL`,
+    // `status = 'live'`) or purely existential (`reminder_email IS NOT NULL`,
+    // `reminder_sent_at IS NULL`), so putting them in the index KEY would only
+    // widen every entry with a value the scan already knows. Moving them into
+    // the predicate instead leaves a single-column `expires_at` btree over the
+    // handful of rows that can ever match — which is also exactly the order the
+    // sweep reads in (nearest expiry first), so the cap's LIMIT terminates the
+    // scan instead of sorting the whole set.
+    index("sites_reminder_due_idx")
+      .on(table.expiresAt)
+      .where(
+        sql`${table.reminderEmail} is not null and ${table.reminderSentAt} is null and ${table.ownerId} is null and ${table.status} = 'live'`,
+      ),
   ],
 );
 

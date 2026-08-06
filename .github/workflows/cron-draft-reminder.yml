@@ -1,0 +1,102 @@
+name: Cron — draft reminder (dev)
+
+# THE REPO'S SCHEDULER SUBSTRATE (E05 task 011). There was none before this
+# file — no Vercel `crons`, no Railway cron service, no Worker `[triggers]`, no
+# scheduled Action — and **E07 inherits this choice** for the draft-expiry sweep
+# and the grace-end purge. The reasoning, because the next person will need it:
+#
+#   CHOSEN — a scheduled GitHub Actions workflow calling an authenticated route.
+#     * The schedule is committed, reviewed and diffed like any other code. A
+#       Railway cron lives in a dashboard, where nobody can see it in a PR.
+#     * GitHub Environments already hold per-track secrets (E02 task 004), so
+#       `dev` and `prod` are isolated by the same mechanism as every deploy —
+#       no new secret topology, no new provider account.
+#     * It costs nothing: Actions minutes are free on public repos, and the job
+#       is a single `curl`, not a container running a copy of the app.
+#     * It scales to E07 by adding steps, not substrate. The endpoint contract
+#       — POST, bearer secret, idempotent, capped, replayable — is the thing
+#       being reused, and it is provider-agnostic: if this ever moves to a
+#       Railway cron or a queue, the routes do not change.
+#     * `workflow_dispatch` makes a run reproducible by hand, which is what
+#       makes it debuggable.
+#
+#   REJECTED — a Cloudflare Worker `[triggers]` cron. It would make the DATA
+#     PLANE call the CONTROL PLANE, inverting the architecture's one-directional
+#     boundary. `apps/edge` reads R2 + KV and nothing else, precisely so that a
+#     control-plane outage cannot take a hosted page offline; giving the Worker
+#     a reason to call `apps/web` creates exactly the coupling the whole design
+#     exists to prevent. Not a close call — this one is a rule, not a trade-off.
+#
+#   REJECTED — a Railway cron service. It is a second service running the app
+#     image on a schedule: more cost, a second deploy target to keep in sync
+#     with `apps/web`, and configuration that lives in a dashboard instead of
+#     the repo. Its one real advantage — no public endpoint needed — is not an
+#     advantage here, because the endpoint is authenticated anyway and E07's
+#     jobs want to be dispatchable by hand during an incident.
+#
+#   REJECTED — Vercel crons. The control plane is on Railway (E02). Not
+#     available, listed only so nobody re-proposes it from habit.
+#
+# THE KNOWN COST OF THIS CHOICE: GitHub's scheduled runs are best-effort and can
+# be delayed by minutes to an hour under load, and are skipped entirely on a
+# repo with no activity for 60 days. Both are acceptable for a T-2d reminder and
+# for E07's daily sweeps — nothing here is time-critical to the minute — but
+# neither would be acceptable for a job with a tight SLA. If E07 ever needs one,
+# that is the moment to revisit, not before.
+#
+# PROD IS DEFERRED. Prod has never been deployed: `release.yml` has never run
+# and the `prod` GitHub Environment holds zero secrets, so there is no prod
+# variant of this workflow to write yet. It is a copy of this file with
+# `environment: prod` once prod exists.
+
+on:
+  schedule:
+    # 09:00 UTC daily. Once a day is the right frequency for a T-2d window that
+    # is 48 hours wide: a draft cannot fall through it, and a delayed run is
+    # still comfortably inside it.
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+
+# Never two sweeps at once. The endpoint is idempotent — the second run would
+# claim nothing and send nothing — but overlapping runs make the reported counts
+# impossible to read, and the whole point of the counts is diagnosability.
+concurrency:
+  group: cron-draft-reminder-dev
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  send:
+    name: Send draft reminders (dev)
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      # No checkout and no toolchain: this is one authenticated HTTP call. The
+      # batch size, the ordering, the cap and the idempotency all live in the
+      # application, where they are typechecked and unit-tested — not in YAML.
+      - name: POST /api/cron/draft-reminder
+        env:
+          # The deployed control plane's origin for this environment. Same
+          # value the release smoke probes, deliberately not a second copy of
+          # the same string under a second name.
+          APP_URL: ${{ vars.SMOKE_WEB_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${APP_URL}" ] || [ -z "${CRON_SECRET}" ]; then
+            echo "::error::SMOKE_WEB_URL (variable) and CRON_SECRET (secret) must both be set on the dev environment."
+            exit 1
+          fi
+
+          # `--fail-with-body` so a non-2xx both fails the step and prints what
+          # the endpoint said. The body is counts only — it never contains an
+          # email address or a token — so it is safe in a public build log.
+          curl --fail-with-body --silent --show-error \
+            --max-time 300 \
+            --request POST \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            --header "Content-Length: 0" \
+            "${APP_URL%/}/api/cron/draft-reminder"
