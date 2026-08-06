@@ -42,6 +42,7 @@ import { Resend } from "resend";
 import { db, schema } from "../db";
 import { authConfig, githubOAuth, googleOAuth, resendConfig } from "../storage/env";
 
+import { bootstrapProfile } from "./bootstrap-profile";
 import { fetchGithubIdentity } from "./github-identity";
 
 function createAuth() {
@@ -75,6 +76,30 @@ function createAuth() {
     // Email + password is not a sign-in route kept offers. Three doors only:
     // GitHub, Google, magic link.
     emailAndPassword: { enabled: false },
+
+    /**
+     * D3 — KEPT'S HALF OF AN ACCOUNT IS MADE ON THE `user` ROW'S CREATION.
+     *
+     * One hook, all three doors, and any door added later: a `user` row cannot
+     * come into existence without a `profiles` row following it, so there is no
+     * sign-in path that produces a signed-in user with no owner id to hang
+     * pages off. See `./bootstrap-profile.ts` for why the hook beats the three
+     * callbacks, and `../db/queries/profile.ts` for the create-once itself.
+     *
+     * NOT `create.before`, which runs inside the OAuth transaction and before
+     * the `user` row exists — `profiles.id` is an FK onto it. `after` is queued
+     * past the commit and awaited, so this both succeeds and is allowed to fail
+     * the sign-in if the database is unwell.
+     */
+    databaseHooks: {
+      user: {
+        create: {
+          after: async (user) => {
+            await bootstrapProfile(user);
+          },
+        },
+      },
+    },
 
     account: {
       /**
