@@ -28,14 +28,19 @@ test.describe("stub routes", () => {
     expect(errors, `console errors: ${errors.join(" | ")}`).toEqual([]);
   });
 
-  test("/auth responds and renders its placeholder", async ({ page }) => {
-    const errors = trackConsoleErrors(page);
+  // /auth is no longer a stub — E05 task 005 built the real sign-in screen, and
+  // `auth-screen.spec.ts` owns it. This keeps only the smoke assertion that
+  // belongs with the other route shells: the page answers, and the placeholder
+  // heading this suite used to look for is gone for good.
+  test("/auth responds with the real sign-in screen, not the old stub", async ({
+    page,
+  }) => {
     const res = await page.goto("/auth");
     expect(res?.ok()).toBe(true);
     await expect(
-      page.getByRole("heading", { name: "Sign-in placeholder" }),
+      page.getByRole("heading", { name: "Sign in to kept" }),
     ).toBeVisible();
-    expect(errors, `console errors: ${errors.join(" | ")}`).toEqual([]);
+    await expect(page.getByText("Sign-in placeholder")).toHaveCount(0);
   });
 
   test("/stats responds and reports the zero baseline honestly", async ({
