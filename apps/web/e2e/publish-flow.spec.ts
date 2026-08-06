@@ -226,6 +226,48 @@ test.describe("publish flow", () => {
     await expect(page.getByText("Drop your HTML").first()).toBeVisible();
   });
 
+  test("a non-HTML file is refused before the network, and prose pasted by accident is ignored", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.waitForLoadState("networkidle");
+
+    let requests = 0;
+    await page.route("**/api/publish", async (route) => {
+      requests += 1;
+      await route.abort();
+    });
+
+    // A `.txt` dropped on the tile. `checkPageFile` reads the MIME type first
+    // and falls back to the extension for the browsers that hand over an empty
+    // one — either way this never reaches the wire, so the visitor gets the
+    // sentence immediately instead of a round trip and a 400.
+    await page.setInputFiles('input[type="file"]', {
+      name: "notes.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("just some notes, not a page"),
+    });
+
+    await expect(face(page, "error")).toHaveCSS("opacity", "1");
+    await expect(face(page, "error")).toContainText(
+      "kept hosts a single HTML document",
+    );
+    expect(requests, "a non-HTML file reached the network").toBe(0);
+
+    await page.getByRole("button", { name: "Try again" }).click();
+    await expect(face(page, "idle")).toHaveCSS("opacity", "1");
+
+    // …and a ⌘V of ordinary prose does not even become an error: without the
+    // markup guard, copying a sentence and pasting it on the landing page
+    // would publish it. Nothing happens at all — the tile stays idle.
+    await pasteHtml(page, "Reminder: buy milk on the way home.");
+
+    await expect(face(page, "idle")).toHaveCSS("opacity", "1");
+    await expect(face(page, "error")).toHaveCSS("opacity", "0");
+    await expect(face(page, "minting")).toHaveCSS("opacity", "0");
+    expect(requests, "pasted prose reached the network").toBe(0);
+  });
+
   test("an oversized page fails before the network — the byte cap is shared, not guessed", async ({
     page,
   }) => {
