@@ -9,7 +9,7 @@ import { expect, test } from "@playwright/test";
 import { config } from "dotenv";
 import { eq, inArray } from "drizzle-orm";
 
-import { db, schema } from "../lib/db";
+import { closeDb, db, schema } from "../lib/db";
 
 /**
  * The three owner routes over the wire — E05 task 010.
@@ -68,7 +68,7 @@ test.describe("owner site routes", () => {
       // Cascades `profiles`, `session` and `account`.
       await db.delete(schema.user).where(inArray(schema.user.id, createdUserIds));
     }
-    await db.$client.end();
+    await closeDb();
   });
 
   /** A real session cookie, minted through the real verify endpoint. */

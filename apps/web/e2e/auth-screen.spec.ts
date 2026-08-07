@@ -4,31 +4,32 @@ import { test, expect, type Page } from "@playwright/test";
  * `/auth` — the sign-in screen. E05 task 005.
  *
  * ── WHAT THIS SUITE CAN AND CANNOT PROVE ───────────────────────────────────
- * `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` do not exist yet (the Google
- * Cloud OAuth app is unprovisioned — see the epic's Unresolved Inputs), so the
- * Better Auth instance cannot be constructed and every `/api/auth/*` endpoint
- * answers 500. That is not a limitation to work around here — it is the exact
- * production incident the screen is designed to survive, and it makes three
- * things provable against the real app with no mocking whatsoever:
+ * Written while the auth layer was unprovisioned, when every `/api/auth/*`
+ * endpoint answered 500 and that 500 was the material every failure assertion
+ * was made of. **Task 012 provisioned the credentials, and two of those tests
+ * were then asserting something no longer true** — `/api/auth/get-session`
+ * answers 200, and a GitHub click really does reach GitHub. Both were rewritten
+ * against what is true now rather than relaxed; see the two tests below.
  *
- *   1. `/auth` still renders all three routes when the auth layer is down. The
- *      shell has no session dependency, which is the whole reason the session
- *      is read in the browser rather than in the server component.
+ * What it proves:
+ *
+ *   1. `/auth` renders all three routes with no session dependency in the
+ *      server component — which is why a session read that fails, or simply
+ *      returns null, cannot stop the screen drawing.
  *   2. Both failure paths reach a readable error panel with a working button,
- *      not a spinner. The 500 is a real 500 from the real handler.
+ *      not a spinner. The magic-link failure is a REAL rejection from Resend
+ *      (`example.com` is refused at request time), not a substituted response.
  *   3. The `next` return URL is threaded into the real request body and is
  *      validated by `safeReturnPath` on the way in.
  *
- * WHAT IT CANNOT PROVE: the **sent** state and its resend cooldown, which need
- * `/api/auth/sign-in/magic-link` to answer 200 — i.e. the Google credentials
- * plus a verified Resend sending domain. Faking that response would mean
- * mocking the auth layer, which the project forbids outright, so it is left to
- * task 012 against the dev stack.
+ * `auth-providers.spec.ts` owns the provider boundary itself (the authorize
+ * redirect's shape, the provider accepting the registration, state forgery,
+ * and a real Resend send).
  *
- * NO `page.route(..., fulfill)` ANYWHERE. The one place this suite touches the
- * network (`slowRequest`) delays a request and then continues it — the response
- * still comes from the real handler. Delaying is throttling; substituting would
- * be a mock.
+ * NO `page.route(..., fulfill)` ANYWHERE, and no substituted provider. The two
+ * places this suite touches the network delay a request and continue it, or
+ * abort it outright to produce a genuine transport failure in the browser —
+ * the response, when there is one, always comes from the real handler.
  */
 
 const SIGN_IN_HEADING = "Sign in to kept";
@@ -100,12 +101,16 @@ test.describe("/auth sign-in screen", () => {
     expect(googleBox!.y).toBeLessThan(emailBox!.y);
   });
 
-  test("renders with all three routes even though the auth API is down", async ({
+  test("renders with all three routes whatever the session read answers", async ({
     page,
   }) => {
-    // Proof, not assumption: the endpoint the session read uses is failing.
+    // Proof, not assumption: the endpoint the session read uses now answers,
+    // and answers "nobody" for a visitor with no cookie. Before task 012's
+    // provisioning this was a 500 and the screen drew anyway — the point of the
+    // shell having no session dependency is that neither answer changes it.
     const session = await page.request.get("/api/auth/get-session");
-    expect(session.status()).toBe(500);
+    expect(session.status()).toBe(200);
+    expect(await session.text()).toBe("null");
 
     const res = await page.goto("/auth");
     expect(res?.ok()).toBe(true);
@@ -113,7 +118,7 @@ test.describe("/auth sign-in screen", () => {
     await expect(page.locator("button[data-provider]")).toHaveCount(2);
   });
 
-  test("an OAuth click shows the redirect state, then a readable error — never a silent spinner", async ({
+  test("an OAuth click shows the redirect state, then really leaves for the provider", async ({
     page,
   }) => {
     await slowRequest(page, "/sign-in/social", 700);
@@ -129,7 +134,28 @@ test.describe("/auth sign-in screen", () => {
     ).toBeVisible();
     await expect(page.getByRole("button", { name: "cancel" })).toBeVisible();
 
-    // …and it terminates. The 500 becomes words plus a button.
+    // …and the redirect is not decorative: with the credentials provisioned the
+    // browser actually lands on github.com. `auth-providers.spec.ts` asserts the
+    // shape of that URL; here the only claim is that the button leaves.
+    await page.waitForURL(/^https:\/\/github\.com\//, { timeout: 15_000 });
+  });
+
+  test("an OAuth click that cannot reach the server ends in words, not a spinner", async ({
+    page,
+  }) => {
+    await page.goto("/auth");
+    // A genuine transport failure, not a substituted response: the request is
+    // aborted at the socket, which is what the browser sees when the provider
+    // leg is unreachable. Nothing fabricates a body — `route.fulfill` is
+    // forbidden here and is not used.
+    await page.route(
+      (url) => url.pathname.includes("/sign-in/social"),
+      (route) => route.abort("connectionfailed"),
+    );
+
+    await page.getByRole("button", { name: "Continue with GitHub" }).click();
+
+    // The failure becomes words plus a button.
     await expect(
       page.getByRole("heading", { name: "We could not reach that provider" }),
     ).toBeVisible({ timeout: 15_000 });

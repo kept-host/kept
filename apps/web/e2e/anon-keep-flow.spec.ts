@@ -9,7 +9,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { config } from "dotenv";
 import { eq, inArray } from "drizzle-orm";
 
-import { db, schema } from "../lib/db";
+import { closeDb, db, schema } from "../lib/db";
 import { PENDING_KEEP_COOKIE } from "../lib/auth/pending-keep";
 
 /**
@@ -82,7 +82,7 @@ test.describe("the pending-keep round trip", () => {
       // Cascades `profiles`, `session` and `account`.
       await db.delete(schema.user).where(inArray(schema.user.id, createdUserIds));
     }
-    await db.$client.end();
+    await closeDb();
   });
 
   /**

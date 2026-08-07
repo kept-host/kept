@@ -229,14 +229,22 @@ export function SignInForm({
 
   async function startProvider(route: AuthProviderRoute) {
     setPhase({ kind: "redirecting", provider: route });
-    const { error } = await signIn.social({
-      provider: route.id,
-      callbackURL: returnTo,
-      // Bounce failures back to this screen with the return URL intact, so a
-      // refused link or a declined consent lands on readable copy instead of
-      // Better Auth's own /api/auth/error page.
-      errorCallbackURL: signInHref(returnTo),
-    });
+    // `await`-and-check is not enough: the client returns `{ error }` for an
+    // HTTP failure but THROWS for a transport one ("Failed to fetch" — offline,
+    // DNS gone, the request cut at the socket). Unhandled, that rejection left
+    // this screen on "Redirecting to …" for ever, which is precisely the silent
+    // spinner the copy below exists to prevent. Found by aborting the request in
+    // e2e (task 012); both callers are guarded the same way.
+    const { error } = await signIn
+      .social({
+        provider: route.id,
+        callbackURL: returnTo,
+        // Bounce failures back to this screen with the return URL intact, so a
+        // refused link or a declined consent lands on readable copy instead of
+        // Better Auth's own /api/auth/error page.
+        errorCallbackURL: signInHref(returnTo),
+      })
+      .catch((cause: unknown) => ({ error: cause ?? new Error("unreachable") }));
     // On success the client's redirect plugin has already set
     // `window.location`; we stay in `redirecting` while that navigation runs,
     // and the cancel control is the way out if the provider is slow.
@@ -244,11 +252,13 @@ export function SignInForm({
   }
 
   async function sendLink(address: string): Promise<boolean> {
-    const { error } = await signIn.magicLink({
-      email: address,
-      callbackURL: returnTo,
-      errorCallbackURL: signInHref(returnTo),
-    });
+    const { error } = await signIn
+      .magicLink({
+        email: address,
+        callbackURL: returnTo,
+        errorCallbackURL: signInHref(returnTo),
+      })
+      .catch((cause: unknown) => ({ error: cause ?? new Error("unreachable") }));
     if (error) {
       setPhase({ kind: "error", code: "send_failed" });
       return false;

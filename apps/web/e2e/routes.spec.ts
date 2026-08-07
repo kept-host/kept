@@ -83,6 +83,75 @@ test.describe("the (app) route gate", () => {
   });
 });
 
+/**
+ * D3, at the edge of the URL space rather than in the handlers — E05 task 012.
+ *
+ * Task 013 moved every anonymous route under `/api/anon/`, which broke the API
+ * contract deployed at `dev-v0.1.5` deliberately and with no compatibility
+ * redirect. The absence of that redirect is the security property: a 301 or 307
+ * would resurrect a retired URL that carries a BEARER CREDENTIAL in its path,
+ * and the token would then be handed to whatever the redirect resolved to —
+ * plus leaked through `Referer`. So the retired paths must answer an ordinary,
+ * boring 404, and must not answer with a `Location`.
+ *
+ * No credentials needed: a made-up token is enough, because the assertion is
+ * that the route does not exist at all.
+ */
+test.describe("the retired anonymous API paths", () => {
+  const RETIRED_TOKEN = "e05012retiredpathprobe000000000000000000";
+
+  test("the pre-D3 `/api/sites/:anonToken/*` URLs 404 and never redirect", async ({
+    request,
+  }) => {
+    const attempts: [string, "get" | "post" | "delete"][] = [
+      [`/api/sites/${RETIRED_TOKEN}`, "delete"],
+      [`/api/sites/${RETIRED_TOKEN}/replace`, "post"],
+      [`/api/sites/${RETIRED_TOKEN}/reminder`, "post"],
+    ];
+
+    for (const [path, method] of attempts) {
+      const response = await request[method](path, { maxRedirects: 0 });
+      expect(response.status(), `${method.toUpperCase()} ${path}`).toBe(404);
+      expect(response.headers()["location"], `${method.toUpperCase()} ${path}`).toBeUndefined();
+    }
+  });
+
+  test("the `/api/anon/` namespace answers those same shapes with no session", async ({
+    request,
+  }) => {
+    // The token is fictional, so the honest answer is the uniform 404 the
+    // anonymous manage API gives any unknown token — what matters here is that
+    // the ROUTE exists and gates on the token rather than on a session (a 401
+    // would mean publish-before-signup had grown a sign-in wall).
+    const attempts: [string, "post" | "delete"][] = [
+      [`/api/anon/${RETIRED_TOKEN}`, "delete"],
+      [`/api/anon/${RETIRED_TOKEN}/replace`, "post"],
+      [`/api/anon/${RETIRED_TOKEN}/reminder`, "post"],
+      [`/api/anon/${RETIRED_TOKEN}/keep`, "post"],
+    ];
+
+    for (const [path, method] of attempts) {
+      const response = await request[method](path, { maxRedirects: 0 });
+      const where = `${method.toUpperCase()} ${path}`;
+      // 404 (unknown token), or 400 where the body is validated first. A 405
+      // would mean the method never reached a handler at all.
+      expect([400, 401, 404], where).toContain(response.status());
+    }
+
+    // Only `keep` may answer 401 — it is the one anonymous route that needs a
+    // session to have anywhere to put the page. The other three must stay
+    // reachable with no session at all, because publish-before-signup is the
+    // product and a gate that crept onto that path is launch-blocking.
+    for (const [path, method] of attempts.slice(0, 3)) {
+      const response = await request[method](path, { maxRedirects: 0 });
+      expect(
+        response.status(),
+        `${method.toUpperCase()} ${path} must not gate on a session`,
+      ).not.toBe(401);
+    }
+  });
+});
+
 test.describe("stub routes", () => {
   // /auth is no longer a stub — E05 task 005 built the real sign-in screen, and
   // `auth-screen.spec.ts` owns it. This keeps only the smoke assertion that
