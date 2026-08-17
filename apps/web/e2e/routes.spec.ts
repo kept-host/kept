@@ -40,6 +40,25 @@ const SKIP_AUTH: string | false =
     ? `auth credentials absent (${missingAuthVars.join(", ")}) — run locally with apps/web/.env.local`
     : false;
 
+/**
+ * The `/api/anon/` drill further down is a LIVE-STORE drill, not a URL-space
+ * one. Three of those four handlers resolve the token against Postgres before
+ * they can answer "unknown" at all, and `keep` reads the session before it even
+ * reads the token — so with `DATABASE_URL` empty (`lib/db/index.ts` throws by
+ * design, and the client is lazy precisely so a secretless build still passes)
+ * or the auth slots empty, every one of them answers 500 and the 404 the drill
+ * is after is unreachable. That is missing config failing loud, which is the
+ * intended behaviour, so the drill skips rather than asserting something weaker.
+ */
+const missingLiveVars = ["DATABASE_URL", ...AUTH_VARS].filter(
+  (name) => !process.env[name]?.trim(),
+);
+
+const SKIP_LIVE: string | false =
+  missingLiveVars.length > 0
+    ? `database or auth credentials absent (${missingLiveVars.join(", ")}) — run locally with apps/web/.env.local`
+    : false;
+
 function trackConsoleErrors(page: Page): string[] {
   const errors: string[] = [];
   page.on("console", (msg) => {
@@ -94,8 +113,9 @@ test.describe("the (app) route gate", () => {
  * plus leaked through `Referer`. So the retired paths must answer an ordinary,
  * boring 404, and must not answer with a `Location`.
  *
- * No credentials needed: a made-up token is enough, because the assertion is
- * that the route does not exist at all.
+ * The retired-path test needs no credentials — a made-up token is enough,
+ * because the assertion is that the route does not exist at all. The live
+ * `/api/anon/` counterpart does need them, and skips without; see `SKIP_LIVE`.
  */
 test.describe("the retired anonymous API paths", () => {
   const RETIRED_TOKEN = "e05012retiredpathprobe000000000000000000";
@@ -119,6 +139,8 @@ test.describe("the retired anonymous API paths", () => {
   test("the `/api/anon/` namespace answers those same shapes with no session", async ({
     request,
   }) => {
+    test.skip(!!SKIP_LIVE, SKIP_LIVE || undefined);
+
     // The token is fictional, so the honest answer is the uniform 404 the
     // anonymous manage API gives any unknown token — what matters here is that
     // the ROUTE exists and gates on the token rather than on a session (a 401

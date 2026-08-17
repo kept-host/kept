@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { config } from "dotenv";
 
 /**
  * `/auth` — the sign-in screen. E05 task 005.
@@ -30,7 +31,39 @@ import { test, expect, type Page } from "@playwright/test";
  * places this suite touches the network delay a request and continue it, or
  * abort it outright to produce a genuine transport failure in the browser —
  * the response, when there is one, always comes from the real handler.
+ *
+ * Two of those tests need the credentials to exist and SKIP WITHOUT THEM — see
+ * `SKIP_AUTH` below. The other six are environment-free: the shell renders with
+ * no session dependency, and the two failure paths are produced in the browser
+ * rather than by an unprovisioned server, so they hold either way.
  */
+config({ path: ".env.local", quiet: true });
+
+/**
+ * Everything `createAuth()` validates. The first touch of `auth` constructs the
+ * whole Better Auth instance, and with any slot empty that construction throws
+ * by design (`lib/storage/env.ts`) — so `/api/auth/get-session` answers 500 and
+ * a provider click never reaches a provider. That is a missing OAuth app, not a
+ * broken screen. Gating on `BETTER_AUTH_SECRET` alone would break the moment
+ * somebody filled only that one, so the whole set is checked, exactly as
+ * `routes.spec.ts` and the anon-keep suites do. Nothing is mocked around it.
+ */
+const AUTH_VARS = [
+  "BETTER_AUTH_SECRET",
+  "GITHUB_CLIENT_ID",
+  "GITHUB_CLIENT_SECRET",
+  "GOOGLE_CLIENT_ID",
+  "GOOGLE_CLIENT_SECRET",
+  "RESEND_API_KEY",
+  "EMAIL_FROM",
+] as const;
+
+const missingAuthVars = AUTH_VARS.filter((name) => !process.env[name]?.trim());
+
+const SKIP_AUTH: string | false =
+  missingAuthVars.length > 0
+    ? `auth credentials absent (${missingAuthVars.join(", ")}) — run locally with apps/web/.env.local`
+    : false;
 
 const SIGN_IN_HEADING = "Sign in to kept";
 
@@ -104,6 +137,8 @@ test.describe("/auth sign-in screen", () => {
   test("renders with all three routes whatever the session read answers", async ({
     page,
   }) => {
+    test.skip(!!SKIP_AUTH, SKIP_AUTH || undefined);
+
     // Proof, not assumption: the endpoint the session read uses now answers,
     // and answers "nobody" for a visitor with no cookie. Before task 012's
     // provisioning this was a 500 and the screen drew anyway — the point of the
@@ -121,6 +156,10 @@ test.describe("/auth sign-in screen", () => {
   test("an OAuth click shows the redirect state, then really leaves for the provider", async ({
     page,
   }) => {
+    // The second half of this test leaves for github.com for real, which needs
+    // a registered `GITHUB_CLIENT_ID` to redirect to.
+    test.skip(!!SKIP_AUTH, SKIP_AUTH || undefined);
+
     await slowRequest(page, "/sign-in/social", 700);
     await page.goto("/auth");
 
