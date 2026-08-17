@@ -27,7 +27,7 @@ const UNREACHABLE =
   "That didn't go through — the request never reached us. Try again.";
 
 function base(anonToken: string): string {
-  return `/api/sites/${encodeURIComponent(anonToken)}`;
+  return `/api/anon/${encodeURIComponent(anonToken)}`;
 }
 
 /**

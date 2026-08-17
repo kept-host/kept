@@ -127,7 +127,7 @@ export const KV_REPURGE_DELAY_MS = (2 * MANIFEST_KV_CACHE_TTL_SECONDS + 5) * 100
  * answers, no further KV read ever happens to correct it. One purge therefore
  * converts a bounded propagation window into a PERMANENT stale edge.
  *
- * Measured on deployed dev, 2026-08-05, `DELETE /api/sites/:token`: the KV key
+ * Measured on deployed dev, 2026-08-05, `DELETE /api/anon/:token`: the KV key
  * and the pointer were both gone and a cache-busting URL 404'd, yet three
  * seconds after the delete the live URL was a cache MISS serving 200 with
  * `s-maxage=31536000` — the purge had landed and the deleted page had just been

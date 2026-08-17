@@ -22,7 +22,7 @@ import {
 
 /**
  * The two §7.3 ordering proofs, END TO END — published through the real
- * `POST /api/publish` and deleted through the real `DELETE /api/sites/:token`,
+ * `POST /api/publish` and deleted through the real `DELETE /api/anon/:token`,
  * not through the storage helper.
  *
  * `lib/storage/manifest.test.ts` (task 004) and `lib/publish/anon-manage.test.ts`
@@ -149,7 +149,7 @@ test.describe("pointer ordering, through the publish and delete APIs", () => {
 
     expect(anonToken, "drill 1 must have published").not.toBe("");
 
-    const deleted = await request.delete(`/api/sites/${anonToken}`);
+    const deleted = await request.delete(`/api/anon/${anonToken}`);
     expect(deleted.status(), await deleted.text()).toBe(200);
     expect(await deleted.json()).toEqual({ ok: true });
 

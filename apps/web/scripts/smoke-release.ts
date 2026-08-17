@@ -32,7 +32,7 @@
  * THE PUBLISH HALF (E04): `smokePublish` closes what E03 could only narrow.
  * There is a publish path now, so the smoke uses it: one page published through
  * `POST /api/publish` on the deployed control plane, asserted to serve at the
- * `live_url` the API minted, then deleted through `DELETE /api/sites/:anonToken`.
+ * `live_url` the API minted, then deleted through `DELETE /api/anon/:anonToken`.
  * That is the full write chain — Postgres, R2 object, `slugs/{slug}.json`, KV,
  * purge — proven against the deployment that was just released, on every deploy.
  * It leaves nothing behind: a smoke that accumulates pages stops being runnable.
@@ -387,7 +387,7 @@ async function smokePublish(webUrl: string, deadline: number): Promise<StoreResu
 
   /** Delete on the way out of every branch below. Never leave a page behind. */
   const cleanup = async (): Promise<string> => {
-    const deleteUrl = new URL(`/api/sites/${anonToken}`, webUrl).toString();
+    const deleteUrl = new URL(`/api/anon/${anonToken}`, webUrl).toString();
     try {
       const del = await send(deleteUrl, deadline, { method: "DELETE" });
       await drain(del);

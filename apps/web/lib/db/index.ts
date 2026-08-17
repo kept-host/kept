@@ -39,7 +39,7 @@ function getDatabaseUrl(): string {
 
 /**
  * What `drizzle()` actually returns: the query builder plus `$client`, the
- * underlying `postgres` connection (tests call `db.$client.end()`).
+ * underlying `postgres` connection (tests close it through `closeDb()`).
  */
 type Db = PostgresJsDatabase<typeof schema> & { $client: ReturnType<typeof postgres> };
 
@@ -63,6 +63,24 @@ function getDb(): Db {
  * access, so `db.select(...)` behaves exactly as before while merely importing
  * this module touches neither `process.env` nor the network.
  */
+/**
+ * Close the pooled connection and forget it, so the next use builds a fresh
+ * one.
+ *
+ * For test teardown: postgres-js holds sockets open, which keeps a Playwright
+ * worker process alive after its last assertion. Calling `db.$client.end()`
+ * directly is the trap — the client is a module-scoped singleton and a
+ * Playwright worker runs several spec files in turn, so the first file's
+ * teardown left every later file in that worker querying a dead connection
+ * (`write CONNECTION_ENDED`). Clearing the cache is what makes the close
+ * survivable.
+ */
+export async function closeDb(): Promise<void> {
+  const current = cached;
+  cached = undefined;
+  await current?.$client.end();
+}
+
 export const db = new Proxy({} as Db, {
   // No `.bind()` here: `db.$client` is postgres-js's callable client, and
   // binding a function drops the own properties hanging off it (`.end()`,

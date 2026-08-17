@@ -34,6 +34,7 @@
 import { hashToken } from "@kept/shared";
 
 import { findSiteByAnonTokenHash, type AnonSite } from "../db/queries/publish";
+import { findAnonTokenHashByReminderKeepTokenHash } from "../db/queries/reminders";
 import { fail, type PublishFailure } from "./pipeline";
 
 export type { AnonSite };
@@ -81,9 +82,38 @@ export async function resolveAnonToken(
   // path traversal attempt, an empty segment — cannot be one.
   if (!/^[A-Za-z0-9_-]{40,64}$/.test(token)) return null;
 
-  const site = await findSiteByAnonTokenHash(await hashToken(token));
+  const site = await resolveHash(await hashToken(token));
   if (!site) return null;
   if (requireLive && site.status !== "live") return null;
 
   return site;
+}
+
+/**
+ * TWO TOKENS CAN NAME A PAGE, AND STILL ONLY ONE RESOLVER DOES (E05 task 011).
+ *
+ * The publisher's own token is the first case and the common one. The second is
+ * the one-time token carried by the draft-reminder email: the publisher's token
+ * is unrecoverable from the database by design, so the reminder cannot re-send
+ * it and mints its own instead, storing only the digest
+ * (`sites.reminder_keep_token_hash`). Both grant the same rights over the same
+ * page — the reminder link has to be able to keep, and keeping is not a
+ * narrower capability than managing.
+ *
+ * The fallback deliberately maps back onto `findSiteByAnonTokenHash` rather
+ * than selecting a site itself. That keeps one query producing `AnonSite`, one
+ * status guard, and one 404 shape; a parallel select is the thing that
+ * eventually returns a subtly different row and turns the uniform 404 into an
+ * oracle. It costs one extra index lookup, and only on the miss path.
+ *
+ * A kept page's `anon_token_hash` is NULL, so this resolves to nothing once the
+ * page has been kept — which is correct: after keeping, the account is the
+ * authority and every bearer link must stop working.
+ */
+async function resolveHash(hash: string): Promise<AnonSite | null> {
+  const direct = await findSiteByAnonTokenHash(hash);
+  if (direct) return direct;
+
+  const anonTokenHash = await findAnonTokenHashByReminderKeepTokenHash(hash);
+  return anonTokenHash ? findSiteByAnonTokenHash(anonTokenHash) : null;
 }

@@ -15,6 +15,20 @@
       "when": 1785929003974,
       "tag": "0001_publish_columns_and_status_enum",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786018943267,
+      "tag": "0002_better_auth_tables_and_plan_enum",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1786045603470,
+      "tag": "0003_reminder_sent_at_and_keep_token",
+      "breakpoints": true
     }
   ]
 }

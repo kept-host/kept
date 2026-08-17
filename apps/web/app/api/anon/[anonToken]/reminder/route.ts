@@ -1,5 +1,5 @@
 /**
- * `POST /api/sites/:anonToken/reminder` — store the "your draft expires soon"
+ * `POST /api/anon/:anonToken/reminder` — store the "your draft expires soon"
  * address.
  *
  * E04 ONLY PERSISTS IT. The cron that sends anything to it is E05's, and the

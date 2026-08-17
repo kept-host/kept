@@ -89,7 +89,7 @@ export async function deleteDraft(
   request: APIRequestContext,
   token: string,
 ): Promise<void> {
-  await request.delete(`/api/sites/${token}`).catch(() => {
+  await request.delete(`/api/anon/${token}`).catch(() => {
     /* best effort: a failed teardown must not fail the assertion above it */
   });
 }

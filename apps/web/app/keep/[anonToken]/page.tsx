@@ -15,24 +15,27 @@
  * QR, no replace, no delete. A stranger handed a link should not be one click
  * from deleting somebody's page.
  *
- * THE E05 SEAM — the one thing on this screen that does not work yet. Keeping a
- * page means signing in, attaching it to an account and clearing the clock, and
- * all three are E05. E04 ships the button honestly disabled with the reason
- * stated in the visible copy, rather than a fake success or a link into a flow
- * that does not exist. See `KEEP_CTA_NOTE` below for exactly what E05 replaces.
+ * THE E05 SEAM, NOW CLOSED (task 009). Keeping means signing in, attaching the
+ * page to an account and clearing the clock. E04 shipped the button honestly
+ * disabled with the reason in the visible copy; E05 replaced exactly the two
+ * things it promised — the note, and `aria-disabled` with a real destination.
+ * The button now submits to `./start-keep.ts`, which writes the pending-keep
+ * cookie and hands the visitor to `/auth/keep`; `/auth/callback` spends the
+ * cookie once on the way back. Nothing else on this screen moved.
  *
  * THE URL IS A BEARER CREDENTIAL, same as the manage link:
  * `robots: noindex, nofollow` keeps it out of search indexes,
  * `referrer: "no-referrer"` keeps it out of the `Referer` header of every
  * outbound navigation (including the hosted page itself), no link on this page
- * carries the token, and the token is never logged.
+ * carries the token, the keep form closes over it inside a server action rather
+ * than writing it into a field, and the token is never logged.
  */
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { ArrowUpRight } from "lucide-react";
 
-import { DRAFT_GRACE_DAYS, DRAFT_TTL_DAYS } from "@kept/shared";
+import { DRAFT_GRACE_DAYS, DRAFT_TTL_DAYS, KEPT_PAGE_LIMIT } from "@kept/shared";
 
 import {
   DraftChip,
@@ -44,6 +47,8 @@ import { Button } from "@/components/ui/button";
 import { resolveAnonToken } from "@/lib/publish/anon-token";
 import { liveUrl } from "@/lib/publish/pipeline";
 import { readPreviewHtml } from "@/lib/publish/preview";
+
+import { startKeep } from "./start-keep";
 
 /** `postgres-js` needs TCP sockets and `aws4fetch` signs with Node's crypto. */
 export const runtime = "nodejs";
@@ -85,16 +90,19 @@ const COPY: Record<DraftPhase, { eyebrow: string; heading: string; body: string 
 };
 
 /**
- * THE E05 HANDOFF, IN ONE STRING. Keeping needs sign-in, an account to attach
- * the page to, and the two clocks cleared — none of which exist in E04. The
- * button below is `aria-disabled` and this note says why, in place of the two
- * dishonest alternatives: a fake success, or a link into a flow that 404s.
+ * THE E05 HANDOFF, HONOURED (task 009). E04 shipped this note saying accounts
+ * were not open yet and the button `aria-disabled` beside it, and said E05 would
+ * replace exactly those two things and nothing else. That is what happened: the
+ * note now says what pressing the button does, and the button submits to
+ * `startKeep`. The preview, the chip, the address, the copy and the metadata are
+ * untouched.
  *
- * E05 replaces exactly two things here — this note, and the button's
- * `aria-disabled` with its real destination. Nothing else on this screen moves.
+ * `KEPT_PAGE_LIMIT` comes from `@kept/shared` for the same reason every other
+ * number on this screen does — a literal here is kept lying to a stranger the
+ * day the cap changes.
  */
 const KEEP_CTA_NOTE =
-  "Keeping needs a kept account, and accounts are not open yet — this button turns on when they are. Until then, save this link: it is the only handle anyone has on this page.";
+  `Keeping needs a free kept account — GitHub, Google, or a link sent to your email. The page does not move while you sign in: same address, same file, and the clock comes off the moment it is attached. Free accounts keep ${KEPT_PAGE_LIMIT} pages forever.`;
 
 export default async function ClaimPage({
   params,
@@ -117,6 +125,21 @@ export default async function ClaimPage({
   const now = new Date();
   const { phase } = draftCountdown(site.expiresAt, now);
   const copy = COPY[phase];
+
+  /**
+   * THE KEEP INTENT, CLOSED OVER RATHER THAN BOUND. `startKeep.bind(null, token)`
+   * would be the obvious shape and it serialises the token into a plaintext
+   * hidden field; an inline action closing over it does not, because Next
+   * encrypts the closed-over variables of an inline server action before they
+   * reach the document. The token is in this page's own URL either way, so this
+   * is defence in depth rather than a secret being protected for the first time
+   * — but a plaintext bearer credential in a form field is a thing that gets
+   * copied, and there is no reason to write one.
+   */
+  async function keepThisPage() {
+    "use server";
+    await startKeep(anonToken);
+  }
 
   return (
     <div className="flex min-h-dvh flex-col bg-bg">
@@ -175,22 +198,29 @@ export default async function ClaimPage({
             </Button>
           ) : (
             <div className="flex w-full flex-col items-center gap-3">
-              {/* `aria-disabled` rather than `disabled`: the control stays
-                  focusable, so a keyboard or screen-reader visitor reaches it
-                  and hears both the label and the note explaining it. It has no
-                  handler and no href, so activating it does nothing at all —
-                  which is the honest behaviour until E05 lands. */}
-              <Button
-                type="button"
-                aria-disabled="true"
-                aria-describedby="keep-cta-note"
-                // The hover and press affordances are cancelled deliberately: a
-                // button that lights up and squashes under the cursor is a
-                // button claiming it did something.
-                className="w-full max-w-[20rem] cursor-not-allowed opacity-60 hover:bg-accent active:scale-100"
+              {/* A FORM, NOT A LINK — and that is the whole trick. The token is
+                  a bearer credential, so it must not appear in an href, a query
+                  string or an OAuth `state`; here it is closed over by the
+                  server action above, which Next encrypts before it reaches the
+                  document. Signed out, `startKeep` writes it into an httpOnly
+                  cookie and `/auth/callback` spends it once on the way back;
+                  signed in, the keep happens in this very request.
+
+                  It also keeps this screen's zero-JavaScript promise: a plain
+                  form submit posts to the action and follows the redirect with
+                  no client bundle involved. */}
+              <form
+                action={keepThisPage}
+                className="flex w-full flex-col items-center"
               >
-                Keep it forever
-              </Button>
+                <Button
+                  type="submit"
+                  aria-describedby="keep-cta-note"
+                  className="w-full max-w-[20rem]"
+                >
+                  Keep it forever
+                </Button>
+              </form>
               <p
                 id="keep-cta-note"
                 className="max-w-[46ch] text-center text-sm leading-relaxed text-text-secondary"
