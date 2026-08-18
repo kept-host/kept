@@ -33,17 +33,31 @@ const MAX_MINT_ATTEMPTS = 16;
 /**
  * Labels a minted slug may never take.
  *
- * A superset of the Worker's own reserved set — `www`, `app`, `api`, `assets`,
- * mirrored from `apps/edge/src/host.ts`, which must not be edited — plus the
- * control plane's product routes. Duplicated rather than imported on purpose:
- * `apps/web` must not import from `apps/edge` (the one-directional serve-path
- * rule, enforced by ESLint), and hoisting it into `@kept/shared` would drag the
- * control plane's route names into the Worker bundle for no reason. The Worker
- * rejects its four before they reach KV; this list is the narrower rule the
- * control plane applies when it assigns one.
+ * **This list and the Worker's `RESERVED_LABELS` (`apps/edge/src/host.ts`) are
+ * deliberately no longer mirrors as of E05a. Do not "fix" the divergence.**
+ *
+ * `app` is **absent there** on purpose: `app.{base}` is the control plane,
+ * answered by Railway on a DNS-only (grey-cloud) record, so making it a reserved
+ * serving label would 301 the control plane away from its own hostname and take
+ * sign-in with it.
+ *
+ * `app` is **present here** on purpose: if that record is ever proxied by
+ * accident, the Worker resolves `app.{base}` as an ordinary slug — and because
+ * no page can be minted at `app`, the lookup misses and serves the branded 404
+ * rather than somebody's uploaded HTML. Deleting it from this tuple to restore
+ * the old symmetry is exactly the bug this comment exists to prevent.
+ *
+ * The rest of the tuple is the Worker's remaining reserved set (`www`, `api`,
+ * `assets`) plus the control plane's own product routes. Duplicated rather than
+ * imported on purpose: `apps/web` must not import from `apps/edge` (the
+ * one-directional serve-path rule, enforced by ESLint), and hoisting it into
+ * `@kept/shared` would drag the control plane's route names into the Worker
+ * bundle for no reason. The Worker rejects its labels before they reach KV; this
+ * list is the narrower rule the control plane applies when it assigns one.
  */
 export const RESERVED_SLUGS = [
-  // Mirrored from apps/edge/src/host.ts RESERVED_LABELS.
+  // Reserved by the Worker too (`RESERVED_LABELS`), except `app` — which is
+  // reserved ONLY here, by design. See the note above before touching it.
   "www",
   "app",
   "api",

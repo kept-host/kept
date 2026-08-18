@@ -136,10 +136,12 @@ describe("response classes", () => {
     }
   });
 
-  it("301s to the control plane and never proxies it", async () => {
-    // The serve path must never fetch the control plane, so a reserved label is
+  it("301s a reserved label to the apex and never proxies it", async () => {
+    // The serve path must never fetch another origin, so a reserved label is
     // answered with a redirect the browser follows, not with borrowed content.
-    const response = await dispatch(requestUrl(`https://app.${BASE_DOMAIN}/settings`));
+    // `www`, not `app`: E05a took `app` out of RESERVED_LABELS because that
+    // hostname IS the control plane and must not be redirected away.
+    const response = await dispatch(requestUrl(`https://www.${BASE_DOMAIN}/settings`));
 
     expect(response.status, `expected 301, got ${describeResponse(response)}`).toBe(301);
     expect(response.headers.get("location"), "the redirect target is KEPT_APEX_ORIGIN from [vars]").toBe(

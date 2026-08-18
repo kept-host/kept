@@ -11,11 +11,21 @@
 // serves `*.kept-dev.xyz`, prod serves `*.kept.host`, one code path serves both.
 
 /**
- * Labels that belong to the control plane, not the serving plane. The deployed
- * route `*.{base}/*` DOES match `www.{base}`, so the Worker owns the redirect
- * rather than depending on a more-specific Cloudflare route staying in place.
+ * Labels that belong to the control plane, not the serving plane, and are 301'd
+ * to `KEPT_APEX_ORIGIN`. The deployed route `*.{base}/*` DOES match
+ * `www.{base}`, so the Worker owns that redirect rather than depending on a
+ * more-specific Cloudflare route staying in place.
+ *
+ * `app` is deliberately NOT here (E05a). `app.{base}` IS the control plane,
+ * answered by Railway on a DNS-only (grey-cloud) record so proxied traffic never
+ * reaches this Worker. Re-adding it would 301 the control plane away from its
+ * own hostname and make sign-in unreachable the moment the record is proxied.
+ * `app` stays reserved on the *minting* side (`apps/web/lib/publish/slug.ts`
+ * `RESERVED_SLUGS`), so an accidentally re-proxied record resolves as a slug
+ * with no manifest and serves the branded 404 — never somebody's uploaded page.
+ * The two lists are no longer mirrors, on purpose. Do not "fix" the divergence.
  */
-export const RESERVED_LABELS = ["www", "app", "api", "assets"] as const;
+export const RESERVED_LABELS = ["www", "api", "assets"] as const;
 
 export type ReservedLabel = (typeof RESERVED_LABELS)[number];
 
