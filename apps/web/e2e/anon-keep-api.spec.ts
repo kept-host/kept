@@ -12,6 +12,8 @@ import { eq, inArray } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
 
+import { jarlessContext } from "./jarless-request";
+
 /**
  * `POST /api/anon/:anonToken/keep` over the wire — E05 task 008.
  *
@@ -96,17 +98,25 @@ test.describe("anonymous keep route", () => {
       expiresAt: new Date(Date.now() + 300_000),
     });
 
-    const response = await fetch(`${baseURL}/api/auth/magic-link/verify?token=${token}`);
-    expect(response.status, await response.clone().text()).toBe(200);
-    const body = (await response.json()) as { user: { id: string } };
-    createdUserIds.push(body.user.id);
+    const requestCtx = await jarlessContext();
+    try {
+      const response = await requestCtx.get(
+        `${baseURL}/api/auth/magic-link/verify?token=${token}`,
+      );
+      expect(response.status(), await response.text()).toBe(200);
+      const body = (await response.json()) as { user: { id: string } };
+      createdUserIds.push(body.user.id);
 
-    const cookie = response.headers
-      .getSetCookie()
-      .map((entry) => entry.split(";", 1)[0])
-      .join("; ");
-    expect(cookie.length).toBeGreaterThan(0);
-    return cookie;
+      const cookie = response
+        .headersArray()
+        .filter((header) => header.name.toLowerCase() === "set-cookie")
+        .map((header) => header.value.split(";", 1)[0])
+        .join("; ");
+      expect(cookie.length).toBeGreaterThan(0);
+      return cookie;
+    } finally {
+      await requestCtx.dispose();
+    }
   }
 
   /** An anonymous draft with a REAL bearer token; only its digest is stored. */

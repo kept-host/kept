@@ -11,6 +11,8 @@ import { eq, inArray } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
 
+import { jarlessContext } from "./jarless-request";
+
 /**
  * The three owner routes over the wire — E05 task 010.
  *
@@ -86,25 +88,40 @@ test.describe("owner site routes", () => {
       expiresAt: new Date(Date.now() + 300_000),
     });
 
-    const response = await fetch(`${baseURL}/api/auth/magic-link/verify?token=${token}`);
-    expect(response.status, await response.clone().text()).toBe(200);
-    const body = (await response.json()) as { user: { id: string } };
-    createdUserIds.push(body.user.id);
+    const requestCtx = await jarlessContext();
+    try {
+      const response = await requestCtx.get(
+        `${baseURL}/api/auth/magic-link/verify?token=${token}`,
+      );
+      expect(response.status(), await response.text()).toBe(200);
+      const body = (await response.json()) as { user: { id: string } };
+      createdUserIds.push(body.user.id);
 
-    const cookie = response.headers
-      .getSetCookie()
-      .map((entry) => entry.split(";", 1)[0])
-      .join("; ");
-    expect(cookie.length).toBeGreaterThan(0);
-    return cookie;
+      const cookie = response
+        .headersArray()
+        .filter((header) => header.name.toLowerCase() === "set-cookie")
+        .map((header) => header.value.split(";", 1)[0])
+        .join("; ");
+      expect(cookie.length).toBeGreaterThan(0);
+      return cookie;
+    } finally {
+      await requestCtx.dispose();
+    }
   }
 
   /** The profile Better Auth's create hook bootstrapped for a fresh user. */
   async function profileIdFor(cookie: string, baseURL: string): Promise<string> {
-    const response = await fetch(`${baseURL}/api/auth/get-session`, { headers: { cookie } });
-    expect(response.status).toBe(200);
-    const body = (await response.json()) as { user: { id: string } };
-    return body.user.id;
+    const requestCtx = await jarlessContext();
+    try {
+      const response = await requestCtx.get(`${baseURL}/api/auth/get-session`, {
+        headers: { cookie },
+      });
+      expect(response.status()).toBe(200);
+      const body = (await response.json()) as { user: { id: string } };
+      return body.user.id;
+    } finally {
+      await requestCtx.dispose();
+    }
   }
 
   async function makeSite(ownerId: string, kept: boolean): Promise<string> {

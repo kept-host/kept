@@ -81,7 +81,7 @@ Scope to one package with a Turbo filter, e.g.
 **apps/web** (control plane)
 
 ```bash
-pnpm --filter @kept/web dev           # next dev (http://localhost:3000)
+pnpm --filter @kept/web dev           # next dev --experimental-https (https://localhost:3000)
 pnpm --filter @kept/web build         # next build
 pnpm --filter @kept/web start         # serve the production build
 pnpm --filter @kept/web test          # Playwright e2e (boots its own dev server)
@@ -126,6 +126,44 @@ what caught a bug where every conditional request 404'd.
   dev server, so no separate `pnpm dev` is needed.
 
 Run everything with `pnpm test`.
+
+## Local dev runs on **https**, and that is deliberate
+
+`pnpm --filter @kept/web dev` is `next dev --experimental-https`, and the app is
+at **`https://localhost:3000`** — not http. The Playwright harness points at the
+same origin with `ignoreHTTPSErrors`.
+
+**Why.** The session cookie is `__Host-kept.session_token` (E05a decision D5).
+The `__Host-` prefix forces `Secure`, and a browser will not store a `Secure`
+cookie delivered over plain http. The prefix is unconditional on every track,
+local included, so that the cookie shape you develop against is the one you
+ship — deriving a weaker cookie from `NODE_ENV` or the protocol is forbidden.
+
+**First run.** Next downloads a `mkcert` binary and generates a locally-trusted
+certificate into `apps/web/certificates/` (gitignored — it contains a private
+key). Installing the root CA into the system trust store needs your password, so
+the first boot prompts for it and is slower than usual; later boots reuse the
+certificate silently. If it prompts on a machine where you cannot answer, run
+`mkcert` yourself without `-install` — Next reuses any valid
+`certificates/localhost{,-key}.pem` it finds:
+
+```bash
+cd apps/web && mkcert -key-file certificates/localhost-key.pem \
+  -cert-file certificates/localhost.pem localhost 127.0.0.1 ::1
+```
+
+**Expected, not a bug:** without the CA in the trust store, the browser shows a
+certificate warning on first visit — click through it. Playwright ignores it by
+config. If certificate generation fails outright, **Next silently falls back to
+http** and prints one line about it; the suite then fails at the readiness probe
+rather than mysteriously later.
+
+**Set the local origins to match.** `BETTER_AUTH_URL` and `NEXT_PUBLIC_APP_URL`
+in `apps/web/.env.local` must be `https://localhost:3000`. Left at `http://`,
+sign-in appears to work and the next request is signed out, and the OAuth
+`redirect_uri` is built for the wrong scheme. Both OAuth apps also need
+`https://localhost:3000/api/auth/callback/{github,google}` registered if you
+sign in with a provider locally; magic link needs nothing extra.
 
 ## Environment setup
 
