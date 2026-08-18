@@ -10,6 +10,7 @@ import {
   publishViaApi,
   SKIP_LIVE_PUBLISH,
 } from "./live-publish";
+import { rawRequest } from "./raw-request";
 
 /**
  * The three anonymous manage routes over the wire — `POST .../replace`,
@@ -320,5 +321,36 @@ test.describe("the anonymous manage API", () => {
       const res = await request.get(`${prefix}/${draft.anonToken}`);
       expect(res.status(), `${prefix} on an archived token`).toBe(404);
     }
+  });
+
+  test("keyless: DELETE with NO Origin and NO Sec-Fetch-Site succeeds, and stays idempotent", async ({
+    request,
+    baseURL,
+  }) => {
+    /**
+     * E05a task 008, epic criterion 9 — the other half of the keyless canary.
+     *
+     * `POST /api/publish` is the one everybody remembers; DELETE is the one
+     * that would break silently. It is the shape an agent uses to clean up
+     * after itself, it carries its credential in the PATH rather than in a
+     * cookie, and `lib/publish/origin.ts` therefore does not — and must not —
+     * import into it. `rawRequest` owns the wire so the absence of `Origin` is
+     * a measurement; `sent` is the receipt.
+     */
+    const draft = await publish(request, pageHtml(marker()));
+
+    const first = await rawRequest("DELETE", `${baseURL}/api/anon/${draft.anonToken}`);
+    expect(first.sent).not.toContain("origin");
+    expect(first.sent).not.toContain("sec-fetch-site");
+    expect(first.sent).not.toContain("cookie");
+
+    expect(first.status, first.body).toBe(200);
+    expect(JSON.parse(first.body)).toEqual({ ok: true });
+
+    // A retrying agent asks twice. Still 200, still no headers it has no way
+    // to send.
+    const second = await rawRequest("DELETE", `${baseURL}/api/anon/${draft.anonToken}`);
+    expect(second.status, second.body).toBe(200);
+    expect(JSON.parse(second.body)).toEqual({ ok: true });
   });
 });

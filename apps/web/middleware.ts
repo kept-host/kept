@@ -38,10 +38,43 @@ import { NextResponse, type NextRequest } from "next/server";
 import { PATHNAME_HEADER } from "@/lib/auth/return-path";
 import { decideHostAction } from "@/lib/routing/host-split";
 
+/**
+ * The hostname the VISITOR asked for — which is emphatically not
+ * `request.nextUrl.host`.
+ *
+ * Next builds the URL it hands middleware from the server's own listen address,
+ * not from the request: `resolve-routes.js` composes
+ * `${protocol}://${opts.hostname || "localhost"}:${opts.port}${req.url}` unless
+ * `experimental.trustHostHeader` is set. `next start` takes no `-H`, so on
+ * Railway every request — on the apex AND on `app.` — arrives at middleware
+ * reporting `nextUrl.host === "localhost:3000"`. Measured against a live server,
+ * not inferred: a request with `Host: app.kept-dev.xyz` reports
+ * `nextUrl.host = "localhost:3000"` and `x-forwarded-host = "app.kept-dev.xyz"`.
+ *
+ * Reading `nextUrl.host` would therefore make `decideHostAction` take the APEX
+ * branch for every request in production: `app.kept.host/dashboard` would 307 to
+ * itself forever and `app.kept.host/api/auth/*` would 404 — sign-in dead on the
+ * one origin allowed to mint a session. Locally it fails the other way (every
+ * host looks like `app.`), which is why nothing caught it before deploy.
+ *
+ * `x-forwarded-host` first because that is what a proxy sets and what Next
+ * itself backfills from `Host` (`base-server.js`: `req.headers['x-forwarded-host']
+ * ??= req.headers['host']`); the raw `Host` next, for a direct connection; and
+ * `nextUrl.host` last so the value is never empty. A client can forge either
+ * header, and the worst it buys is a redirect or a 404 on its own request — this
+ * is a routing decision, not an authorization one (see the block above).
+ */
+function requestHost(request: NextRequest): string {
+  const forwarded = request.headers.get("x-forwarded-host");
+  // Chained proxies append; the FIRST entry is the hostname the client asked for.
+  const claimed = (forwarded ?? request.headers.get("host") ?? "").split(",")[0]!.trim();
+  return claimed.length > 0 ? claimed : request.nextUrl.host;
+}
+
 export function middleware(request: NextRequest) {
-  const { host, pathname, search } = request.nextUrl;
+  const { pathname, search } = request.nextUrl;
   const action = decideHostAction({
-    host,
+    host: requestHost(request),
     pathname,
     search,
     // `NEXT_PUBLIC_`, never `BETTER_AUTH_URL` — see `host-split.ts`. A
