@@ -77,6 +77,19 @@ test.describe("landing smoke", () => {
     await expect(nav.getByText(/FOR\s*AGENTS/)).toBeVisible();
     await expect(nav.getByText("PRICING")).toBeVisible();
 
+    // The landing has a way in to an account at all. It points at /dashboard,
+    // never /auth: signed in that IS the destination; signed out the `(app)`
+    // gate bounces to /auth?next=%2Fdashboard and returns there afterwards. It
+    // also cannot be session-aware — the session cookie is host-only to `app.`
+    // and is never sent to this apex — so the label is unconditional.
+    const signIn = page.locator("#nav-signin");
+    await expect(signIn).toBeVisible();
+    await expect(signIn).toHaveText(/SIGN\s*IN/);
+    const signInHref = await signIn.evaluate(
+      (el) => (el as HTMLAnchorElement).href,
+    );
+    expect(new URL(signInHref).pathname).toBe("/dashboard");
+
     expect(consoleErrors, `console errors: ${consoleErrors.join(" | ")}`).toEqual(
       [],
     );

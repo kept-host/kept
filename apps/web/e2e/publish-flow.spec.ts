@@ -127,23 +127,58 @@ test.describe("publish flow", () => {
       await expect(liveLabel(page)).toHaveText(host);
       await expect(face(page, "minting")).toHaveCSS("opacity", "0");
 
-      // A minted page is a DRAFT. The next step offers to keep it — the modal
-      // is rendered only once opened, and speaks keep/kept, never "claim".
+      // A minted page is a DRAFT, and the next step offers to keep it. That
+      // step is a NAVIGATION into E05's keep flow at /keep/{token} — the only
+      // path that parks the keep intent, carries it through sign-in and
+      // actually attaches the page. The inert sign-in panel that used to open
+      // here instead (two provider buttons with no handlers, and no keep intent
+      // at all) is gone; this asserts it cannot come back.
       await expect(
         page.getByRole("heading", { name: "Keep this page" }),
       ).toHaveCount(0);
       await page.getByRole("button", { name: /Keep it & manage it/ }).click();
 
+      await expect(page).toHaveURL(/\/keep\/[^/]+$/);
+      // No panel opened on the way, and the pre-pivot "Claim this page"
+      // framing is gone entirely.
       await expect(
         page.getByRole("heading", { name: "Keep this page" }),
+      ).toHaveCount(0);
+      await expect(page.getByText(/Claim this page/)).toHaveCount(0);
+    });
+
+    test("the keep button lands on the real keep screen for the page just minted", async ({
+      page,
+    }) => {
+      await page.goto("/");
+      await page.waitForLoadState("networkidle");
+
+      const published = page.waitForResponse(
+        (res) => res.url().includes("/api/publish") && res.status() === 201,
+      );
+
+      await dropFile(page, pageHtml(marker()));
+
+      const body = (await (await published).json()) as {
+        live_url: string;
+        anonToken: string;
+      };
+      await expect(face(page, "live")).toHaveCSS("opacity", "1");
+
+      await page.getByRole("button", { name: /Keep it & manage it/ }).click();
+
+      // Keyed by the token the publish response returned — not an invented one,
+      // and not a panel that would have carried no token at all.
+      await expect(page).toHaveURL(
+        new RegExp(`/keep/${encodeURIComponent(body.anonToken)}$`),
+      );
+      // …and the screen it reaches is the keep screen for THAT page.
+      await expect(
+        page.getByRole("button", { name: "Keep it forever" }),
       ).toBeVisible();
       await expect(
-        page.getByText(
-          /keeping it stops the 7-day draft clock and puts it in your dashboard/,
-        ),
+        page.getByText(new URL(body.live_url).host, { exact: false }).first(),
       ).toBeVisible();
-      // The pre-pivot "Claim this page" framing is gone entirely.
-      await expect(page.getByText(/Claim this page/)).toHaveCount(0);
     });
 
     test("paste is publish-equivalent: same path, same phases, same minted link", async ({

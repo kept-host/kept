@@ -9,7 +9,7 @@
  * computePricing / computeFooter) chain to decide the tile's pose as the user
  * scrolls the `#kept-root` container, docking it into each section.
  *
- * Discrete React state (phase, authOpen, copied, agentNotify, proNotify,
+ * Discrete React state (phase, copied, agentNotify, proNotify,
  * openTab, humanPresent, gaugeRevealed) is owned by the React component and
  * mirrored here via `getState` / `setState`; everything per-frame is written
  * straight to the DOM through refs (never React state) to stay at 60fps.
@@ -41,7 +41,6 @@ export type NotifyState = "idle" | "success" | "error";
 
 export interface EngineState {
   phase: Phase;
-  authOpen: boolean;
   copied: boolean;
   agentNotify: NotifyState;
   proNotify: NotifyState;
@@ -89,7 +88,6 @@ export interface EngineRefs {
   ctaIdleRef: Ref;
   ctaLiveRef: Ref;
   liveSlugBigRef: Ref;
-  authSlugRef: Ref;
   howRef: Ref;
   howStickyRef: Ref;
   cardsGridRef: Ref;
@@ -780,14 +778,21 @@ export class KeptEngine {
     if (input) input.value = "";
     void this.publishFiles(files);
   };
-  openAuth = () => {
-    this.setState({ authOpen: true });
-    setTimeout(() => {
-      if (this.refs.authSlugRef.current)
-        this.refs.authSlugRef.current.textContent = this.liveSlug;
-    }, 0);
+  /**
+   * Keep the draft that was just published. `/keep/{token}` is E05's one and
+   * only entry into the keep flow: it parks the keep intent, sends a signed-out
+   * visitor through `/auth` and back, then attaches the page on return. A
+   * sign-in panel spliced in here would carry no keep intent at all, so the
+   * page would never actually be kept — which is precisely what the dead modal
+   * this replaced did.
+   *
+   * On the apex the middleware 307s `/keep/*` to the `app.` host, so the
+   * relative path is correct on both origins.
+   */
+  keep = () => {
+    const token = this.published?.anonToken;
+    if (token) window.location.assign(`/keep/${encodeURIComponent(token)}`);
   };
-  closeAuth = () => this.setState({ authOpen: false });
   reset = () => {
     this.liveSlug = PLACEHOLDER_HOST;
     this.published = null;
