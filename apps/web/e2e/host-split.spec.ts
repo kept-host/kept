@@ -76,6 +76,51 @@ const fromApex = { "x-forwarded-host": APEX_HOST };
 /** The three routes whose reachability on the apex the product depends on. */
 const NEEDS_DB = !process.env.DATABASE_URL?.trim();
 
+/**
+ * Everything `createAuth()` validates before it can be constructed at all.
+ *
+ * A route that reaches `requireSession()` or the Better Auth API answers **500**
+ * with these empty — by design (`lib/storage/env.ts` fails loud rather than
+ * degrading), which is why every other suite guards on the same seven names.
+ *
+ * ⚠️ THIS GUARD IS DELIBERATELY NOT ON THE DESCRIBE. The tests that guard bug 1
+ * — the `nextUrl.host` vs `Host` regression documented above — are pure routing
+ * decisions: middleware answers them before any route runs, so they need no
+ * secret, and CI is precisely where they earn their keep. Skipping this file
+ * wholesale would retire the tripwire in the only environment that runs on
+ * every push. Gate the individual tests that genuinely cannot work, nothing
+ * more.
+ */
+const AUTH_VARS = [
+  "BETTER_AUTH_SECRET",
+  "GITHUB_CLIENT_ID",
+  "GITHUB_CLIENT_SECRET",
+  "GOOGLE_CLIENT_ID",
+  "GOOGLE_CLIENT_SECRET",
+  "RESEND_API_KEY",
+  "EMAIL_FROM",
+] as const;
+
+const missingAuthVars = AUTH_VARS.filter((name) => !process.env[name]?.trim());
+
+const SKIP_AUTH: string | false =
+  missingAuthVars.length > 0
+    ? `auth credentials absent (${missingAuthVars.join(", ")}) — a route that reaches ` +
+      `createAuth() answers 500, so the split decision could not be observed`
+    : false;
+
+/**
+ * A non-marketing path that exists nowhere in the route tree.
+ *
+ * The split rule is a HOST comparison and nothing else, so the cleanest subject
+ * for it is a path with no page, no session, no database and no auth behind it:
+ * on the apex it must 307 to the `app.` origin, and on the `app.` host it must
+ * fall through to an ordinary 404. Both directions then depend on exactly one
+ * variable — which hostname the middleware believed it was serving — which is
+ * what makes this the tripwire that has to run everywhere, credentials or not.
+ */
+const PROBE_PATH = "/e05a-008-split-probe";
+
 test.describe("the apex / `app.` split", () => {
   test.skip(!!SKIP, SKIP || undefined);
 
@@ -105,20 +150,33 @@ test.describe("the apex / `app.` split", () => {
     expect(await response.text()).not.toContain("<html");
   });
 
-  test("the same request WITHOUT the apex header is not redirected by the split", async ({
+  test("the same path WITHOUT the apex header is not redirected at all", async ({
     request,
     baseURL,
   }) => {
-    // The other half of the tripwire. This request is on the `app.` host, so
-    // the split must pass it through and the only redirect it may collect is
-    // the `(app)` gate's own — to `/auth`, never to `/dashboard`.
-    const response = await request.get("/dashboard?x=1&y=2", { maxRedirects: 0 });
-    expect(response.status()).toBe(307);
+    /**
+     * THE OTHER HALF OF THE TRIPWIRE, and the half that fails if the rule is
+     * ever rewired to `request.nextUrl.host`.
+     *
+     * Locally `nextUrl.host` and the `app.` host are the same string, so a
+     * broken rule still passes this request through and this test still goes
+     * green — but paired with the test above (same path, same server, one extra
+     * header, opposite outcome) the only thing that can explain both results is
+     * that middleware read the HEADER. `PROBE_PATH` keeps the pair honest: no
+     * page, no session, no database, so neither direction can be explained by
+     * anything but the host.
+     */
+    const withApex = await request.get(PROBE_PATH, { headers: fromApex, maxRedirects: 0 });
+    expect(withApex.status()).toBe(307);
+    expect(new URL(withApex.headers()["location"] ?? "", `${baseURL}${PROBE_PATH}`).href).toBe(
+      `${APP_URL}${PROBE_PATH}`,
+    );
 
-    const location = response.headers()["location"] ?? "";
-    const resolved = new URL(location, `${baseURL}/dashboard`);
-    expect(resolved.pathname).toBe("/auth");
-    expect(resolved.searchParams.get("next")).toBe("/dashboard?x=1&y=2");
+    // Identical request, one header removed: no split, no `Location`, just the
+    // ordinary 404 a path with no route deserves.
+    const withoutApex = await request.get(PROBE_PATH, { maxRedirects: 0 });
+    expect(withoutApex.status()).toBe(404);
+    expect(withoutApex.headers()["location"]).toBeUndefined();
   });
 
   test("signed out, following the apex redirect lands on /auth?next=/dashboard", async ({
@@ -126,6 +184,11 @@ test.describe("the apex / `app.` split", () => {
     request,
     baseURL,
   }) => {
+    // Hop two lands on the `(app)` gate and then on the sign-in screen, both of
+    // which construct Better Auth. The split decision itself (hop one) is
+    // asserted without credentials by the two tests above; this is the only
+    // thing here that genuinely cannot run without them.
+    test.skip(!!SKIP_AUTH, SKIP_AUTH || undefined);
     test.skip(
       APP_URL !== new URL(baseURL!).origin,
       `NEXT_PUBLIC_APP_URL (${APP_URL}) is not this harness's origin — following the ` +
@@ -205,6 +268,18 @@ test.describe("the apex / `app.` split", () => {
       `${baseURL}/api/auth/callback/google?code=e05a-008&state=e05a-008`,
     );
     expect(callback.status, callback.body).not.toBe(404);
+
+    // The read side too, so the claim covers the whole `/api/auth/` subtree
+    // rather than the two endpoints the apex test happens to name.
+    const session = await rawRequest("GET", `${baseURL}/api/auth/get-session`);
+    expect(session.status, session.body).not.toBe(404);
+
+    // `not 404` and not `200` ON PURPOSE. The claim here is about the URL
+    // space: these paths resolve to a route on the `app.` host, which is what
+    // makes the apex's 404 above attributable to the split. What the route then
+    // ANSWERS depends on credentials this run may not have — with the auth slots
+    // empty it is a 500 by design — and asserting a status that encodes that
+    // would make this test a credentials check wearing a routing test's name.
   });
 
   test("/auth on the apex redirects rather than 404s — D6's asymmetry", async ({
@@ -251,7 +326,7 @@ test.describe("the apex / `app.` split", () => {
     publishErrorSchema.parse(await response.json());
   });
 
-  test("on the `app.` host, the auth API answers and no path is redirected by the split", async ({
+  test("on the `app.` host nothing is redirected by the split, and `Host` alone drives it too", async ({
     request,
     baseURL,
   }) => {
@@ -259,6 +334,8 @@ test.describe("the apex / `app.` split", () => {
 
     // Named explicitly rather than omitted: this asserts the rule's positive
     // branch — the `app.` host serves the WHOLE app, marketing pages included.
+    // (`/api/auth/*` on this host is covered above, where the assertion can be
+    // about the URL space rather than about a status that needs credentials.)
     for (const path of ["/", "/promise", "/stats", "/auth", "/api/health"]) {
       const response = await request.get(path, {
         headers: { "x-forwarded-host": appHost },
@@ -267,20 +344,14 @@ test.describe("the apex / `app.` split", () => {
       expect(response.status(), `${path} on ${appHost}`).toBe(200);
     }
 
-    const session = await request.get("/api/auth/get-session", {
-      headers: { "x-forwarded-host": appHost },
-      maxRedirects: 0,
-    });
-    expect(session.status(), "the auth API must live on the `app.` host").toBe(200);
-
     // And a `Host` header alone drives the same decision — a proxy that
     // forwards only `Host` must not silently disable the split.
-    const viaHost = await rawRequest("GET", `${baseURL}/dashboard`, {
+    const viaHost = await rawRequest("GET", `${baseURL}${PROBE_PATH}`, {
       headers: { host: APEX_HOST },
     });
     expect(viaHost.status).toBe(307);
-    expect(new URL(viaHost.headers["location"] as string, `${baseURL}/dashboard`).href).toBe(
-      `${APP_URL}/dashboard`,
+    expect(new URL(viaHost.headers["location"] as string, `${baseURL}${PROBE_PATH}`).href).toBe(
+      `${APP_URL}${PROBE_PATH}`,
     );
   });
 
