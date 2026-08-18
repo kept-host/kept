@@ -51,7 +51,22 @@ jobs:
       - name: Install Playwright browsers
         run: pnpm --filter @kept/web exec playwright install --with-deps chromium
 
+      # `NEXT_PUBLIC_APP_URL` is NOT a secret — it is the control plane's own
+      # public origin, and `NEXT_PUBLIC_` values are inlined into the client
+      # bundle by design. It is set here so `e2e/host-split.spec.ts` runs.
+      # That spec is the regression tripwire for the apex/`app.` split rule
+      # (E05a task 004), and it skips wholesale when the var is absent — which
+      # is exactly CI's secretless case. Without this line the tripwire never
+      # fires in CI, and the bug it guards against (reading the server's listen
+      # address instead of the Host header, so every deployed request takes the
+      # apex branch and sign-in dies) would reach a deploy unnoticed. It was
+      # caught by hand once; that is not a control.
+      # The value is the LOCAL origin on purpose: Playwright boots its own
+      # `next dev` here, so this is the origin the harness actually serves.
+      # It does NOT unskip the auth suites — those gate on the seven variables
+      # `createAuth()` validates, none of which exist on a runner.
       - name: Test
         run: pnpm test
         env:
           CI: "true"
+          NEXT_PUBLIC_APP_URL: "https://localhost:3000"
