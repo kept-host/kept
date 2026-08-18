@@ -20,6 +20,7 @@ import type { NextResponse } from "next/server";
 
 import { getSession } from "../../../../../lib/auth/session";
 import { getProfileForSession } from "../../../../../lib/db/queries/profile";
+import { refuseUntrustedOrigin } from "../../../../../lib/publish/origin";
 import {
   demoteOwnedSite,
   ownerResponse,
@@ -33,9 +34,14 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
+  // E05a D3 — the session cookie is ambient authority, so a cross-origin caller
+  // is refused before anything is read. See `lib/publish/origin.ts`.
+  const foreign = refuseUntrustedOrigin(request);
+  if (foreign) return foreign;
+
   const profile = await getProfileForSession(await getSession());
   if (!profile) return ownerResponse(signedOut());
 

@@ -25,6 +25,7 @@ import { NextResponse } from "next/server";
 import { getSession } from "../../../../../lib/auth/session";
 import { getProfileForSession } from "../../../../../lib/db/queries/profile";
 import { errorResponse } from "../../../../../lib/publish/http";
+import { refuseUntrustedOrigin } from "../../../../../lib/publish/origin";
 import { keepAnonymousPage } from "../../../../../lib/sites/anon-keep";
 // The one signed-out body in the epic, shared with the owner routes so a client
 // sees the same 401 whichever keep it called.
@@ -37,9 +38,16 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ anonToken: string }> },
 ): Promise<NextResponse> {
+  // E05a D3 — THIS route takes the check and its three siblings under
+  // `/api/anon/` do not, because this is the only one that consumes the session
+  // cookie. The token alone cannot keep a page, so the cookie is ambient
+  // authority here exactly as it is on `/api/sites/`. See `lib/publish/origin.ts`.
+  const foreign = refuseUntrustedOrigin(request);
+  if (foreign) return foreign;
+
   // The session gate runs BEFORE the token is even read: a signed-out request
   // must not cause a lookup, and therefore cannot be timed into an existence
   // probe.
