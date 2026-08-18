@@ -22,6 +22,7 @@ import {
   servingDomain,
   SKIP_LIVE_PUBLISH,
 } from "./live-publish";
+import { rawRequest } from "./raw-request";
 
 /**
  * `POST /api/publish` over the wire, with no browser anywhere in the picture.
@@ -388,6 +389,44 @@ test.describe("the publish API, as an agent calls it", () => {
       expect(message.length, name).toBeGreaterThan(20);
       expect(message.trim().endsWith("."), `${name}: ${message}`).toBe(true);
     }
+  });
+
+  test("keyless: a raw POST with NO Origin and NO Sec-Fetch-Site still mints a live link", async ({
+    baseURL,
+  }) => {
+    /**
+     * E05a task 008, epic criterion 9 — THE E08 REGRESSION CANARY.
+     *
+     * `lib/publish/origin.ts` binds its check to COOKIE USE, not to HTTP
+     * method, precisely so this shape keeps working: an agent, an MCP tool or a
+     * `curl` sends a body and a content type and nothing else. If the check
+     * ever migrated to "every POST needs an `Origin`" — the obvious-looking
+     * hardening — this endpoint would start answering 403 to every caller the
+     * product is built for, and nothing else in the suite would notice until
+     * E08.
+     *
+     * `rawRequest`, not the `request` fixture: the property is the ABSENCE of
+     * two headers, so the spec has to own what goes on the wire and be able to
+     * say what went. `sent` is that receipt.
+     */
+    const html = pageHtml(marker());
+    const response = await rawRequest("POST", `${baseURL}/api/publish`, {
+      headers: { "content-type": "text/html" },
+      body: html,
+    });
+
+    expect(response.sent).not.toContain("origin");
+    expect(response.sent).not.toContain("sec-fetch-site");
+    expect(response.sent).not.toContain("cookie");
+
+    expect(response.status, response.body).toBe(201);
+    const body = contract(JSON.parse(response.body));
+    published.push(body.anonToken);
+
+    expectWellFormedSlug(body.slug, "keyless publish");
+    expect(new URL(body.live_url).host).toBe(`${body.slug}.${servingDomain()}`);
+    // Still keyless on the way out: nothing about this call created a session.
+    expect(response.setCookies).toEqual([]);
   });
 });
 

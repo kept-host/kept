@@ -11,6 +11,9 @@ import { eq, inArray } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
 
+import { rawRequest } from "./raw-request";
+import { jarlessContext, sessionHeaders } from "./session-request";
+
 /**
  * The three owner routes over the wire — E05 task 010.
  *
@@ -29,6 +32,11 @@ import { closeDb, db, schema } from "../lib/db";
  *      production.
  *   3. **A real session reaches the primitives.** Signed in, keep/demote/swap
  *      answer with the shared schemas' shapes and honour ownership.
+ *   4. **The origin gate, on the wire** (E05a task 008). A valid session cookie
+ *      carrying a hosted page's `Origin` is refused 403 AND MUTATES NOTHING —
+ *      the rows are re-read, not merely the status asserted. `lib/publish/
+ *      origin.test.ts` drills the decision; only this file can prove the
+ *      refusal happens before the two Postgres writes.
  *
  * NO MOCKS. Real dev Neon branch, real Better Auth instance, real signed
  * cookie, real HTTP. The one thing substituted is the **inbox**: with no
@@ -52,6 +60,21 @@ const SKIP: string | false =
   missing.length > 0
     ? `auth/dev credentials absent (${missing.join(", ")}) — run locally with apps/web/.env.local`
     : false;
+
+/** The slug every fixture page in this file is minted under. */
+const wireSlug = (id: string) => `e05-010-wire-${id.slice(0, 12)}`;
+
+/**
+ * A HOSTED PAGE'S OWN ORIGIN — the attacker in epic decision D3.
+ *
+ * `{slug}.kept-dev.xyz` and the control plane share a registrable domain and dev
+ * can never be PSL-listed, so a script on a page kept publishes is *same-site*:
+ * `SameSite=Lax` does not block its request and the `__Host-` session cookie
+ * rides along. That is the whole reason `lib/publish/origin.ts` exists, and this
+ * is the exact `Origin` header a browser would put on such a request.
+ */
+const hostedOrigin = (slug: string): string =>
+  `https://${slug}.${process.env.KEPT_BASE_DOMAIN?.trim() || "kept-dev.xyz"}`;
 
 test.describe("owner site routes", () => {
   test.skip(!!SKIP, SKIP || undefined);
@@ -86,25 +109,40 @@ test.describe("owner site routes", () => {
       expiresAt: new Date(Date.now() + 300_000),
     });
 
-    const response = await fetch(`${baseURL}/api/auth/magic-link/verify?token=${token}`);
-    expect(response.status, await response.clone().text()).toBe(200);
-    const body = (await response.json()) as { user: { id: string } };
-    createdUserIds.push(body.user.id);
+    const requestCtx = await jarlessContext();
+    try {
+      const response = await requestCtx.get(
+        `${baseURL}/api/auth/magic-link/verify?token=${token}`,
+      );
+      expect(response.status(), await response.text()).toBe(200);
+      const body = (await response.json()) as { user: { id: string } };
+      createdUserIds.push(body.user.id);
 
-    const cookie = response.headers
-      .getSetCookie()
-      .map((entry) => entry.split(";", 1)[0])
-      .join("; ");
-    expect(cookie.length).toBeGreaterThan(0);
-    return cookie;
+      const cookie = response
+        .headersArray()
+        .filter((header) => header.name.toLowerCase() === "set-cookie")
+        .map((header) => header.value.split(";", 1)[0])
+        .join("; ");
+      expect(cookie.length).toBeGreaterThan(0);
+      return cookie;
+    } finally {
+      await requestCtx.dispose();
+    }
   }
 
   /** The profile Better Auth's create hook bootstrapped for a fresh user. */
   async function profileIdFor(cookie: string, baseURL: string): Promise<string> {
-    const response = await fetch(`${baseURL}/api/auth/get-session`, { headers: { cookie } });
-    expect(response.status).toBe(200);
-    const body = (await response.json()) as { user: { id: string } };
-    return body.user.id;
+    const requestCtx = await jarlessContext();
+    try {
+      const response = await requestCtx.get(`${baseURL}/api/auth/get-session`, {
+        headers: { cookie },
+      });
+      expect(response.status()).toBe(200);
+      const body = (await response.json()) as { user: { id: string } };
+      return body.user.id;
+    } finally {
+      await requestCtx.dispose();
+    }
   }
 
   async function makeSite(ownerId: string, kept: boolean): Promise<string> {
@@ -113,7 +151,7 @@ test.describe("owner site routes", () => {
     const expiresAt = new Date(Date.now() + DRAFT_TTL_DAYS * msPerDay);
     await db.insert(schema.sites).values({
       id,
-      slug: `e05-010-wire-${id.slice(0, 12)}`,
+      slug: wireSlug(id),
       status: "live",
       region: "auto",
       ownerId,
@@ -159,8 +197,13 @@ test.describe("owner site routes", () => {
     // `demote === keep` is a 400 that ONLY the swap handler emits — the `[id]`
     // handlers answer 401 or 404 and never look at a body. Getting it back is
     // proof the request resolved to `swap/route.ts`.
+    //
+    // `sessionHeaders` and not a bare `cookie`: task 006's origin check refuses
+    // a cookie-bearing mutating call that carries no `Origin`, which a real
+    // browser always sends and an `APIRequestContext` never does. See
+    // `./session-request.ts`.
     const response = await request.post(`${baseURL}/api/sites/swap`, {
-      headers: { cookie },
+      headers: sessionHeaders(cookie, baseURL!),
       data: { demote: site, keep: site },
     });
     expect(response.status()).toBe(400);
@@ -176,7 +219,7 @@ test.describe("owner site routes", () => {
     const draft = await makeSite(ownerId, false);
 
     const kept = await request.post(`${baseURL}/api/sites/${draft}/keep`, {
-      headers: { cookie },
+      headers: sessionHeaders(cookie, baseURL!),
     });
     expect(kept.status()).toBe(200);
     const keepBody = keepResultSchema.parse(await kept.json());
@@ -187,7 +230,7 @@ test.describe("owner site routes", () => {
     ).toBeNull();
 
     const demoted = await request.post(`${baseURL}/api/sites/${draft}/demote`, {
-      headers: { cookie },
+      headers: sessionHeaders(cookie, baseURL!),
     });
     expect(demoted.status()).toBe(200);
 
@@ -197,15 +240,113 @@ test.describe("owner site routes", () => {
     const theirs = await makeSite(otherOwner, true);
 
     const refused = await request.post(`${baseURL}/api/sites/${theirs}/keep`, {
-      headers: { cookie },
+      headers: sessionHeaders(cookie, baseURL!),
     });
     expect(refused.status()).toBe(404);
 
     // Byte-identical to a page that simply does not exist.
     const absent = await request.post(`${baseURL}/api/sites/${crypto.randomUUID()}/keep`, {
-      headers: { cookie },
+      headers: sessionHeaders(cookie, baseURL!),
     });
     expect(absent.status()).toBe(404);
     expect(await refused.text()).toBe(await absent.text());
+  });
+
+  /** The row as the app reads it, for a before/after comparison. */
+  async function readSite(id: string) {
+    const [row] = await db.select().from(schema.sites).where(eq(schema.sites.id, id));
+    expect(row, `site ${id} vanished`).toBeDefined();
+    return row!;
+  }
+
+  test("a swap from a hosted page's origin is refused 403 and mutates neither row", async ({
+    request,
+    baseURL,
+  }) => {
+    const cookie = await signIn(baseURL!);
+    const ownerId = await profileIdFor(cookie, baseURL!);
+    const keptSite = await makeSite(ownerId, true);
+    const draft = await makeSite(ownerId, false);
+
+    const before = [await readSite(keptSite), await readSite(draft)];
+    const swap = { demote: keptSite, keep: draft };
+
+    const refused = await request.post(`${baseURL}/api/sites/swap`, {
+      // A REAL session cookie — the request is authenticated and would succeed
+      // on its merits. Only the origin is wrong, which is the entire point:
+      // `__Host-` stops cookie tossing and does nothing about CSRF.
+      headers: { cookie, origin: hostedOrigin(wireSlug(keptSite)) },
+      data: swap,
+    });
+
+    expect(refused.status()).toBe(403);
+    const body = publishErrorSchema.parse(await refused.json());
+    // The publish family's closed `{ error, message }` shape — not a bespoke
+    // code minted at this call site.
+    expect(body.error).toBe("invalid_request");
+    // The message names the origin that IS trusted, so a developer who hits
+    // this can see immediately which host they were expected to call from.
+    expect(body.message).toContain(new URL(baseURL!).origin);
+
+    // THE ASSERTION THIS TEST EXISTS FOR. A 403 with a partial write is worse
+    // than no check at all, because it looks safe. Whole rows, not a chosen
+    // field: `expires_at`, `purge_after`, `owner_id`, `status` and everything
+    // else must be byte-identical to the moment before the refusal.
+    expect([await readSite(keptSite), await readSite(draft)]).toEqual(before);
+
+    // …and the identical request from the `app.` origin does change them, so
+    // the 403 above is the origin and not a swap that could never have worked.
+    const allowed = await request.post(`${baseURL}/api/sites/swap`, {
+      headers: sessionHeaders(cookie, baseURL!),
+      data: swap,
+    });
+    expect(allowed.status(), await allowed.text()).toBe(200);
+    expect((await readSite(keptSite)).expiresAt).not.toBeNull();
+    expect((await readSite(draft)).expiresAt).toBeNull();
+  });
+
+  test("the same 403-then-allow pair holds for keep", async ({ request, baseURL }) => {
+    const cookie = await signIn(baseURL!);
+    const ownerId = await profileIdFor(cookie, baseURL!);
+    const draft = await makeSite(ownerId, false);
+
+    const before = await readSite(draft);
+
+    const refused = await request.post(`${baseURL}/api/sites/${draft}/keep`, {
+      headers: { cookie, origin: hostedOrigin(wireSlug(draft)) },
+    });
+    expect(refused.status()).toBe(403);
+    publishErrorSchema.parse(await refused.json());
+    expect(await readSite(draft), "a refused keep still stopped the clock").toEqual(before);
+
+    const allowed = await request.post(`${baseURL}/api/sites/${draft}/keep`, {
+      headers: sessionHeaders(cookie, baseURL!),
+    });
+    expect(allowed.status(), await allowed.text()).toBe(200);
+    expect((await readSite(draft)).expiresAt).toBeNull();
+  });
+
+  test("a cookie with NO Origin and NO Sec-Fetch-Site is refused — and that is how we know", async ({
+    baseURL,
+  }) => {
+    const cookie = await signIn(baseURL!);
+    const ownerId = await profileIdFor(cookie, baseURL!);
+    const draft = await makeSite(ownerId, false);
+    const before = await readSite(draft);
+
+    // Raw https, so the header set on the wire is exactly this one. Better Auth
+    // calls this shape `MISSING_OR_NULL_ORIGIN` and refuses it; so do we.
+    const response = await rawRequest("POST", `${baseURL}/api/sites/${draft}/keep`, {
+      headers: { cookie },
+    });
+
+    // Both halves matter. The 403 is the rule; `sent` is the PROOF that no
+    // `Origin` reached the server — which is what makes the keyless assertions
+    // in `publish-api.spec.ts` and `anon-manage-api.spec.ts` mean anything,
+    // since they use the same client and rely on the same absence.
+    expect(response.sent).not.toContain("origin");
+    expect(response.sent).not.toContain("sec-fetch-site");
+    expect(response.status, response.body).toBe(403);
+    expect(await readSite(draft)).toEqual(before);
   });
 });

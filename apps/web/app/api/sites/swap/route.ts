@@ -26,6 +26,7 @@ import {
   readJsonOnlyBody,
   UnreadableBodyError,
 } from "../../../../lib/publish/http";
+import { refuseUntrustedOrigin } from "../../../../lib/publish/origin";
 import { ownerResponse, signedOut, swapOwnedSites } from "../../../../lib/sites/owner-routes";
 
 /** `postgres-js` needs TCP sockets. */
@@ -35,6 +36,11 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request): Promise<NextResponse> {
+  // E05a D3 — refused before the session lookup and before the body is read, so
+  // a cross-origin swap touches neither row. See `lib/publish/origin.ts`.
+  const foreign = refuseUntrustedOrigin(request);
+  if (foreign) return foreign;
+
   const profile = await getProfileForSession(await getSession());
   if (!profile) return ownerResponse(signedOut());
 

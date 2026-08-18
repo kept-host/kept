@@ -161,7 +161,12 @@ test(
     );
     assert.equal(
       await auth.api.getSession({
-        headers: new Headers({ cookie: "better-auth.session_token=forged.signature" }),
+        // The REAL cookie name (E05a task 005 renamed it to `__Host-…`), read
+        // off the instance so this stays a forged *session* cookie rather than
+        // an unrelated name that would resolve to null for the wrong reason.
+        headers: new Headers({
+          cookie: `${ctx.authCookies.sessionToken.name}=forged.signature`,
+        }),
       }),
       null,
       "an unsigned/forged cookie must not resolve to a session",

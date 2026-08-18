@@ -60,9 +60,104 @@ function createAuth() {
     // 100% Cloudflare and has no auth surface.
     baseURL: baseUrl,
 
+    /**
+     * E05a D3/D5 — PINNED, not defaulted.
+     *
+     * Left unset, Better Auth derives the trusted-origin list from `baseURL`
+     * alone, so a mis-set `BETTER_AUTH_URL` silently moves both the origin the
+     * cookie is minted on AND the origin allowed to redirect to it. Pinning it
+     * to the same resolved value makes the intent explicit and keeps the
+     * resolved set a single origin — the `app.` host and nothing else. Never a
+     * hostname literal (E02): the value comes from `authConfig()`, and never
+     * from `KEPT_BASE_DOMAIN`, which serves arbitrary user HTML.
+     */
+    trustedOrigins: [baseUrl],
+
     database: drizzleAdapter(db, { provider: "pg", schema }),
 
+    /**
+     * ── D3/D5: THE SESSION COOKIE IS `__Host-`, ON EVERY TRACK ────────────────
+     *
+     * kept serves arbitrary user-authored HTML, `<script>` included, at
+     * `{slug}.kept.host` — and on dev at `{slug}.kept-dev.xyz`, which can never
+     * be PSL-listed, so it will always share a registrable domain with
+     * `app.kept-dev.xyz`. A hosted page can therefore write a cookie with
+     * `Domain=kept-dev.xyz` that the control plane's browser will send.
+     *
+     * `__Secure-` — what Better Auth prepends automatically on an https
+     * `baseURL` — does NOT stop that. It constrains nothing but the transport:
+     * a hosted page can set `__Secure-<name>=…; Domain=kept-dev.xyz; Secure`
+     * and shadow or fix the real session. `__Host-` is the control that works:
+     * the BROWSER rejects any `__Host-` cookie carrying `Domain`, and forces
+     * `Path=/` and `Secure`. No PSL entry, no server cooperation, identical
+     * behaviour on dev and prod — which is exactly why the prefix is
+     * unconditional here, local included (D5). If a browser refuses a `Secure`
+     * cookie on plain http, the fix is https locally (`next dev
+     * --experimental-https`), never a weaker cookie.
+     *
+     * FOUR HAZARDS, all verified against the installed better-auth@1.6.26
+     * (`dist/cookies/index.mjs`, `createCookieGetter`):
+     *
+     * 1. THE PREFIX CONCATENATES. The emitted name is
+     *    `${secureCookiePrefix}${configuredName}`. Configure `__Host-…` while
+     *    the automatic prefix is live and the browser sees
+     *    `__Secure-__Host-…` — a name with NO prefix semantics at all, which
+     *    is strictly worse than doing nothing because it looks hardened.
+     *    `useSecureCookies: false` is the only thing that suppresses it.
+     * 2. SUPPRESSING THE PREFIX ALSO DROPS `Secure`. The same flag feeds
+     *    `secure: !!secureCookiePrefix` on EVERY cookie the library mints —
+     *    the OAuth `state`/`pkce`/`nonce` cookies, `dont_remember`,
+     *    `session_data` — not just `session_token`.
+     *    `defaultCookieAttributes: { secure: true }` is spread into all of
+     *    them and is what puts `Secure` back. The two settings below are one
+     *    change; removing either alone is a silent security downgrade.
+     * 3. `crossSubDomainCookies` IS INCOMPATIBLE WITH `__Host-`. Enabling it
+     *    adds a `Domain` attribute, and a `__Host-` cookie with `Domain` is
+     *    REJECTED by the browser outright. It is also the precise mechanism
+     *    that would hand sessions to hosted pages, which is the thing this
+     *    whole block exists to prevent. Worse, the regression hides: better-call's
+     *    serializer (`dist/cookies.mjs`) re-imposes `__Host-` semantics on any
+     *    key carrying the prefix — forcing `Secure` and `Path=/` and DELETING
+     *    `domain` — so the session cookie's own header would look untouched
+     *    while every cookie WITHOUT the prefix (the OAuth `state` cookie among
+     *    them) started shipping `Domain=kept.host` to every hosted page. It is
+     *    deliberately absent, and `session-cookie.test.ts` asserts it absent at
+     *    the config AND resolved-attribute level rather than trusting the
+     *    header.
+     * 4. THE PER-COOKIE `attributes` SPREAD WINS LAST, after the `maxAge`
+     *    override Better Auth passes for `session_token`. Keep `maxAge` OUT of
+     *    the override below or the cookie becomes a session cookie; the test
+     *    asserts `Max-Age` on the emitted header for that reason.
+     *
+     * Reading is unaffected: `stripSecureCookiePrefix`
+     * (`dist/cookies/cookie-utils.mjs`) already strips `__Host-` as well as
+     * `__Secure-`.
+     *
+     * NO COMPATIBILITY SHIM for the old `better-auth.session_token` name. Dev
+     * sessions minted before this signed in once more; no prod user exists. A
+     * second accepted session cookie name is a second thing to attack.
+     *
+     * SESSION COOKIE CACHING IS NOT ENABLED (`session.cookieCache` is unset),
+     * so `session_data` and `account_data` carry no authority today and are
+     * only named here for completeness. If a later epic enables either, that
+     * cookie becomes a bearer of session authority and MUST get identical
+     * treatment — same `__Host-` name shape, same attributes — or the hardening
+     * below is bypassed by the cache.
+     */
     advanced: {
+      // Suppress the automatic `__Secure-` (hazard 1) …
+      useSecureCookies: false,
+      // … and put `Secure` back on every cookie it mints (hazard 2).
+      defaultCookieAttributes: { secure: true },
+      cookies: {
+        session_token: {
+          // Explicit and readable; bypasses `cookiePrefix` entirely. No
+          // `maxAge` here — see hazard 4.
+          name: "__Host-kept.session_token",
+          attributes: { secure: true, httpOnly: true, sameSite: "lax", path: "/" },
+        },
+      },
+      // crossSubDomainCookies: DELIBERATELY ABSENT — see hazard 3.
       database: {
         // D1's other half. See the header, and `lib/db/schema.ts` for the
         // decision itself. Not `"uuid"` (Better Auth's built-in shorthand):

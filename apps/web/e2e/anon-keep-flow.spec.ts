@@ -67,8 +67,49 @@ const SKIP: string | false =
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
+/**
+ * How long "press the button, land on the outcome screen" is allowed to take.
+ *
+ * NOT A FLAKE CONCESSION — a measured budget. A keep is roughly ten Postgres
+ * round trips against a REMOTE Neon branch: the session read, the profile read,
+ * `resolveAnonToken`, then `BEGIN` → `lockOwner` → `lockSite` → `countKept` →
+ * `UPDATE` → `COMMIT`. Measured against the dev branch (eu-central-1) a single
+ * `select 1` ranges from 47 ms to 1193 ms depending on pooler warmth and Neon's
+ * scale-to-zero, so the whole press-to-screen path legitimately lands anywhere
+ * between ~1 s and ~9 s.
+ *
+ * Playwright's DEFAULT expect budget is 5000 ms, which sits in the middle of
+ * that distribution — so these tests passed or failed on which side of the
+ * median the database happened to be, which is exactly the intermittency this
+ * file showed. The assertions themselves are unchanged: the same URL, the same
+ * heading and the same committed rows are still required. Only the waiting is.
+ *
+ * ⚠️ A TIMEOUT HERE MASQUERADES AS A SERVER BUG. When the assertion gave up
+ * first, the test ended, `afterAll` deleted the user and the site, and the keep
+ * transaction — still in flight — then found its `SELECT … FOR UPDATE` rows
+ * gone and logged `No profile <uuid>` or `SiteNotFoundError`. Those lines are a
+ * CONSEQUENCE of the teardown racing an unfinished request, not a cause. If
+ * they reappear, suspect the budget below before suspecting `lib/sites/keep.ts`.
+ */
+const KEEP_TIMEOUT = 30_000;
+
+/**
+ * How long a token-driven colour is allowed to take to actually paint.
+ *
+ * Same shape of cause as `KEEP_TIMEOUT`, different resource: the suite runs
+ * fully parallel against a single dev server that compiles and serves CSS on
+ * demand, so a computed background can be read before the stylesheet lands —
+ * or, as `openWithTokensApplied` documents, never land at all on that
+ * navigation. Split three ways across the retries there.
+ */
+const PAINT_TIMEOUT = 20_000;
+
 test.describe("the pending-keep round trip", () => {
   test.skip(!!SKIP, SKIP || undefined);
+
+  // Several tests do two or three full keeps in sequence; at the slow end of the
+  // latency range above that alone exceeds Playwright's default 30 s per test.
+  test.describe.configure({ timeout: 120_000 });
 
   const createdUserIds: string[] = [];
   const createdSiteIds: string[] = [];
@@ -164,6 +205,49 @@ test.describe("the pending-keep round trip", () => {
     return id;
   }
 
+  /** A card with no background — what an UNSTYLED card reports. */
+  const TRANSPARENT = "rgba(0, 0, 0, 0)";
+
+  /**
+   * Open `url` and do not return until the token stylesheet is actually applied.
+   *
+   * ⚠️ AN INFRASTRUCTURE FAILURE THAT READS EXACTLY LIKE A TOKEN REGRESSION.
+   * The local dev server serves `--experimental-https`, and under the suite's
+   * parallel load it intermittently drops a static asset: measured directly,
+   * `/_next/static/css/app/layout.css` failing with `net::ERR_TOO_MANY_RETRIES`
+   * while the document itself loads fine. The card then still carries its
+   * `bg-surface` class but computes `rgba(0, 0, 0, 0)` — in BOTH themes. Those
+   * two readings compare EQUAL, so `expect(dark).not.toBe(light)` fails and
+   * reports a hardcoded colour that does not exist. (The same dropped-asset
+   * fault is why `routes.spec.ts` and `smoke.spec.ts` intermittently see
+   * `Failed to load resource` console errors; it is a harness fault, not a
+   * product one, and CI does not meet it because CI runs a single worker.)
+   *
+   * A fresh navigation re-requests the asset, so retrying the NAVIGATION is the
+   * honest fix: nothing about what this test asserts is relaxed, and a genuine
+   * failure to ever apply the tokens still fails, loudly and with a reason.
+   */
+  async function openWithTokensApplied(
+    page: Page,
+    url: string,
+    background: () => Promise<string>,
+  ): Promise<void> {
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      await page.goto(url);
+      await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+
+      const deadline = Date.now() + PAINT_TIMEOUT / 3;
+      while (Date.now() < deadline) {
+        if ((await background()) !== TRANSPARENT) return;
+        await page.waitForTimeout(100);
+      }
+    }
+    throw new Error(
+      `The token stylesheet never applied to ${url} across 3 navigations — ` +
+        "the card stayed transparent, so no theme comparison was possible.",
+    );
+  }
+
   async function pendingKeepCookieOf(page: Page) {
     const cookies = await page.context().cookies();
     return cookies.find((cookie) => cookie.name === PENDING_KEEP_COOKIE);
@@ -233,7 +317,9 @@ test.describe("the pending-keep round trip", () => {
     await page.goto(`${baseURL}${await magicLink("/auth/callback")}`);
 
     // Landed permanent, at the same address, with nothing secret in the URL.
-    await expect(page).toHaveURL(`/auth/callback/done?outcome=kept&slug=${site.slug}`);
+    await expect(page).toHaveURL(`/auth/callback/done?outcome=kept&slug=${site.slug}`, {
+      timeout: KEEP_TIMEOUT,
+    });
     await expect(page.getByRole("heading", { name: "Kept forever" })).toBeVisible();
     await expect(page.getByText(new RegExp(site.slug))).toBeVisible();
     expect(page.url()).not.toContain(site.token);
@@ -251,7 +337,7 @@ test.describe("the pending-keep round trip", () => {
     expect(await pendingKeepCookieOf(page)).toBeUndefined();
     await page.goto("/auth/callback");
     // No intent is an ordinary post-sign-in landing, not a second keep attempt.
-    await expect(page).toHaveURL("/dashboard");
+    await expect(page).toHaveURL("/dashboard", { timeout: KEEP_TIMEOUT });
   });
 
   test("already signed in: no sign-in screen, no cookie, straight to the outcome", async ({
@@ -269,7 +355,9 @@ test.describe("the pending-keep round trip", () => {
     await page.goto(`/keep/${site.token}`);
     await page.getByRole("button", { name: "Keep it forever" }).click();
 
-    await expect(page).toHaveURL(`/auth/callback/done?outcome=kept&slug=${site.slug}`);
+    await expect(page).toHaveURL(`/auth/callback/done?outcome=kept&slug=${site.slug}`, {
+      timeout: KEEP_TIMEOUT,
+    });
     await expect(page.getByRole("heading", { name: "Kept forever" })).toBeVisible();
     // The sign-in screen was never rendered, and no round trip means no intent
     // was ever parked in a cookie.
@@ -295,7 +383,9 @@ test.describe("the pending-keep round trip", () => {
     await page.goto(`/keep/${site.token}`);
     await page.getByRole("button", { name: "Keep it forever" }).click();
 
-    await expect(page).toHaveURL(/\/auth\/callback\/done\?outcome=draft/);
+    await expect(page).toHaveURL(/\/auth\/callback\/done\?outcome=draft/, {
+      timeout: KEEP_TIMEOUT,
+    });
     await expect(
       page.getByRole("heading", { name: "Saved to your account — as a draft" }),
     ).toBeVisible();
@@ -321,25 +411,30 @@ test.describe("the pending-keep round trip", () => {
    */
   for (const outcome of ["kept", "draft", "gone"] as const) {
     test(`the "${outcome}" outcome screen reads in both themes`, async ({ page }) => {
-      await page.goto(
-        `/auth/callback/done?outcome=${outcome}&slug=e05-009-theme-probe&expires=${new Date(
-          Date.now() + MS_PER_DAY,
-        ).toISOString()}`,
-      );
+      const url = `/auth/callback/done?outcome=${outcome}&slug=e05-009-theme-probe&expires=${new Date(
+        Date.now() + MS_PER_DAY,
+      ).toISOString()}`;
 
       const card = page.locator("div.bg-surface").first();
       const heading = page.getByRole("heading", { level: 1 });
+      const background = () =>
+        card.evaluate((el) => getComputedStyle(el).backgroundColor);
+
+      await openWithTokensApplied(page, url, background);
       await expect(heading).toBeVisible();
-      const light = await card.evaluate((el) => getComputedStyle(el).backgroundColor);
+      const light = await background();
 
       await page.evaluate(() =>
         document.documentElement.setAttribute("data-theme", "dark"),
       );
       await expect(page.locator('html[data-theme="dark"]')).toHaveCount(1);
 
-      const dark = await card.evaluate((el) => getComputedStyle(el).backgroundColor);
       // A card that did not move is a card painted with a hardcoded colour
-      // rather than a token.
+      // rather than a token — so this still FAILS if the theme flip changes
+      // nothing; it merely allows the repaint to land first.
+      await expect.poll(background, { timeout: PAINT_TIMEOUT }).not.toBe(light);
+      const dark = await background();
+      expect(dark).not.toBe(TRANSPARENT);
       expect(dark).not.toBe(light);
       await expect(heading).toBeVisible();
       // Every branch offers a way onward — nobody who just signed in dead-ends.
@@ -359,7 +454,9 @@ test.describe("the pending-keep round trip", () => {
     // Keep it once, which retires the token…
     await page.goto(`/keep/${site.token}`);
     await page.getByRole("button", { name: "Keep it forever" }).click();
-    await expect(page.getByRole("heading", { name: "Kept forever" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Kept forever" })).toBeVisible({
+      timeout: KEEP_TIMEOUT,
+    });
 
     // …then present the dead token again. The claim screen itself 404s, so the
     // callback branch is reached by replaying the intent directly.
@@ -378,7 +475,7 @@ test.describe("the pending-keep round trip", () => {
       page.getByRole("heading", {
         name: "This page has already been kept, or the link has expired",
       }),
-    ).toBeVisible();
+    ).toBeVisible({ timeout: KEEP_TIMEOUT });
     // Signed in and not dead-ended: there is a way onward.
     await expect(
       page.getByRole("link", { name: "Go to your dashboard" }),

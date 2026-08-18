@@ -26,6 +26,11 @@ worker-configuration.d.ts
 .env.*
 !.env.example
 
+# Local HTTPS (E05a D5 / task 007)
+# `next dev --experimental-https` mints a locally-trusted cert into
+# apps/web/certificates/. That directory holds a PRIVATE KEY — never commit it.
+certificates/
+
 # Drizzle
 # (migrations under drizzle/ ARE tracked; only ignore local journal noise if any)
 

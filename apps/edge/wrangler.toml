@@ -22,7 +22,10 @@
 # third binding. They exist so one code path serves both domains without a
 # `NODE_ENV` fork or a hostname literal (E02's locked decision):
 #   - KEPT_BASE_DOMAIN  the serving suffix (no leading dot, no scheme)
-#   - KEPT_APEX_ORIGIN  control-plane origin that reserved labels 301 to
+#   - KEPT_APEX_ORIGIN  the marketing apex that reserved labels 301 to. It stays
+#     the apex after E05a moved the control plane to `app.{base}`: the labels
+#     that remain (`www`/`api`/`assets`) carry human traffic that guessed a
+#     hostname, and `www.` must land on the landing page, not a signed-out app.
 
 name = "kept-edge"
 main = "src/index.ts"
@@ -56,8 +59,11 @@ id = "fd5c0c7fbd9147f4849f65d59cdcd14c"
 
 # ---------------------------------------------------------------------------
 # prod — `*.kept.host`. The apex `kept.host` is not matched by this route, but
-# `www.kept.host` IS; the reserved `www`/`app`/`api`/`assets` labels are 301'd to
+# `www.kept.host` IS; the reserved `www`/`api`/`assets` labels are 301'd to
 # `KEPT_APEX_ORIGIN` by the Worker itself (src/host.ts) rather than by config.
+# `app` is NOT among them (E05a): the control plane answers `app.kept.host` on a
+# DNS-only (grey-cloud) record, so proxied traffic never reaches this Worker and
+# reserving the label would only 301 sign-in away from its own hostname.
 # ---------------------------------------------------------------------------
 
 [env.prod]

@@ -39,6 +39,22 @@ test("reserved labels are rejected and never minted", () => {
   }
 });
 
+test("`app` stays reserved even though the Worker no longer reserves the label", () => {
+  // E05a: `app` left `RESERVED_LABELS` in apps/edge/src/host.ts so the Worker
+  // stops 301'ing the control plane away from `app.{base}`. It must NOT leave
+  // this list to match — keeping it is what makes an accidentally re-proxied
+  // `app.` record a branded 404 instead of a user page published at the control
+  // plane's own hostname.
+  assert.ok(
+    RESERVED_SLUGS.includes("app"),
+    "`app` must stay in RESERVED_SLUGS: removing it lets a user page be minted at the control plane's hostname (app.kept.host)",
+  );
+  assert.ok(
+    isReservedSlug("app"),
+    "the slug guard, not just the constant, must refuse `app` — this is the check the minting path runs",
+  );
+});
+
 test("profane substrings are rejected and never minted", () => {
   assert.ok(containsProfanity("x7assq2b"));
   assert.ok(containsProfanity("fckz3m9p"));

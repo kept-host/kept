@@ -136,10 +136,13 @@ export function servingBaseDomain(): string {
 }
 
 /**
- * The control plane's OWN origin — `https://kept.host` in prod, the Railway URL
- * on dev, `http://localhost:3000` locally. `claim_url` is built from it, and it
- * is a different value from `servingBaseDomain()`: pages are served from
- * `{slug}.{KEPT_BASE_DOMAIN}` by the Worker, while `/keep/{anonToken}` is a
+ * The control plane's OWN origin — the `app.` host, not the apex (E05a):
+ * `https://app.kept.host` in prod, `https://app.kept-dev.xyz` on dev,
+ * `https://localhost:3000` locally (https, because the `__Host-` session cookie
+ * requires `Secure`). `claim_url` is built from it, and it is a different value
+ * from `servingBaseDomain()`: pages are served from `{slug}.{KEPT_BASE_DOMAIN}`
+ * by the Worker — which serves arbitrary user HTML and must therefore never be
+ * the origin a session cookie lives on — while `/keep/{anonToken}` is a
  * control-plane route.
  *
  * The one `NEXT_PUBLIC_` variable this module reads, and it is read on the
@@ -180,9 +183,12 @@ const absoluteUrl = z
  * Better Auth's own two values (E05 task 003).
  *
  * `baseUrl` is the CONTROL PLANE's origin — the one every OAuth redirect URI is
- * registered against. It is `BETTER_AUTH_URL` when set and `appOrigin()`
- * otherwise, so a deployment that already carries `NEXT_PUBLIC_APP_URL` needs no
- * second copy of the same string. It is NEVER `KEPT_BASE_DOMAIN`: the serving
+ * registered against, and since E05a that is the `app.` host and never the apex.
+ * It is `BETTER_AUTH_URL` when set and `appOrigin()` otherwise, so a deployment
+ * that already carries `NEXT_PUBLIC_APP_URL` needs no second copy of the same
+ * string. It is NEVER `KEPT_BASE_DOMAIN`, nor any hostname under it: those
+ * serve arbitrary user-authored HTML, so an auth origin sharing a registrable
+ * domain with them is exposed to cookie tossing and same-site CSRF. The serving
  * domain has no auth surface and must not appear anywhere in an OAuth config.
  */
 export function authConfig(): { secret: string; baseUrl: string } {

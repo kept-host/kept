@@ -5,6 +5,8 @@ import { eq, inArray, sql } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
 
+import { rawRequest } from "./raw-request";
+
 /**
  * The provider boundary — E05 task 012.
  *
@@ -181,6 +183,43 @@ test.describe("the provider boundary", () => {
       const body = verdict.status >= 300 && verdict.status < 400 ? "" : await verdict.text();
       const evidence = `${verdict.status} ${location} ${body.slice(0, 400)}`;
 
+      /**
+       * ONE KNOWN LOCAL GAP, AND ONLY ONE — E05a task 007.
+       *
+       * D5 moved local dev to https, so the `redirect_uri` this sends is now
+       * `https://localhost:3000/api/auth/callback/…` where it used to be
+       * `http://`. Only the http one is registered on the Google and GitHub
+       * OAuth apps, and registering the https one is a console action no agent
+       * can perform — task 009 owns it, alongside the `app.kept-dev.xyz`
+       * re-registration it already carries.
+       *
+       * So this skips, by name, and NARROWLY: only on a localhost origin, and
+       * only for the mismatch verdict itself. Every other verdict
+       * (`invalid_client`, `unauthorized_client`, a hand-off that never reaches
+       * the provider's sign-in) still fails here, and on any deployed origin —
+       * which is where this assertion earns its keep — nothing is skipped at
+       * all. Delete the skip once the callback is registered; do not widen it.
+       */
+      const localhostOrigin = new URL(baseURL!).hostname === "localhost";
+      // Google states the reason in base64url, not in the clear: `authError` is
+      // a protobuf carrying the literal `redirect_uri_mismatch`, which is why
+      // the assertions below have to match the error PATH as well as the name.
+      // The skip reads the same way, or it never fires on the one provider it
+      // exists for.
+      const authError = location.startsWith("http")
+        ? (new URL(location).searchParams.get("authError") ?? "")
+        : "";
+      const decoded = authError ? Buffer.from(authError, "base64url").toString("latin1") : "";
+      const mismatch = /redirect_uri_mismatch|redirect_uri (is not associated|must match)/i.test(
+        `${evidence} ${decoded}`,
+      );
+      test.skip(
+        localhostOrigin && mismatch,
+        `${baseURL}/api/auth/callback/${provider.id} is not registered with ${provider.id}. ` +
+          `Local dev moved to https (E05a D5); add the https localhost callback to the ` +
+          `OAuth app — human-gated, E05a task 009.`,
+      );
+
       // The failure modes, named. `redirect_uri_mismatch` is base64'd inside
       // Google's error URL, so the raw name is matched as well as the
       // `/signin/oauth/error` path it lives on.
@@ -311,6 +350,155 @@ test.describe("the provider boundary", () => {
     expect(
       await db.select().from(schema.profiles).where(eq(schema.profiles.id, userId)),
     ).toHaveLength(1);
+  });
+
+  /**
+   * A verification value written straight through the plugin's own storage
+   * contract, so a `GET /api/auth/magic-link/verify?token=…` mints a REAL
+   * session. Only the inbox is skipped; nothing about Better Auth is stubbed.
+   * The same substitution `signIn` makes in `owner-sites-api.spec.ts`.
+   */
+  async function mintVerificationToken(label: string): Promise<string> {
+    const { auth } = await import("../lib/auth");
+    const ctx = await auth.$context;
+    const token = crypto.randomUUID().replace(/-/g, "");
+    await ctx.internalAdapter.createVerificationValue({
+      identifier: token,
+      value: JSON.stringify({
+        email: `e05a-008-${token.slice(0, 8)}@kept-e05a-008.invalid`,
+        name: label,
+      }),
+      expiresAt: new Date(Date.now() + 300_000),
+    });
+    return token;
+  }
+
+  test("the session Set-Cookie is `__Host-` and carries no Domain — asserted on the emitted header", async ({
+    baseURL,
+  }) => {
+    /**
+     * E05a task 008, epic criterion 6.
+     *
+     * `lib/auth/session-cookie.test.ts` asserts the CONFIG. This asserts the
+     * bytes, which is a different claim: Better Auth composes the emitted name
+     * from `cookiePrefix` + `secureCookiePrefix` + the configured name, so a
+     * correct-looking config can still put `__Secure-__Host-…` on the wire — a
+     * name with NO prefix semantics at all, which is worse than no prefix
+     * because it reads as two.
+     *
+     * `rawRequest` rather than the fixture: a client that parses cookies into
+     * objects has already thrown away the string this test is about.
+     */
+    const token = await mintVerificationToken("E05a-008 cookie drill");
+    const response = await rawRequest(
+      "GET",
+      `${baseURL}/api/auth/magic-link/verify?token=${token}`,
+    );
+    expect(response.status, response.body).toBe(200);
+    createdUserIds.push((JSON.parse(response.body) as { user: { id: string } }).user.id);
+
+    const session = response.setCookies.filter((line) => line.includes("session_token="));
+    expect(session, "no session cookie was emitted").toHaveLength(1);
+    const header = session[0]!;
+    const name = header.split("=", 1)[0]!;
+
+    // The name.
+    expect(name.startsWith("__Host-"), header).toBe(true);
+    // The `__Secure-__Host-` trap, stated separately: a name carrying both
+    // prefixes matches neither rule and the browser enforces nothing.
+    expect(header, "the automatic `__Secure-` prefix is back").not.toContain("__Secure-");
+
+    // The attributes the prefix requires, and the one it forbids.
+    expect(header, "Secure").toMatch(/;\s*Secure\s*(;|$)/i);
+    expect(header, "Path=/").toMatch(/;\s*Path=\/\s*(;|$)/i);
+    expect(header, "HttpOnly").toMatch(/;\s*HttpOnly\s*(;|$)/i);
+    expect(header, "SameSite=Lax").toMatch(/;\s*SameSite=Lax\s*(;|$)/i);
+    // Written so that enabling `advanced.crossSubDomainCookies` fails HERE.
+    expect(header, "a `__Host-` cookie carrying Domain is rejected outright").not.toMatch(
+      /;\s*Domain=/i,
+    );
+  });
+
+  test("the cookies WITHOUT the prefix carry no Domain either — the real crossSubDomainCookies tripwire", async ({
+    baseURL,
+  }) => {
+    /**
+     * THE ASSERTION ABOVE IS NOT SUFFICIENT ON ITS OWN, and this is why.
+     *
+     * `better-call`'s serializer re-imposes `__Host-` semantics on any key
+     * carrying the prefix: it forces `Secure`, forces `Path=/` and DELETES
+     * `domain`. So if `crossSubDomainCookies` were switched on tomorrow, the
+     * session cookie's own header would still look immaculate — while every
+     * cookie without the prefix quietly started shipping `Domain=.kept.host`
+     * to every hosted page on the domain. The OAuth `state` cookie is a CSRF
+     * credential; scoping it to the whole domain is exactly the hand-off this
+     * epic exists to prevent.
+     *
+     * So the tripwire has to live on the UNPREFIXED cookies, and it has to fail
+     * if there are none to check.
+     */
+    const seen: string[] = [];
+
+    for (const provider of PROVIDERS) {
+      const response = await rawRequest("POST", `${baseURL}/api/auth/sign-in/social`, {
+        headers: { "content-type": "application/json", origin: new URL(baseURL!).origin },
+        body: JSON.stringify({ provider: provider.id, callbackURL: "/dashboard" }),
+      });
+      expect(response.status, response.body).toBe(200);
+
+      for (const line of response.setCookies) {
+        const name = line.split("=", 1)[0]!;
+        if (name.startsWith("__Host-")) continue;
+        seen.push(name);
+        expect(line, `${name} escaped its origin`).not.toMatch(/;\s*Domain=/i);
+        // `defaultCookieAttributes: { secure: true }` putting Secure back on
+        // the cookies Better Auth would otherwise leave bare once the automatic
+        // `__Secure-` prefix is suppressed.
+        expect(line, `${name} is not Secure`).toMatch(/;\s*Secure\s*(;|$)/i);
+      }
+    }
+
+    // A vacuous tripwire is not a tripwire. The OAuth hand-off mints at least
+    // one unprefixed cookie (`better-auth.state`); if it ever stops, this test
+    // must be rewritten rather than silently pass.
+    expect(seen.length, "no unprefixed cookie was emitted to check").toBeGreaterThan(0);
+  });
+
+  test("a real browser stores that cookie, and the session survives a reload", async ({
+    page,
+    baseURL,
+  }) => {
+    /**
+     * The property the whole `__Host-` + https harness rests on, and the one a
+     * header assertion cannot make: that a REAL browser accepts the cookie and
+     * sends it back. A `Secure` cookie delivered over plain http is dropped
+     * silently — sign-in appears to work and the next request is signed out —
+     * so this is the test that fails loudly if the harness scheme regresses.
+     */
+    const token = await mintVerificationToken("E05a-008 reload drill");
+    const verified = await page.goto(`${baseURL}/api/auth/magic-link/verify?token=${token}`);
+    expect(verified?.status()).toBe(200);
+    createdUserIds.push(
+      (JSON.parse(await verified!.text()) as { user: { id: string } }).user.id,
+    );
+
+    // The browser's jar holds a `__Host-` cookie with no domain qualifier of
+    // its own beyond the exact host that set it.
+    const stored = (await page.context().cookies()).filter((c) =>
+      c.name.startsWith("__Host-"),
+    );
+    expect(stored, "the browser did not store the session cookie").toHaveLength(1);
+    expect(stored[0]!.secure).toBe(true);
+    expect(stored[0]!.httpOnly).toBe(true);
+    expect(stored[0]!.path).toBe("/");
+    expect(stored[0]!.domain).toBe(new URL(baseURL!).hostname);
+
+    await page.goto("/dashboard");
+    await expect(page.getByRole("heading", { name: "Dashboard placeholder" })).toBeVisible();
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Dashboard placeholder" })).toBeVisible();
+    expect(new URL(page.url()).pathname).toBe("/dashboard");
   });
 
   test("the database's plan enum is exactly what packages/shared says it is", async () => {

@@ -7,7 +7,7 @@
 
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { RESERVED_LABELS } from "../src/host";
+import { RESERVED_LABELS, resolveHost } from "../src/host";
 import {
   APEX_ORIGIN,
   BASE_DOMAIN,
@@ -131,10 +131,9 @@ describe("host → slug resolution", () => {
   });
 
   describe("reserved control-plane labels", () => {
-    it("covers exactly www, app, api and assets", () => {
+    it("covers exactly www, api and assets — app belongs to the control plane", () => {
       expect([...RESERVED_LABELS].sort(), "the reserved set is a serving contract; adding one is a deliberate change").toEqual([
         "api",
-        "app",
         "assets",
         "www",
       ]);
@@ -169,6 +168,28 @@ describe("host → slug resolution", () => {
 
       expect(response.status, `a manifest at "www" must not defeat the redirect, got ${describeResponse(response)}`).toBe(301);
       expect(counts.kvGet, `the redirect must still read no KV — ${describeCounts(counts)}`).toBe(0);
+    });
+  });
+
+  describe("`app` is the control plane, not a reserved serving label (E05a)", () => {
+    it("resolves app.{base} as a slug, so the Worker never 301s the control plane away", () => {
+      expect(
+        resolveHost(`app.${BASE_DOMAIN}`, BASE_DOMAIN),
+        "`app.{base}` is answered by the control plane on a DNS-only record; reserving it here would 301 sign-in away from its own hostname",
+      ).toEqual({ kind: "slug", slug: "app" });
+    });
+
+    it("serves the branded 404 for an accidentally re-proxied app.{base}, never user content", async () => {
+      // The safety net: `app` stays in the control plane's RESERVED_SLUGS
+      // (apps/web/lib/publish/slug.ts), so no page can ever be minted at this
+      // slug. A re-proxied record therefore misses the manifest and gets the
+      // branded 404 rather than somebody's uploaded HTML.
+      const { response, text } = await dispatchText(requestUrl(`https://app.${BASE_DOMAIN}/`));
+
+      expect(response.status, `app.${BASE_DOMAIN} must miss the manifest, got ${describeResponse(response, text)}`).toBe(404);
+      expect(text, "an unclaimable slug must render the branded notFound page").toContain(
+        SYSTEM_PAGE_TITLES.notFound,
+      );
     });
   });
 });
