@@ -12,7 +12,7 @@ import { eq, inArray } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
 
-import { jarlessContext } from "./jarless-request";
+import { jarlessContext, sessionHeaders } from "./session-request";
 
 /**
  * `POST /api/anon/:anonToken/keep` over the wire — E05 task 008.
@@ -173,13 +173,18 @@ test.describe("anonymous keep route", () => {
 
     // `/api/sites/:id/` is session-authenticated and owner-scoped (D3). The
     // token is not a uuid and, even if it were, the row is not this account's.
+    //
+    // `sessionHeaders` and not a bare `cookie`: task 006's origin check refuses
+    // a cookie-bearing mutating call that carries no `Origin`, which a real
+    // browser always sends and an `APIRequestContext` never does. See
+    // `./session-request.ts`.
     const wrongDoor = await request.post(`${baseURL}/api/sites/${site.token}/keep`, {
-      headers: { cookie },
+      headers: sessionHeaders(cookie, baseURL!),
     });
     expect(wrongDoor.status()).toBe(404);
 
     const byId = await request.post(`${baseURL}/api/sites/${site.id}/keep`, {
-      headers: { cookie },
+      headers: sessionHeaders(cookie, baseURL!),
     });
     expect(byId.status(), "an unclaimed draft is not keepable through the owner door").toBe(
       404,
@@ -197,7 +202,7 @@ test.describe("anonymous keep route", () => {
     const site = await makeAnonSite();
 
     const response = await request.post(`${baseURL}/api/anon/${site.token}/keep`, {
-      headers: { cookie },
+      headers: sessionHeaders(cookie, baseURL!),
     });
     expect(response.status(), await response.text()).toBe(200);
     expect(response.headers()["cache-control"]).toContain("no-store");
@@ -226,10 +231,10 @@ test.describe("anonymous keep route", () => {
     // The token is dead everywhere — and answers exactly like one that never
     // existed, so a stale link is not an existence probe.
     const replayed = await request.post(`${baseURL}/api/anon/${site.token}/keep`, {
-      headers: { cookie },
+      headers: sessionHeaders(cookie, baseURL!),
     });
     const unknown = await request.post(`${baseURL}/api/anon/${generateAnonToken()}/keep`, {
-      headers: { cookie },
+      headers: sessionHeaders(cookie, baseURL!),
     });
     expect(replayed.status()).toBe(404);
     expect(unknown.status()).toBe(404);

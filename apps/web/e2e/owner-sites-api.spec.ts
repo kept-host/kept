@@ -11,7 +11,7 @@ import { eq, inArray } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
 
-import { jarlessContext } from "./jarless-request";
+import { jarlessContext, sessionHeaders } from "./session-request";
 
 /**
  * The three owner routes over the wire — E05 task 010.
@@ -176,8 +176,13 @@ test.describe("owner site routes", () => {
     // `demote === keep` is a 400 that ONLY the swap handler emits — the `[id]`
     // handlers answer 401 or 404 and never look at a body. Getting it back is
     // proof the request resolved to `swap/route.ts`.
+    //
+    // `sessionHeaders` and not a bare `cookie`: task 006's origin check refuses
+    // a cookie-bearing mutating call that carries no `Origin`, which a real
+    // browser always sends and an `APIRequestContext` never does. See
+    // `./session-request.ts`.
     const response = await request.post(`${baseURL}/api/sites/swap`, {
-      headers: { cookie },
+      headers: sessionHeaders(cookie, baseURL!),
       data: { demote: site, keep: site },
     });
     expect(response.status()).toBe(400);
@@ -193,7 +198,7 @@ test.describe("owner site routes", () => {
     const draft = await makeSite(ownerId, false);
 
     const kept = await request.post(`${baseURL}/api/sites/${draft}/keep`, {
-      headers: { cookie },
+      headers: sessionHeaders(cookie, baseURL!),
     });
     expect(kept.status()).toBe(200);
     const keepBody = keepResultSchema.parse(await kept.json());
@@ -204,7 +209,7 @@ test.describe("owner site routes", () => {
     ).toBeNull();
 
     const demoted = await request.post(`${baseURL}/api/sites/${draft}/demote`, {
-      headers: { cookie },
+      headers: sessionHeaders(cookie, baseURL!),
     });
     expect(demoted.status()).toBe(200);
 
@@ -214,13 +219,13 @@ test.describe("owner site routes", () => {
     const theirs = await makeSite(otherOwner, true);
 
     const refused = await request.post(`${baseURL}/api/sites/${theirs}/keep`, {
-      headers: { cookie },
+      headers: sessionHeaders(cookie, baseURL!),
     });
     expect(refused.status()).toBe(404);
 
     // Byte-identical to a page that simply does not exist.
     const absent = await request.post(`${baseURL}/api/sites/${crypto.randomUUID()}/keep`, {
-      headers: { cookie },
+      headers: sessionHeaders(cookie, baseURL!),
     });
     expect(absent.status()).toBe(404);
     expect(await refused.text()).toBe(await absent.text());
