@@ -12,6 +12,7 @@ import { eq, inArray } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
 
+import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
 import { jarlessContext, sessionHeaders } from "./session-request";
 
 /**
@@ -70,8 +71,17 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 test.describe("anonymous keep route", () => {
   test.skip(!!SKIP, SKIP || undefined);
 
+  // Two of the three tests here mint a real session, which is ~15 s of remote
+  // Postgres before the first assertion. See `./live-stack.ts`.
+  test.describe.configure({ timeout: LIVE_STACK_TIMEOUT });
+
   const createdUserIds: string[] = [];
   const createdSiteIds: string[] = [];
+
+  test.beforeAll(async () => {
+    if (SKIP) return;
+    await warmDb();
+  });
 
   test.afterAll(async () => {
     if (SKIP) return;
