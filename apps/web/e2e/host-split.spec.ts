@@ -63,6 +63,20 @@ const SKIP: string | false = APP_URL
   : "NEXT_PUBLIC_APP_URL absent — the split rule is inert without it (`host-split.ts`)";
 
 /**
+ * Whether this run's config has TWO hostnames, which is what the reverse half of
+ * the split needs to exist at all.
+ *
+ * `host-split.ts` derives the apex from the `app.` label rather than from a
+ * variable of its own, so locally (`https://localhost:3000`) there is no apex to
+ * mirror to and `/` must keep serving the landing — the rule passes everything
+ * through on purpose. The two-hostname contract is asserted exhaustively as a
+ * pure function in `lib/routing/host-split.test.ts`; what is checked below is
+ * that whichever shape this run is configured for is the shape it serves.
+ */
+const APP_HOST = APP_URL ? new URL(APP_URL).host.toLowerCase() : "";
+const DERIVED_APEX = APP_HOST.startsWith("app.") ? APP_HOST.slice("app.".length) : "";
+
+/**
  * A hostname that is not the `app.` host — which is the whole of what "the
  * apex" means to the rule. `KEPT_BASE_DOMAIN` is the real apex on whichever
  * track this run points at (`kept-dev.xyz` on dev), so it is used when present
@@ -326,22 +340,39 @@ test.describe("the apex / `app.` split", () => {
     publishErrorSchema.parse(await response.json());
   });
 
-  test("on the `app.` host nothing is redirected by the split, and `Host` alone drives it too", async ({
+  test("the `app.` host serves the app and not the marketing pages, and `Host` alone drives it too", async ({
     request,
     baseURL,
   }) => {
-    const appHost = new URL(APP_URL).host;
+    const fromApp = { "x-forwarded-host": APP_HOST };
 
-    // Named explicitly rather than omitted: this asserts the rule's positive
-    // branch — the `app.` host serves the WHOLE app, marketing pages included.
-    // (`/api/auth/*` on this host is covered above, where the assertion can be
-    // about the URL space rather than about a status that needs credentials.)
-    for (const path of ["/", "/promise", "/stats", "/auth", "/api/health"]) {
-      const response = await request.get(path, {
-        headers: { "x-forwarded-host": appHost },
-        maxRedirects: 0,
-      });
-      expect(response.status(), `${path} on ${appHost}`).toBe(200);
+    // The control plane's own surface is never touched by the split, in either
+    // direction. (`/api/auth/*` on this host is covered above, where the
+    // assertion can be about the URL space rather than about a status that needs
+    // credentials.)
+    for (const path of ["/auth", "/api/health"]) {
+      const response = await request.get(path, { headers: fromApp, maxRedirects: 0 });
+      expect(response.status(), `${path} on ${APP_HOST}`).toBe(200);
+    }
+
+    // The reverse half: the apex owns `(marketing)`, so `app.` sends `/` to the
+    // gated dashboard and the rest back to the apex. With one hostname
+    // configured there is no apex to send them to and they are served here —
+    // which is the local shape, and why the exhaustive two-hostname cases live
+    // in the unit test rather than in this file.
+    for (const path of ["/", "/promise", "/stats"]) {
+      const response = await request.get(path, { headers: fromApp, maxRedirects: 0 });
+
+      if (!DERIVED_APEX) {
+        expect(response.status(), `${path} on the single-origin ${APP_HOST}`).toBe(200);
+        continue;
+      }
+
+      expect(response.status(), `${path} on ${APP_HOST}`).toBe(307);
+      const target = new URL(response.headers()["location"] ?? "", `${baseURL}${path}`);
+      expect(target.href, `${path} on ${APP_HOST}`).toBe(
+        path === "/" ? `${APP_URL}/dashboard` : `https://${DERIVED_APEX}${path}`,
+      );
     }
 
     // And a `Host` header alone drives the same decision — a proxy that
