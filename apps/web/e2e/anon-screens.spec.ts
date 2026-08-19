@@ -12,6 +12,7 @@ import {
   publishViaApi,
   SKIP_LIVE_PUBLISH,
 } from "./live-publish";
+import { LIVE_STACK_TIMEOUT } from "./live-stack";
 
 /**
  * The two anon-token screens, against a page that was really published:
@@ -64,6 +65,17 @@ function trackRequests(page: Page): { all: string[]; offOrigin: string[] } {
 
 test.describe("the anon-token screens", () => {
   test.skip(!!SKIP_LIVE_PUBLISH, String(SKIP_LIVE_PUBLISH));
+  /**
+   * Every test here publishes for real and reads the bytes back out of R2, so
+   * the whole describe belongs to the live-stack family and not to Playwright's
+   * 30 s default.
+   *
+   * This file was missed when that budget was applied elsewhere, and the reason
+   * is worth recording: `test.setTimeout(60_000)` further down looks like the
+   * describe is already covered, but it sits INSIDE one test's body and applies
+   * to that test alone. `describe.configure` is the one that reaches every test.
+   */
+  test.describe.configure({ timeout: LIVE_STACK_TIMEOUT });
   // Chromium refuses `navigator.clipboard` without these, and the copy control
   // is the single most important thing on the result screen.
   test.use({ permissions: ["clipboard-read", "clipboard-write"] });
@@ -335,7 +347,11 @@ test.describe("the anon-token screens", () => {
 
     await page.getByRole("link", { name: /Keep it forever/ }).click();
 
-    await expect(page).toHaveURL(`/keep/${draft.anonToken}`);
+    // The default 5 s EXPECT budget, not the 60 s test budget, is what fired
+    // here: `/keep` resolves the token against remote Neon and reads the
+    // preview bytes from R2 before it renders, which is comfortably over 5 s
+    // from a laptop. `test.setTimeout` does not widen a per-assertion wait.
+    await expect(page).toHaveURL(`/keep/${draft.anonToken}`, { timeout: 30_000 });
     await expect(
       page.getByRole("heading", { name: "It is live — but not permanent yet" }),
     ).toBeVisible();
@@ -389,9 +405,10 @@ test.describe("the anon-token screens", () => {
     await expect(
       page.getByText(/kept gives a single web page a permanent home, free/),
     ).toBeVisible();
-    await expect(
-      page.getByText(new RegExp(`${DRAFT_TTL_DAYS} days from when it went live`)),
-    ).toBeVisible();
+    // The clock is the chip's job, asserted on `time` below. The prose used to
+    // restate "N days from when it went live" as well; that duplication was cut,
+    // so what the body must still carry is what KEEPING does.
+    await expect(page.getByText(/Keeping takes the clock off/)).toBeVisible();
     await expect(page.locator("time")).toHaveText(`Draft · ${DRAFT_TTL_DAYS} days left`);
 
     // The page it is being asked to keep, and the address it lives at.
@@ -407,7 +424,7 @@ test.describe("the anon-token screens", () => {
     await expect(keep).toBeEnabled();
     await expect(keep).not.toHaveAttribute("aria-disabled", "true");
     await expect(
-      page.getByText(new RegExp(`Free accounts keep ${KEPT_PAGE_LIMIT} pages forever`)),
+      page.getByText(new RegExp(`free accounts keep ${KEPT_PAGE_LIMIT} pages`)),
     ).toBeVisible();
 
     // IT IS NOT THE MANAGE SCREEN. A stranger handed a link must not be one
@@ -433,6 +450,7 @@ test.describe("the anon-token screens", () => {
  */
 test.describe("the claim page with JavaScript switched off", () => {
   test.skip(!!SKIP_LIVE_PUBLISH, String(SKIP_LIVE_PUBLISH));
+  test.describe.configure({ timeout: LIVE_STACK_TIMEOUT });
   test.use({ javaScriptEnabled: false });
 
   let draft: { anonToken: string; live_url: string };

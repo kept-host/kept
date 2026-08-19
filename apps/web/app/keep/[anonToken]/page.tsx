@@ -35,7 +35,7 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { ArrowUpRight } from "lucide-react";
 
-import { DRAFT_GRACE_DAYS, DRAFT_TTL_DAYS, KEPT_PAGE_LIMIT } from "@kept/shared";
+import { DRAFT_GRACE_DAYS, KEPT_PAGE_LIMIT } from "@kept/shared";
 
 import {
   DraftChip,
@@ -68,24 +68,37 @@ export const metadata: Metadata = {
  * promise to a stranger in words, so a literal `7` or `30` here is not a style
  * problem — it is kept lying to somebody the day the constant changes.
  */
-const WHAT_KEPT_IS =
-  "kept gives a single web page a permanent home, free. Someone published this one and sent you the link.";
+const WHAT_KEPT_IS = "kept gives a single web page a permanent home, free.";
 
+/**
+ * THE `kept` PHASE IS UNREACHABLE HERE, AND IS KEPT ANYWAY.
+ *
+ * Keeping a page nulls its `anon_token_hash` (`lib/sites/keep.ts`), so the very
+ * act that would move this screen into `kept` destroys the token that reaches
+ * it. A visitor returning to their own claim link gets `./not-found.tsx`
+ * instead, and the app cannot tell that case from a token that never existed —
+ * which is the point, not a gap.
+ *
+ * `DraftPhase` is a closed union, so the branch stays: dropping it makes this
+ * record non-exhaustive and the next phase added to `draft-chip` would fail to
+ * type rather than fail loudly here. It is one line, and it is a type-level
+ * assertion, not dead copy.
+ */
 const COPY: Record<DraftPhase, { eyebrow: string; heading: string; body: string }> = {
   draft: {
     eyebrow: "Someone shared this page with you",
     heading: "It is live — but not permanent yet",
-    body: `It was published as a draft, so it has a clock on it: ${DRAFT_TTL_DAYS} days from when it went live, and the chip above shows what is left. If nobody keeps it before then, it stops answering, and ${DRAFT_GRACE_DAYS} days later it is deleted for good. Keeping it takes the clock off — same link, same page, no expiry, still free.`,
+    body: "If nobody keeps it, it stops working. Keeping takes the clock off — same link, no expiry, still free.",
   },
   expired: {
     eyebrow: "Someone shared this page with you",
     heading: "Its clock has run out",
-    body: `It was published as a draft with a ${DRAFT_TTL_DAYS}-day window, and that window has passed, so it stops answering. Nothing is destroyed yet: the file is held for ${DRAFT_GRACE_DAYS} days after the deadline, and keeping it in that time brings it back at the same link — free, and permanent.`,
+    body: `Nothing is lost yet. Keep it within ${DRAFT_GRACE_DAYS} days and it comes back at the same link — free, and permanent.`,
   },
   kept: {
     eyebrow: "Nothing to do here",
     heading: "This page is kept",
-    body: "It is permanent. There is no clock on it, nothing expires, and nobody has to claim it — the link will keep working.",
+    body: "It is permanent. The link will keep working.",
   },
 };
 
@@ -101,8 +114,7 @@ const COPY: Record<DraftPhase, { eyebrow: string; heading: string; body: string 
  * number on this screen does — a literal here is kept lying to a stranger the
  * day the cap changes.
  */
-const KEEP_CTA_NOTE =
-  `Keeping needs a free kept account — GitHub, Google, or a link sent to your email. The page does not move while you sign in: same address, same file, and the clock comes off the moment it is attached. Free accounts keep ${KEPT_PAGE_LIMIT} pages forever.`;
+const KEEP_CTA_NOTE = `Free. Sign in with GitHub, Google, or email — free accounts keep ${KEPT_PAGE_LIMIT} pages.`;
 
 export default async function ClaimPage({
   params,
