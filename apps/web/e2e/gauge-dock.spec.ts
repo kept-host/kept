@@ -1,6 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 
 import { deleteDrafts, SKIP_LIVE_PUBLISH, trackDrafts } from "./live-publish";
+import { gotoWithTokensApplied } from "./tokens-applied";
 
 /**
  * The open-books gauge's "next free slot" dot, and the traveling drop tile that
@@ -16,6 +17,11 @@ import { deleteDrafts, SKIP_LIVE_PUBLISH, trackDrafts } from "./live-publish";
  * Unlike the other landing specs this one does assert scroll-driven poses, so
  * every pose read goes through `expect.poll` — the engine lerps toward its
  * target at ~0.14/frame and needs a moment to settle.
+ *
+ * `dockState` reads token-driven computed values (`firstDotBg`, `tileRadius`,
+ * the dot opacities), so every navigation here goes through
+ * `gotoWithTokensApplied` — see `tokens-applied.ts` for the dropped-stylesheet
+ * fault that otherwise reports these as token regressions that never happened.
  */
 
 /** Accessible name of the slot control at the zero baseline. */
@@ -76,7 +82,7 @@ test.describe("gauge next-slot dock", () => {
   test("the next free slot is a real control, visibly not a kept-page dot", async ({
     page,
   }) => {
-    await page.goto("/");
+    await gotoWithTokensApplied(page, "/");
 
     const slot = page.getByRole("button", { name: SLOT_LABEL });
     await expect(slot).toHaveCount(1);
@@ -112,7 +118,7 @@ test.describe("gauge next-slot dock", () => {
   test("the tile docks beside the slot dot instead of the left edge", async ({
     page,
   }) => {
-    await page.goto("/");
+    await gotoWithTokensApplied(page, "/");
     await parkGauge(page, 0.3);
 
     // The tile lerps toward its target ~0.14/frame; wait for it to settle level
@@ -160,7 +166,7 @@ test.describe("gauge next-slot dock", () => {
   test("the dock never crosses the left column's text at any scroll position", async ({
     page,
   }) => {
-    await page.goto("/");
+    await gotoWithTokensApplied(page, "/");
 
     // Sweep the whole window in which the gauge choreography owns the tile.
     for (let f = 0.95; f >= -0.25; f -= 0.1) {
@@ -199,7 +205,7 @@ test.describe("gauge next-slot dock", () => {
   });
 
   test("hovering the dock expands it into the drop panel", async ({ page }) => {
-    await page.goto("/");
+    await gotoWithTokensApplied(page, "/");
     await parkGauge(page, 0.3);
     // Settle: the docked box is ~40px wide, well short of the 300px panel.
     await expect
@@ -226,7 +232,7 @@ test.describe("gauge next-slot dock", () => {
   test("leaving the gauge goes straight to the link icon, never back through the drop box", async ({
     page,
   }) => {
-    await page.goto("/");
+    await gotoWithTokensApplied(page, "/");
     await parkGauge(page, 0.3);
     await expect
       .poll(async () => Math.round((await dockState(page)).tile[2]!), {
@@ -267,7 +273,7 @@ test.describe("gauge next-slot dock", () => {
     const choosers: unknown[] = [];
     page.on("filechooser", (c) => choosers.push(c));
 
-    await page.goto("/");
+    await gotoWithTokensApplied(page, "/");
 
     // The slot follows the left column's last control in DOM order, so it is a
     // single Tab away — it is genuinely in the tab order, not aria-hidden with
@@ -308,7 +314,7 @@ test.describe("gauge next-slot dock", () => {
   }) => {
     test.skip(!!SKIP_LIVE_PUBLISH, String(SKIP_LIVE_PUBLISH));
     const drafts = trackDrafts(page);
-    await page.goto("/");
+    await gotoWithTokensApplied(page, "/");
     // Bring the field into view first: the number counts up on reveal, so a
     // mint before that has nothing to add to yet.
     await parkGauge(page, 0.3);

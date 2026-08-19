@@ -24,12 +24,16 @@ import { decideHostAction } from "./host-split";
 const APP_URL = "https://app.kept-dev.xyz";
 const APP_HOST = "app.kept-dev.xyz";
 const APEX_HOST = "kept-dev.xyz";
+/** Derived by the rule, not configured: `app.kept-dev.xyz` minus its label. */
+const APEX_URL = "https://kept-dev.xyz";
+
+/** The `(marketing)` pages the apex owns, other than the landing at `/`. */
+const MARKETING_PATHS = ["/promise", "/stats"];
 
 /** Every path the rule has an opinion about, in one place. */
 const APEX_PASS_PATHS = [
   "/",
-  "/promise",
-  "/stats",
+  ...MARKETING_PATHS,
   "/api/publish",
   "/api/anon/tok_abc123",
   "/api/anon/tok_abc123/replace",
@@ -97,14 +101,64 @@ test("`x-kept-pathname` is stamped on document paths and withheld from API paths
   assert.deepEqual(decide(APP_HOST, "/api/auth/session"), { kind: "pass", stampPathname: false });
 });
 
-test("on the app origin nothing redirects — marketing paths included", () => {
-  for (const pathname of [...APEX_PASS_PATHS, ...APEX_REDIRECT_PATHS, ...APEX_NOT_FOUND_PATHS]) {
+test("on the app origin, / is the dashboard — never the landing", () => {
+  assert.deepEqual(decide(APP_HOST, "/"), {
+    kind: "redirect",
+    location: `${APP_URL}/dashboard`,
+  });
+  // Same origin, so the `(app)` gate — not this rule — does the signed-out
+  // bounce on the next hop. The query survives the hop either way.
+  assert.deepEqual(decide(APP_HOST, "/", "?utm=x"), {
+    kind: "redirect",
+    location: `${APP_URL}/dashboard?utm=x`,
+  });
+});
+
+test("on the app origin, a marketing page 307s back to the apex that owns it", () => {
+  for (const pathname of MARKETING_PATHS) {
+    assert.deepEqual(decide(APP_HOST, pathname), {
+      kind: "redirect",
+      location: `${APEX_URL}${pathname}`,
+    });
+  }
+  // Query intact, and the apex host is DERIVED from the app host rather than
+  // configured: `app.kept-dev.xyz` minus its label.
+  assert.deepEqual(decide(APP_HOST, "/stats", "?range=30d"), {
+    kind: "redirect",
+    location: `${APEX_URL}/stats?range=30d`,
+  });
+  // A trailing slash is the same page, so it mirrors too.
+  assert.equal(decide(APP_HOST, "/promise/").kind, "redirect");
+});
+
+test("on the app origin, everything that is not the apex's own passes through", () => {
+  const passes = [
+    ...APEX_PASS_PATHS.filter((p) => p !== "/" && !MARKETING_PATHS.includes(p)),
+    ...APEX_REDIRECT_PATHS,
+    ...APEX_NOT_FOUND_PATHS,
+  ];
+  for (const pathname of passes) {
     assert.equal(
       decide(APP_HOST, pathname).kind,
       "pass",
       `${pathname} should pass on the app origin`,
     );
   }
+});
+
+test("with one origin serving both halves, nothing is mirrored", () => {
+  // Local development: `NEXT_PUBLIC_APP_URL` has no `app.` label, so there is no
+  // apex to send anything to and `/` must keep showing the landing.
+  for (const pathname of [...APEX_PASS_PATHS, ...APEX_REDIRECT_PATHS, ...APEX_NOT_FOUND_PATHS]) {
+    assert.equal(
+      decide("localhost:3000", pathname, "", "https://localhost:3000").kind,
+      "pass",
+      `${pathname} should pass on a single-origin deploy`,
+    );
+  }
+  // Not a hostname-shape coincidence: an `app.` host with nothing behind the
+  // label is unusable as a source of an apex, so it degrades the same way.
+  assert.equal(decide("app.", "/", "", "https://app.").kind, "pass");
 });
 
 test("the host comparison is case-insensitive and includes the port", () => {
@@ -167,6 +221,15 @@ test("an apex gated request is answered 307 to the app origin, query intact", ()
   assert.equal(response.status, 307);
   assert.equal(response.headers.get("location"), `${APP_URL}/dashboard?tab=drafts`);
   assert.equal(response.headers.getSetCookie().length, 0);
+});
+
+test("an `app.` root request is answered 307 to /dashboard, not the landing", () => {
+  const response = runMiddleware(`https://${APP_HOST}/?utm=x`, APP_URL);
+  assert.equal(response.status, 307);
+  assert.equal(response.headers.get("location"), `${APP_URL}/dashboard?utm=x`);
+  // Middleware answered, so `(marketing)/page.tsx` — which claims `/` on every
+  // hostname, route groups being invisible to the URL — never rendered.
+  assert.equal(response.headers.get("x-middleware-request-x-kept-pathname"), null);
 });
 
 test("an apex landing request passes through carrying the pathname header", () => {

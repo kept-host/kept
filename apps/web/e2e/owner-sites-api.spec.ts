@@ -11,6 +11,7 @@ import { eq, inArray } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
 
+import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
 import { rawRequest } from "./raw-request";
 import { jarlessContext, sessionHeaders } from "./session-request";
 
@@ -79,8 +80,17 @@ const hostedOrigin = (slug: string): string =>
 test.describe("owner site routes", () => {
   test.skip(!!SKIP, SKIP || undefined);
 
+  // Five of the six tests here mint a real session and one of them mints two,
+  // which alone was measured at 48.6 s. See `./live-stack.ts`.
+  test.describe.configure({ timeout: LIVE_STACK_TIMEOUT });
+
   const createdUserIds: string[] = [];
   const createdSiteIds: string[] = [];
+
+  test.beforeAll(async () => {
+    if (SKIP) return;
+    await warmDb();
+  });
 
   test.afterAll(async () => {
     if (SKIP) return;

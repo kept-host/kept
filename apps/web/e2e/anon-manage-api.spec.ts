@@ -10,6 +10,7 @@ import {
   publishViaApi,
   SKIP_LIVE_PUBLISH,
 } from "./live-publish";
+import { LIVE_STACK_TIMEOUT } from "./live-stack";
 import { rawRequest } from "./raw-request";
 
 /**
@@ -68,6 +69,12 @@ async function waitForBody(url: string, expected: string) {
 
 test.describe("the anonymous manage API", () => {
   test.skip(!!SKIP_LIVE_PUBLISH, String(SKIP_LIVE_PUBLISH));
+
+  // No session here, but the same arithmetic: every test in this file publishes
+  // for real, so it pays Postgres + R2 + the KV write + the edge purge, and the
+  // delete drill then pays a second publish-shaped teardown. Measured at
+  // 19.4-26.5 s against a 30 000 ms default. See `./live-stack.ts`.
+  test.describe.configure({ timeout: LIVE_STACK_TIMEOUT });
 
   const published: string[] = [];
 

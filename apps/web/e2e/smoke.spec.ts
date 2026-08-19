@@ -1,5 +1,7 @@
 import { test, expect } from "@playwright/test";
 
+import { gotoWithTokensApplied } from "./tokens-applied";
+
 /**
  * Smoke + content contract for the landing page ("/").
  *
@@ -7,7 +9,11 @@ import { test, expect } from "@playwright/test";
  * the section anchors and nav links, and the load-bearing claims of the
  * drafts/kept pivot — nothing scroll-driven (the choreography engine throttles
  * headless, so poses / reveal opacity are intentionally out of scope here).
- * Console errors are treated as hard failures (zero tolerance).
+ * Console errors are treated as hard failures (zero tolerance) — which is why
+ * the two zero-tolerance tests navigate through `gotoWithTokensApplied`: a
+ * stylesheet the dev server drops shows up here as `Failed to load resource`,
+ * and `tokens-applied.ts` turns that into a named cause instead of an
+ * unattributable console diff.
  */
 
 /**
@@ -27,7 +33,7 @@ test.describe("landing smoke", () => {
     });
     page.on("pageerror", (err) => consoleErrors.push(err.message));
 
-    await page.goto("/");
+    await gotoWithTokensApplied(page, "/");
     await expect(page).toHaveTitle("kept");
 
     // Scroll root exists.
@@ -76,6 +82,19 @@ test.describe("landing smoke", () => {
     await expect(nav.getByText(/OPEN\s*SOURCE/)).toBeVisible();
     await expect(nav.getByText(/FOR\s*AGENTS/)).toBeVisible();
     await expect(nav.getByText("PRICING")).toBeVisible();
+
+    // The landing has a way in to an account at all. It points at /dashboard,
+    // never /auth: signed in that IS the destination; signed out the `(app)`
+    // gate bounces to /auth?next=%2Fdashboard and returns there afterwards. It
+    // also cannot be session-aware — the session cookie is host-only to `app.`
+    // and is never sent to this apex — so the label is unconditional.
+    const signIn = page.locator("#nav-signin");
+    await expect(signIn).toBeVisible();
+    await expect(signIn).toHaveText(/SIGN\s*IN/);
+    const signInHref = await signIn.evaluate(
+      (el) => (el as HTMLAnchorElement).href,
+    );
+    expect(new URL(signInHref).pathname).toBe("/dashboard");
 
     expect(consoleErrors, `console errors: ${consoleErrors.join(" | ")}`).toEqual(
       [],
@@ -212,7 +231,7 @@ test.describe("landing smoke", () => {
     // nav counter and the gauge number directly — the same figures, no
     // animation and no seeded fallback.
     await page.emulateMedia({ reducedMotion: "reduce" });
-    await page.goto("/");
+    await gotoWithTokensApplied(page, "/");
 
     const counter = page.locator('[title="pages kept forever, right now"]');
     await expect

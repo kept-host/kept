@@ -27,8 +27,42 @@ import {
  * the traveling tile with all its layers, auth modal, toast, loader). All
  * per-frame motion is imperative and lives in `KeptEngine`, driven from a
  * single rAF loop inside the mount effect; only discrete UI state (phase,
- * modal, notify forms, accordion tab, gauge reveal) is React state.
+ * notify forms, accordion tab, gauge reveal) is React state.
  */
+
+/**
+ * Where the nav's sign-in CTA points. **`/dashboard`, never `/auth`.**
+ *
+ * One link serves both audiences. A signed-in visitor lands on their dashboard;
+ * a signed-out one is caught by the `(app)` gate and sent to
+ * `/auth?next=%2Fdashboard`, so after signing in they still land on the
+ * dashboard. Pointing at `/auth` instead would strand everyone already signed
+ * in on a sign-in screen.
+ *
+ * ── AND IT CANNOT BE SESSION-AWARE ─────────────────────────────────────────
+ * This landing runs on the apex. The session cookie is
+ * `__Host-kept.session_token` with `crossSubDomainCookies` deliberately absent
+ * (`lib/auth/index.ts`), so it is host-only to `app.` and is never sent here. A
+ * client `useSession()` would call the apex's `/api/auth/get-session`, which
+ * `middleware.ts` 404s by design (D6). Auth-aware landing chrome is impossible
+ * on the apex **by construction, not by omission** — do not "improve" this into
+ * a conditional "Sign in" / "Dashboard" label.
+ *
+ * `NEXT_PUBLIC_APP_URL` is inlined at build time, so it is readable from this
+ * client component. When it is absent or unparseable the link stays relative
+ * rather than becoming `https://undefined/dashboard`: `decideHostAction` also
+ * degrades to a pass-through without it, so the apex serves `/dashboard` itself
+ * and a relative href is the one that still works.
+ */
+const DASHBOARD_HREF = (() => {
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL?.trim();
+  if (!appUrl) return "/dashboard";
+  try {
+    return new URL("/dashboard", appUrl).toString();
+  } catch {
+    return "/dashboard";
+  }
+})();
 
 // Data figures come from the open-books module — never hardcoded here.
 const LIVE_COUNT = keptCount;
@@ -45,7 +79,6 @@ type UIState = EngineState;
 
 const INITIAL: UIState = {
   phase: "idle",
-  authOpen: false,
   copied: false,
   agentNotify: "idle",
   proNotify: "idle",
@@ -300,6 +333,15 @@ export default function KeptLanding() {
               </span>
               &nbsp;KEPT
             </div>
+            {/* The landing's only way in to an account — see DASHBOARD_HREF
+                above for why it points at /dashboard and why it is, and must
+                remain, unconditional. Every colour is a token, so light/dark
+                parity is free. Unlike #nav-links it survives the ≤820px
+                collapse: sign-in is the one nav affordance a phone still
+                needs. */}
+            <a id="nav-signin" href={DASHBOARD_HREF} style={navSignIn}>
+              SIGN&nbsp;IN
+            </a>
           </div>
         </div>
       </header>
@@ -737,8 +779,11 @@ export default function KeptLanding() {
                     marginTop: 18,
                   }}
                 >
+                  {/* Into E05's keep flow at /keep/{token} — the only path
+                      that carries the keep intent through sign-in and actually
+                      attaches the page. See `KeptEngine.keep`. */}
                   <button
-                    onClick={() => e()?.openAuth()}
+                    onClick={() => e()?.keep()}
                     style={{
                       fontFamily: "var(--font-display)",
                       fontWeight: 600,
@@ -3093,118 +3138,6 @@ export default function KeptLanding() {
         style={{ display: "none" }}
       />
 
-      {/* ===================== AUTH MODAL ===================== */}
-      {state.authOpen && (
-        <div
-          onClick={() => e()?.closeAuth()}
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 80,
-            background: "rgba(26,23,20,0.55)",
-            backdropFilter: "blur(4px)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 24,
-          }}
-        >
-          <div
-            onClick={(ev) => ev.stopPropagation()}
-            style={{
-              width: "100%",
-              maxWidth: 420,
-              background: "var(--bg)",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--r-xl)",
-              boxShadow: "var(--shadow-lg)",
-              padding: 32,
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "flex-start",
-                marginBottom: 8,
-              }}
-            >
-              <h3
-                style={{
-                  fontFamily: "var(--font-display)",
-                  fontWeight: 700,
-                  fontSize: 26,
-                  letterSpacing: "-0.02em",
-                  margin: 0,
-                }}
-              >
-                Keep this page
-              </h3>
-              <button
-                onClick={() => e()?.closeAuth()}
-                aria-label="Close"
-                style={{
-                  background: "none",
-                  border: "none",
-                  color: "var(--text-muted)",
-                  cursor: "pointer",
-                  fontSize: 20,
-                  lineHeight: 1,
-                }}
-              >
-                ✕
-              </button>
-            </div>
-            <p
-              style={{
-                fontSize: 14,
-                color: "var(--text-secondary)",
-                lineHeight: 1.55,
-                margin: "0 0 26px",
-              }}
-            >
-              We&rsquo;ll attach{" "}
-              <b ref={bind(refs.authSlugRef)} style={{ color: "var(--text)" }}>
-                your-page.kept.host
-              </b>{" "}
-              to your account. It stays exactly where it is — keeping it stops
-              the {DRAFT_TTL_DAYS}-day draft clock and puts it in your dashboard.
-            </p>
-            <button style={authGithub}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12 2C6.5 2 2 6.6 2 12.3c0 4.5 2.9 8.3 6.8 9.7.5.1.7-.2.7-.5v-1.7c-2.8.6-3.4-1.4-3.4-1.4-.5-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.6 2.4 1.1 3 .9.1-.7.4-1.1.6-1.4-2.2-.3-4.6-1.1-4.6-5 0-1.1.4-2 1-2.7-.1-.3-.4-1.3.1-2.6 0 0 .8-.3 2.7 1a9.3 9.3 0 0 1 5 0c1.9-1.3 2.7-1 2.7-1 .5 1.3.2 2.3.1 2.6.6.7 1 1.6 1 2.7 0 3.9-2.3 4.7-4.6 5 .4.3.7.9.7 1.9v2.8c0 .3.2.6.7.5 4-1.4 6.8-5.2 6.8-9.7C22 6.6 17.5 2 12 2z" />
-              </svg>
-              Continue with GitHub
-            </button>
-            <button style={authEmail}>
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-              >
-                <rect x="3" y="5" width="18" height="14" rx="2" />
-                <path d="m3 7 9 6 9-6" />
-              </svg>
-              Email me a magic link
-            </button>
-            <p
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: 11,
-                color: "var(--text-muted)",
-                textAlign: "center",
-                margin: 0,
-              }}
-            >
-              NO PASSWORD · YOUR PAGE STAYS LIVE EITHER WAY
-            </p>
-          </div>
-        </div>
-      )}
-
       {/* ===================== TOAST ===================== */}
       {state.copied && (
         <div
@@ -3330,7 +3263,6 @@ function makeRefs(): EngineRefs {
     ctaIdleRef: r(),
     ctaLiveRef: r(),
     liveSlugBigRef: r(),
-    authSlugRef: r(),
     howRef: r(),
     howStickyRef: r(),
     cardsGridRef: r(),
@@ -3393,6 +3325,22 @@ const liveTextAction: React.CSSProperties = {
 const navLink: React.CSSProperties = {
   color: "var(--text-secondary)",
   textDecoration: "none",
+};
+/**
+ * The sign-in slab. The same inverted `--text`-on-`--bg` treatment the hero's
+ * primary action uses, shrunk to the nav's mono 12px / 0.08em type so it reads
+ * as part of this row rather than as a second button language.
+ */
+const navSignIn: React.CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontSize: 12,
+  letterSpacing: "0.08em",
+  background: "var(--text)",
+  color: "var(--bg)",
+  borderRadius: "var(--r-sm)",
+  padding: "8px 14px",
+  textDecoration: "none",
+  whiteSpace: "nowrap",
 };
 const howNum: React.CSSProperties = {
   fontFamily: "var(--font-mono)",
@@ -3548,41 +3496,6 @@ const notifyError: React.CSSProperties = {
   color: "var(--danger)",
   margin: "12px 0 0",
 };
-const authGithub: React.CSSProperties = {
-  width: "100%",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  gap: 10,
-  fontFamily: "var(--font-display)",
-  fontWeight: 600,
-  fontSize: 15,
-  background: "var(--text)",
-  color: "var(--bg)",
-  border: "none",
-  borderRadius: "var(--r-md)",
-  padding: 14,
-  cursor: "pointer",
-  marginBottom: 12,
-};
-const authEmail: React.CSSProperties = {
-  width: "100%",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  gap: 10,
-  fontFamily: "var(--font-display)",
-  fontWeight: 600,
-  fontSize: 15,
-  background: "var(--surface)",
-  color: "var(--text)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--r-md)",
-  padding: 14,
-  cursor: "pointer",
-  marginBottom: 18,
-};
-
 const proIcon = (children: React.ReactNode) => (
   <svg
     width="16"

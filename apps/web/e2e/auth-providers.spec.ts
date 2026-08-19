@@ -5,6 +5,7 @@ import { eq, inArray, sql } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
 
+import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
 import { rawRequest } from "./raw-request";
 
 /**
@@ -123,7 +124,29 @@ async function authorizeUrl(
 test.describe("the provider boundary", () => {
   test.skip(!!SKIP, SKIP || undefined);
 
+  /**
+   * This file signs users in FOR REAL, so it carries the same budget as the
+   * other session-bearing specs — see `live-stack.ts` for the measurement.
+   * `GET /api/auth/magic-link/verify` is 8-12 s warm against the dev Neon
+   * branch (8-10 sequential round trips plus `bootstrapProfile`), so a single
+   * sign-in costs ~15 s before this file asserts anything and several tests do
+   * more than one. Under Playwright's 30 s default they pass or fail on which
+   * side of the median the database happened to land — which is exactly the
+   * intermittency `:289` showed, failing in a full run and passing on re-run.
+   *
+   * NOTHING IS RELAXED BY THIS. The same statuses, the same emitted headers and
+   * the same `user` / `account` row counts are still required; only the waiting.
+   */
+  test.describe.configure({ timeout: LIVE_STACK_TIMEOUT });
+
   const createdUserIds: string[] = [];
+
+  test.beforeAll(async () => {
+    if (SKIP) return;
+    // Connection establishment (~3-5.5 s) belongs in a hook, not in whichever
+    // test happens to run first.
+    await warmDb();
+  });
 
   test.afterAll(async () => {
     if (SKIP) return;

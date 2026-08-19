@@ -12,6 +12,9 @@ import { eq, inArray } from "drizzle-orm";
 import { closeDb, db, schema } from "../lib/db";
 import { PENDING_KEEP_COOKIE } from "../lib/auth/pending-keep";
 
+import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
+import { TRANSPARENT, gotoWithTokensApplied } from "./tokens-applied";
+
 /**
  * The zero-context keep, end to end — E05 task 009.
  *
@@ -94,13 +97,13 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const KEEP_TIMEOUT = 30_000;
 
 /**
- * How long a token-driven colour is allowed to take to actually paint.
+ * How long a token-driven colour is allowed to take to actually REPAINT once
+ * the theme attribute is stamped.
  *
  * Same shape of cause as `KEEP_TIMEOUT`, different resource: the suite runs
- * fully parallel against a single dev server that compiles and serves CSS on
- * demand, so a computed background can be read before the stylesheet lands —
- * or, as `openWithTokensApplied` documents, never land at all on that
- * navigation. Split three ways across the retries there.
+ * fully parallel against a single dev server. This is only the repaint budget —
+ * whether the stylesheet arrived at all is settled first, and separately, by
+ * `gotoWithTokensApplied`.
  */
 const PAINT_TIMEOUT = 20_000;
 
@@ -109,10 +112,16 @@ test.describe("the pending-keep round trip", () => {
 
   // Several tests do two or three full keeps in sequence; at the slow end of the
   // latency range above that alone exceeds Playwright's default 30 s per test.
-  test.describe.configure({ timeout: 120_000 });
+  test.describe.configure({ timeout: LIVE_STACK_TIMEOUT });
 
   const createdUserIds: string[] = [];
   const createdSiteIds: string[] = [];
+
+  test.beforeAll(async () => {
+    if (SKIP) return;
+    // Pay connection establishment in a hook rather than in the first test.
+    await warmDb();
+  });
 
   test.afterAll(async () => {
     if (SKIP) return;
@@ -203,49 +212,6 @@ test.describe("the pending-keep round trip", () => {
     });
     createdSiteIds.push(id);
     return id;
-  }
-
-  /** A card with no background — what an UNSTYLED card reports. */
-  const TRANSPARENT = "rgba(0, 0, 0, 0)";
-
-  /**
-   * Open `url` and do not return until the token stylesheet is actually applied.
-   *
-   * ⚠️ AN INFRASTRUCTURE FAILURE THAT READS EXACTLY LIKE A TOKEN REGRESSION.
-   * The local dev server serves `--experimental-https`, and under the suite's
-   * parallel load it intermittently drops a static asset: measured directly,
-   * `/_next/static/css/app/layout.css` failing with `net::ERR_TOO_MANY_RETRIES`
-   * while the document itself loads fine. The card then still carries its
-   * `bg-surface` class but computes `rgba(0, 0, 0, 0)` — in BOTH themes. Those
-   * two readings compare EQUAL, so `expect(dark).not.toBe(light)` fails and
-   * reports a hardcoded colour that does not exist. (The same dropped-asset
-   * fault is why `routes.spec.ts` and `smoke.spec.ts` intermittently see
-   * `Failed to load resource` console errors; it is a harness fault, not a
-   * product one, and CI does not meet it because CI runs a single worker.)
-   *
-   * A fresh navigation re-requests the asset, so retrying the NAVIGATION is the
-   * honest fix: nothing about what this test asserts is relaxed, and a genuine
-   * failure to ever apply the tokens still fails, loudly and with a reason.
-   */
-  async function openWithTokensApplied(
-    page: Page,
-    url: string,
-    background: () => Promise<string>,
-  ): Promise<void> {
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      await page.goto(url);
-      await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-
-      const deadline = Date.now() + PAINT_TIMEOUT / 3;
-      while (Date.now() < deadline) {
-        if ((await background()) !== TRANSPARENT) return;
-        await page.waitForTimeout(100);
-      }
-    }
-    throw new Error(
-      `The token stylesheet never applied to ${url} across 3 navigations — ` +
-        "the card stayed transparent, so no theme comparison was possible.",
-    );
   }
 
   async function pendingKeepCookieOf(page: Page) {
@@ -408,6 +374,11 @@ test.describe("the pending-keep round trip", () => {
    * whatever theme they were already in. The app pins `forcedTheme="light"`, so
    * parity is asserted by stamping the attribute the token block keys off — the
    * same way task 005 and E04 task 008 did it.
+   *
+   * The navigation goes through `gotoWithTokensApplied` because without the
+   * stylesheet the card computes `TRANSPARENT` in BOTH themes and the two
+   * readings compare EQUAL — a parity test that can fail for a reason that is
+   * not a parity fault. See `tokens-applied.ts`.
    */
   for (const outcome of ["kept", "draft", "gone"] as const) {
     test(`the "${outcome}" outcome screen reads in both themes`, async ({ page }) => {
@@ -420,9 +391,10 @@ test.describe("the pending-keep round trip", () => {
       const background = () =>
         card.evaluate((el) => getComputedStyle(el).backgroundColor);
 
-      await openWithTokensApplied(page, url, background);
+      await gotoWithTokensApplied(page, url);
       await expect(heading).toBeVisible();
       const light = await background();
+      expect(light).not.toBe(TRANSPARENT);
 
       await page.evaluate(() =>
         document.documentElement.setAttribute("data-theme", "dark"),
