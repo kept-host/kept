@@ -46,8 +46,7 @@
  * line — to reach identical code. Task 008 split the HTTP boundary from the
  * logic precisely so both doors could share the logic; this is the second door.
  */
-import { cookies } from "next/headers";
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 
 import {
   expiredPendingKeepCookie,
@@ -57,6 +56,7 @@ import { RETURN_PARAM, safeReturnPath } from "../../../lib/auth/return-path";
 import { getSession } from "../../../lib/auth/session";
 import { getProfileForSession } from "../../../lib/db/queries/profile";
 import { keepAnonymousPage } from "../../../lib/sites/anon-keep";
+import { authConfig } from "../../../lib/storage/env";
 import { doneHref, doneHrefForKeep } from "./done/outcomes";
 
 /** `postgres-js` needs TCP sockets and `aws4fetch` signs with Node's crypto. */
@@ -65,8 +65,33 @@ export const runtime = "nodejs";
 /** Reads a cookie and writes a row. Never cacheable, never prerendered. */
 export const dynamic = "force-dynamic";
 
-export async function GET(request: Request): Promise<NextResponse> {
-  const url = new URL(request.url);
+export async function GET(request: NextRequest): Promise<NextResponse> {
+  /**
+   * ⚠️ THE BASE IS CONFIGURATION, NEVER `request.url`.
+   *
+   * `NextResponse.redirect` needs an absolute URL, and the obvious base — the
+   * URL of the request being answered — is the wrong one. Next does not build
+   * that URL from the `Host` header: `resolve-routes.js` composes it from the
+   * SERVER's own listen address (`${protocol}://${opts.hostname || "localhost"}
+   * :${opts.port}${req.url}`) unless `experimental.trustHostHeader` is set, and
+   * `next start` takes no `-H`. On Railway the container listens on `$PORT`, so
+   * `new URL(path, request.url)` here emitted
+   * `Location: https://localhost:8080/…` — a dead address in the visitor's
+   * browser — for every keep that came back through a provider. Measured, not
+   * inferred: `GET https://app.kept-dev.xyz/auth/callback` answered
+   * `location: https://localhost:8080/dashboard`.
+   *
+   * It is the same defect `middleware.ts` documents at `requestHost`, and it hid
+   * for the same reason: locally the listen address and the configured origin
+   * are the same string, so every spec stayed green.
+   *
+   * `authConfig().baseUrl` is the right base rather than a forwarded header
+   * because this route is only ever reached as Better Auth's `callbackURL`,
+   * resolved against that very origin — the one the OAuth redirect URIs are
+   * registered against and the one the session cookie is scoped to. A visitor
+   * finishing a keep must land there or nowhere.
+   */
+  const base = authConfig().baseUrl;
 
   /**
    * Every exit goes through here, so the cookie cannot survive any of them.
@@ -74,19 +99,24 @@ export async function GET(request: Request): Promise<NextResponse> {
    * can safely reload.
    */
   const leave = (path: string): NextResponse => {
-    const response = NextResponse.redirect(new URL(path, url), 303);
+    const response = NextResponse.redirect(new URL(path, base), 303);
     response.cookies.set(expiredPendingKeepCookie());
     return response;
   };
 
-  const token = (await cookies()).get(PENDING_KEEP_COOKIE)?.value;
+  // `request.cookies`, not `next/headers`' `cookies()`: it is the same jar on
+  // the same request, read from the argument this handler was already given —
+  // so the origin rule above can be exercised by handing this function a
+  // `NextRequest` whose URL carries a listen address, which is exactly the
+  // shape that broke and the one `lib/auth/callback-origin.test.ts` asserts.
+  const token = request.cookies.get(PENDING_KEEP_COOKIE)?.value;
 
   if (!token) {
     // No intent pending: an ordinary post-sign-in landing, or a replay of a
     // callback that already ran. `?next=` goes through the same validator every
     // other return path uses — it arrives from the address bar, and validating
     // it only on the write side is not validating it at all.
-    return leave(safeReturnPath(url.searchParams.get(RETURN_PARAM)));
+    return leave(safeReturnPath(request.nextUrl.searchParams.get(RETURN_PARAM)));
   }
 
   const profile = await getProfileForSession(await getSession());

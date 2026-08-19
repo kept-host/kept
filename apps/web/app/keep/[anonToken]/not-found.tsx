@@ -24,23 +24,44 @@ export default function ClaimNotFound() {
         </h1>
       </div>
       <div className="flex flex-col gap-4 text-text-secondary">
+        {/* MOST LIKELY FIRST. Keeping a page nulls its `anon_token_hash`, so a
+            keep link stops resolving the moment it is used — the commonest way
+            to land here is someone revisiting a link they already kept. The old
+            copy led with a mistyped address, which is the rarer case.
+
+            Saying a keep link expires once used describes how keep links work;
+            it does not say which reason applies to THIS one. The indistinguish-
+            able answer survives, because the app genuinely cannot tell a kept
+            page from a token that never existed. */}
         <p>
-          kept gives a single web page a permanent home, free — and a link like
-          this one is how a page gets kept. No page matches this one. It may be
-          mistyped or cut short, or the page may have been taken down or run out
-          of time; we can&rsquo;t tell you which, because this link is the key to
-          somebody&rsquo;s page and we answer the same way to everybody who holds
-          one.
+          A keep link stops working once it&rsquo;s been used — if you already
+          kept this page, it&rsquo;s live at its own address. The link may also
+          be incomplete: the part after{" "}
+          <span className="font-mono text-text">/keep/</span> is long, and
+          messaging apps often break it across lines.
         </p>
-        <p>
-          If someone sent you the link, check you have the whole address — the
-          part after <span className="font-mono text-text">/keep/</span> is long
-          and messaging apps often break it across lines.
-        </p>
+        <p>kept gives a single web page a permanent home, free.</p>
       </div>
-      <Link href="/" className="mono-label text-xs text-accent hover:underline">
-        ← See what kept is
-      </Link>
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+        {/* The exit that was missing. Someone who kept the page and came back
+            to check on it had nowhere to go but the marketing site.
+
+            Relative on purpose: `/keep/*` is redirected from the apex to the
+            `app.` origin, so this screen is always already on `app.` and a bare
+            path lands on the right host without reading an env var. */}
+        <Link
+          href="/dashboard"
+          className="mono-label text-xs text-accent hover:underline"
+        >
+          Find your page in the dashboard →
+        </Link>
+        <Link
+          href="/"
+          className="mono-label text-xs text-text-secondary hover:underline"
+        >
+          See what kept is
+        </Link>
+      </div>
     </main>
   );
 }
