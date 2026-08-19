@@ -1,6 +1,8 @@
 import { test, expect, type Page } from "@playwright/test";
 import { config } from "dotenv";
 
+import { gotoWithTokensApplied } from "./tokens-applied";
+
 /**
  * `/auth` — the sign-in screen. E05 task 005.
  *
@@ -294,9 +296,15 @@ test.describe("/auth sign-in screen", () => {
     await expect(page.getByRole("heading", { name: SIGN_IN_HEADING })).toBeVisible();
   });
 
+  /**
+   * Both navigations here go through `gotoWithTokensApplied`. Without the token
+   * stylesheet the card computes `rgba(0, 0, 0, 0)` in BOTH themes, the two
+   * readings compare EQUAL, and `expect(darkCard).not.toBe(lightCard)` reports a
+   * hardcoded colour that does not exist — see `tokens-applied.ts`.
+   */
   test("light and dark parity on idle and on error", async ({ page }) => {
     const errors = trackConsoleErrors(page);
-    await page.goto("/auth");
+    await gotoWithTokensApplied(page, "/auth");
 
     const card = page.locator("div.bg-surface").first();
     const lightCard = await card.evaluate(
@@ -331,7 +339,7 @@ test.describe("/auth sign-in screen", () => {
     expect(slab).not.toBe(darkCard);
 
     // The error panel too.
-    await page.goto("/auth?error=INVALID_TOKEN");
+    await gotoWithTokensApplied(page, "/auth?error=INVALID_TOKEN");
     await page.evaluate(() =>
       document.documentElement.setAttribute("data-theme", "dark"),
     );

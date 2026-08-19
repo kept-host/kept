@@ -1,5 +1,7 @@
 import { test, expect } from "@playwright/test";
 
+import { gotoWithTokensApplied } from "./tokens-applied";
+
 /**
  * Smoke + content contract for the landing page ("/").
  *
@@ -7,7 +9,11 @@ import { test, expect } from "@playwright/test";
  * the section anchors and nav links, and the load-bearing claims of the
  * drafts/kept pivot — nothing scroll-driven (the choreography engine throttles
  * headless, so poses / reveal opacity are intentionally out of scope here).
- * Console errors are treated as hard failures (zero tolerance).
+ * Console errors are treated as hard failures (zero tolerance) — which is why
+ * the two zero-tolerance tests navigate through `gotoWithTokensApplied`: a
+ * stylesheet the dev server drops shows up here as `Failed to load resource`,
+ * and `tokens-applied.ts` turns that into a named cause instead of an
+ * unattributable console diff.
  */
 
 /**
@@ -27,7 +33,7 @@ test.describe("landing smoke", () => {
     });
     page.on("pageerror", (err) => consoleErrors.push(err.message));
 
-    await page.goto("/");
+    await gotoWithTokensApplied(page, "/");
     await expect(page).toHaveTitle("kept");
 
     // Scroll root exists.
@@ -225,7 +231,7 @@ test.describe("landing smoke", () => {
     // nav counter and the gauge number directly — the same figures, no
     // animation and no seeded fallback.
     await page.emulateMedia({ reducedMotion: "reduce" });
-    await page.goto("/");
+    await gotoWithTokensApplied(page, "/");
 
     const counter = page.locator('[title="pages kept forever, right now"]');
     await expect

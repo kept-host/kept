@@ -1,6 +1,8 @@
 import { test, expect, type Page } from "@playwright/test";
 import { config } from "dotenv";
 
+import { gotoWithTokensApplied } from "./tokens-applied";
+
 /**
  * Route smoke: the `(app)` gate, /auth, /stats and /promise.
  *
@@ -59,6 +61,12 @@ const SKIP_LIVE: string | false =
     ? `database or auth credentials absent (${missingLiveVars.join(", ")}) — run locally with apps/web/.env.local`
     : false;
 
+/**
+ * The two zero-console-error drills below navigate through
+ * `gotoWithTokensApplied`. A stylesheet the `--experimental-https` dev server
+ * drops lands in `errors` as `Failed to load resource` and fails them for a
+ * reason that has nothing to do with the route — see `tokens-applied.ts`.
+ */
 function trackConsoleErrors(page: Page): string[] {
   const errors: string[] = [];
   page.on("console", (msg) => {
@@ -194,7 +202,7 @@ test.describe("stub routes", () => {
     page,
   }) => {
     const errors = trackConsoleErrors(page);
-    const res = await page.goto("/stats");
+    const res = await gotoWithTokensApplied(page, "/stats");
     expect(res?.ok()).toBe(true);
     await expect(page).toHaveTitle("Stats · kept");
     await expect(page.getByRole("heading", { name: "Stats" })).toBeVisible();
@@ -224,7 +232,7 @@ test.describe("stub routes", () => {
     page,
   }) => {
     const errors = trackConsoleErrors(page);
-    const res = await page.goto("/promise");
+    const res = await gotoWithTokensApplied(page, "/promise");
     expect(res?.ok()).toBe(true);
     await expect(page).toHaveTitle("The promise · kept");
     await expect(

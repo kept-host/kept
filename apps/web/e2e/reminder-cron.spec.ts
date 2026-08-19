@@ -5,6 +5,8 @@ import { eq, inArray } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
 
+import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
+
 /**
  * `POST /api/cron/draft-reminder` over the wire — E05 tasks 011 and 012.
  *
@@ -49,7 +51,26 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 test.describe("the draft-reminder cron endpoint", () => {
   test.skip(!!SKIP, SKIP || undefined);
 
+  /**
+   * Same exposure as the session-bearing specs, different cause — see
+   * `live-stack.ts`. The T-2d test inserts a draft, drives a cron sweep that
+   * queries, sends a REAL email through Resend and stamps a row, re-reads it,
+   * opens the minted keep link in a browser, then runs the whole sweep a second
+   * time to prove nothing more is sent. That is a dozen transatlantic round
+   * trips plus an external API call, against a 30 s default.
+   *
+   * NOTHING IS RELAXED BY THIS: one send, one `sent`, one stamped
+   * `reminder_sent_at` and a second sweep that sends nothing are all still
+   * required.
+   */
+  test.describe.configure({ timeout: LIVE_STACK_TIMEOUT });
+
   const createdSiteIds: string[] = [];
+
+  test.beforeAll(async () => {
+    if (SKIP) return;
+    await warmDb();
+  });
 
   test.afterAll(async () => {
     if (SKIP) return;
