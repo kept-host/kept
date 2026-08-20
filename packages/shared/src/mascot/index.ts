@@ -20,4 +20,11 @@
 // Nothing under `src/mascot/` may touch the DOM or a Node API. `mascotSvg`
 // returns a string, which is what lets `apps/edge` render the character at all.
 
+// The public surface. `frame.ts` is what a consumer actually calls —
+// `mascotFrame`, `mascotSvg`, `MASCOT_REST_T` and the frozen `MascotOptions`;
+// `face.ts` and `geometry.ts` come along because the two consumers legitimately
+// need the viewBox, the sample count and the character's own constants to size
+// and colour the element they mount it in.
 export * from "./geometry";
+export * from "./face";
+export * from "./frame";
