@@ -187,13 +187,19 @@ test("the refusal is the publish family's closed error shape, uncacheable", asyn
   assert.equal(body.message.includes(HOSTED), false);
 });
 
-test("the four bearer-credential routes do not import the gate", async () => {
+test("the five bearer-credential routes do not import the gate", async () => {
   const { readFile } = await import("node:fs/promises");
   const bearerRoutes = [
     "app/api/publish/route.ts",
     "app/api/anon/[anonToken]/route.ts",
     "app/api/anon/[anonToken]/replace/route.ts",
     "app/api/anon/[anonToken]/reminder/route.ts",
+    // The scheduled sweep, authorised by `Authorization: Bearer CRON_SECRET`
+    // from `.github/workflows/cron-draft-reminder.yml`. A GitHub Actions `curl`
+    // sends no `Origin` and no `Sec-Fetch-Site`, so a gate here would refuse
+    // every run — and the failure would surface as reminder emails quietly not
+    // being sent, not as anything a browser flow would ever notice.
+    "app/api/cron/draft-reminder/route.ts",
   ];
   for (const path of bearerRoutes) {
     const source = await readFile(new URL(`../../${path}`, import.meta.url), "utf8");
