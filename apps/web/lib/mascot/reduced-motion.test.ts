@@ -248,3 +248,71 @@ test("the gaze eases toward the pointer instead of snapping, and rests where it 
   stopSlow();
   stop();
 });
+
+/**
+ * The shadow is the other half of "reduce stops the movement, not the drawing",
+ * and it is the half a scheduler count cannot reach: it is CSS, so the only
+ * place its shape and its gating exist is the stylesheet's source text.
+ *
+ * Two claims, both regressions that have actually happened or nearly did:
+ *
+ * 1. It must be `filter: drop-shadow()`, never a `box-shadow` and never a
+ *    `shadow-*` Tailwind class at the call site. A box-shadow paints the
+ *    element's BORDER BOX, and the mascot is a round character in a transparent
+ *    square viewBox — so `shadow-lg` on `<Mascot>` drew a pale square TILE
+ *    floating behind the blob. That shipped, and was rejected on sight. Only
+ *    drop-shadow derives from the rendered alpha and traces the silhouette.
+ *
+ * 2. The rule must sit OUTSIDE the `prefers-reduced-motion` block. A shadow is
+ *    not motion; folding it in with the bob would flatten the character for
+ *    exactly the viewers who asked only for stillness. That is a one-line
+ *    mistake to make while tidying the two mascot rules together, and it is
+ *    invisible unless you are testing with reduce on.
+ *
+ * `apps/edge` pins the same pair over its rendered CSS (`system-pages.test.ts`),
+ * where the additional trap is `.m-dim`'s competing `filter`.
+ */
+test("the mascot's shadow follows its silhouette, and survives reduced motion", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const here = new URL(".", import.meta.url);
+  const css = await readFile(new URL("../../app/globals.css", here), "utf8");
+  const shell = await readFile(new URL("../../app/auth/auth-shell.tsx", here), "utf8");
+
+  const mascotClass = /<Mascot\s+className="([^"]*)"/.exec(shell)?.[1];
+  assert.ok(mascotClass, "expected /auth's shell to mount <Mascot> with a className");
+  assert.doesNotMatch(
+    mascotClass,
+    /(^|\s)(shadow-|drop-shadow-)/,
+    `the mascot's call site must not carry an elevation class (got "${mascotClass}"). ` +
+      "A box-shadow paints its square border box and draws a tile behind a round character; " +
+      "the silhouette shadow belongs on [data-mascot] in globals.css.",
+  );
+
+  // Delete every `@media` block first, THEN look for the rule: an anchored
+  // regex is not enough, because a rule nested one level in is still at the
+  // start of its own line and would match. What is left is the unconditional
+  // CSS, which is where this rule has to be.
+  const unconditional = css.replace(/@media[^{]*\{(?:[^{}]|\{[^{}]*\})*\}/g, "");
+  assert.match(
+    unconditional,
+    /\[data-mascot\]\s*\{[^{}]*filter:\s*drop-shadow\(var\(--shadow-mascot\)\)/,
+    "[data-mascot] must carry filter: drop-shadow(var(--shadow-mascot)) UNCONDITIONALLY, outside every " +
+      "@media block. Nested in one it stops applying to somebody; as a box-shadow it stops following the outline.",
+  );
+  for (const block of css.matchAll(/@media\s*\(prefers-reduced-motion[^{]*\{(?:[^{}]|\{[^{}]*\})*\}/g)) {
+    assert.doesNotMatch(
+      block[0],
+      /filter\s*:/,
+      "no prefers-reduced-motion block may set `filter` on anything — reduced motion stops the bob, " +
+        "it does not flatten the character.",
+    );
+  }
+
+  // Both themes, or the shadow vanishes on one of them.
+  assert.match(css, /:root\s*\{(?:[^{}])*--shadow-mascot:/, "--shadow-mascot must be defined on :root");
+  assert.match(
+    css,
+    /\[data-theme="dark"\]\s*\{(?:[^{}])*--shadow-mascot:/,
+    "--shadow-mascot must be remapped in the dark block, or a dark page gets the warm light shadow",
+  );
+});

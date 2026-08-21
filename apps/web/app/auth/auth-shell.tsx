@@ -32,13 +32,14 @@ export function AuthShell({ children }: { children: React.ReactNode }) {
               paints the `currentColor` body. `aria-hidden` is on its own `<svg>`
               root, so there is no wrapper here to carry it.
 
-              `shadow-lg` is elevation on the square box, not on the silhouette:
-              a plain box-shadow that lifts the mascot's tile off the page. It
-              resolves to the `--shadow-lg` token, which the dark block
-              redefines, so it is theme-correct without a `dark:` variant. It is
-              static, so it survives `prefers-reduced-motion: reduce` — the bob
-              does not. Presentation, hence here and not in the component. */}
-          <Mascot className="mx-auto mb-2 block size-24 text-accent shadow-lg" />
+              No `shadow-lg` here any more. A box-shadow paints the element's
+              BORDER BOX, and the mascot's box is a transparent square, so it
+              drew a pale square tile behind a round character. The shadow the
+              character actually needs traces its silhouette, which only
+              `filter: drop-shadow()` can do — and a silhouette is neither size
+              nor colour, it is how the character is drawn, so it lives with the
+              rest of `[data-mascot]` in `globals.css`. */}
+          <Mascot className="mx-auto mb-2 block size-24 text-accent" />
 
           {children}
         </div>

@@ -107,6 +107,7 @@ const TOKENS_CSS = `
   --shadow-sm:0 1px 2px rgba(40,30,20,0.05);   /* --shadow-sm */
   --shadow-md:0 4px 16px rgba(40,30,20,0.08);  /* --shadow-md */
   --shadow-lg:0 12px 40px rgba(40,30,20,0.12); /* --shadow-lg */
+  --shadow-mascot:0 6px 14px rgba(40,30,20,0.18); /* --shadow-mascot: the blob's own, tighter and stronger than the card ramp */
   --r-sm:8px;                /* --r-sm */
   --r-md:12px;               /* --r-md */
   --r-lg:16px;               /* --r-lg */
@@ -127,6 +128,7 @@ const TOKENS_CSS = `
     --shadow-sm:0 1px 2px rgba(0,0,0,0.3);   /* dark --shadow-sm */
     --shadow-md:0 4px 16px rgba(0,0,0,0.4);  /* dark --shadow-md */
     --shadow-lg:0 12px 40px rgba(0,0,0,0.5); /* dark --shadow-lg */
+    --shadow-mascot:0 6px 14px rgba(0,0,0,0.75); /* dark --shadow-mascot */
   }
 }
 `;
@@ -220,17 +222,23 @@ h1{
    The POSE stays frozen at MASCOT_REST_T: the breathing outline and the blink
    need per-frame values, and these pages get no script (the kept-own CSP grants
    no script-src). What CSS alone can carry, it carries, so the character reads
-   the same in both places — apps/web's hover and its --shadow-lg elevation.
+   the same in both places — apps/web's hover and its silhouette shadow.
    The hover is a transform on this box, never on the path data or the eye
    centres: the viewBox is tight to the silhouette, so moving the geometry
    inside it would clip the character. Moving the element cannot. The pip and
    the dim filter ride along, being on/inside this same box. */
 .mascot{
   width:170px;color:var(--accent);
-  box-shadow:var(--shadow-lg);
   animation:hover 3s ease-in-out infinite alternate;
 }
-.mascot>svg:first-child{display:block;width:100%;height:auto}
+/* Depth via drop-shadow, which traces the rendered alpha: box-shadow paints the
+   border box, and this box is a transparent square, so it drew a square tile
+   behind a round character. On the inner svg, not on .mascot, because filter
+   does not accumulate — .m-dim is the SAME element at the same specificity, so
+   one declaration would have silently replaced the other and 410 would have
+   lost either its shadow or its drain. One filter each; dim then drains the
+   shadow too, which is what a lapsed draft should look like. */
+.mascot>svg:first-child{display:block;width:100%;height:auto;filter:drop-shadow(var(--shadow-mascot))}
 /* The expired draft is drained rather than redrawn — one asset, two readings.
    A plain filter, not a transition: the page looks the same at first paint as
    it does forever after. */
@@ -250,8 +258,9 @@ h1{
 /* Reduced motion is mandatory (design system §6): every animation has a static
    equivalent. These pages' motion is decorative, so the equivalent is "none" —
    the wildcard covers pop and hover alike, parking the mascot at translateY(0),
-   which is the frozen frame the markup already carries. The --shadow-lg
-   elevation is not motion and stays. */
+   which is the frozen frame the markup already carries. The mascot's
+   drop-shadow is a filter, not an animation, so this block does not touch it:
+   the character keeps its depth and only stops moving. */
 @media (prefers-reduced-motion:reduce){
   *{animation:none!important;transition:none!important}
 }
@@ -284,10 +293,11 @@ function apexHost(apexOrigin: string): string {
    from making any external request: a fetched <img src> here would be both a
    second round-trip on the error path and a dependency, and the whole premise of
    this epic is that the serve path depends on nothing. Inline markup beats the
-   base64 raster it replaced on that axis too: 15,920 characters off every one of
-   the three pages, measured — about 57% of the rendered document. (It was 17,027
-   until the hover keyframe, the --shadow-lg token and their comments went in;
-   those cost 1,107 characters back. The figure is re-measured, not derived.)
+   base64 raster it replaced on that axis too: 15,079 characters off every one of
+   the three pages, measured — about 54% of the rendered document. (It was 17,027
+   for the bare swap; the hover keyframe, the mascot's shadow and the comments
+   explaining both have cost 1,948 characters back since — 1,107 of that for the
+   hover and the first, wrong, box-shadow. Re-measured each time, not derived.)
 
    The generator is called once, at module load, with a fixed `t`: the output is
    pure, so every request would otherwise recompute identical bytes.

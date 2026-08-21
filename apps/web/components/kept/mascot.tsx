@@ -31,8 +31,9 @@
  * `MASCOT_REST_T` and stops, which is the same instant `apps/edge` freezes into
  * its system pages, so the resting character is identical in both places. It
  * also never registers the pointer listener; the CSS bob is gated by the same
- * query in `globals.css`. The elevation shadow at the call site stays — it is
- * static, and reduced motion is about movement, not about flatness.
+ * query in `globals.css`. The silhouette shadow there stays — it sits OUTSIDE
+ * that query, because it is static and reduced motion is about movement, not
+ * about flatness.
  *
  * CSS cannot serve this: the blink schedule is deliberately irregular (a
  * keyframe loop would regularise it) and the gaze drift needs per-frame values,
@@ -299,10 +300,15 @@ export function Mascot({ className }: MascotProps) {
       ref={rootRef}
       aria-hidden="true"
       focusable="false"
-      // The hover hook. Size and colour are the caller's (task 003), but the
-      // idle bob is intrinsic to the character — the same reason the blink
-      // schedule is not a prop — so the component carries it and `globals.css`
-      // gates it behind `prefers-reduced-motion: no-preference`. It is a CSS
+      // The hook `globals.css` styles this element through. Size and colour are
+      // the caller's (task 003), but the idle bob is intrinsic to the character
+      // — the same reason the blink schedule is not a prop — so the component
+      // carries it and `globals.css` gates it behind `prefers-reduced-motion:
+      // no-preference`. So is the `filter: drop-shadow()` that gives the
+      // character its depth: it is derived from the silhouette this file draws,
+      // which is neither a size nor a colour, and no call site could supply it
+      // without re-introducing the square tile a `box-shadow` painted. That one
+      // is NOT gated — a shadow is not motion. The bob is a CSS
       // transform on this element and never a change to `cy` or to the path:
       // `MASCOT_BODY_R = 85` against a 1.157 profile peak leaves ~1.6 viewBox
       // units of headroom, so bobbing inside the viewBox clips the silhouette.

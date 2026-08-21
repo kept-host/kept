@@ -34,6 +34,16 @@
   --shadow-sm: 0 1px 2px rgba(40, 30, 20, 0.05);
   --shadow-md: 0 4px 16px rgba(40, 30, 20, 0.08);
   --shadow-lg: 0 12px 40px rgba(40, 30, 20, 0.12);
+  /* The mascot's silhouette shadow. Its own token because the sm/md/lg ramp is
+     tuned for cards, and a card's shadow is read against a hard rectangular
+     edge: --shadow-lg's 40px of blur, offset 12px, is wider than the mascot is
+     tall at size-24, and against a round blob it dissolves into a smudge you
+     cannot see. --shadow-lg's geometry tightened to --shadow-md's and the alpha
+     lifted 1.5x to compensate for the softer edge. Picked by rendering all of
+     sm/md/lg and four candidates side by side at 96px and 170px, in both
+     themes. Consumed by drop-shadow(), so no spread component — see
+     [data-mascot] below. */
+  --shadow-mascot: 0 6px 14px rgba(40, 30, 20, 0.18);
   --ease-out: cubic-bezier(0.2, 0, 0, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 }
@@ -52,6 +62,8 @@
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.5);
+  /* The same 1.5x lift on the dark ramp's own shadow colour. */
+  --shadow-mascot: 0 6px 14px rgba(0, 0, 0, 0.75);
 }
 
 @theme inline {
@@ -236,6 +248,28 @@
   to {
     transform: translateY(3%);
   }
+}
+
+/* The mascot's depth. `filter: drop-shadow()`, never `box-shadow`.
+
+   A box-shadow paints the element's BORDER BOX, and the mascot is a round
+   character in a transparent square viewBox — so `shadow-lg` at the /auth call
+   site drew a pale square TILE floating behind a round blob. That was the bug.
+   drop-shadow derives its shape from the rendered alpha channel instead, so it
+   traces the silhouette; nothing else in CSS can.
+
+   Here rather than at the call site: task 003 draws the line at "the component
+   owns motion, the caller owns size and colour", and a silhouette shadow is
+   neither size nor colour — it is a property of how the character is drawn,
+   and it depends on the artwork's outline, which no caller knows. Same reason
+   the bob is not a prop. Every mount gets it; none can forget it.
+
+   Deliberately OUTSIDE the motion query below. A shadow is not motion, and
+   `prefers-reduced-motion: reduce` must stop the bob, not flatten the
+   character. The token is redefined by the dark block, so both themes are
+   correct without a second selector. */
+[data-mascot] {
+  filter: drop-shadow(var(--shadow-mascot));
 }
 
 @media (prefers-reduced-motion: no-preference) {

@@ -381,18 +381,25 @@ const RETIRED_DATA_URI_CHARS = 20_719;
  *
  * Not `RETIRED_DATA_URI_CHARS`: the replacement is not free. All 20,719
  * characters of the data URI came off and 3,185 characters of inline `<svg>`
- * went back on; the mascot's hover keyframe, the `--shadow-lg` token and their
- * comments then cost a further 1,107. The net is **15,920 per page, measured**
- * — 11,833 / 12,355 / 12,287 characters rendered against the 27,753 / 28,275 /
- * 28,207 the raster cost, about 57% of the document. (17,027 before the hover
- * and the shadow, and 15,969 while the hover was 6px over 5s; both figures are
- * superseded by a re-measurement, not loosened away from.)
+ * went back on; the mascot's hover keyframe, its shadow, and the comments
+ * explaining both have cost 1,948 back on top of that. The net is **15,079 per
+ * page, measured** — 12,674 / 13,196 / 13,128 characters rendered against the
+ * 27,753 / 28,275 / 28,207 the raster cost, about 54% of the document.
+ *
+ * Superseded figures, each replaced by a re-measurement and never by loosening
+ * the floor: 17,027 before the hover and any shadow; 15,969 while the hover was
+ * 6px over 5s; 15,920 while the shadow was a `box-shadow` on the mascot's
+ * square box — which is the bug that brought us here, since a box-shadow paints
+ * the border box and drew a pale square tile behind a round character. The
+ * `filter: drop-shadow(var(--shadow-mascot))` that replaced it traces the
+ * silhouette, and its rule, its token and the comment on the `.m-dim` filter
+ * collision are what the extra 841 characters buy.
  *
  * A criterion of "≥ 20,719 net" is unsatisfiable by any drawing at all; this is
  * the strictest floor an actual replacement can meet, and it still fails loudly
  * if the raster returns or the outline balloons.
  */
-const MIN_NET_SAVING_CHARS = 15_900;
+const MIN_NET_SAVING_CHARS = 15_000;
 
 /** The lock pip, byte-identical to `system-pages.ts`. 451 and nothing else. */
 const PIP_MARKER = 'stroke="var(--warning)"';
@@ -515,22 +522,44 @@ describe("the mascot is the generated frozen frame (task 005)", () => {
     }
   });
 
-  it("hovers and sits on --shadow-lg, in both themes, with the motion reducible", () => {
+  it("hovers and casts a silhouette shadow, in both themes, with the motion reducible", () => {
     // The two CSS-only halves of the interactive mascot. `apps/web` gets pointer
     // tracking; the Worker cannot (no script), so these are the parts that keep
     // the character looking like one character in both places, and each has a
     // way of silently going missing.
     const { body } = renderSystemPage("notFound", { apexOrigin: TEST_APEX });
 
-    // Token, not a raw shadow: a hex or rgba() on `.mascot` itself would not
+    // drop-shadow, NEVER box-shadow. A box-shadow paints the element's border
+    // box, and the mascot's box is a transparent square, so it drew a pale
+    // square TILE behind a round character — shipped once, rejected on sight.
+    // drop-shadow derives from the rendered alpha and traces the silhouette.
+    expect(
+      body,
+      "a box-shadow on the mascot paints its square border box, not its outline. Use filter:drop-shadow().",
+    ).not.toMatch(/\.mascot[^{]*\{[^}]*box-shadow/);
+    // Token, not a raw shadow: a hex or rgba() on the element itself would not
     // flip with the theme, and tokens are law.
-    expect(body, "the mascot must sit on the shared elevation token").toContain(
-      "box-shadow:var(--shadow-lg)",
+    expect(body, "the mascot must sit on the shared silhouette-shadow token").toContain(
+      "filter:drop-shadow(var(--shadow-mascot))",
     );
-    expect(body, "--shadow-lg must be defined for light").toContain("--shadow-lg:0 12px 40px rgba(40,30,20,0.12)");
-    expect(body, "--shadow-lg must be remapped for dark, or the shadow vanishes on a dark page").toContain(
-      "--shadow-lg:0 12px 40px rgba(0,0,0,0.5)",
+    expect(body, "--shadow-mascot must be defined for light").toContain(
+      "--shadow-mascot:0 6px 14px rgba(40,30,20,0.18)",
     );
+    expect(body, "--shadow-mascot must be remapped for dark, or the shadow vanishes on a dark page").toContain(
+      "--shadow-mascot:0 6px 14px rgba(0,0,0,0.75)",
+    );
+
+    // THE COLLISION. `filter` does not accumulate: two `filter` declarations
+    // matching one element at equal specificity leave only the later one. `.m-dim`
+    // (410's drained treatment) already owns a `filter` on `.mascot` itself, so
+    // the drop-shadow has to live on a different element — the inner <svg> — or
+    // the expired page silently loses one effect or the other. This asserts the
+    // two are not competing for the same box.
+    const shadowSelector = /([^;{}\n]*)\{[^}]*filter:drop-shadow\(var\(--shadow-mascot\)\)/.exec(body)?.[1]?.trim();
+    expect(
+      shadowSelector,
+      "the drop-shadow must not sit on the same element as .m-dim's grayscale/opacity filter — filter does not accumulate, so one of them would be dropped and 410 would lose its shadow or its drain",
+    ).toBe(".mascot>svg:first-child");
 
     // A CSS transform on the box. NOT baked into the path or the eye centres:
     // the generator's viewBox is tight to the silhouette, so animated geometry
