@@ -6,7 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**E00 → E04 are complete.** The pnpm + Turbo monorepo builds and ships: `apps/web` (Next.js control plane — themed landing, the publish API, the anonymous result/claim screens), `apps/edge` (the Hono Worker serving `*.kept-dev.xyz` from R2 + KV), `packages/shared`. E04-anonymous-publish is deployed to **dev** at tag `dev-v0.1.5`. Suites green: Playwright 62, `apps/web` unit 40 (`tsx --test`), `apps/edge` vitest 171. **Next epic: `E05-auth-and-claim`** — GitHub + magic-link sign-in, keeping a draft forever, swap at cap. **Prod has never been deployed:** the `prod` GitHub Environment holds zero secrets, `release.yml` has never run, and `develop` → `main` promotion is unexercised.
+**E00 → E05b are complete.** The pnpm + Turbo monorepo builds and ships: `apps/web` (Next.js control plane — the landing, the publish API, sign-in + claim, the anonymous result/claim screens), `apps/edge` (the Hono Worker serving `*.kept-dev.xyz` from R2 + KV), `packages/shared`. E05-auth-and-claim and the corrective E05a-control-plane-origin-and-session-hardening are deployed to **dev** at tag `dev-v0.3.2`; **E05b-mascot** replaced both brand objects with one generated mascot and is not yet tagged. Suites green: `apps/web` unit 169 (`tsx --test`), `apps/edge` vitest 183, Playwright 118 tests / 19 specs (in CI 47 pass / 71 skipped — the skips are auth specs correctly gating on absent secrets; locally with credentials ~116 pass). **Next epic: `E06-dashboard-and-management`.** **Prod has never been deployed:** the `prod` GitHub Environment holds zero secrets, `release.yml` has never run, and `develop` → `main` promotion is unexercised.
+
+> The E05/E05a half of this section is also rewritten, in more detail, on the unmerged `docs/context-refresh-e05a` branch; expect to resolve a conflict here when that lands.
 
 Read `.agent/System/00-README-architecture-index.md` first — it is the entry point and the source of truth for build order, repo structure, and the non-negotiable rules. Each `.agent/Tasks/prds/E*.md` is a self-contained epic PRD with its own scope, data model, states, acceptance criteria, and a `UI Source` import block.
 
@@ -38,7 +40,7 @@ The **KV manifest contract** is the seam: control plane writes `{ siteId, versio
 
 ## Locked decisions (don't drift)
 
-- **Stack:** Next.js (Railway) + **Neon** Postgres control plane, with **Better Auth** v1.6.x self-hosted (Drizzle adapter, users in the same Neon database) and **Resend** for magic-link email — both wired in E05; Cloudflare Worker (Hono) + R2 + KV + Cache serving; Tailwind v4 (`@theme`) + shadcn (`new-york`, heavily re-themed) + Motion (`motion/react`) + React Three Fiber; fonts Hanken Grotesk (display) / Geist (body) / JetBrains Mono (mono).
+- **Stack:** Next.js (Railway) + **Neon** Postgres control plane, with **Better Auth** v1.6.x self-hosted (Drizzle adapter, users in the same Neon database) and **Resend** for magic-link email — both wired in E05; Cloudflare Worker (Hono) + R2 + KV + Cache serving; Tailwind v4 (`@theme`) + shadcn (`new-york`, heavily re-themed) + Motion (`motion/react`); fonts Hanken Grotesk (display) / Geist (body) / JetBrains Mono (mono).
 - **Tokens are law.** Design tokens are CSS variables in `globals.css`, exposed to Tailwind via `@theme`, with shadcn pointed at them. Never hardcode a hex — use token classes (`bg-bg`, `text-accent`, `font-display`, `rounded-md`). Theme toggle swaps the variable block; light/dark parity on every screen. shadcn is the behavior/a11y layer, not the look. See `03-frontend-specs.md` §3–4.
 - **`packages/shared` is the single source** for types/enums/constants — `MAX_PAGE_BYTES`, `KEPT_PAGE_LIMIT=3`, `DRAFT_TTL_DAYS=7`, `DRAFT_GRACE_DAYS=30`; site `status`, `plan`, `region` (`auto | eu`) enums; zod schemas; the KV manifest type. The landing must never hardcode a `3` or a `7` where a constant exists.
   - ⚠️ **One pivot delta still pending.** E01 renamed the constants to draft/kept vocabulary and deleted `SLOT_COST_EUR` / `SUPPORTER_PAGE_LIMIT`. E04's migration `0001_publish_columns_and_status_enum.sql` dropped `resting` from `site_status` and added `archived`, so `SITE_STATUSES` is now clean (`live | under_review | quarantined | expired | removed | archived`). Still outstanding: **`PLANS` carries `supporter`**. It drives a `pgEnum` in `apps/web/lib/db/schema.ts` baked into a committed migration, so dropping it is a **Postgres enum migration, not a rename** — owned by **E05**. Target: plans `free | premium`.
@@ -54,23 +56,33 @@ MVP screens are designed in Claude Design (project `da93d30e-94eb-40d4-b3d1-4632
 - **The stats dot-field** (E09-open-books) — real open-books data (pages kept, infra cost, uptime) + animation. *(Replaces the old Open Collective funding gauge.)*
 
 > **There is no R3F Vessel, and there is no plan for one.** Earlier revisions of
-> this file specified a `components/kept/Vessel.tsx` — React Three Fiber, `ssr:false`,
-> a `VesselState` context bus. It was never built and the decision is withdrawn;
-> `three` / `@react-three/fiber` are not dependencies and must not be added for this.
+> this file specified a `components/kept/Vessel.tsx` — a React Three Fiber orb
+> component, `ssr:false`, with a `VesselState` context bus. It was specified early
+> on and never built; that decision is withdrawn and stays withdrawn. `three` /
+> `@react-three/fiber` are not dependencies and must not be added for this — see
+> the same note above `@keyframes keptLive` in `apps/web/app/globals.css`.
 > E01 shipped the landing's drop-box choreography imperatively instead, in
 > `apps/web/components/kept/kept-engine.ts` driving `KeptLanding.tsx` — that is the real thing,
 > and it is what any epic touching the hero should extend.
 >
-> Separately, **"vessel" is also the name of a CSS illustration** — the orb drawn with
-> `--vessel-lit` / `--vessel-shade` / `--vessel-shade-dim` on the Worker's branded
-> system pages (`apps/edge/src/system-pages.ts`). That one is real, shipped and
-> tested. Do not delete it while cleaning up references to the component above.
+> Separately, **"vessel" was also the name of two CSS illustrations, and E05b
+> retired both.** The orb drawn with `--vessel-lit` / `--vessel-shade` /
+> `--vessel-shade-dim` on the Worker's branded system pages is gone from
+> `apps/edge/src/system-pages.ts` — only retirement comments name it now — and the
+> pure-CSS `.kept-vessel` E05 put on the `/auth` screens is gone from
+> `globals.css`, which carries no illustration rules at all any more.
+> `git grep -i vessel -- apps/web` returns nothing. Both were replaced by the
+> **generated mascot**: one pure function in `packages/shared/src/mascot/` behind
+> the `@kept/shared/mascot` subpath, animated on a rAF loop by
+> `apps/web/components/kept/mascot.tsx` and frozen into a single inline SVG frame
+> by the Worker. Do not re-introduce either illustration; the character and its
+> take-and-leave line are `.agent/System/02-design-system.md` §7.
 
 ## Build order
 
 ```
-E00 ✅ → E01 ✅ → E02 ✅ → E03 ✅ → E04 ✅ → E05 → E06 → E07 → E08 → E09-open-books   (v1 / launch)
-                                                                └──→ E10, E11   (v1.5)
+E00 ✅ → E01 ✅ → E02 ✅ → E03 ✅ → E04 ✅ → E05 ✅ → E05a ✅ → E05b ✅ → E06 → E07 → E08 → E09-open-books   (v1 / launch)
+                                                                                    └──→ E10, E11   (v1.5)
 ```
 
 | Epic | Covers |
@@ -80,8 +92,10 @@ E00 ✅ → E01 ✅ → E02 ✅ → E03 ✅ → E04 ✅ → E05 → E06 → E07 
 | `E02-cicd-deployment` | GitHub Actions, dev/prod tracks, tag-based releases; Supabase → Neon cutover. **Shipped.** |
 | `E03-serving-data-plane` | The Worker that serves `*.kept.host` from R2/KV. **Shipped** (dev only). |
 | `E04-anonymous-publish` | API-first publish; drop/paste or agent call → live link + claim link; the 7-day draft. **Shipped** to dev at `dev-v0.1.5`. |
-| `E05-auth-and-claim` | GitHub + magic-link sign-in; keep a draft forever; swap when at cap. **Current.** |
-| `E06-dashboard-and-management` | Kept pages + drafts; rename/replace/delete; keep/demote; quota |
+| `E05-auth-and-claim` | GitHub + Google + magic-link sign-in; keep a draft forever; swap when at cap. **Shipped.** |
+| `E05a-control-plane-origin-and-session-hardening` | Corrective, inserted after E05: control plane moved to `app.`, `__Host-` session cookie, origin checks on cookie-authenticated mutations. **Shipped** to dev at `dev-v0.3.2`. |
+| `E05b-mascot` | Corrective: the CSS vessel and the base64-WebP mascot replaced by one generated mascot in `packages/shared`, animated in `apps/web` and frozen into the Worker's system pages. **Shipped** (untagged). |
+| `E06-dashboard-and-management` | Kept pages + drafts; rename/replace/delete; keep/demote; quota. **Current.** |
 | `E07-abuse-and-moderation` | PSL, scanning, reports, status lifecycle, draft expiry/purge, volume governors |
 | `E08-mcp-server` | **Now v1.** Keyless MCP + Skill + copy-paste prompt; the agents wedge |
 | `E09-open-books` | Public `/stats`, the forever promise, landing panel data |
