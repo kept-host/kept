@@ -382,16 +382,17 @@ const RETIRED_DATA_URI_CHARS = 20_719;
  * Not `RETIRED_DATA_URI_CHARS`: the replacement is not free. All 20,719
  * characters of the data URI came off and 3,185 characters of inline `<svg>`
  * went back on; the mascot's hover keyframe, the `--shadow-lg` token and their
- * comments then cost a further 1,058. The net is **15,969 per page, measured**
- * — 11,784 / 12,306 / 12,238 characters rendered against the 27,753 / 28,275 /
- * 28,207 the raster cost, about 57% of the document. (It was 17,027 before the
- * hover and the shadow; that figure is superseded, not loosened.)
+ * comments then cost a further 1,107. The net is **15,920 per page, measured**
+ * — 11,833 / 12,355 / 12,287 characters rendered against the 27,753 / 28,275 /
+ * 28,207 the raster cost, about 57% of the document. (17,027 before the hover
+ * and the shadow, and 15,969 while the hover was 6px over 5s; both figures are
+ * superseded by a re-measurement, not loosened away from.)
  *
  * A criterion of "≥ 20,719 net" is unsatisfiable by any drawing at all; this is
  * the strictest floor an actual replacement can meet, and it still fails loudly
  * if the raster returns or the outline balloons.
  */
-const MIN_NET_SAVING_CHARS = 15_950;
+const MIN_NET_SAVING_CHARS = 15_900;
 
 /** The lock pip, byte-identical to `system-pages.ts`. 451 and nothing else. */
 const PIP_MARKER = 'stroke="var(--warning)"';
@@ -535,10 +536,13 @@ describe("the mascot is the generated frozen frame (task 005)", () => {
     // the generator's viewBox is tight to the silhouette, so animated geometry
     // would clip the character's outline against it.
     expect(body, "the mascot must run the hover keyframe").toMatch(
-      /animation:hover 5s ease-in-out infinite alternate/,
+      /animation:hover 3s ease-in-out infinite alternate/,
     );
+    // The same period, amplitude and shape as apps/web's keptMascotHover, and a
+    // PERCENTAGE amplitude so the bob is proportional to whichever size draws it
+    // — 96px there, 170px here. A px value would look like a different character.
     expect(body, "the hover must translate the element, not redraw it").toContain(
-      "@keyframes hover{from{transform:translateY(0)}to{transform:translateY(-6px)}}",
+      "@keyframes hover{from{transform:translateY(-3%)}to{transform:translateY(3%)}}",
     );
 
     // Design system §6: every animation has a static equivalent. The wildcard in

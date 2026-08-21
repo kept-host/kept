@@ -228,7 +228,7 @@ h1{
 .mascot{
   width:170px;color:var(--accent);
   box-shadow:var(--shadow-lg);
-  animation:hover 5s ease-in-out infinite alternate;
+  animation:hover 3s ease-in-out infinite alternate;
 }
 .mascot>svg:first-child{display:block;width:100%;height:auto}
 /* The expired draft is drained rather than redrawn — one asset, two readings.
@@ -243,10 +243,10 @@ h1{
    The pip is always emitted last, after the mascot. */
 .m-pip>svg:last-child{position:absolute;right:2px;bottom:26px}
 @keyframes pop{0%{transform:translateY(8px);opacity:0}100%{transform:translateY(0);opacity:1}}
-/* 6px over 5s, alternating — 3.5% of the 170px box, a drift you notice only if
-   you watch for it. Matched with apps/web so the character moves the same way
-   wherever it is drawn. */
-@keyframes hover{from{transform:translateY(0)}to{transform:translateY(-6px)}}
+/* ±3% over 3s, alternating — apps/web's keptMascotHover exactly. A PERCENTAGE,
+   not px: a transform percentage resolves against the element's own border box,
+   so the bob is proportional at apps/web's 96px and at the 170px here. */
+@keyframes hover{from{transform:translateY(-3%)}to{transform:translateY(3%)}}
 /* Reduced motion is mandatory (design system §6): every animation has a static
    equivalent. These pages' motion is decorative, so the equivalent is "none" —
    the wildcard covers pop and hover alike, parking the mascot at translateY(0),
@@ -284,10 +284,10 @@ function apexHost(apexOrigin: string): string {
    from making any external request: a fetched <img src> here would be both a
    second round-trip on the error path and a dependency, and the whole premise of
    this epic is that the serve path depends on nothing. Inline markup beats the
-   base64 raster it replaced on that axis too: 15,969 characters off every one of
+   base64 raster it replaced on that axis too: 15,920 characters off every one of
    the three pages, measured — about 57% of the rendered document. (It was 17,027
    until the hover keyframe, the --shadow-lg token and their comments went in;
-   those cost 1,058 characters back. The figure is re-measured, not derived.)
+   those cost 1,107 characters back. The figure is re-measured, not derived.)
 
    The generator is called once, at module load, with a fixed `t`: the output is
    pure, so every request would otherwise recompute identical bytes.
