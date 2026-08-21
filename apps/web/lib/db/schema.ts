@@ -224,6 +224,21 @@ export const sites = pgTable(
     // because the PRD's data model specifies it. Do not spread `claim` into any
     // new identifier — the product word is **keep**.
     claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    // The page's own `<title>`, extracted from the HTML on every write path by
+    // `lib/publish/page-title.ts` (E06 task 001, migration 0004).
+    //
+    // ⚠️ NULLABLE ON PURPOSE, AND IT STAYS THAT WAY. Every consumer renders
+    // `title ?? slug` — the dashboard wall and the OG card — so a page with no
+    // readable `<title>` is a page named by its slug, not a failed publish.
+    // `0004` backfills nothing, so rows published before it read NULL forever
+    // and that is a correct terminal state. Do NOT add `notNull()`, a default,
+    // or an index: nothing queries by title.
+    //
+    // ⚠️ UNTRUSTED STRANGER-AUTHORED INPUT. It is rendered into a dashboard
+    // card and painted into an image. `extractPageTitle` is the only writer:
+    // it trims, collapses whitespace, decodes the common entities, caps the
+    // length and never throws. Never write this column from anywhere else.
+    title: text("title"),
     // Denormalised from the current version so the dedup probe is a single
     // index scan on `sites` and never has to join `site_versions`.
     contentHash: text("content_hash"),

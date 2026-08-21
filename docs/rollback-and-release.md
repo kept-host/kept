@@ -113,6 +113,32 @@ concluding anything. Prod does not run Serverless, so a 502 there is real.
 
 ## 5. Database & stores
 
+### Where the two branches actually are
+
+`drizzle/` holds **five** migrations, and the two Neon branches are **not** at
+the same point:
+
+| Migration | Adds | dev | prod |
+| --- | --- | --- | --- |
+| `0000_nasty_moonstone` | initial schema | ✅ | ❌ |
+| `0001_publish_columns_and_status_enum` | publish columns, `site_status` rewrite | ✅ | ❌ |
+| `0002_better_auth_tables_and_plan_enum` | Better Auth tables, `sites.claimed_at`, plan enum | ✅ | ❌ |
+| `0003_reminder_sent_at_and_keep_token` | `reminder_sent_at`, `reminder_keep_token_hash` | ✅ | ❌ |
+| `0004_page_title` | `sites.title` (nullable text, E06) | ✅ | ❌ |
+
+**Prod has never been migrated and has never been deployed** — the `prod`
+GitHub Environment holds no secrets and `release.yml` has never run. So the
+first prod release applies all five in one go, and the pre-release backup
+branch below is the only unwind for that.
+
+**`0004` backfills nothing, deliberately.** Rows published before it read
+`title = NULL` permanently; every consumer renders `title ?? slug`, so there is
+nothing to repair and no data migration to schedule. It is additive and
+nullable, which makes it safe to apply ahead of the code that reads it.
+
+Re-tag dev (`dev-v*`) only after `0004` is applied to the dev branch — the
+dashboard's card rendering assumes the column exists.
+
 ### Policy — read this before touching anything
 
 - **Migrations are forward-only.** A bad migration is fixed by writing a **new

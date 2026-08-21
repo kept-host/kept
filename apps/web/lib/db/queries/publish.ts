@@ -152,6 +152,13 @@ export interface AnonymousDraftInput {
   expiresAt: Date;
   purgeAfter: Date;
   reminderEmail?: string;
+  /**
+   * The page's own `<title>`, from `lib/publish/page-title.ts`. `null` when the
+   * document has no readable one — every consumer renders `title ?? slug`, so
+   * that is a name, not a failure. REQUIRED rather than optional so a new write
+   * path cannot forget it and quietly ship a wall of slugs.
+   */
+  title: string | null;
 }
 
 /**
@@ -190,6 +197,7 @@ export async function insertAnonymousDraft(
           publisherHash: input.publisherHash,
           expiresAt: input.expiresAt,
           purgeAfter: input.purgeAfter,
+          title: input.title,
           contentHash: input.contentHash,
           sizeBytes: input.sizeBytes,
           reminderEmail: input.reminderEmail ?? null,
@@ -239,6 +247,13 @@ export interface AnonSite {
   expiresAt: Date | null;
   /** End of the post-expiry grace window; null on a kept page. */
   purgeAfter: Date | null;
+  /**
+   * The page's `<title>` as of the CURRENT bytes. Carried for the same reason
+   * `contentHash` and `sizeBytes` are: a failed replace has to put the row back
+   * exactly as it found it, and a row describing bytes it no longer points at
+   * is the bug this column was added to avoid.
+   */
+  title: string | null;
   contentHash: string | null;
   sizeBytes: number | null;
 }
@@ -269,6 +284,7 @@ export async function findSiteByAnonTokenHash(
       currentVersionId: sites.currentVersionId,
       expiresAt: sites.expiresAt,
       purgeAfter: sites.purgeAfter,
+      title: sites.title,
       contentHash: sites.contentHash,
       sizeBytes: sites.sizeBytes,
     })
@@ -285,6 +301,13 @@ export interface ReplaceVersionInput {
   r2Key: string;
   contentHash: string;
   sizeBytes: number;
+  /**
+   * Re-extracted from the NEW bytes. Required, and set in the SAME statement as
+   * the `current_version_id` swap below: a replace that updates the bytes but
+   * not the title leaves the dashboard confidently displaying the PREVIOUS
+   * page's name, which is worse than displaying the slug.
+   */
+  title: string | null;
 }
 
 /**
@@ -315,6 +338,7 @@ export async function insertReplacementVersion(
       .update(sites)
       .set({
         currentVersionId: input.versionId,
+        title: input.title,
         contentHash: input.contentHash,
         sizeBytes: input.sizeBytes,
         updatedAt: new Date(),
@@ -330,13 +354,21 @@ export async function insertReplacementVersion(
 export async function revertReplacementVersion(input: {
   siteId: string;
   versionId: string;
-  previous: { versionId: string | null; contentHash: string | null; sizeBytes: number | null };
+  previous: {
+    versionId: string | null;
+    /** Restored alongside the version id, or the row describes bytes it no
+     * longer points at — the same reason `contentHash` and `sizeBytes` are here. */
+    title: string | null;
+    contentHash: string | null;
+    sizeBytes: number | null;
+  };
 }): Promise<void> {
   await db.transaction(async (tx) => {
     await tx
       .update(sites)
       .set({
         currentVersionId: input.previous.versionId,
+        title: input.previous.title,
         contentHash: input.previous.contentHash,
         sizeBytes: input.previous.sizeBytes,
         updatedAt: new Date(),

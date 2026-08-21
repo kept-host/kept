@@ -48,6 +48,7 @@ import { removeManifest } from "../storage/manifest";
 import { pageObjectKey } from "../storage/r2";
 import { notFound, resolveAnonToken } from "./anon-token";
 import { checkHeuristics, enqueueScan, verifyTurnstile } from "./hooks";
+import { extractPageTitle } from "./page-title";
 import {
   fail,
   internalError,
@@ -151,6 +152,11 @@ export async function replacePage(
 
   const contentHash = await hashContent(html);
   const sizeBytes = Buffer.byteLength(html, "utf8");
+  // RE-EXTRACTED, NOT CARRIED OVER. The name belongs to the bytes, so new bytes
+  // get a new name — including `null`, when the replacement has no readable
+  // `<title>`. Leaving the old value in place would make the dashboard
+  // confidently display the PREVIOUS page's name (E06 task 001).
+  const title = extractPageTitle(html);
 
   // NEW versionId, SAME siteId — so the key is a new object rather than a
   // mutation of one the edge may have cached, and the slug never has to move.
@@ -159,6 +165,7 @@ export async function replacePage(
 
   const previous = {
     versionId: site.currentVersionId,
+    title: site.title,
     contentHash: site.contentHash,
     sizeBytes: site.sizeBytes,
   };
@@ -168,6 +175,7 @@ export async function replacePage(
       siteId: site.id,
       versionId,
       r2Key,
+      title,
       contentHash,
       sizeBytes,
     });

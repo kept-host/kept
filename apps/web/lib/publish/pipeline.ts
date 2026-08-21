@@ -64,6 +64,7 @@ import {
   enqueueScan,
   verifyTurnstile,
 } from "./hooks";
+import { extractPageTitle } from "./page-title";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -331,6 +332,11 @@ export async function publishPage(
   // encoding, which is what `r2.put` sends.
   const contentHash = await hashContent(html);
   const sizeBytes = Buffer.byteLength(html, "utf8");
+  // The page's display name, off the SAME in-memory buffer that was just hashed
+  // and sized — one read of the bytes, not a second. `null` when the document
+  // has no readable `<title>`; the helper cannot throw, so extraction can never
+  // fail a publish (E06 task 001).
+  const title = extractPageTitle(html);
 
   // One token, used either to rotate the deduped row or to create a new one.
   const anonToken = generateAnonToken();
@@ -367,6 +373,7 @@ export async function publishPage(
       siteId,
       versionId,
       r2Key,
+      title,
       contentHash,
       sizeBytes,
       anonTokenHash,
