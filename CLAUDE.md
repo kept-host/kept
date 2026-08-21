@@ -72,7 +72,10 @@ MVP screens are designed in Claude Design (project `da93d30e-94eb-40d4-b3d1-4632
 > `--vessel-shade-dim` on the Worker's branded system pages is gone from
 > `apps/edge/src/system-pages.ts` — only retirement comments name it now — and the
 > pure-CSS `.kept-vessel` E05 put on the `/auth` screens is gone from
-> `globals.css`, which carries no illustration rules at all any more.
+> `globals.css`, which draws no illustration any more — its only mascot rule is
+> the *motion* keyframe `keptMascotHover` (the idle bob), which sits with the
+> other keyframes by convention. Do not read that as licence to bring a drawing
+> back.
 > `git grep -i vessel -- apps/web` returns nothing. Both were replaced by the
 > **generated mascot**: one pure function in `packages/shared/src/mascot/` behind
 > the `@kept/shared/mascot` subpath, animated on a rAF loop by
