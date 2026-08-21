@@ -106,6 +106,7 @@ const TOKENS_CSS = `
   --on-accent:#FFFFFF;       /* shadcn --color-primary-foreground */
   --shadow-sm:0 1px 2px rgba(40,30,20,0.05);   /* --shadow-sm */
   --shadow-md:0 4px 16px rgba(40,30,20,0.08);  /* --shadow-md */
+  --shadow-lg:0 12px 40px rgba(40,30,20,0.12); /* --shadow-lg */
   --r-sm:8px;                /* --r-sm */
   --r-md:12px;               /* --r-md */
   --r-lg:16px;               /* --r-lg */
@@ -125,6 +126,7 @@ const TOKENS_CSS = `
     --on-accent:#131210;       /* dark --bg */
     --shadow-sm:0 1px 2px rgba(0,0,0,0.3);   /* dark --shadow-sm */
     --shadow-md:0 4px 16px rgba(0,0,0,0.4);  /* dark --shadow-md */
+    --shadow-lg:0 12px 40px rgba(0,0,0,0.5); /* dark --shadow-lg */
   }
 }
 `;
@@ -213,11 +215,21 @@ h1{
    background the visitor's OS asked for.
 
    No ratio guard in CSS any more — the proportions come from the generator's
-   square viewBox, so a re-crop cannot silently squash the character. Still
-   deliberately NOT animated: these pages get no script (the kept-own CSP grants
-   no script-src), and the frozen MASCOT_REST_T pose is exactly the static
-   equivalent apps/web falls back to under prefers-reduced-motion. */
-.mascot{width:170px;color:var(--accent)}
+   square viewBox, so a re-crop cannot silently squash the character.
+
+   The POSE stays frozen at MASCOT_REST_T: the breathing outline and the blink
+   need per-frame values, and these pages get no script (the kept-own CSP grants
+   no script-src). What CSS alone can carry, it carries, so the character reads
+   the same in both places — apps/web's hover and its --shadow-lg elevation.
+   The hover is a transform on this box, never on the path data or the eye
+   centres: the viewBox is tight to the silhouette, so moving the geometry
+   inside it would clip the character. Moving the element cannot. The pip and
+   the dim filter ride along, being on/inside this same box. */
+.mascot{
+  width:170px;color:var(--accent);
+  box-shadow:var(--shadow-lg);
+  animation:hover 5s ease-in-out infinite alternate;
+}
 .mascot>svg:first-child{display:block;width:100%;height:auto}
 /* The expired draft is drained rather than redrawn — one asset, two readings.
    A plain filter, not a transition: the page looks the same at first paint as
@@ -231,8 +243,15 @@ h1{
    The pip is always emitted last, after the mascot. */
 .m-pip>svg:last-child{position:absolute;right:2px;bottom:26px}
 @keyframes pop{0%{transform:translateY(8px);opacity:0}100%{transform:translateY(0);opacity:1}}
+/* 6px over 5s, alternating — 3.5% of the 170px box, a drift you notice only if
+   you watch for it. Matched with apps/web so the character moves the same way
+   wherever it is drawn. */
+@keyframes hover{from{transform:translateY(0)}to{transform:translateY(-6px)}}
 /* Reduced motion is mandatory (design system §6): every animation has a static
-   equivalent. These pages' motion is decorative, so the equivalent is "none". */
+   equivalent. These pages' motion is decorative, so the equivalent is "none" —
+   the wildcard covers pop and hover alike, parking the mascot at translateY(0),
+   which is the frozen frame the markup already carries. The --shadow-lg
+   elevation is not motion and stays. */
 @media (prefers-reduced-motion:reduce){
   *{animation:none!important;transition:none!important}
 }
@@ -265,8 +284,10 @@ function apexHost(apexOrigin: string): string {
    from making any external request: a fetched <img src> here would be both a
    second round-trip on the error path and a dependency, and the whole premise of
    this epic is that the serve path depends on nothing. Inline markup beats the
-   base64 raster it replaced on that axis too: 17,027 characters off every one of
-   the three pages, measured — about 61% of the rendered document.
+   base64 raster it replaced on that axis too: 15,969 characters off every one of
+   the three pages, measured — about 57% of the rendered document. (It was 17,027
+   until the hover keyframe, the --shadow-lg token and their comments went in;
+   those cost 1,058 characters back. The figure is re-measured, not derived.)
 
    The generator is called once, at module load, with a fixed `t`: the output is
    pure, so every request would otherwise recompute identical bytes.

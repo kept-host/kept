@@ -380,13 +380,18 @@ const RETIRED_DATA_URI_CHARS = 20_719;
  * The floor the NET per-page saving must clear.
  *
  * Not `RETIRED_DATA_URI_CHARS`: the replacement is not free. All 20,719
- * characters of the data URI came off, and 3,185 characters of inline `<svg>`
- * went back on, so the net is ~17,020 per page — a measured 61% of the rendered
- * document. A criterion of "≥ 20,719 net" is unsatisfiable by any drawing at
- * all; this is the strictest floor an actual replacement can meet, and it still
- * fails loudly if the raster returns or the outline balloons.
+ * characters of the data URI came off and 3,185 characters of inline `<svg>`
+ * went back on; the mascot's hover keyframe, the `--shadow-lg` token and their
+ * comments then cost a further 1,058. The net is **15,969 per page, measured**
+ * — 11,784 / 12,306 / 12,238 characters rendered against the 27,753 / 28,275 /
+ * 28,207 the raster cost, about 57% of the document. (It was 17,027 before the
+ * hover and the shadow; that figure is superseded, not loosened.)
+ *
+ * A criterion of "≥ 20,719 net" is unsatisfiable by any drawing at all; this is
+ * the strictest floor an actual replacement can meet, and it still fails loudly
+ * if the raster returns or the outline balloons.
  */
-const MIN_NET_SAVING_CHARS = 17_000;
+const MIN_NET_SAVING_CHARS = 15_950;
 
 /** The lock pip, byte-identical to `system-pages.ts`. 451 and nothing else. */
 const PIP_MARKER = 'stroke="var(--warning)"';
@@ -507,6 +512,43 @@ describe("the mascot is the generated frozen frame (task 005)", () => {
         `${page} is now ${after} characters against ${before} before — a net saving of ${before - after}. All ${RETIRED_DATA_URI_CHARS} characters of the base64 WebP must come off and only the inline outline go back on; a smaller saving means a raster, or a much heavier frame, has crept in.`,
       ).toBeGreaterThanOrEqual(MIN_NET_SAVING_CHARS);
     }
+  });
+
+  it("hovers and sits on --shadow-lg, in both themes, with the motion reducible", () => {
+    // The two CSS-only halves of the interactive mascot. `apps/web` gets pointer
+    // tracking; the Worker cannot (no script), so these are the parts that keep
+    // the character looking like one character in both places, and each has a
+    // way of silently going missing.
+    const { body } = renderSystemPage("notFound", { apexOrigin: TEST_APEX });
+
+    // Token, not a raw shadow: a hex or rgba() on `.mascot` itself would not
+    // flip with the theme, and tokens are law.
+    expect(body, "the mascot must sit on the shared elevation token").toContain(
+      "box-shadow:var(--shadow-lg)",
+    );
+    expect(body, "--shadow-lg must be defined for light").toContain("--shadow-lg:0 12px 40px rgba(40,30,20,0.12)");
+    expect(body, "--shadow-lg must be remapped for dark, or the shadow vanishes on a dark page").toContain(
+      "--shadow-lg:0 12px 40px rgba(0,0,0,0.5)",
+    );
+
+    // A CSS transform on the box. NOT baked into the path or the eye centres:
+    // the generator's viewBox is tight to the silhouette, so animated geometry
+    // would clip the character's outline against it.
+    expect(body, "the mascot must run the hover keyframe").toMatch(
+      /animation:hover 5s ease-in-out infinite alternate/,
+    );
+    expect(body, "the hover must translate the element, not redraw it").toContain(
+      "@keyframes hover{from{transform:translateY(0)}to{transform:translateY(-6px)}}",
+    );
+
+    // Design system §6: every animation has a static equivalent. The wildcard in
+    // the reduce block is what supplies it — dropping it would leave the mascot
+    // drifting for a visitor who asked for stillness.
+    const reduceBlock = /@media \(prefers-reduced-motion:reduce\)\{([^}]*\})/.exec(body)?.[1] ?? "";
+    expect(
+      reduceBlock,
+      "the reduced-motion block must switch every animation off, the mascot's hover included",
+    ).toContain("animation:none!important");
   });
 
   it("serves the frozen frame on the wire, not just from renderSystemPage", async () => {
