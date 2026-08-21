@@ -38,7 +38,7 @@ import {
   type KeptQuota,
   type SwapResult,
 } from "@kept/shared";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull, sql, type SQL } from "drizzle-orm";
 
 import { db } from "../db";
 import { profiles, sites } from "../db/schema";
@@ -118,19 +118,45 @@ async function lockOwner(tx: Tx, profileId: string): Promise<void> {
 }
 
 /**
+ * THE DEFINITION OF KEPT-NESS, AND THE ONLY ONE.
+ *
+ * `owner_id = ? AND expires_at IS NULL AND status = 'live'`. `claimed_at` is a
+ * historical stamp that survives a demote and must never be read to answer this
+ * question — see the column comment in `../db/schema.ts`.
+ *
+ * ⚠️ EXPORTED SO IT IS NEVER RETYPED (E06 task 002). E06's dashboard splits the
+ * kept wall from the drafts section and prints "N of `KEPT_PAGE_LIMIT`" with the
+ * same predicate this module counts the cap with. A second copy of the WHERE
+ * clause in a query module is not cosmetic duplication: the two drift the first
+ * time `archived` or `quarantined` changes what counts, and then the dashboard
+ * disagrees with the endpoint that enforces the cap. Compose this — do not
+ * re-spell it.
+ *
+ * `archived` and `quarantined` rows are excluded here BY THE STATUS CLAUSE, and
+ * that exclusion belongs to the *quota*, not to what a dashboard may read: a
+ * page that vanishes from the wall when it is flagged is indistinguishable from
+ * data loss. `lib/db/queries/dashboard.ts` reads every status and asks this
+ * predicate only for the number.
+ */
+export function isKeptCondition(profileId: string): SQL {
+  return and(
+    eq(sites.ownerId, profileId),
+    isNull(sites.expiresAt),
+    eq(sites.status, "live"),
+  ) as SQL;
+}
+
+/**
  * How many pages this profile currently keeps.
  *
- * `owner_id = ? AND expires_at IS NULL AND status = 'live'` — the definition of
- * kept-ness, and the only one. `claimed_at` is a historical stamp that survives
- * a demote and must never be read to answer this question.
+ * Stays private: callers want the quota, not the arithmetic. `keptQuotaFor`
+ * below is the public door, and both read `isKeptCondition`.
  */
 async function countKept(tx: Tx, profileId: string): Promise<number> {
   const [row] = await tx
     .select({ count: sql<number>`count(*)::int` })
     .from(sites)
-    .where(
-      and(eq(sites.ownerId, profileId), isNull(sites.expiresAt), eq(sites.status, "live")),
-    );
+    .where(isKeptCondition(profileId));
   return row?.count ?? 0;
 }
 
@@ -140,6 +166,28 @@ function quotaOf(used: number): KeptQuota {
     used,
     remaining: Math.max(0, KEPT_PAGE_LIMIT - used),
   };
+}
+
+/**
+ * The account's kept-page allowance right now — the one number every E06 surface
+ * prints (dashboard header, drop-zone notice, keep button, swap chooser).
+ *
+ * It wraps `countKept` + `quotaOf` so `quotaOf`'s arithmetic — and the
+ * `KEPT_PAGE_LIMIT` it reads — stays in exactly one place. A caller that
+ * subtracts `used` from a limit of its own is the same drift `isKeptCondition`
+ * exists to prevent, one level up.
+ *
+ * ⚠️ PASS `tx` WHEN YOU ARE ALREADY INSIDE A CAP DECISION. `keepSite`/`demoteSite`/
+ * `swapKept` serialise on `lockOwner`, and a quota read that opens its own
+ * connection would take a *different* snapshot — outside the lock, after a
+ * concurrent keep, before this transaction's own write. Composing with the
+ * caller's `tx` (E06 tasks 004/006/011) reads inside the serialisation point and
+ * therefore agrees with what the cap branch decided. Without a `tx` this opens
+ * its own read transaction, which is what a server-component dashboard read
+ * wants.
+ */
+export function keptQuotaFor(profileId: string, tx?: Tx): Promise<KeptQuota> {
+  return inTransaction(tx, async (trx) => quotaOf(await countKept(trx, profileId)));
 }
 
 /** The columns every primitive below reads, locked for the read-modify-write. */

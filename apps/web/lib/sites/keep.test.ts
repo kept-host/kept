@@ -19,7 +19,12 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
-import { DRAFT_GRACE_DAYS, DRAFT_TTL_DAYS, KEPT_PAGE_LIMIT } from "@kept/shared";
+import {
+  DRAFT_GRACE_DAYS,
+  DRAFT_TTL_DAYS,
+  KEPT_PAGE_LIMIT,
+  type SiteStatus,
+} from "@kept/shared";
 import { config } from "dotenv";
 
 config({ path: ".env.local", quiet: true });
@@ -64,9 +69,19 @@ interface MakeSite {
   ownerId?: string | null;
   /** Owned rows only: no clock → kept, clock → owned draft. */
   kept?: boolean;
+  /**
+   * Anything other than `live` for the drift drill: `archived` and
+   * `quarantined` rows are clockless and owned, so they look kept to any
+   * predicate that forgets the status clause.
+   */
+  status?: SiteStatus;
 }
 
-async function makeSite({ ownerId = null, kept = false }: MakeSite = {}): Promise<{
+async function makeSite({
+  ownerId = null,
+  kept = false,
+  status = "live",
+}: MakeSite = {}): Promise<{
   id: string;
   slug: string;
 }> {
@@ -80,7 +95,7 @@ async function makeSite({ ownerId = null, kept = false }: MakeSite = {}): Promis
   await db.insert(sites).values({
     id,
     slug,
-    status: "live",
+    status,
     region: "auto",
     ownerId,
     anonTokenHash: ownerId === null ? `e05-007-${id}` : null,
@@ -110,17 +125,24 @@ function stamp(value: Date | null): Date {
   return value;
 }
 
-/** The kept-ness predicate, asked of the database rather than of a result object. */
+/**
+ * The kept-ness predicate, asked of the database rather than of a result object.
+ *
+ * It composes the module's own exported `isKeptCondition` rather than re-typing
+ * the WHERE clause. A drill that spells the predicate a second time is a drill
+ * that passes while the two definitions drift apart, which is precisely the
+ * failure the whole arrangement exists to prevent — the assertion has to be
+ * "these agree about reality", not "these two copies of a clause agree".
+ */
 async function keptCount(profileId: string): Promise<number> {
   const db = await client();
   const { sites } = await schema();
-  const { and, eq, isNull, sql } = await import("drizzle-orm");
+  const { sql } = await import("drizzle-orm");
+  const { isKeptCondition } = await import("./keep");
   const [row] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(sites)
-    .where(
-      and(eq(sites.ownerId, profileId), isNull(sites.expiresAt), eq(sites.status, "live")),
-    );
+    .where(isKeptCondition(profileId));
   return row?.count ?? 0;
 }
 
@@ -413,6 +435,81 @@ test(
     assert.equal(promoted.expiresAt, null);
     assert.equal(promoted.purgeAfter, null);
     assert.equal(await keptCount(profileId), KEPT_PAGE_LIMIT);
+  },
+);
+
+test(
+  "THE DRIFT ASSERTION: keptQuotaFor and keepSite's own count agree across every status",
+  { skip: skipLive },
+  async () => {
+    const { keepSite, keptQuotaFor } = await import("./keep");
+    const profileId = await makeProfile();
+
+    // The mix that separates a correct predicate from a plausible one. Both of
+    // the last two are OWNED and CLOCKLESS — indistinguishable from a kept page
+    // to anything that drops the `status = 'live'` clause, which is exactly how
+    // a second copy of the predicate goes wrong.
+    await fillKept(profileId, KEPT_PAGE_LIMIT - 1);
+    await makeSite({ ownerId: profileId, kept: false });
+    await makeSite({ ownerId: profileId, kept: false });
+    await makeSite({ ownerId: profileId, kept: true, status: "archived" });
+    await makeSite({ ownerId: profileId, kept: true, status: "quarantined" });
+
+    const quota = await keptQuotaFor(profileId);
+    assert.deepEqual(quota, {
+      limit: KEPT_PAGE_LIMIT,
+      used: KEPT_PAGE_LIMIT - 1,
+      remaining: 1,
+      });
+    assert.equal(
+      quota.used,
+      await keptCount(profileId),
+      "the quota and the predicate count the same rows",
+    );
+
+    // And the enforcer agrees: keeping one more must land `kept`, because the
+    // archived and quarantined rows do not occupy a slot.
+    const site = await makeSite();
+    const result = await keepSite(site.id, profileId, { expectAnonymous: true });
+    assert.equal(result.outcome, "kept");
+    assert.deepEqual(
+      result.quota,
+      await keptQuotaFor(profileId),
+      "keepSite's quota and keptQuotaFor's are the same number, from the same predicate",
+    );
+    assert.deepEqual(result.quota, {
+      limit: KEPT_PAGE_LIMIT,
+      used: KEPT_PAGE_LIMIT,
+      remaining: 0,
+    });
+  },
+);
+
+test(
+  "keptQuotaFor composes inside the caller's transaction rather than opening a second one",
+  { skip: skipLive },
+  async () => {
+    const { keepSite, keptQuotaFor } = await import("./keep");
+    const db = await client();
+    const profileId = await makeProfile();
+    const site = await makeSite();
+
+    // Inside `lockOwner`'s serialisation point, the quota must reflect writes
+    // this transaction has made and not yet committed. A `keptQuotaFor` that
+    // opened its own connection would read the pre-keep snapshot and report 0 —
+    // which is how tasks 004/006/011 would decide the cap against stale state.
+    await db.transaction(async (tx) => {
+      const before = await keptQuotaFor(profileId, tx);
+      assert.equal(before.used, 0);
+
+      await keepSite(site.id, profileId, { expectAnonymous: true, tx });
+
+      const inside = await keptQuotaFor(profileId, tx);
+      assert.equal(inside.used, 1, "the uncommitted keep is visible to the same transaction");
+      assert.equal(inside.remaining, KEPT_PAGE_LIMIT - 1);
+    });
+
+    assert.equal((await keptQuotaFor(profileId)).used, 1, "and it survives the commit");
   },
 );
 
