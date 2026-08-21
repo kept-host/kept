@@ -21,10 +21,12 @@
 // returns a string, which is what lets `apps/edge` render the character at all.
 
 // The public surface. `frame.ts` is what a consumer actually calls —
-// `mascotFrame`, `mascotSvg`, `MASCOT_REST_T` and the frozen `MascotOptions`;
-// `face.ts` and `geometry.ts` come along because the two consumers legitimately
-// need the viewBox, the sample count and the character's own constants to size
-// and colour the element they mount it in.
+// `mascotFrame`, `mascotSvg`, `MASCOT_REST_T` and `MascotOptions`; `face.ts`
+// and `geometry.ts` come along because the two consumers legitimately need the
+// viewBox, the sample count and the character's own constants to size and
+// colour the element they mount it in, and because a consumer that points the
+// eyes at something needs `gazeToward`, `HeadGaze` and the `KEPT_TRACK_*`
+// envelope it clamps to.
 export * from "./geometry";
 export * from "./face";
 export * from "./frame";

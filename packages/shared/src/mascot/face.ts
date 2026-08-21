@@ -237,6 +237,86 @@ export const KEPT_REST_GAZE: HeadGaze = { yaw: -11, pitch: 13, roll: 7 };
 export const KEPT_EYE_INSET = 0.9;
 
 /**
+ * How far off the rest gaze the head may be aimed while tracking a pointer, in
+ * degrees. Yaw and pitch only — see `gazeToward`.
+ *
+ * **Derived by rendering, exactly like every other constant in this block, and
+ * against the same defect `KEPT_EYE_INSET` exists to hold shut.** A tracking
+ * gaze swings the eyes across the silhouette far harder than `liveliness`'s
+ * ±4.98° / ±3.22° drift does, so an envelope picked by taste rather than by
+ * looking reopens the crescent that `KEPT_EYE_INSET = 0.9` was tuned to close.
+ *
+ * The sheet: `mascotSvg` at the four extreme corners (+yaw+pitch, +yaw−pitch,
+ * −yaw+pitch, −yaw−pitch) plus centre, in a light and a dark panel, at 300 px
+ * and at the ~170 px the Worker's system pages draw at, and at two instants —
+ * `MASCOT_REST_T` and the drift instant that pushes the outer eye hardest
+ * (t ≈ 606.29, found by sweeping the minimum body-outside-the-eye clearance
+ * over 700 samples of `t`). Envelopes rendered: ±8/±6, ±10/±7, ±12/±8, ±14/±10,
+ * ±16/±11, ±18/±13, ±20/±14, ±22/±15, ±26/±18.
+ *
+ * **−yaw +pitch is always the worst corner** — it turns the head further the way
+ * the rest gaze already faces, so the outer eye climbs toward the squircle's
+ * upper-left shoulder where `radiusAtAngle` pushes its seat furthest out. What
+ * that corner looks like as the envelope opens:
+ *
+ *   · **±14 / ±10 — chosen.** Both eyes stay whole, tilted ovals with a clear
+ *     rim of body outside them, in both themes, at 170 px as well as 300 px.
+ *     The outer eye is foreshortened, which is the sphere model working, not
+ *     the mask biting.
+ *   · **±16 / ±11** — the outer eye flattens into a leaf lying along the flank.
+ *     Nothing is clipped yet, but at 170 px it has stopped reading as an eye.
+ *   · **±18 / ±13** — that leaf is now hugging the shoulder and the head reads
+ *     as turned away rather than as looking at something.
+ *   · **±20 / ±14 and past it** — at 170 px the outer eye is a smudge on the
+ *     rim; ±26 / ±18 is the `KEPT_EYE_INSET = 1.15` failure back again.
+ *
+ * So the envelope is set one full step inside where the character starts to
+ * break, and the 170 px render is what decided it — same tie-breaker as
+ * `KEPT_EYE_SPLIT`. The measured clearance agrees: the worst corner at ±14/±10
+ * keeps 12.0 viewBox units of body outside the eye against 23.7 at rest, about
+ * half, and never approaches zero.
+ *
+ * Pitch is the smaller of the two on purpose. Rest pitch is already 13°, and
+ * past roughly 20° total the eyes climb onto the crown (see `KEPT_REST_GAZE`);
+ * 10° spends most of the remaining headroom without turning a glance upward
+ * into a stare over your shoulder.
+ */
+export const KEPT_TRACK_YAW = 14;
+export const KEPT_TRACK_PITCH = 10;
+
+/**
+ * Aim the head at a point, given that point as an offset from the mascot's
+ * centre normalised to roughly [-1, 1].
+ *
+ * `nx` grows to the right and `ny` grows **downward**, because that is what
+ * every pointer coordinate a caller can measure already does — the caller
+ * divides its own offsets by its own half-width and half-height and passes the
+ * result. Nothing here measures anything: this module has no access to a
+ * layout, by contract, and the whole reason it is a pure function of two
+ * numbers is that `apps/edge` must be able to link it and never call it.
+ *
+ * Inputs are clamped, so a pointer outside the element (or a caller that
+ * normalised against a smaller box than it thought) saturates at the envelope
+ * instead of walking the eyes off the silhouette. The result is
+ * `KEPT_REST_GAZE` plus at most `KEPT_TRACK_YAW` / `KEPT_TRACK_PITCH`, and
+ * `gazeToward(0, 0)` is `KEPT_REST_GAZE` exactly — a caller may hand this
+ * straight to `MascotOptions.gaze` on every frame and the mascot at rest is the
+ * mascot it has always been.
+ *
+ * `roll` is passed through untouched. The head-cock is a fixed characteristic
+ * of the face, not part of where it is looking; rolling it toward the pointer
+ * reads as the whole body leaning and is a different gesture entirely.
+ */
+export function gazeToward(nx: number, ny: number): HeadGaze {
+  return {
+    yaw: KEPT_REST_GAZE.yaw + clamp(nx, -1, 1) * KEPT_TRACK_YAW,
+    // screen y points down, `pitch` points up
+    pitch: KEPT_REST_GAZE.pitch - clamp(ny, -1, 1) * KEPT_TRACK_PITCH,
+    roll: KEPT_REST_GAZE.roll,
+  };
+}
+
+/**
  * One eye, as a capsule centred on the origin, at a body radius of `scale`.
  *
  * Both eyes are the same shape — only their matrices differ — so a frame draws

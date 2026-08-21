@@ -48,6 +48,7 @@ import {
   toPoints,
 } from "./geometry";
 import {
+  type HeadGaze,
   KEPT_EYE_INSET,
   KEPT_EYE_SPLIT,
   KEPT_EYE_TILT,
@@ -122,6 +123,25 @@ export interface MascotOptions {
    * that stays angularly uniform.
    */
   samples?: number;
+  /**
+   * The head orientation the frame's resting life is added to. Defaults to
+   * `KEPT_REST_GAZE`, which is what every caller wanted until the eyes started
+   * tracking the pointer.
+   *
+   * Additive on purpose: `liveliness(t)`'s drift, its blink and the breath are
+   * all still applied on top, so a tracking consumer supplies only where the
+   * head is *aimed* and gets the same living character it had before. Pass
+   * `gazeToward(nx, ny)` from `face.ts` to point it at something; pass nothing
+   * (`apps/edge`, and `apps/web` under `prefers-reduced-motion`) and the frame
+   * is byte-identical to the one this generator emitted before the option
+   * existed.
+   *
+   * **Bounded by the caller, not here.** `gazeToward` clamps to
+   * `KEPT_TRACK_YAW` / `KEPT_TRACK_PITCH`, the envelope that keeps both eyes
+   * clear of the silhouette; an arbitrary gaze passed directly is the caller's
+   * problem, exactly as an arbitrary `t` is.
+   */
+  gaze?: HeadGaze;
 }
 
 /** One eye of one frame: the shared capsule path plus this eye's own matrix. */
@@ -222,10 +242,11 @@ export function mascotFrame(t: number, opts: MascotOptions): MascotFrameData {
   // The eyes live on a unit sphere. The moment the silhouette stops being a
   // circle they have to be re-seated at the proportion of the REAL radius in
   // their own direction, or they escape the body and the mask crops them.
+  const base = opts.gaze ?? KEPT_REST_GAZE;
   const gaze = {
-    yaw: KEPT_REST_GAZE.yaw + life.dYaw,
-    pitch: KEPT_REST_GAZE.pitch + life.dPitch,
-    roll: KEPT_REST_GAZE.roll + life.dRoll,
+    yaw: base.yaw + life.dYaw,
+    pitch: base.pitch + life.dPitch,
+    roll: base.roll + life.dRoll,
   };
   const eyeD = keptEyePath(R);
   const k = blinkScale(life.lid);
