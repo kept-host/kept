@@ -15,8 +15,8 @@
  * render `<Mascot />`. The browser alternative — `page.emulateMedia({
  * reducedMotion: "reduce" })` plus a counter installed over
  * `window.requestAnimationFrame` via `addInitScript` — needs a route that
- * mounts the component, and that route does not exist until task 004 swaps the
- * vessel out of `/auth`. Writing the spec now would mean landing a red spec.
+ * mounts the component. `/auth` mounts it as of task 004, so that spec became
+ * possible only after this file was written; task 008 owns whether to add it.
  *
  * So the branch is factored instead: `startMascotLoop` is the decision, it
  * takes its scheduler as an argument, and this file counts the calls. That is
