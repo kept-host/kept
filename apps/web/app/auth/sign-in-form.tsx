@@ -6,7 +6,7 @@
  * ── WHAT THIS FILE OWNS ────────────────────────────────────────────────────
  * Three routes (GitHub, Google, email magic link) and every state the screen
  * can be in: **idle · redirecting · sending · sent · error · signed-in**. The
- * shell around it — header, vessel, footer line — is the server component in
+ * shell around it — header, mascot, footer line — is the server component in
  * `./page.tsx`, which has no session dependency at all.
  *
  * ── NO SILENT SPINNER, ANYWHERE ────────────────────────────────────────────
