@@ -163,63 +163,15 @@
    Landing keyframes. keptLive is the live-dot pulse, applied via motion-safe:
    so reduced-motion users see it static.
 
-   A `keptFloat` idle-bob used to sit here for an R3F Vessel component that was
-   never built. Nothing referenced it, so it is gone; the landing's motion is
-   driven imperatively by components/kept/kept-engine.ts.
+   A `keptFloat` idle-bob used to sit here for a React Three Fiber orb component
+   that was specified early on and never built. That decision is withdrawn and
+   stays withdrawn: there is no R3F illustration anywhere in kept, `three` and
+   `@react-three/fiber` are not dependencies, and neither is to be added for
+   one. Nothing referenced the keyframe, so it is gone; the landing's motion is
+   driven imperatively by components/kept/kept-engine.ts, and `/auth`'s
+   illustration is the mascot — an SVG animated per frame in
+   components/kept/mascot.tsx, with no CSS of its own to keep here.
    ───────────────────────────────────────────────────────────────────────── */
-/* ─────────────────────────────────────────────────────────────────────────
-   The vessel illustration on `/auth` (E05 task 005), ported verbatim from
-   `kept Auth.dc.html`.
-
-   IT LIVES HERE RATHER THAN IN ARBITRARY TAILWIND CLASSES because two of its
-   values cannot survive the class parser: the elliptical `border-radius` uses
-   `/`, which Tailwind reads as an opacity modifier, and the layered gradient is
-   a comma-and-paren thicket that does not round-trip through `_` escaping.
-   Written as CSS it is also just legible. Every colour is a token or a
-   `color-mix` against one, so it tracks the theme block; the two `white` stops
-   are the specular highlight of a glass form — white in both themes by
-   construction, not by omission.
-
-   NOT the withdrawn React Three Fiber Vessel component: this is pure CSS, the
-   same family as the orb on the Worker's branded system pages. The keyframe is
-   deliberately not called `keptFloat` — that name went with the R3F decision
-   and reusing it would suggest the decision came back.
-   ───────────────────────────────────────────────────────────────────────── */
-.kept-vessel {
-  width: 60px;
-  height: 72px;
-  border-radius: 42% 42% 46% 46% / 46% 46% 50% 50%;
-  border: 1px solid color-mix(in srgb, white 45%, transparent);
-  box-shadow: var(--shadow-sm);
-  background:
-    radial-gradient(
-      58% 52% at 50% 58%,
-      color-mix(in srgb, var(--accent) 50%, transparent),
-      transparent 62%
-    ),
-    linear-gradient(
-      160deg,
-      color-mix(in srgb, var(--surface) 92%, white),
-      color-mix(in srgb, var(--bg) 55%, var(--accent-soft))
-    );
-}
-
-@keyframes keptVesselFloat {
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(-7px);
-  }
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .kept-vessel {
-    animation: keptVesselFloat 7s ease-in-out infinite;
-  }
-}
-
 @keyframes keptLive {
   0%,
   100% {

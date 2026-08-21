@@ -1,12 +1,14 @@
 /**
- * The chrome both sign-in screens sit in — the wordmark header and the vessel.
+ * The chrome both sign-in screens sit in — the wordmark header and the mascot.
  *
  * Extracted from `./page.tsx` when task 009 added `./keep/page.tsx`: the two
  * screens differ by one prop on `<SignInForm>` (the keep reassurance line) and
  * by nothing else, and a second copy of this markup would be a second place for
- * the vessel's geometry and the header's focus ring to drift.
+ * the mascot's size and colour classes and the header's focus ring to drift.
  */
 import Link from "next/link";
+
+import { Mascot } from "@/components/kept/mascot";
 
 export function AuthShell({ children }: { children: React.ReactNode }) {
   return (
@@ -24,18 +26,12 @@ export function AuthShell({ children }: { children: React.ReactNode }) {
 
       <main className="flex flex-1 items-center justify-center px-6 py-12">
         <div className="w-full max-w-[420px]">
-          {/* The vessel. Its geometry and gradients are `.kept-vessel` in
-              globals.css — see the block there for why they cannot be Tailwind
-              arbitrary values. The glowing core stays here: it is a plain
-              circle and expresses fine as classes. */}
-          <div
-            aria-hidden="true"
-            className="mb-2 flex h-24 items-center justify-center"
-          >
-            <div className="kept-vessel relative">
-              <div className="absolute left-1/2 top-[54%] size-5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[radial-gradient(circle,var(--accent-hover),var(--accent)_60%)] shadow-[0_0_22px_6px_color-mix(in_srgb,var(--accent)_45%,transparent)]" />
-            </div>
-          </div>
+          {/* The mascot owns no colour and no size — the caller does. `size-24`
+              holds the slot the illustration used to occupy (its viewBox is
+              square, so this is the whole rhythm), and `text-accent` is what
+              paints the `currentColor` body. `aria-hidden` is on its own `<svg>`
+              root, so there is no wrapper here to carry it. */}
+          <Mascot className="mx-auto mb-2 block size-24 text-accent" />
 
           {children}
         </div>

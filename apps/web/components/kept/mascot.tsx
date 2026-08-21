@@ -101,9 +101,11 @@ export interface MascotProps {
 }
 
 /**
- * `aria-hidden` decoration: it names nothing and labels nothing. The
- * `aria-hidden` that sits on the vessel's wrapper in `auth-shell.tsx` moves
- * onto this element rather than being dropped.
+ * `aria-hidden` decoration: it names nothing and labels nothing. It carries the
+ * attribute on its own `<svg>` root rather than relying on a wrapper at the
+ * call site — the illustration this replaced in `auth-shell.tsx` was hidden by
+ * a wrapper `<div>`, and moving the attribute onto the element itself means no
+ * future mount site can drop it by forgetting one.
  */
 export function Mascot({ className }: MascotProps) {
   // Not a literal: the moment a second mascot mounts — E06, or the landing —
