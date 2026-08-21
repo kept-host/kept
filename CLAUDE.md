@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**E00 → E05b are complete.** The pnpm + Turbo monorepo builds and ships: `apps/web` (Next.js control plane — the landing, the publish API, sign-in + claim, the anonymous result/claim screens), `apps/edge` (the Hono Worker serving `*.kept-dev.xyz` from R2 + KV), `packages/shared`. E05-auth-and-claim and the corrective E05a-control-plane-origin-and-session-hardening are deployed to **dev** at tag `dev-v0.3.2`; **E05b-mascot** replaced both brand objects with one generated mascot and is not yet tagged. Suites green: `apps/web` unit 169 (`tsx --test`), `apps/edge` vitest 183, Playwright 118 tests / 19 specs (in CI 47 pass / 71 skipped — the skips are auth specs correctly gating on absent secrets; locally with credentials ~116 pass). **Next epic: `E06-dashboard-and-management`.** **Prod has never been deployed:** the `prod` GitHub Environment holds zero secrets, `release.yml` has never run, and `develop` → `main` promotion is unexercised.
+**E00 → E05b are complete.** The pnpm + Turbo monorepo builds and ships: `apps/web` (Next.js control plane — the landing on the apex, the publish API, sign-in + claim, the anonymous result/claim screens), `apps/edge` (the Hono Worker serving `*.kept-dev.xyz` from R2 + KV), `packages/shared`. E05-auth-and-claim and the corrective E05a-control-plane-origin-and-session-hardening are deployed to **dev** at tag `dev-v0.3.2` and verified end to end against the deployed stack; **E05b-mascot** replaced both brand objects with one generated mascot and is **not yet tagged**. Suites green: `apps/web` unit 169 (`tsx --test`), `apps/edge` vitest 183, Playwright 118 tests / 19 specs — **47 pass, 71 skipped, 0 failed in CI** (the skips are auth specs correctly gating on absent secrets; locally with credentials ~116 pass). **Next epic: `E06-dashboard-and-management`.** **Prod has never been deployed:** the `prod` GitHub Environment holds zero secrets, `release.yml` has never run, and `develop` → `main` promotion is unexercised.
 
-> The E05/E05a half of this section is also rewritten, in more detail, on the unmerged `docs/context-refresh-e05a` branch; expect to resolve a conflict here when that lands.
+⚠️ **`apps/web/app/providers.tsx` sets `forcedTheme="light"`** and has since E00 (`6117a26`), so dark mode is unreachable in the running app and the theme toggle is inert — "light/dark parity on every screen" is not actually being exercised. Pre-existing, out of scope for E05b (whose dark verification applied the `[data-theme="dark"]` token block directly). **Owned by a `fix/` branch before E06 starts.**
 
 Read `.agent/System/00-README-architecture-index.md` first — it is the entry point and the source of truth for build order, repo structure, and the non-negotiable rules. Each `.agent/Tasks/prds/E*.md` is a self-contained epic PRD with its own scope, data model, states, acceptance criteria, and a `UI Source` import block.
 
@@ -30,7 +30,7 @@ publish/manage (apps/web) ──writes──▶  R2 (files) + KV (manifest)
 visitor ──▶ {slug}.kept.host (apps/edge) ─────┘──▶ page
 ```
 
-- **`apps/web`** — CONTROL PLANE. Next.js (App Router, RSC, TS) on its own infra (Railway). Landing, dashboard, auth, publish/manage APIs, cron, Neon Postgres. *Writes* pages/settings.
+- **`apps/web`** — CONTROL PLANE. Next.js (App Router, RSC, TS) on its own infra (Railway), authenticated surface at **`app.kept.host` / `app.kept-dev.xyz`**; the apex serves the landing. Both hostnames are the *same* Railway service and build. Landing, dashboard, auth, publish/manage APIs, cron, Neon Postgres. *Writes* pages/settings.
 - **`apps/edge`** — DATA PLANE. Hono Worker on Cloudflare serving `*.kept.host` from R2 + KV + Cache. Nothing else. *Reads* only.
 - **`packages/shared`** — types, enums (status/plan/region), constants, zod schemas, the KV manifest type. Imported by **both** apps.
 
@@ -38,12 +38,14 @@ visitor ──▶ {slug}.kept.host (apps/edge) ─────┘──▶ page
 
 The **KV manifest contract** is the seam: control plane writes `{ siteId, versionId, status, region, ownerId, updatedAt }` keyed by `<slug>`; the Worker only reads it. R2 layout is `sites/{siteId}/{versionId}/index.html` — keyed by `siteId` not slug, so renaming a slug is a KV-only change (no file move).
 
+**The origin split (E05a) is the second load-bearing boundary.** Pages serve arbitrary user-authored HTML — `<script>` included — at `{slug}.kept.host`, so an authenticated control plane sharing that registrable domain is open to cookie tossing and *same-site* CSRF that `SameSite` cannot block. Hence `app.` for everything authenticated; a session cookie named **`__Host-kept.session_token`** (the prefix makes the browser reject any `Domain` attribute, so a hosted page cannot toss or shadow it); and an `Origin`/`Sec-Fetch-Site` check on the four cookie-authenticated mutating routes, owned by `apps/web/lib/publish/origin.ts`. The **keyless bearer** routes (`POST /api/publish`, the `/api/anon/:token` family) deliberately do **not** check it — that is E08's agent path and it must stay callable from anywhere. PSL submission for `kept.host` is still required before launch (E07 owns it), but it is now defence in depth rather than the only isolation.
+
 ## Locked decisions (don't drift)
 
-- **Stack:** Next.js (Railway) + **Neon** Postgres control plane, with **Better Auth** v1.6.x self-hosted (Drizzle adapter, users in the same Neon database) and **Resend** for magic-link email — both wired in E05; Cloudflare Worker (Hono) + R2 + KV + Cache serving; Tailwind v4 (`@theme`) + shadcn (`new-york`, heavily re-themed) + Motion (`motion/react`); fonts Hanken Grotesk (display) / Geist (body) / JetBrains Mono (mono).
+- **Stack:** Next.js (Railway) + **Neon** Postgres control plane, with **Better Auth** v1.6.26 self-hosted (Drizzle adapter, uuid ids via `advanced.database.generateId`, users in the same Neon database) and **Resend** for magic-link email — both shipped in E05, alongside GitHub **and Google** OAuth (three sign-in doors; account linking is verified-email-only); Cloudflare Worker (Hono) + R2 + KV + Cache serving; Tailwind v4 (`@theme`) + shadcn (`new-york`, heavily re-themed) + Motion (`motion/react`); fonts Hanken Grotesk (display) / Geist (body) / JetBrains Mono (mono).
 - **Tokens are law.** Design tokens are CSS variables in `globals.css`, exposed to Tailwind via `@theme`, with shadcn pointed at them. Never hardcode a hex — use token classes (`bg-bg`, `text-accent`, `font-display`, `rounded-md`). Theme toggle swaps the variable block; light/dark parity on every screen. shadcn is the behavior/a11y layer, not the look. See `03-frontend-specs.md` §3–4.
 - **`packages/shared` is the single source** for types/enums/constants — `MAX_PAGE_BYTES`, `KEPT_PAGE_LIMIT=3`, `DRAFT_TTL_DAYS=7`, `DRAFT_GRACE_DAYS=30`; site `status`, `plan`, `region` (`auto | eu`) enums; zod schemas; the KV manifest type. The landing must never hardcode a `3` or a `7` where a constant exists.
-  - ⚠️ **One pivot delta still pending.** E01 renamed the constants to draft/kept vocabulary and deleted `SLOT_COST_EUR` / `SUPPORTER_PAGE_LIMIT`. E04's migration `0001_publish_columns_and_status_enum.sql` dropped `resting` from `site_status` and added `archived`, so `SITE_STATUSES` is now clean (`live | under_review | quarantined | expired | removed | archived`). Still outstanding: **`PLANS` carries `supporter`**. It drives a `pgEnum` in `apps/web/lib/db/schema.ts` baked into a committed migration, so dropping it is a **Postgres enum migration, not a rename** — owned by **E05**. Target: plans `free | premium`.
+  - ✅ **The pivot deltas are discharged.** E01 renamed the constants and deleted `SLOT_COST_EUR` / `SUPPORTER_PAGE_LIMIT`; E04's migration `0001` dropped `resting` from `site_status` and added `archived` (`SITE_STATUSES` = `live | under_review | quarantined | expired | removed | archived`); E05's migration `0002` rewrote the plan `pgEnum`, so **`PLANS` is now `free | premium`**. Nothing pivot-related is outstanding — don't re-open it.
 - **Page model:** every page is a **draft** (`expires_at` set; live instantly; 7-day clock → `expired` → 30-day grace → delete) or **kept** (`expires_at` null; permanent). `isDraft = expires_at != null`. **Keeping** a draft = sign in + attach + clear the clock, within the kept cap. Publishing past the cap **lands as a draft, never a hard error**; demoting a kept page starts a fresh 7-day clock. Archive, don't delete. The `region` field is wired in v1 but EU data residency only activates in **E11**.
 - **Vocabulary:** **draft** and **kept** are product vocabulary — use them consistently in UI copy, code identifiers, and docs.
 - **Writes** (publish/rename/replace/delete/claim) go through route handlers / server actions that (a) write Postgres, (b) upload to R2 via S3 client, (c) update the KV manifest via Cloudflare REST, (d) enqueue scans, then (e) purge the edge cache. The browser never touches R2/KV directly. **Reads** (dashboard/settings) query Postgres directly from server components.
@@ -82,7 +84,7 @@ MVP screens are designed in Claude Design (project `da93d30e-94eb-40d4-b3d1-4632
 
 ```
 E00 ✅ → E01 ✅ → E02 ✅ → E03 ✅ → E04 ✅ → E05 ✅ → E05a ✅ → E05b ✅ → E06 → E07 → E08 → E09-open-books   (v1 / launch)
-                                                                                    └──→ E10, E11   (v1.5)
+                                                                                       └──→ E10, E11   (v1.5)
 ```
 
 | Epic | Covers |
@@ -107,7 +109,9 @@ Several epics carry **open questions** worth resolving before that epic starts (
 
 ## CI/CD model (E02-cicd-deployment)
 
-Protected `develop`/`main`. **Merge = validate, tag = deploy.** Tag patterns: `dev-v*` → dev, `prod-v*` → prod (prod tags must point at `main`). Dev and prod are fully isolated (separate Cloudflare resources and Neon branches — prod is the root branch, dev a persistent branch; dev serves from `*.kept-dev.xyz`). Worker deploys via Wrangler; control plane to Railway.
+Protected `develop`/`main`. **Merge = validate, tag = deploy.** Tag patterns: `dev-v*` → dev, `prod-v*` → prod (prod tags must point at `main`). Dev and prod are fully isolated (separate Cloudflare resources and Neon branches — prod is the root branch, dev a persistent branch; dev serves from `*.kept-dev.xyz`, with the control plane at `app.kept-dev.xyz`). Worker deploys via Wrangler; control plane to Railway.
+
+**Cron is a scheduled GitHub Actions workflow calling an authenticated route** (`.github/workflows/cron-draft-reminder.yml` → `Authorization: Bearer CRON_SECRET`), not a Worker `[triggers]` block — a Worker cron would make the data plane call the control plane, which the architecture rule forbids. **E07 inherits that substrate** for expiry/purge jobs. Env beyond E02's topology: `BETTER_AUTH_SECRET`/`_URL`, `GITHUB_CLIENT_*`, `GOOGLE_CLIENT_ID`/`_SECRET` (added after E02 reserved its slots), `RESEND_API_KEY`, `EMAIL_FROM`, `CRON_SECRET`. Migrations `0002` (Better Auth tables, `sites.claimed_at`, plan enum rewrite) and `0003` (`reminder_sent_at`, `reminder_keep_token_hash`) are applied to the dev Neon branch only; **prod remains unmigrated and undeployed.**
 
 ---
 
@@ -170,11 +174,13 @@ Criticism is welcome — say when I'm wrong or might be wrong. Flag better appro
 - **NO MIXED CONCERNS** — keep validation out of API handlers, DB queries out of UI components, etc.
 - **NO RESOURCE LEAKS** — close connections, clear timeouts, remove listeners, clean up file handles.
 - **ALWAYS RUN `pnpm typecheck`** before claiming any task complete (zero TypeScript errors). Not `pnpm tsc --noEmit` — there is no root `tsconfig.json`, so that command prints tsc's help and verifies nothing. `pnpm typecheck` runs `turbo run typecheck` across every workspace, which is the real gate.
-- **ALWAYS RUN `pnpm lint`** before claiming any task complete (zero ESLint errors; warnings OK). This maps to `turbo run lint`. If a wrapper or proxy reports errors that `pnpm exec eslint .` inside the workspace does not, trust the workspace — the repo's flat config is authoritative.
+- **ALWAYS RUN `pnpm lint`** before claiming any task complete (zero ESLint errors; warnings OK). This maps to `turbo run lint`. ⚠️ The `rtk` hook rewrites the command and **summarises** its output, and its summariser invents errors: it reports phantom failures in `KeptLanding.tsx` / `next-env.d.ts` / `lib/auth/return-path.ts` that do not exist. **`rtk proxy pnpm lint` is the truth** (currently 0 errors, 1 pre-existing warning). `git status` is filtered the same way and can show a clean tree while files are untracked — use `/usr/bin/git` when it matters.
 - **Node ≥22 is required** (`engines` and `.nvmrc` both say so). Wrangler will not run on Node 20, so `apps/edge` cannot build or test there. Use `nvm use` at the repo root.
 
 ## Other conventions
 
+- **Never derive an origin from the request — read it from configuration.** This bug class has shipped twice: `middleware.ts` read `request.nextUrl.host`, and `/auth/callback` built its redirect from `new URL(request.url)`. Next composes both from the server's **listen address**, not the `Host` header, so locally the address *is* the app origin and the bug is invisible; on Railway (`PORT=8080`) it yields `localhost:8080` and kills sign-in. Use `x-forwarded-host` for routing decisions and `authConfig().baseUrl` for anything security-bearing. `apps/web/lib/routing/configured-origins.test.ts` guards the class in CI.
+- **Local dev is HTTPS** — `pnpm dev` runs `next dev --experimental-https` at `https://localhost:3000`, because `__Host-` cookies require `Secure`. The first run mints a certificate into `apps/web/certificates/` (gitignored; it holds a private key — never commit it).
 - **AST-grep** (`.claude/rules/use-ast-grep.md`): prefer `ast-grep` over regex for structural/language-aware code search and refactoring — *if installed* (`command -v ast-grep`); otherwise fall back to grep/semantic search.
 - **Command patterns** (`.claude/rules/standard-patterns.md`): fail fast, trust the system, clear actionable errors, minimal output, smart defaults over interactive prompts.
 - **Datetime** (`.claude/rules/datetime.md`): get real timestamps from `date -u +"%Y-%m-%dT%H:%M:%SZ"` for any frontmatter/timestamps — never placeholder or estimate; always UTC ISO 8601.
