@@ -169,8 +169,10 @@
    `@react-three/fiber` are not dependencies, and neither is to be added for
    one. Nothing referenced the keyframe, so it is gone; the landing's motion is
    driven imperatively by components/kept/kept-engine.ts, and `/auth`'s
-   illustration is the mascot — an SVG animated per frame in
-   components/kept/mascot.tsx, with no CSS of its own to keep here.
+   illustration is the mascot — an SVG whose face is animated per frame in
+   components/kept/mascot.tsx. Its one piece of CSS motion is keptMascotHover
+   below: a whole-element bob, which is a transform and so has no business in
+   the per-frame path maths.
    ───────────────────────────────────────────────────────────────────────── */
 @keyframes keptLive {
   0%,
@@ -214,6 +216,28 @@
   }
 }
 
+/* keptMascotHover: the mascot's idle bob. The amplitude is a PERCENTAGE, which
+   on a transform resolves against the element's own border box — so the bob
+   scales with whatever size the caller picked (±3% ≈ ±2.9px at `size-24`,
+   ±6px at `size-48`) instead of reading as a twitch on a large mascot and a
+   lurch on a small one. A fixed px value would need a second class per size.
+
+   It must stay a CSS transform on the element and must never move `cy` or the
+   path: MASCOT_BODY_R = 85 against the profile's 1.157 peak leaves only ~1.6
+   viewBox units of headroom, so bobbing inside the viewBox clips the crown.
+
+   `alternate` over 3s makes the round trip 6s — the ease-in-out then spends
+   most of it near the turning points, which is what reads as breathing rather
+   than as bouncing. */
+@keyframes keptMascotHover {
+  from {
+    transform: translateY(-3%);
+  }
+  to {
+    transform: translateY(3%);
+  }
+}
+
 @media (prefers-reduced-motion: no-preference) {
   #gauge-dots [data-on="1"] {
     animation: keptGaugeRipple 3.6s ease-in-out infinite;
@@ -221,6 +245,9 @@
   }
   #gauge-next-slot {
     animation: keptGaugeSlot 2.4s ease-in-out infinite;
+  }
+  [data-mascot] {
+    animation: keptMascotHover 3s ease-in-out infinite alternate;
   }
 }
 

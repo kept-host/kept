@@ -30,8 +30,15 @@ export function AuthShell({ children }: { children: React.ReactNode }) {
               holds the slot the illustration used to occupy (its viewBox is
               square, so this is the whole rhythm), and `text-accent` is what
               paints the `currentColor` body. `aria-hidden` is on its own `<svg>`
-              root, so there is no wrapper here to carry it. */}
-          <Mascot className="mx-auto mb-2 block size-24 text-accent" />
+              root, so there is no wrapper here to carry it.
+
+              `shadow-lg` is elevation on the square box, not on the silhouette:
+              a plain box-shadow that lifts the mascot's tile off the page. It
+              resolves to the `--shadow-lg` token, which the dark block
+              redefines, so it is theme-correct without a `dark:` variant. It is
+              static, so it survives `prefers-reduced-motion: reduce` — the bob
+              does not. Presentation, hence here and not in the component. */}
+          <Mascot className="mx-auto mb-2 block size-24 text-accent shadow-lg" />
 
           {children}
         </div>
