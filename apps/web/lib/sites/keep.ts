@@ -40,7 +40,7 @@ import {
 } from "@kept/shared";
 import { and, eq, isNull, sql, type SQL } from "drizzle-orm";
 
-import { db } from "../db";
+import { db, type Tx } from "../db";
 import { profiles, sites } from "../db/schema";
 // The single definition of the draft clock arithmetic, reused rather than
 // retyped: `now + DRAFT_TTL_DAYS`, then `+ DRAFT_GRACE_DAYS`, both from
@@ -48,9 +48,6 @@ import { profiles, sites } from "../db/schema";
 // store helpers resolve their environment lazily inside their own calls, so
 // nothing here reaches R2, KV or the purge endpoint.
 import { draftClocks } from "../publish/pipeline";
-
-/** The transaction handle Drizzle hands `db.transaction`'s callback. */
-type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /**
  * A site that does not exist, is not owned by this profile, or is not in the
@@ -103,8 +100,16 @@ function inTransaction<T>(tx: Tx | undefined, fn: (tx: Tx) => Promise<T>): Promi
  * both count 2 and both keep, producing a fourth kept page. Serialising on the
  * owner has no phantom: the second transaction blocks here, and its count
  * statement afterwards takes a fresh snapshot that includes the first keep.
+ *
+ * ⚠️ EXPORTED SO THE OWNED PUBLISH SERIALISES ON THE SAME POINT (E06 task 004).
+ * A signed-in publish decides kept-or-draft against the same cap, so it must
+ * queue behind the same lock: two dashboard tabs at 2/3 that each took a
+ * *different* serialisation point would both count 2 and both land kept,
+ * producing a fourth kept page — the exact failure the paragraph above
+ * describes, reached through a second door. `./publish.ts` takes this lock and
+ * does its count AND its insert inside the transaction that holds it.
  */
-async function lockOwner(tx: Tx, profileId: string): Promise<void> {
+export async function lockOwner(tx: Tx, profileId: string): Promise<void> {
   const [row] = await tx
     .select({ id: profiles.id })
     .from(profiles)
@@ -112,7 +117,7 @@ async function lockOwner(tx: Tx, profileId: string): Promise<void> {
     .for("update");
   if (!row) {
     throw new Error(
-      `No profile ${profileId}. A keep/demote takes a profile id that a session already resolved.`,
+      `No profile ${profileId}. A keep/demote/publish takes a profile id that a session already resolved.`,
     );
   }
 }

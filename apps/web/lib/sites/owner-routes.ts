@@ -2,6 +2,7 @@
  * The HTTP shape of the owner-scoped endpoints — E05 task 010, extended by E06.
  *
  * `POST /api/sites/:id/keep` · `POST /api/sites/:id/demote` · `POST /api/sites/swap`
+ * `POST /api/sites` (E06 task 004)
  * `PATCH /api/sites/:id/slug` (E06 task 005)
  * `POST /api/sites/:id/replace` · `DELETE /api/sites/:id` (E06 task 006)
  *
@@ -22,12 +23,13 @@
  * harmless extra. The one manifest-touching branch in E05 is the late keep of an
  * `expired` row, and it belongs to the anonymous keep route, not to these.
  *
- * ⚠️ RENAME, REPLACE AND DELETE ARE THE EXCEPTIONS, AND THEY ARE ON PURPOSE.
- * Moving a slug, storing new bytes and taking a page off the internet are all
- * unavoidably edge operations — but each ordering lives in exactly one place,
- * `./rename.ts` and `./manage.ts`, and this module only maps their errors onto
- * statuses. Nothing here calls `writeManifest`/`removeManifest`/`r2Store`
- * directly, and nothing new may.
+ * ⚠️ PUBLISH, RENAME, REPLACE AND DELETE ARE THE EXCEPTIONS, AND THEY ARE ON
+ * PURPOSE. Storing a page's first bytes, moving a slug, storing new bytes and
+ * taking a page off the internet are all unavoidably edge operations — but each
+ * ordering lives in exactly one place, `./publish.ts`, `./rename.ts` and
+ * `./manage.ts`, and this module only maps their errors onto statuses. Nothing
+ * here calls `writeManifest`/`removeManifest`/`r2Store` directly, and nothing
+ * new may.
  *
  * ⚠️ "YOU DON'T OWN THIS" IS AN EXISTENCE ORACLE. A site that does not exist, a
  * site owned by somebody else and an id that is not even a uuid all produce the
@@ -50,6 +52,7 @@ import {
   deleteResultSchema,
   demoteResultSchema,
   keepResultSchema,
+  ownedPublishResultSchema,
   renameRequestSchema,
   renameResultSchema,
   replaceResultSchema,
@@ -57,6 +60,7 @@ import {
   type DeleteResult,
   type DemoteResult,
   type KeepResult,
+  type OwnedPublishResult,
   type RenameResult,
   type ReplaceResult,
   type SwapResult,
@@ -64,18 +68,26 @@ import {
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { SlugUnavailableError } from "../db/queries/publish";
 import { checkHeuristics } from "../publish/hooks";
 import { errorResponse } from "../publish/http";
-import { fail, requestError, type PublishFailure } from "../publish/pipeline";
+import {
+  fail,
+  internalError,
+  requestError,
+  type PublishFailure,
+  type PublisherContext,
+} from "../publish/pipeline";
 import { checkChosenSlug } from "../publish/slug";
 import { demoteSite, keepSite, SiteNotFoundError, swapKept } from "./keep";
 import {
   deleteSite,
   ManageStoreError,
-  replaceBodySchema,
+  ownerPageBodySchema,
   replaceSite,
   SiteNotReplaceableError,
 } from "./manage";
+import { OwnedPublishStoreError, publishOwnedPage } from "./publish";
 import {
   renameSite,
   RenameStoreError,
@@ -155,6 +167,77 @@ function unexpected(operation: string, err: unknown): PublishFailure {
     error: "internal_error",
     message: `kept could not ${operation} this page. Nothing was left half-written — retry the request.`,
   });
+}
+
+/**
+ * `POST /api/sites` — publish a page that belongs to this account from its first
+ * byte. E06 task 004, epic decision **D1**.
+ *
+ * ⚠️ THIS IS NOT `POST /api/publish` WITH A SESSION. That endpoint is the
+ * KEYLESS one: it mints an `anon_token_hash`, leaves `owner_id` null and starts
+ * a clock, and composing it with a keep would be two non-atomic requests with an
+ * orphan window between them — plus a bearer token handed to a browser for a
+ * page the account already owns. Two authorities on one page is the bug; this
+ * route is how it is avoided. `./publish.ts` owns the transaction and the store
+ * ordering, and mints no token at all.
+ *
+ * ⚠️ THE CAP IS A BRANCH, NOT AN ERROR — the same rule keep obeys, and the
+ * reason this returns `KeepResult`'s `kept | owned_draft` discriminant rather
+ * than a third vocabulary. Publishing at `KEPT_PAGE_LIMIT` lands an OWNED DRAFT
+ * with its countdown running and returns **200**, so the drop-zone renders a
+ * notice instead of an error. A 4xx here would mean losing the page somebody
+ * just dropped because their account is full, and there must never be one.
+ *
+ * 200 rather than 201: `OwnerOutcome` pins one success status across the whole
+ * owner family, and the caller branches on `outcome` — which carries the fact
+ * that matters — never on the status code.
+ *
+ * TURNSTILE IS NOT REQUIRED and must not be added "for symmetry": the caller is
+ * authenticated by a `__Host-` session cookie and an origin check. The heuristic
+ * content check DOES run, in the same position as every other path that stores
+ * bytes — being signed in is not a content policy.
+ */
+export async function publishOwnedSite(
+  raw: unknown,
+  profileId: string,
+  publisher: PublisherContext,
+): Promise<OwnerOutcome<OwnedPublishResult>> {
+  const parsed = ownerPageBodySchema.safeParse(raw);
+  if (!parsed.success) return requestError(parsed.error);
+
+  const heuristics = await checkHeuristics(parsed.data.html);
+  if (!heuristics.allowed) {
+    return fail(422, {
+      error: "content_rejected",
+      message: `This page was refused by the content check (${heuristics.reason}).`,
+    });
+  }
+
+  try {
+    const result = await publishOwnedPage({ profileId, html: parsed.data.html, publisher });
+    // Parse our own output: the drop-zone repaints its card and its quota from
+    // this body without a second request, so a silent shape change here is a
+    // broken dashboard rather than a failed test.
+    return { ok: true, status: 200, body: ownedPublishResultSchema.parse(result) };
+  } catch (err) {
+    if (err instanceof SlugUnavailableError) {
+      // The same 503 and the same code the anonymous pipeline gives for the
+      // same exhausted mint — a broken index or a broken CSPRNG, and transient
+      // from the caller's side either way.
+      console.error(`[kept] ${err.message}`);
+      return fail(503, {
+        error: "slug_unavailable",
+        message:
+          "Could not assign a link for this page right now. This is transient — retry the request.",
+      });
+    }
+    if (err instanceof OwnedPublishStoreError) {
+      console.error(`[owner-routes] publish refused — ${err.message}`);
+      // The row was rolled back, so "nothing was left half-written" is true.
+      return internalError();
+    }
+    return unexpected("publish", err);
+  }
 }
 
 /**
@@ -327,7 +410,7 @@ export async function renameOwnedSite(
  * `POST /api/sites/:id/replace` — new bytes, same URL.
  *
  * VALIDATION AND CONTENT POLICY HAPPEN HERE, ORDERING HAPPENS IN `./manage.ts`,
- * the same split rename uses. `replaceBodySchema` is the publish schema's `html`
+ * the same split rename uses. `ownerPageBodySchema` is the publish schema's `html`
  * field, so `MAX_PAGE_BYTES`, the empty-page rule and every error CODE are
  * identical to the path that first stored the page — `requestError` is the
  * shared mapper, because "the body was 6 MB" and "the body had no `html` field"
@@ -348,7 +431,7 @@ export async function replaceOwnedSite(
   const parsedId = siteIdSchema.safeParse(rawSiteId);
   if (!parsedId.success) return ownerNotFound();
 
-  const parsed = replaceBodySchema.safeParse(raw);
+  const parsed = ownerPageBodySchema.safeParse(raw);
   if (!parsed.success) return requestError(parsed.error);
 
   // The same E07 seam the anonymous replace runs, in the same position: before

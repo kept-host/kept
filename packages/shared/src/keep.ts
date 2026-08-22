@@ -67,14 +67,25 @@ export type KeepResult =
       purgeAfter: string;
     };
 
-export const keepResultSchema = z.discriminatedUnion("outcome", [
-  z.object({
+/**
+ * The two branches, named rather than inlined into the union below.
+ *
+ * ⚠️ EXPORTED SO E06's OWNED PUBLISH CAN EXTEND THEM (task 004). A signed-in
+ * publish resolves into the SAME two outcomes — under the cap the page is kept,
+ * at the cap it lands as an owned draft — and it carries two extra fields the
+ * browser needs (`./manage`'s `ownedPublishResultSchema`). Extending these is
+ * how that stays one vocabulary: re-spelling `outcome`/`siteId`/`slug`/`quota`
+ * in a second discriminated union would invent a third shape that agrees with
+ * this one only until somebody edits one of them.
+ */
+export const keepResultBranches = {
+  kept: z.object({
     outcome: z.literal("kept"),
     siteId: z.string(),
     slug: z.string(),
     quota: keptQuotaSchema,
   }),
-  z.object({
+  ownedDraft: z.object({
     outcome: z.literal("owned_draft"),
     siteId: z.string(),
     slug: z.string(),
@@ -82,6 +93,11 @@ export const keepResultSchema = z.discriminatedUnion("outcome", [
     expiresAt: z.string().datetime(),
     purgeAfter: z.string().datetime(),
   }),
+} as const;
+
+export const keepResultSchema = z.discriminatedUnion("outcome", [
+  keepResultBranches.kept,
+  keepResultBranches.ownedDraft,
 ]);
 
 /**

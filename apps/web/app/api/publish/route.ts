@@ -16,10 +16,11 @@ import { NextResponse } from "next/server";
 
 import {
   errorResponse,
+  publisherFrom,
   readPageBody,
   UnreadableBodyError,
 } from "../../../lib/publish/http";
-import { publishPage, type PublisherContext } from "../../../lib/publish/pipeline";
+import { publishPage } from "../../../lib/publish/pipeline";
 
 /**
  * Node, not edge: `postgres-js` needs TCP sockets and `aws4fetch` signs with
@@ -30,22 +31,6 @@ export const runtime = "nodejs";
 
 /** Every publish mutates four stores; nothing about it is cacheable. */
 export const dynamic = "force-dynamic";
-
-/**
- * The publisher's identity for dedup and E07's rate limiter.
- *
- * The raw address is read here, handed to the salted hash, and then dropped: it
- * is never stored, never logged, and never returned. Railway (and any proxy in
- * front of it) sets `x-forwarded-for`; the first entry is the client.
- */
-function publisherFrom(request: Request): PublisherContext {
-  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  const real = request.headers.get("x-real-ip")?.trim();
-  return {
-    ip: forwarded || real || "unknown",
-    userAgent: request.headers.get("user-agent") ?? "",
-  };
-}
 
 export async function POST(request: Request): Promise<NextResponse> {
   let body: unknown;

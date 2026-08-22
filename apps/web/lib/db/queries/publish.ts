@@ -16,7 +16,7 @@ import type { Region, SiteStatus } from "@kept/shared";
 import { and, desc, eq, gt, sql } from "drizzle-orm";
 
 import { mintSlugCandidate } from "../../publish/slug";
-import { db } from "../index";
+import { db, type Tx } from "../index";
 import { sites, siteVersions } from "../schema";
 
 /**
@@ -26,8 +26,15 @@ import { sites, siteVersions } from "../schema";
  * or the CSPRNG is broken, not that the namespace is full. Bounded and loudly
  * fatal rather than an unbounded loop, because an unbounded retry against a
  * broken index is an outage that looks like a hang.
+ *
+ * ⚠️ EXPORTED FOR THE OWNED PUBLISH (E06 task 004), which cannot reuse
+ * `insertAnonymousDraft`'s loop because its transaction also holds the owner
+ * lock and the cap decision — so the retry has to live one level up, in
+ * `lib/sites/publish.ts`, where re-opening the transaction re-takes the lock.
+ * The BOUND is shared so both paths give up in the same place for the same
+ * reason.
  */
-const MAX_SLUG_ATTEMPTS = 8;
+export const MAX_SLUG_ATTEMPTS = 8;
 
 /** Thrown when slug minting exhausts `MAX_SLUG_ATTEMPTS`; maps to a 503. */
 export class SlugUnavailableError extends Error {
@@ -224,6 +231,83 @@ export async function insertAnonymousDraft(
     }
   }
   throw new SlugUnavailableError();
+}
+
+export interface OwnedPageInput {
+  /** Pre-generated so the R2 key is known before the row exists. */
+  siteId: string;
+  versionId: string;
+  /** Minted by the caller's retry loop, which owns the collision handling. */
+  slug: string;
+  r2Key: string;
+  ownerId: string;
+  publisherHash: string;
+  title: string | null;
+  contentHash: string;
+  sizeBytes: number;
+  /**
+   * The draft clock, or its absence. **Both null ⇒ kept** (permanent, no
+   * countdown); **both set ⇒ an owned draft** at the cap. Never one of the two:
+   * a row with `expires_at` and no `purge_after` expires into a grace window
+   * that has no end, and E07's purge sweep orders on the column that is missing.
+   */
+  expiresAt: Date | null;
+  purgeAfter: Date | null;
+  /** When the page became this account's. On this path, its creation. */
+  claimedAt: Date;
+}
+
+/**
+ * Insert the `sites` + `site_versions` pair for a page that is OWNED from its
+ * first byte — E06 task 004, epic decision D1.
+ *
+ * ⚠️ IT TAKES THE CALLER'S TRANSACTION, AND THAT IS THE WHOLE POINT. The cap
+ * decision (`lockOwner` → count → kept-or-draft) and this insert must commit
+ * together, or two concurrent publishes at 2/3 both read 2 and both land kept.
+ * `insertAnonymousDraft` above opens its own transaction because an anonymous
+ * publish has no cap to decide; this one must not, and there is deliberately no
+ * `db.transaction` in this function to make that impossible to forget.
+ *
+ * ⚠️ NO `anon_token_hash`. NOT "not yet", NOT "null for now" — never. A page
+ * that already belongs to an account must not also carry a bearer credential:
+ * two authorities on one page is the bug E05 was explicit about, and it is why
+ * `keepSite` clears the column the moment an account takes an anonymous draft.
+ * The column is written here as an explicit `null` rather than omitted, so that
+ * a reader of this insert can see the decision instead of inferring it.
+ *
+ * `publisher_hash` IS still recorded. An owned publish is still a publish, and
+ * E07's volume governors key on that column (`sites_publisher_created_idx`).
+ * Dropping it because the caller is signed in would make the one class of
+ * publisher that *has* a name invisible to the machinery that counts them.
+ */
+export async function insertOwnedPage(tx: Tx, input: OwnedPageInput): Promise<void> {
+  // `sites` first: `site_versions.site_id` has an FK onto it.
+  await tx.insert(sites).values({
+    id: input.siteId,
+    slug: input.slug,
+    // DRAFTS ARE `live`, exactly as on the anonymous path — the difference
+    // between a draft and a kept page is the clock column and nothing else.
+    status: "live",
+    region: "auto",
+    currentVersionId: input.versionId,
+    ownerId: input.ownerId,
+    anonTokenHash: null,
+    publisherHash: input.publisherHash,
+    expiresAt: input.expiresAt,
+    purgeAfter: input.purgeAfter,
+    claimedAt: input.claimedAt,
+    title: input.title,
+    contentHash: input.contentHash,
+    sizeBytes: input.sizeBytes,
+  });
+  await tx.insert(siteVersions).values({
+    id: input.versionId,
+    siteId: input.siteId,
+    region: "auto",
+    r2Key: input.r2Key,
+    contentHash: input.contentHash,
+    sizeBytes: input.sizeBytes,
+  });
 }
 
 /**

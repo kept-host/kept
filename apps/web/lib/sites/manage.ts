@@ -69,7 +69,9 @@ import { managementRefusal } from "./display";
 import { keptQuotaFor, SiteNotFoundError } from "./keep";
 
 /**
- * The body of an owner replace: the document, and nothing else.
+ * The body of an owner write — a replace here, and the owned publish in
+ * `./publish.ts` (task 004). One schema, because they carry the same thing: the
+ * document, and nothing else.
  *
  * PICKED FROM THE PUBLISH SCHEMA rather than re-declared, so `MAX_PAGE_BYTES`,
  * the "looks like HTML" rule and every error code stay identical to the path
@@ -85,7 +87,7 @@ import { keptQuotaFor, SiteNotFoundError } from "./keep";
  * field ignored — a browser posting a multipart form it built for the landing
  * page must not fail here for sending a token nothing needs.
  */
-export const replaceBodySchema = publishRequestSchema.pick({ html: true });
+export const ownerPageBodySchema = publishRequestSchema.pick({ html: true });
 
 /**
  * The page is not in a state whose bytes may be replaced.

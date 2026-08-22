@@ -9,8 +9,8 @@
  *    stub — the same technique `anon-manage.test.ts` uses to inject real
  *    misconfiguration. No mocks anywhere (project rule).
  *
- * 2. THE WIRING, run against the real dev Neon branch. The four in-scope route
- *    modules are imported and their exported `POST` is CALLED — the actual
+ * 2. THE WIRING, run against the real dev Neon branch. Every in-scope route
+ *    module is imported and its exported handler is CALLED — the actual
  *    handler, not a re-implementation — and the site rows are RE-READ
  *    afterwards, because "it answered 403" and "it changed nothing" are
  *    different claims and only the second one matters. That the handlers are
@@ -207,10 +207,12 @@ test("every cookie-authenticated mutating route imports the gate", async () => {
     // the session cookie the browser attaches for it.
     "app/api/sites/[id]/replace/route.ts",
     "app/api/sites/[id]/route.ts",
-    // ⚠️ `app/api/sites/route.ts` — E06 task 004's owned publish — JOINS THIS
-    // LIST IN TASK 004, which ships it. The rule this file states is "added
-    // HERE, in the task that ships it": naming a route before its file exists
-    // would fail this test for the one reason that is not a security finding.
+    // E06 task 004 — the OWNED publish. Its keyless twin `POST /api/publish` is
+    // in the negative list below and must stay there; this one spends the
+    // session cookie, so ungated a hosted page could publish into its visitor's
+    // account — and, at the cap, silently demote nothing while consuming the
+    // slot they were saving.
+    "app/api/sites/route.ts",
 
     // The anonymous keep carries TWO credentials (bearer token in the path AND
     // a session cookie), so it is gated like a cookie route.
@@ -612,6 +614,48 @@ test(
     );
     assert.notEqual(allowed, 403);
     assert.equal(await snapshot(kept), before);
+  },
+);
+
+test(
+  "a cross-origin owned publish is 403 and no page is created",
+  { skip: skipDb },
+  async () => {
+    const { POST } = await import("../../app/api/sites/route");
+    const { appOrigin } = await import("../storage/env");
+    const html =
+      '<!doctype html><html lang="en"><head><title>e05a-006 owned publish</title></head><body>x</body></html>';
+
+    const request = new Request("https://app.kept-dev.xyz/api/sites", {
+      method: "POST",
+      headers: { cookie: COOKIE, origin: HOSTED, "content-type": "text/html" },
+      body: html,
+    });
+    const res = await POST(request);
+
+    assert.equal(res.status, 403);
+    assert.equal(publishErrorSchema.parse(await res.json()).error, "invalid_request");
+    // THE CLAIM THAT MATTERS, and on a CREATE route it cannot be "the row is
+    // unchanged" — there is no row yet to re-read. It is that the document was
+    // never even read off the wire: `bodyUsed` false proves the refusal
+    // happened before `readPageBody`, and therefore before the hash, the
+    // transaction and every store call that could have put a page on the
+    // internet. A row count would race every other spec sharing this database.
+    assert.equal(request.bodyUsed, false);
+
+    // The same call from the app's own origin gets past the gate and fails
+    // later, on the session — which is the proof the refusal is origin-dependent
+    // rather than blanket, and that the gate runs BEFORE `getSession()`.
+    const allowed = await statusOrThrow(() =>
+      POST(
+        new Request("https://app.kept-dev.xyz/api/sites", {
+          method: "POST",
+          headers: { cookie: COOKIE, origin: appOrigin(), "content-type": "text/html" },
+          body: html,
+        }),
+      ),
+    );
+    assert.notEqual(allowed, 403);
   },
 );
 

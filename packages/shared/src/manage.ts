@@ -1,10 +1,10 @@
 // @kept/shared — the owner management contract (E06).
 //
-// Rename (task 005), replace and delete (task 006) — three verbs, one file
-// rather than three, for the reason ./keep gives: one closed set with two
-// consumers — the route handlers in apps/web and the browser client that parses
-// their responses (`lib/sites/owner-client.ts`) — so the wire shape can never
-// drift between them.
+// Rename (task 005), replace and delete (task 006), and the owned publish
+// (task 004) — four verbs, one file rather than four, for the reason ./keep
+// gives: one closed set with two consumers — the route handlers in apps/web and
+// the browser client that parses their responses (`lib/sites/owner-client.ts`) —
+// so the wire shape can never drift between them.
 //
 // ⚠️ CONTROL PLANE ONLY. `apps/edge` must never import this. A rename is a KV
 // pointer change the Worker learns about by reading KV, exactly as it learns
@@ -12,7 +12,51 @@
 
 import { z } from "zod";
 
-import { keptQuotaSchema, type KeptQuota } from "./keep";
+import { keepResultBranches, keptQuotaSchema, type KeepResult, type KeptQuota } from "./keep";
+
+/**
+ * What a signed-in publish returns — `POST /api/sites` (task 004, epic D1).
+ *
+ * ⚠️ THE OUTCOME VOCABULARY IS `KeepResult`'s, NOT A NEW ONE. A signed-in
+ * publish resolves the same two ways a keep does — under the cap the page is
+ * `kept` and has no clock; at the cap it lands as an `owned_draft` with its
+ * countdown intact and a swap prompt — so it reuses those branches verbatim
+ * rather than inventing a third word for the same two states. **The cap is a
+ * branch, not an error: both outcomes are HTTP 200 and there is no 4xx for
+ * being full.**
+ *
+ * Two fields are added, and both exist because this response is what the
+ * drop-zone repaints from without a second request:
+ *
+ *   · `liveUrl` — the page's public address, built server-side from
+ *     `KEPT_BASE_DOMAIN`. A client that concatenated `slug` with a domain of its
+ *     own would be wrong on dev the first time it ran.
+ *   · `title` — the `<title>` extracted from the bytes just published, `null`
+ *     when there is none. The card renders `title ?? slug`, so it needs the
+ *     value the row was actually given, not a guess.
+ *
+ * There is deliberately no `anonToken` and no `claim_url`: an owned page has one
+ * authority, the account. `PublishResponse` (the keyless contract in ./publish)
+ * carries both and is a different shape for a different caller — that split is
+ * the whole of D1.
+ */
+export type OwnedPublishResult = KeepResult & {
+  /** `https://{slug}.{base}` — built by the control plane, never by the client. */
+  liveUrl: string;
+  /** Extracted from the published bytes; `null` when they carry no `<title>`. */
+  title: string | null;
+};
+
+/** The two fields the publish branches add to `keepResultBranches`. */
+const ownedPublishExtras = {
+  liveUrl: z.string().url(),
+  title: z.string().nullable(),
+} as const;
+
+export const ownedPublishResultSchema = z.discriminatedUnion("outcome", [
+  keepResultBranches.kept.extend(ownedPublishExtras),
+  keepResultBranches.ownedDraft.extend(ownedPublishExtras),
+]);
 
 /**
  * `PATCH /api/sites/:id/slug`.

@@ -43,6 +43,17 @@ function getDatabaseUrl(): string {
  */
 type Db = PostgresJsDatabase<typeof schema> & { $client: ReturnType<typeof postgres> };
 
+/**
+ * The transaction handle Drizzle hands `db.transaction`'s callback.
+ *
+ * Here rather than in each module that composes a transaction: `lib/sites/keep.ts`
+ * takes one so a cap decision serialises on `lockOwner`, and
+ * `lib/db/queries/publish.ts` takes one so the owned insert lands inside that same
+ * decision (E06 task 004). Two spellings of this alias would be two things to fix
+ * the day the client changes.
+ */
+export type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
 let cached: Db | undefined;
 
 function getDb(): Db {
