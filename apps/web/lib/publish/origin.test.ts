@@ -198,9 +198,20 @@ test("every cookie-authenticated mutating route imports the gate", async () => {
     "app/api/sites/[id]/keep/route.ts",
     "app/api/sites/[id]/demote/route.ts",
     "app/api/sites/swap/route.ts",
-    // E06 task 005 — rename. The only owner route that writes KV, which makes
-    // an unguarded cross-origin call able to move somebody's permanent link.
+    // E06 task 005 — rename. An unguarded cross-origin call here could move
+    // somebody's permanent link.
     "app/api/sites/[id]/slug/route.ts",
+    // E06 task 006 — replace and delete, the two verbs that change what a page
+    // IS. Ungated, a script on a hosted page could rewrite its publisher's
+    // other pages' contents, or take them off the internet, using nothing but
+    // the session cookie the browser attaches for it.
+    "app/api/sites/[id]/replace/route.ts",
+    "app/api/sites/[id]/route.ts",
+    // ⚠️ `app/api/sites/route.ts` — E06 task 004's owned publish — JOINS THIS
+    // LIST IN TASK 004, which ships it. The rule this file states is "added
+    // HERE, in the task that ships it": naming a route before its file exists
+    // would fail this test for the one reason that is not a security finding.
+
     // The anonymous keep carries TWO credentials (bearer token in the path AND
     // a session cookie), so it is gated like a cookie route.
     "app/api/anon/[anonToken]/keep/route.ts",
@@ -516,6 +527,85 @@ test(
             "content-type": "application/json",
           },
           body: JSON.stringify(body),
+        }),
+        { params: Promise.resolve({ id: kept }) },
+      ),
+    );
+    assert.notEqual(allowed, 403);
+    assert.equal(await snapshot(kept), before);
+  },
+);
+
+test(
+  "a cross-origin replace is 403 and the page still points at the version it did",
+  { skip: skipDb },
+  async () => {
+    const { POST } = await import("../../app/api/sites/[id]/replace/route");
+    const { appOrigin } = await import("../storage/env");
+    const owner = await makeProfile();
+    const kept = await makeSite(owner, true);
+    const before = await snapshot(kept);
+    const html = "<!doctype html><html lang=\"en\"><head><title>e05a-006 replace</title></head><body>x</body></html>";
+
+    const res = await POST(
+      new Request(`https://app.kept-dev.xyz/api/sites/${kept}/replace`, {
+        method: "POST",
+        headers: { cookie: COOKIE, origin: HOSTED, "content-type": "text/html" },
+        body: html,
+      }),
+      { params: Promise.resolve({ id: kept }) },
+    );
+
+    assert.equal(res.status, 403);
+    assert.equal(publishErrorSchema.parse(await res.json()).error, "invalid_request");
+    // The claim that matters: no new version, no new title, no new content hash.
+    // A refused replace that had already written R2 and KV would be a 403 with
+    // the page's contents swapped — worse than no check at all.
+    assert.equal(await snapshot(kept), before);
+
+    const allowed = await statusOrThrow(() =>
+      POST(
+        new Request(`https://app.kept-dev.xyz/api/sites/${kept}/replace`, {
+          method: "POST",
+          headers: { cookie: COOKIE, origin: appOrigin(), "content-type": "text/html" },
+          body: html,
+        }),
+        { params: Promise.resolve({ id: kept }) },
+      ),
+    );
+    assert.notEqual(allowed, 403);
+    assert.equal(await snapshot(kept), before);
+  },
+);
+
+test(
+  "a cross-origin delete is 403 and the page is still live",
+  { skip: skipDb },
+  async () => {
+    const { DELETE } = await import("../../app/api/sites/[id]/route");
+    const { appOrigin } = await import("../storage/env");
+    const owner = await makeProfile();
+    const kept = await makeSite(owner, true);
+    const before = await snapshot(kept);
+
+    const res = await DELETE(
+      new Request(`https://app.kept-dev.xyz/api/sites/${kept}`, {
+        method: "DELETE",
+        headers: { cookie: COOKIE, origin: HOSTED },
+      }),
+      { params: Promise.resolve({ id: kept }) },
+    );
+
+    assert.equal(res.status, 403);
+    assert.equal(publishErrorSchema.parse(await res.json()).error, "invalid_request");
+    // Still `live`: the manifest was never removed and the row never archived.
+    assert.equal(await snapshot(kept), before);
+
+    const allowed = await statusOrThrow(() =>
+      DELETE(
+        new Request(`https://app.kept-dev.xyz/api/sites/${kept}`, {
+          method: "DELETE",
+          headers: { cookie: COOKIE, origin: appOrigin() },
         }),
         { params: Promise.resolve({ id: kept }) },
       ),

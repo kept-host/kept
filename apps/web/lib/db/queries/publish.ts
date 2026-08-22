@@ -227,7 +227,16 @@ export async function insertAnonymousDraft(
 }
 
 /**
- * What a bearer token resolves to. The token itself is never part of this.
+ * What a manage path resolves a page to. The bearer token itself is never part
+ * of this.
+ *
+ * ⚠️ THE NAME RECORDS WHERE IT STARTED, NOT WHO MAY READ IT. E06's owner-scoped
+ * replace resolves a page by `(id, owner_id)` instead of by token hash and needs
+ * exactly these columns for exactly the same reasons — see `findSiteForOwner`
+ * below, which returns this shape. A second, identical interface named
+ * `OwnedSite` would be the duplication that drifts the first time one of them
+ * grows a column, and the *authority* difference lives in the two queries'
+ * WHERE clauses where it is enforceable, not in a type where it is decorative.
  *
  * Carries the current content state as well as the identity, because the
  * replace path needs exactly these three values to put the row back if a store
@@ -266,6 +275,26 @@ export interface AnonSite {
 }
 
 /**
+ * The columns both resolvers below project. One object so the token-scoped and
+ * owner-scoped reads cannot drift in shape, which is what would make `AnonSite`
+ * a lie on one of the two paths — the same rule `dashboard.ts` states about
+ * `OWNED_SITE_COLUMNS`.
+ */
+const MANAGED_SITE_COLUMNS = {
+  id: sites.id,
+  slug: sites.slug,
+  status: sites.status,
+  region: sites.region,
+  ownerId: sites.ownerId,
+  currentVersionId: sites.currentVersionId,
+  expiresAt: sites.expiresAt,
+  purgeAfter: sites.purgeAfter,
+  title: sites.title,
+  contentHash: sites.contentHash,
+  sizeBytes: sites.sizeBytes,
+} as const;
+
+/**
  * THE ONLY QUERY IN THE REPO THAT READS `sites.anon_token_hash`.
  *
  * A single exact match on the digest — there is no `anon_token` column to
@@ -282,21 +311,39 @@ export async function findSiteByAnonTokenHash(
   anonTokenHash: string,
 ): Promise<AnonSite | null> {
   const [site] = await db
-    .select({
-      id: sites.id,
-      slug: sites.slug,
-      status: sites.status,
-      region: sites.region,
-      ownerId: sites.ownerId,
-      currentVersionId: sites.currentVersionId,
-      expiresAt: sites.expiresAt,
-      purgeAfter: sites.purgeAfter,
-      title: sites.title,
-      contentHash: sites.contentHash,
-      sizeBytes: sites.sizeBytes,
-    })
+    .select(MANAGED_SITE_COLUMNS)
     .from(sites)
     .where(eq(sites.anonTokenHash, anonTokenHash))
+    .limit(1);
+
+  return site ?? null;
+}
+
+/**
+ * The same page, resolved by OWNER instead of by bearer token — E06 task 006's
+ * replace and delete.
+ *
+ * ⚠️ THE OWNER SCOPE IS IN THE SQL, NEVER APPLIED AFTERWARDS IN JS. A read that
+ * fetched by id and then compared `row.ownerId` in the caller is a cross-account
+ * read that happens to be discarded — one forgotten early return away from being
+ * written to. `owner_id` is in the WHERE clause, so a page belonging to somebody
+ * else is indistinguishable here from a page that never existed: both are
+ * `null`, and both become the single `ownerNotFound()` body one layer up.
+ *
+ * ⚠️ IT DOES NOT FILTER ON STATUS. Delete must reach a `quarantined` page —
+ * delete and download are the only affordances left on one — and replace has to
+ * be able to tell an owner *why* their flagged page cannot be replaced. A
+ * resolver that hid non-`live` rows would answer both of those with a 404 that
+ * reads as data loss. The status decision belongs to `lib/sites/manage.ts`.
+ */
+export async function findSiteForOwner(
+  siteId: string,
+  ownerId: string,
+): Promise<AnonSite | null> {
+  const [site] = await db
+    .select(MANAGED_SITE_COLUMNS)
+    .from(sites)
+    .where(and(eq(sites.id, siteId), eq(sites.ownerId, ownerId)))
     .limit(1);
 
   return site ?? null;

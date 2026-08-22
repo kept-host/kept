@@ -3,6 +3,7 @@
  *
  * `POST /api/sites/:id/keep` · `POST /api/sites/:id/demote` · `POST /api/sites/swap`
  * `PATCH /api/sites/:id/slug` (E06 task 005)
+ * `POST /api/sites/:id/replace` · `DELETE /api/sites/:id` (E06 task 006)
  *
  * ── WHAT THIS MODULE IS FOR ────────────────────────────────────────────────
  * Validation and result→response mapping, and nothing else. Every database
@@ -21,11 +22,12 @@
  * harmless extra. The one manifest-touching branch in E05 is the late keep of an
  * `expired` row, and it belongs to the anonymous keep route, not to these.
  *
- * ⚠️ RENAME IS THE EXCEPTION, AND IT IS ONE ON PURPOSE. The slug is the KV key,
- * so moving it is unavoidably an edge operation — but the ordering still lives
- * in exactly one place, `./rename.ts`, and this module only maps its errors onto
- * statuses. Nothing here calls `writeManifest`/`removeManifest` directly, and
- * nothing new may.
+ * ⚠️ RENAME, REPLACE AND DELETE ARE THE EXCEPTIONS, AND THEY ARE ON PURPOSE.
+ * Moving a slug, storing new bytes and taking a page off the internet are all
+ * unavoidably edge operations — but each ordering lives in exactly one place,
+ * `./rename.ts` and `./manage.ts`, and this module only maps their errors onto
+ * statuses. Nothing here calls `writeManifest`/`removeManifest`/`r2Store`
+ * directly, and nothing new may.
  *
  * ⚠️ "YOU DON'T OWN THIS" IS AN EXISTENCE ORACLE. A site that does not exist, a
  * site owned by somebody else and an id that is not even a uuid all produce the
@@ -45,23 +47,35 @@
  * the enum is closed and shared with `apps/edge`'s consumers.
  */
 import {
+  deleteResultSchema,
   demoteResultSchema,
   keepResultSchema,
   renameRequestSchema,
   renameResultSchema,
+  replaceResultSchema,
   swapResultSchema,
+  type DeleteResult,
   type DemoteResult,
   type KeepResult,
   type RenameResult,
+  type ReplaceResult,
   type SwapResult,
 } from "@kept/shared";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { checkHeuristics } from "../publish/hooks";
 import { errorResponse } from "../publish/http";
-import { fail, type PublishFailure } from "../publish/pipeline";
+import { fail, requestError, type PublishFailure } from "../publish/pipeline";
 import { checkChosenSlug } from "../publish/slug";
 import { demoteSite, keepSite, SiteNotFoundError, swapKept } from "./keep";
+import {
+  deleteSite,
+  ManageStoreError,
+  replaceBodySchema,
+  replaceSite,
+  SiteNotReplaceableError,
+} from "./manage";
 import {
   renameSite,
   RenameStoreError,
@@ -306,5 +320,103 @@ export async function renameOwnedSite(
       });
     }
     return unexpected("rename", err);
+  }
+}
+
+/**
+ * `POST /api/sites/:id/replace` — new bytes, same URL.
+ *
+ * VALIDATION AND CONTENT POLICY HAPPEN HERE, ORDERING HAPPENS IN `./manage.ts`,
+ * the same split rename uses. `replaceBodySchema` is the publish schema's `html`
+ * field, so `MAX_PAGE_BYTES`, the empty-page rule and every error CODE are
+ * identical to the path that first stored the page — `requestError` is the
+ * shared mapper, because "the body was 6 MB" and "the body had no `html` field"
+ * arriving as one code is an infinite retry loop for an agent.
+ *
+ * ⚠️ THE CLOCK IS NOT TOUCHED, AND THE RESPONSE SAYS SO by echoing the deadline
+ * it found. A replace that extended the draft window would let a weekly upload
+ * hold a page forever for free.
+ *
+ * ⚠️ A FLAGGED PAGE IS REFUSED WITH AN EXPLANATION, NOT HIDDEN — 409 and the
+ * sentence `./display.ts` gives the card, so the screen and the error body agree.
+ */
+export async function replaceOwnedSite(
+  rawSiteId: string,
+  raw: unknown,
+  profileId: string,
+): Promise<OwnerOutcome<ReplaceResult>> {
+  const parsedId = siteIdSchema.safeParse(rawSiteId);
+  if (!parsedId.success) return ownerNotFound();
+
+  const parsed = replaceBodySchema.safeParse(raw);
+  if (!parsed.success) return requestError(parsed.error);
+
+  // The same E07 seam the anonymous replace runs, in the same position: before
+  // anything is stored. A replace is a re-publish, and a path that stores new
+  // bytes without the content check is a hole big enough to publish anything
+  // through — publish clean, then replace with the payload.
+  const heuristics = await checkHeuristics(parsed.data.html);
+  if (!heuristics.allowed) {
+    return fail(422, {
+      error: "content_rejected",
+      message: `This page was refused by the content check (${heuristics.reason}).`,
+    });
+  }
+
+  try {
+    const result = await replaceSite(parsedId.data, profileId, parsed.data.html);
+    return { ok: true, status: 200, body: replaceResultSchema.parse(result) };
+  } catch (err) {
+    if (err instanceof SiteNotFoundError) return ownerNotFound();
+    // 409, not 400: the request was well-formed and the answer is about the
+    // page's state, not the caller's syntax.
+    if (err instanceof SiteNotReplaceableError) {
+      return fail(409, { error: "invalid_request", message: err.message });
+    }
+    if (err instanceof ManageStoreError) {
+      console.error(`[owner-routes] replace refused — ${err.message}`);
+      return fail(503, {
+        error: "internal_error",
+        message:
+          "kept could not publish the new file just now. Nothing changed — the page is still serving what it was. Try again in a moment.",
+      });
+    }
+    return unexpected("replace", err);
+  }
+}
+
+/**
+ * `DELETE /api/sites/:id` — stop serving one page.
+ *
+ * ⚠️ ARCHIVE, NOT DESTROY, AND NOT THE ACCOUNT-DELETION VERB. This lands
+ * `status = 'archived'` with the row, the versions and the R2 object all
+ * retained; deleting an *account* is the path that lands `removed` with a
+ * `purge_after` (task 011). Two verbs, two terminal states, both deliberate.
+ *
+ * The freed slot rides back on the response so the dashboard can repaint its
+ * quota without a second request, and a `quarantined` page is deletable on
+ * purpose — delete is one of the two affordances a flagged page keeps.
+ */
+export async function deleteOwnedSite(
+  rawSiteId: string,
+  profileId: string,
+): Promise<OwnerOutcome<DeleteResult>> {
+  const parsed = siteIdSchema.safeParse(rawSiteId);
+  if (!parsed.success) return ownerNotFound();
+
+  try {
+    const result = await deleteSite(parsed.data, profileId);
+    return { ok: true, status: 200, body: deleteResultSchema.parse(result) };
+  } catch (err) {
+    if (err instanceof SiteNotFoundError) return ownerNotFound();
+    if (err instanceof ManageStoreError) {
+      console.error(`[owner-routes] delete refused — ${err.message}`);
+      return fail(503, {
+        error: "internal_error",
+        message:
+          "kept could not take this page off the internet just now. Nothing changed — it is still serving. Try again in a moment.",
+      });
+    }
+    return unexpected("delete", err);
   }
 }

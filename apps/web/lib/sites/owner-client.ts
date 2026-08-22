@@ -1,6 +1,6 @@
 /**
- * The browser's client for the owner-scoped management routes — E06 task 005.
- * Task 006 extends it with replace and delete.
+ * The browser's client for the owner-scoped management routes — rename (task
+ * 005), replace and delete (task 006).
  *
  * Same posture as `lib/publish/client.ts`: this module knows the endpoint's URL
  * and nothing else. It serializes the request the route already accepts, parses
@@ -13,15 +13,20 @@
  * which is pure by design precisely so this file can call it.
  */
 import {
+  deleteResultSchema,
   keepResultSchema,
   MANIFEST_KV_CACHE_TTL_SECONDS,
   publishErrorSchema,
   renameResultSchema,
+  replaceResultSchema,
   swapResultSchema,
+  type DeleteResult,
   type KeepResult,
   type PublishError,
+  type PublishRequest,
   type RenameRequest,
   type RenameResult,
+  type ReplaceResult,
   type SwapResult,
 } from "@kept/shared";
 
@@ -35,14 +40,15 @@ export type RenameOutcome =
 const SECONDS_PER_MINUTE = 60;
 
 /**
- * How long the OLD address can still answer, in whole minutes.
+ * How long the edge can still answer from the state a write just replaced, in
+ * whole minutes — the old address after a rename, the old bytes after a replace.
  *
  * Derived, never typed as a literal: it is the same
  * `2 × MANIFEST_KV_CACHE_TTL_SECONDS + 5 s` that `lib/storage/manifest.ts`
  * sizes its second purge from. Past that point the re-purge has run and the
- * edge cannot be holding a response built from the pre-rename manifest.
+ * edge cannot be holding a response built from the pre-write manifest.
  */
-const OLD_URL_MINUTES = Math.round(
+const STALE_EDGE_MINUTES = Math.round(
   (2 * MANIFEST_KV_CACHE_TTL_SECONDS + 5) / SECONDS_PER_MINUTE,
 );
 
@@ -67,7 +73,7 @@ const OLD_URL_MINUTES = Math.round(
  *     window, and the delayed second purge is what ends it.
  *
  * So the truthful shape of the sentence is: it is over in seconds in practice,
- * bounded by `OLD_URL_MINUTES` in the worst case, and **nobody is dropped in
+ * bounded by `STALE_EDGE_MINUTES` in the worst case, and **nobody is dropped in
  * the meantime** — both slugs resolve to the same page while the old one lives,
  * which is exactly why the rename writes the new manifest before removing the
  * old one. Do not "tighten" this to an instant cutover.
@@ -76,7 +82,7 @@ export function renameNotice(page: RenameResult): string {
   if (page.previousSlug === page.slug) {
     return "That is already this page's address — nothing changed.";
   }
-  return `Your page is live at ${page.liveUrl}. The old address keeps working for up to about ${OLD_URL_MINUTES} minutes and then stops, so nobody following an old link is dropped in the meantime.`;
+  return `Your page is live at ${page.liveUrl}. The old address keeps working for up to about ${STALE_EDGE_MINUTES} minutes and then stops, so nobody following an old link is dropped in the meantime.`;
 }
 
 /**
@@ -270,6 +276,136 @@ export async function swapPages(
         error: "internal_error",
         message:
           "kept answered with something this page could not read. Reload to see which pages are kept.",
+      },
+    };
+  }
+  return { ok: true, result: parsed.data };
+}
+
+/** A replace attempt: the page with its new version, or why it did not land. */
+export type ReplaceOutcome =
+  | { ok: true; page: ReplaceResult }
+  | { ok: false; error: PublishError };
+
+/**
+ * What to tell someone who just replaced a page's file — E06 task 006.
+ *
+ * ⚠️ THE ADDRESS DID NOT MOVE AND THE CLOCK DID NOT RESET, and both of those are
+ * things a person reasonably expects to have happened. Saying them out loud is
+ * cheaper than the support question. The `DRAFT_TTL_DAYS` half of it is
+ * `REPLACE_CLOCK_NOTE` in `components/kept/draft-chip.tsx`, which composes the
+ * number from `@kept/shared`; this sentence deliberately does not restate it,
+ * because two copies of the same promise drift.
+ *
+ * The propagation caveat is the same fact of the architecture the rename copy
+ * accommodates: `writeManifest` purges immediately, but the Worker may answer a
+ * cache MISS from a KV read it made up to `MANIFEST_KV_CACHE_TTL_SECONDS` ago
+ * and rebuild a response from the previous manifest. That tail is what the
+ * delayed second purge ends, and `STALE_EDGE_MINUTES` is its bound. In practice
+ * it is seconds — do not "tighten" this to an instant swap.
+ */
+export function replaceNotice(page: ReplaceResult): string {
+  return `The new file is live at ${page.liveUrl} — same address, nothing to re-share. A browser that already had the old version open may keep showing it for a minute or two; a reload past that always gets the new one.`;
+}
+
+/**
+ * `POST /api/sites/:id/replace` — swap a page's bytes, keeping its URL.
+ *
+ * `application/json` with `{ html }`: the route accepts multipart and raw
+ * `text/html` too, for callers that cannot build JSON, which a browser can. The
+ * file has already been read to a string by the caller — a drop target reads it
+ * once, and handing a `File` down here would make this module know about the DOM
+ * it is deliberately kept away from.
+ *
+ * ⚠️ THE PRE-FLIGHT IS THE CALLER'S. `checkPageFile` / `checkPageHtml` in
+ * `lib/publish/client.ts` are the courtesy checks that catch an obviously-wrong
+ * file in a millisecond; they share `MAX_PAGE_BYTES` with the server, which
+ * validates every byte again and is the only authority.
+ *
+ * Never throws, including on abort.
+ */
+export async function replacePage(
+  siteId: string,
+  html: string,
+  signal?: AbortSignal,
+): Promise<ReplaceOutcome> {
+  const body: Pick<PublishRequest, "html"> = { html };
+  let response: Response;
+  try {
+    response = await fetch(`/api/sites/${encodeURIComponent(siteId)}/replace`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch {
+    return { ok: false, error: unreachable("replaced") };
+  }
+
+  if (response.status !== 200) {
+    return { ok: false, error: await readError(response, "replace the file") };
+  }
+
+  const parsed = replaceResultSchema.safeParse(await response.json().catch(() => null));
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: {
+        error: "internal_error",
+        message:
+          "kept answered with something this page could not read. Reload to see which file is live.",
+      },
+    };
+  }
+  return { ok: true, page: parsed.data };
+}
+
+/** A delete attempt: the archived page and the freed slot, or the failure. */
+export type DeleteOutcome =
+  | { ok: true; result: DeleteResult }
+  | { ok: false; error: PublishError };
+
+/**
+ * `DELETE /api/sites/:id` — take one page off the internet.
+ *
+ * ⚠️ THE CONFIRMATION IS THE CALLER'S. This function asks nothing and warns
+ * about nothing; by the time it runs, the decision has been made. The surface
+ * that calls it owns the dialog, and `DELETE_GRACE_NOTE` in
+ * `components/kept/draft-chip.tsx` is the sentence that tells the truth about
+ * what survives — the page stops serving now, the bytes are collected later.
+ *
+ * The response carries the post-delete `KeptQuota`, so a dashboard repaints
+ * "Kept · N of 3" from this body rather than refetching to discover the slot it
+ * already knows it freed.
+ *
+ * Never throws, including on abort.
+ */
+export async function deletePage(
+  siteId: string,
+  signal?: AbortSignal,
+): Promise<DeleteOutcome> {
+  let response: Response;
+  try {
+    response = await fetch(`/api/sites/${encodeURIComponent(siteId)}`, {
+      method: "DELETE",
+      signal,
+    });
+  } catch {
+    return { ok: false, error: unreachable("deleted") };
+  }
+
+  if (response.status !== 200) {
+    return { ok: false, error: await readError(response, "delete the page") };
+  }
+
+  const parsed = deleteResultSchema.safeParse(await response.json().catch(() => null));
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: {
+        error: "internal_error",
+        message:
+          "kept answered with something this page could not read. Reload to see whether the page was deleted.",
       },
     };
   }
