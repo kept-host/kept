@@ -14,6 +14,7 @@
  */
 import {
   deleteResultSchema,
+  demoteResultSchema,
   keepResultSchema,
   MANIFEST_KV_CACHE_TTL_SECONDS,
   publishErrorSchema,
@@ -21,6 +22,7 @@ import {
   replaceResultSchema,
   swapResultSchema,
   type DeleteResult,
+  type DemoteResult,
   type KeepResult,
   type PublishError,
   type PublishRequest,
@@ -211,6 +213,59 @@ export async function keepPage(
         error: "internal_error",
         message:
           "kept answered with something this page could not read. Reload to see whether the page was kept.",
+      },
+    };
+  }
+  return { ok: true, result: parsed.data };
+}
+
+/** A demote attempt: the page and its fresh clock, or why nothing moved. */
+export type DemoteOutcome =
+  | { ok: true; result: DemoteResult }
+  | { ok: false; error: PublishError };
+
+/**
+ * `POST /api/sites/:id/demote` — an owner puts a kept page back on a clock.
+ *
+ * ⚠️ THE WARNING BELONGS TO THE CALLER AND MUST ALREADY HAVE BEEN SHOWN. This
+ * function asks nothing. `demoteConsequence` in `lib/sites/display.ts` is the
+ * sentence, and the route says the same thing from its own side: nothing is
+ * removed, but the page acquires a fresh `DRAFT_TTL_DAYS` deadline and will
+ * expire unless it is kept again.
+ *
+ * There is no `owned_draft`-style branch here: demote always succeeds on a page
+ * that can be demoted, which is why `DemoteResult` carries no discriminant. The
+ * response's `quota` is the freed slot, so the screen repaints its allowance
+ * from this body rather than refetching to learn what it just caused.
+ *
+ * Never throws, including on abort.
+ */
+export async function demotePage(
+  siteId: string,
+  signal?: AbortSignal,
+): Promise<DemoteOutcome> {
+  let response: Response;
+  try {
+    response = await fetch(`/api/sites/${encodeURIComponent(siteId)}/demote`, {
+      method: "POST",
+      signal,
+    });
+  } catch {
+    return { ok: false, error: unreachable("demoted") };
+  }
+
+  if (response.status !== 200) {
+    return { ok: false, error: await readError(response, "demote the page") };
+  }
+
+  const parsed = demoteResultSchema.safeParse(await response.json().catch(() => null));
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: {
+        error: "internal_error",
+        message:
+          "kept answered with something this page could not read. Reload to see whether the page is still kept.",
       },
     };
   }

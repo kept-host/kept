@@ -12,6 +12,7 @@ import test from "node:test";
 import { DRAFT_TTL_DAYS, SITE_STATUSES, type SiteStatus } from "@kept/shared";
 
 import {
+  demoteConsequence,
   effectiveStatus,
   formatBytes,
   formatUpdatedAt,
@@ -124,4 +125,19 @@ test("the swap warning names both pages and never types the draft clock", () => 
   // constant — a literal here is the product lying the day it moves.
   assert.match(sentence, new RegExp(`expires in ${DRAFT_TTL_DAYS} days`));
   assert.match(sentence, /Nothing is deleted/);
+});
+
+test("the demote warning names the page, states the fresh clock and destroys nothing", () => {
+  const sentence = demoteConsequence("Recipe notes");
+
+  assert.match(sentence, /Recipe notes/);
+  // Demote sets a FRESH clock, so the constant is substituted for the same
+  // reason `swapConsequence` substitutes it.
+  assert.match(sentence, new RegExp(`expires in ${DRAFT_TTL_DAYS} days`));
+  assert.match(sentence, /Nothing is deleted/);
+  // The page keeps serving — demote removes nothing, and a warning that implied
+  // otherwise would stop people using a control that is meant to be cheap.
+  assert.match(sentence, /same link/);
+  // One page, not two: the swap sentence's second name has no meaning here.
+  assert.doesNotMatch(sentence, /is kept for good/);
 });

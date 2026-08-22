@@ -58,9 +58,11 @@ export function effectiveStatus(
  *
  * E06 renders these states and writes none of them; E07 owns every flip.
  *
- * Download is deliberately not promised here. The E07 policy grants a download
- * window, but no download control exists yet, and copy that offers one would be
- * the interface lying about a button that is not on the screen.
+ * Download is deliberately not promised here, even though task 008's detail
+ * screen now offers one. That control is bounded by `PREVIEW_MAX_BYTES` — it
+ * hands back the bytes the screen already read — so it is not always on screen,
+ * and a shared sentence that promised it would be the interface lying about a
+ * button that is not there. The screen that *has* the button says so itself.
  */
 export function managementRefusal(status: SiteStatus): string | null {
   switch (status) {
@@ -124,6 +126,26 @@ export function swapRefusal(status: SiteStatus): string | null {
  */
 export function swapConsequence(demoteName: string, keepName: string): string {
   return `${demoteName} becomes a draft again and expires in ${DRAFT_TTL_DAYS} days. ${keepName} is kept for good. Nothing is deleted and both pages stay at their links.`;
+}
+
+/**
+ * The sentence a plain demote must say BEFORE it writes — E06 task 008.
+ *
+ * ⚠️ SHOWN BEFORE THE CALL, NEVER AFTER IT. Demote is the one verb on the detail
+ * screen that takes something away — a permanent page stops being permanent —
+ * and the endpoint deliberately does no confirming of its own
+ * (`app/api/sites/[id]/demote/route.ts`: "the confirmation is the caller's").
+ * A warning printed after the write is not a warning, it is a receipt.
+ *
+ * It is a sibling of `swapConsequence` rather than a call into it: a swap trades
+ * one page for another and names both, a demote gives a slot back and names one.
+ * Reusing the swap sentence would mean inventing a second page to put in it.
+ *
+ * `DRAFT_TTL_DAYS` is substituted for the same reason it is there — demote sets
+ * a FRESH clock, and a typed number turns this into a lie the day the cap moves.
+ */
+export function demoteConsequence(name: string): string {
+  return `${name} becomes a draft again and expires in ${DRAFT_TTL_DAYS} days. Nothing is deleted, the page stays at the same link, and you can keep it again while a slot is free.`;
 }
 
 const BYTES_PER_KB = 1024;

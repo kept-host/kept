@@ -15,7 +15,6 @@
  * fails or the store is unconfigured, `null` comes back and the screen renders
  * with everything that actually matters.
  */
-import type { AnonSite } from "../db/queries/publish";
 import { pageObjectKey, r2Store } from "../storage/r2";
 
 /**
@@ -26,6 +25,24 @@ import { pageObjectKey, r2Store } from "../storage/r2";
 export const PREVIEW_MAX_BYTES = 256 * 1024;
 
 /**
+ * The four columns a preview read actually consults.
+ *
+ * ⚠️ THE PARAMETER IS THIS SHAPE, NOT `AnonSite`, and that is deliberate. E06's
+ * `/site/[slug]` (task 008) previews an **owner-scoped** row — `OwnedSite` from
+ * `lib/db/queries/dashboard.ts`, which carries no `region`, `ownerId` or
+ * `contentHash` because no owner screen needs them. Both row types satisfy this
+ * interface structurally, so one reader serves the anonymous and the signed-in
+ * path without either query growing columns to please a function that never
+ * looks at them.
+ */
+export interface PreviewSubject {
+  id: string;
+  slug: string;
+  currentVersionId: string | null;
+  sizeBytes: number | null;
+}
+
+/**
  * The page's HTML, or `null` when it cannot be shown. Never throws.
  *
  * `context` names the calling screen in the failure log. The log names the site
@@ -33,7 +50,7 @@ export const PREVIEW_MAX_BYTES = 256 * 1024;
  * token is never logged.
  */
 export async function readPreviewHtml(
-  site: AnonSite,
+  site: PreviewSubject,
   context: string,
 ): Promise<string | null> {
   if (!site.currentVersionId) return null;
