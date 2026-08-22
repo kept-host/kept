@@ -13,12 +13,16 @@
  * which is pure by design precisely so this file can call it.
  */
 import {
+  keepResultSchema,
   MANIFEST_KV_CACHE_TTL_SECONDS,
   publishErrorSchema,
   renameResultSchema,
+  swapResultSchema,
+  type KeepResult,
   type PublishError,
   type RenameRequest,
   type RenameResult,
+  type SwapResult,
 } from "@kept/shared";
 
 export { checkChosenSlug, type SlugRefusal, type SlugRefusalReason } from "../publish/slug";
@@ -75,13 +79,32 @@ export function renameNotice(page: RenameResult): string {
   return `Your page is live at ${page.liveUrl}. The old address keeps working for up to about ${OLD_URL_MINUTES} minutes and then stops, so nobody following an old link is dropped in the meantime.`;
 }
 
-/** Turn a non-200 into a `PublishError`, falling back for non-handler responses. */
-async function readError(response: Response): Promise<PublishError> {
+/**
+ * Turn a non-200 into a `PublishError`, falling back for non-handler responses.
+ *
+ * ⚠️ THE HANDLER'S OWN MESSAGE WINS WHENEVER THERE IS ONE, and that is what
+ * carries the `demote === keep` 400 — the only 400 the owner routes emit —
+ * through to the screen instead of being flattened into a generic failure. The
+ * fallback exists for the responses no handler wrote: a proxy's 502, an HTML
+ * error page, a body that is not JSON at all.
+ *
+ * `verb` names the action in that fallback only, so "kept couldn't swap the
+ * pages" is never printed over a rename.
+ */
+async function readError(response: Response, verb: string): Promise<PublishError> {
   const parsed = publishErrorSchema.safeParse(await response.json().catch(() => null));
   if (parsed.success) return parsed.data;
   return {
     error: "internal_error",
-    message: `kept couldn't rename the page (HTTP ${response.status}). Nothing changed — try again.`,
+    message: `kept couldn't ${verb} (HTTP ${response.status}). Nothing changed — try again.`,
+  };
+}
+
+/** The one sentence for a request that never reached the control plane. */
+function unreachable(verb: string): PublishError {
+  return {
+    error: "internal_error",
+    message: `kept couldn't be reached, so nothing was ${verb}. Check your connection and try again.`,
   };
 }
 
@@ -115,17 +138,12 @@ export async function renamePage(
       signal,
     });
   } catch {
-    return {
-      ok: false,
-      error: {
-        error: "internal_error",
-        message:
-          "kept couldn't be reached. Nothing changed — check your connection and try again.",
-      },
-    };
+    return { ok: false, error: unreachable("renamed") };
   }
 
-  if (response.status !== 200) return { ok: false, error: await readError(response) };
+  if (response.status !== 200) {
+    return { ok: false, error: await readError(response, "rename the page") };
+  }
 
   const parsed = renameResultSchema.safeParse(await response.json().catch(() => null));
   if (!parsed.success) {
@@ -138,4 +156,122 @@ export async function renamePage(
     };
   }
   return { ok: true, page: parsed.data };
+}
+
+/** A keep attempt: the parsed outcome, or an error from the closed enum. */
+export type KeepOutcome =
+  | { ok: true; result: KeepResult }
+  | { ok: false; error: PublishError };
+
+/**
+ * `POST /api/sites/:id/keep` — E06 task 007.
+ *
+ * ⚠️ BEING AT THE CAP IS NOT AN ERROR AND MUST NOT BE READ AS ONE. The route
+ * answers HTTP 200 with `outcome: "owned_draft"` when the account is full; the
+ * page keeps its clock and its countdown and the caller's job is to offer the
+ * swap chooser, not to show a failure. `ok: false` here means the request
+ * genuinely did not land.
+ *
+ * The caller normally knows it is at the cap before clicking and opens the
+ * chooser without asking — this branch is the race where a slot filled up in
+ * another tab between the render and the click, and the fresh `quota` on the
+ * response is the authority that settles it.
+ *
+ * Never throws, including on abort.
+ */
+export async function keepPage(
+  siteId: string,
+  signal?: AbortSignal,
+): Promise<KeepOutcome> {
+  let response: Response;
+  try {
+    response = await fetch(`/api/sites/${encodeURIComponent(siteId)}/keep`, {
+      method: "POST",
+      signal,
+    });
+  } catch {
+    return { ok: false, error: unreachable("kept") };
+  }
+
+  if (response.status !== 200) {
+    return { ok: false, error: await readError(response, "keep the page") };
+  }
+
+  const parsed = keepResultSchema.safeParse(await response.json().catch(() => null));
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: {
+        error: "internal_error",
+        message:
+          "kept answered with something this page could not read. Reload to see whether the page was kept.",
+      },
+    };
+  }
+  return { ok: true, result: parsed.data };
+}
+
+/** A swap attempt: both halves of the transaction, or the reason there were none. */
+export type SwapOutcome =
+  | { ok: true; result: SwapResult }
+  | { ok: false; error: PublishError };
+
+/**
+ * `POST /api/sites/swap` — demote one kept page and keep another, atomically.
+ *
+ * ⚠️ ONE REQUEST, AND THE UI ADDS NO SECOND ATOMICITY MECHANISM. `swapKept`
+ * runs both writes in a single Postgres transaction, so there is nothing here to
+ * retry, compensate or sequence — a caller that sent a demote and then a keep
+ * would be re-implementing the one property this endpoint exists to guarantee,
+ * badly, with a window in the middle where the account is a page short.
+ *
+ * The response carries BOTH halves and a post-swap `KeptQuota` on each, which is
+ * why the chooser needs no refetch: everything the two cards and the header have
+ * to say next is in this body, already agreed with the database.
+ *
+ * `demote === keep` is refused by the route with the only 400 this family emits.
+ * The chooser cannot construct it — the page being kept is not in the candidate
+ * list — so if that message arrives it is a real disagreement about state and is
+ * surfaced, never swallowed.
+ *
+ * The body is typed inline rather than imported: `swapRequestSchema` lives in
+ * `lib/sites/owner-routes.ts`, which reaches Postgres, and this module is
+ * browser-safe on purpose (see the header).
+ *
+ * Never throws, including on abort.
+ */
+export async function swapPages(
+  demote: string,
+  keep: string,
+  signal?: AbortSignal,
+): Promise<SwapOutcome> {
+  const body: { demote: string; keep: string } = { demote, keep };
+  let response: Response;
+  try {
+    response = await fetch("/api/sites/swap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch {
+    return { ok: false, error: unreachable("swapped") };
+  }
+
+  if (response.status !== 200) {
+    return { ok: false, error: await readError(response, "swap the pages") };
+  }
+
+  const parsed = swapResultSchema.safeParse(await response.json().catch(() => null));
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: {
+        error: "internal_error",
+        message:
+          "kept answered with something this page could not read. Reload to see which pages are kept.",
+      },
+    };
+  }
+  return { ok: true, result: parsed.data };
 }

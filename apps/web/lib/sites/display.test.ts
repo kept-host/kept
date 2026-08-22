@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { SITE_STATUSES, type SiteStatus } from "@kept/shared";
+import { DRAFT_TTL_DAYS, SITE_STATUSES, type SiteStatus } from "@kept/shared";
 
 import {
   effectiveStatus,
@@ -17,7 +17,10 @@ import {
   formatUpdatedAt,
   isManagementRestricted,
   managementRefusal,
+  pageName,
   siteHref,
+  swapConsequence,
+  swapRefusal,
 } from "./display";
 
 test("a live row whose clock has run out is presented as expired", () => {
@@ -89,4 +92,36 @@ test("the updated stamp is pinned, so it cannot drift with the host's locale", (
 
 test("cards point at the detail route task 008 lands", () => {
   assert.equal(siteHref("k3n8vq2p"), "/site/k3n8vq2p");
+});
+
+test("a page is named by its title, and by its slug only when it has none", () => {
+  assert.equal(pageName({ title: "Recipe notes", slug: "k3n8vq2p" }), "Recipe notes");
+  assert.equal(pageName({ title: null, slug: "k3n8vq2p" }), "k3n8vq2p");
+});
+
+test("only a live kept page may be swapped out", () => {
+  // Demoting anything else frees no slot: the cap counts `expires_at IS NULL AND
+  // status = 'live'`, so the swap would cost a permanent page and gain nothing.
+  assert.equal(swapRefusal("live"), null);
+  for (const status of SITE_STATUSES as readonly SiteStatus[]) {
+    if (status === "live") continue;
+    assert.ok(swapRefusal(status), `${status} must explain why it cannot be swapped out`);
+  }
+});
+
+test("a page held under review refuses a swap in the same words it refuses everything else", () => {
+  for (const status of ["quarantined", "under_review"] as const) {
+    assert.equal(swapRefusal(status), managementRefusal(status));
+  }
+});
+
+test("the swap warning names both pages and never types the draft clock", () => {
+  const sentence = swapConsequence("Recipe notes", "Trip plan");
+
+  assert.match(sentence, /Recipe notes/);
+  assert.match(sentence, /Trip plan/);
+  // The demoted page is the one that gets the clock, and the clock is the
+  // constant — a literal here is the product lying the day it moves.
+  assert.match(sentence, new RegExp(`expires in ${DRAFT_TTL_DAYS} days`));
+  assert.match(sentence, /Nothing is deleted/);
 });

@@ -9,7 +9,20 @@
  * ⚠️ THE ONE THAT MATTERS IS `effectiveStatus`. Everything else here is
  * formatting.
  */
-import type { SiteStatus } from "@kept/shared";
+import { DRAFT_TTL_DAYS, type SiteStatus } from "@kept/shared";
+
+/**
+ * What to call a page. `title ?? slug`, in one place — E06 task 007.
+ *
+ * The rule is stated in three docs and was, until the swap chooser, written out
+ * at every call site. It is one `??`, and that is exactly why it drifts: the
+ * card, the chooser and the confirmation sentence naming the SAME page by two
+ * different rules is how somebody ends up reading "k3n8vq2p becomes a draft"
+ * about a page the wall calls "Recipe notes".
+ */
+export function pageName(site: { title: string | null; slug: string }): string {
+  return site.title ?? site.slug;
+}
 
 /**
  * The status a card may actually claim, given what the clock says.
@@ -63,6 +76,54 @@ export function managementRefusal(status: SiteStatus): string | null {
 /** Whether the verbs above are refused. The predicate behind the sentence. */
 export function isManagementRestricted(status: SiteStatus): boolean {
   return managementRefusal(status) !== null;
+}
+
+/**
+ * Why a page cannot be the one swapped out, or `null` when it can — E06 task 007.
+ *
+ * TWO REASONS, AND THE SECOND IS THE ONE THE CHOOSER WOULD OTHERWISE GET WRONG.
+ * The first is the standing restriction above. The second is arithmetic: the cap
+ * counts `expires_at IS NULL AND status = 'live'` (`isKeptCondition`), so a page
+ * that is clockless but *not* `live` — archived, expired, removed, or held under
+ * review — is already outside the count. Demoting it frees nothing, and the swap
+ * would end with the account still at `KEPT_PAGE_LIMIT` and one more draft than
+ * it started with. Offering it would be offering a no-op that costs the user a
+ * permanent page.
+ *
+ * The wall groups by the clock alone, so those rows sit under "Kept" and are the
+ * obvious thing to pick. They are listed and REFUSED rather than dropped, for
+ * `managementRefusal`'s reason: a control that silently disappears is
+ * indistinguishable from a page that did.
+ */
+export function swapRefusal(status: SiteStatus): string | null {
+  const restricted = managementRefusal(status);
+  if (restricted) return restricted;
+  if (status !== "live") {
+    return "This page is not being served, so swapping it out would not free a kept slot.";
+  }
+  return null;
+}
+
+/**
+ * The sentence the swap chooser must say before it writes anything — task 007.
+ *
+ * ⚠️ BOTH PAGES ARE NAMED, AND THE NUMBER IS NEVER TYPED. "Swap a page?" is not
+ * a warning; it is a shrug with a confirm button. The user is choosing which of
+ * their permanent pages stops being permanent, and the only way that choice can
+ * be made with the consequence in view is for the consequence to name the page
+ * losing it, the page gaining it, and how long the loser now has.
+ *
+ * `DRAFT_TTL_DAYS` is substituted for the reason `draft-chip.tsx` carries no
+ * `7`: demote sets a FRESH clock — not the remainder of some earlier one — and
+ * the day that constant moves, a typed number turns this sentence into a lie
+ * told at the exact moment somebody is trusting it.
+ *
+ * It lives here rather than in the dialog because `lib/**` is what the unit
+ * suite globs, and a copy rule that cannot be asserted is a copy rule that will
+ * be edited back to a literal.
+ */
+export function swapConsequence(demoteName: string, keepName: string): string {
+  return `${demoteName} becomes a draft again and expires in ${DRAFT_TTL_DAYS} days. ${keepName} is kept for good. Nothing is deleted and both pages stay at their links.`;
 }
 
 const BYTES_PER_KB = 1024;

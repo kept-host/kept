@@ -35,15 +35,16 @@
 import Link from "next/link";
 
 import { DRAFT_SECTION_NOTE } from "@/components/kept/draft-chip";
-import { KeptQuotaChip } from "@/components/kept/kept-quota";
 import { Mascot } from "@/components/kept/mascot";
 import { Button } from "@/components/ui/button";
 import { getSession } from "@/lib/auth/session";
 import { getDashboardSites, type OwnedSite } from "@/lib/db/queries/dashboard";
 import { getProfileForSession } from "@/lib/db/queries/profile";
 import { liveUrl } from "@/lib/publish/pipeline";
+import { pageName } from "@/lib/sites/display";
 
 import { ClockProvider } from "./clock";
+import { KeepStateProvider, LiveKeptQuota, type DashboardPage } from "./keep-state";
 import { SiteCard } from "./site-card";
 
 export default async function DashboardPage() {
@@ -65,45 +66,64 @@ export default async function DashboardPage() {
   const now = Date.now();
   const nothingYet = kept.length === 0 && drafts.length === 0;
 
+  // What a keep or a swap is allowed to change, serialised once for the whole
+  // screen (E06 task 007). Every card's island reads its own row out of this, so
+  // a `SwapResult` naming two site ids can flip two cards without either of them
+  // asking the server anything.
+  const pages: DashboardPage[] = [...kept, ...drafts].map((site) => ({
+    id: site.id,
+    name: pageName(site),
+    slug: site.slug,
+    liveUrl: liveUrl(site.slug),
+    status: site.status,
+    expiresAt: site.expiresAt?.toISOString() ?? null,
+  }));
+
   return (
     <ClockProvider initialNow={now}>
-      <main className="mx-auto w-full max-w-[1100px] px-6 pb-28 pt-12 md:px-8 md:pt-16">
-        <header className="border-b border-border pb-8">
-          <p className="mono-label text-[11px] text-text-muted">Your account</p>
-          <h1 className="mt-3 font-display text-[clamp(2.1rem,5.5vw,3.1rem)] font-bold text-text">
-            Your pages
-          </h1>
-          {/* The allowance, from the one function that counts it. `note` adds the
+      <KeepStateProvider initialPages={pages} initialQuota={quota}>
+        <main className="mx-auto w-full max-w-[1100px] px-6 pb-28 pt-12 md:px-8 md:pt-16">
+          <header className="border-b border-border pb-8">
+            <p className="mono-label text-[11px] text-text-muted">Your account</p>
+            <h1 className="mt-3 font-display text-[clamp(2.1rem,5.5vw,3.1rem)] font-bold text-text">
+              Your pages
+            </h1>
+            {/* The allowance, from the one function that counts it. `note` adds the
               way out when the account is full — the cap degrades, it never
-              errors, so it must never read like a wall. */}
-          <KeptQuotaChip quota={quota} note className="mt-6" />
-        </header>
+              errors, so it must never read like a wall.
 
-        {nothingYet ? (
-          <FirstRun />
-        ) : (
-          <>
-            <Section
-              title="Kept"
-              count={kept.length}
-              unit="page"
-              empty="Nothing kept yet. Keep a draft and it stays at its link for good."
-            >
-              {kept}
-            </Section>
+              LIVE, because a swap changes it without a navigation: the number
+              here and the number in the chooser both come off the same parsed
+              `KeptQuota`, so they cannot disagree. */}
+            <LiveKeptQuota note className="mt-6" />
+          </header>
 
-            <Section
-              title="Drafts"
-              count={drafts.length}
-              unit="draft"
-              note={DRAFT_SECTION_NOTE}
-              empty="No drafts right now. Every page starts as one."
-            >
-              {drafts}
-            </Section>
-          </>
-        )}
-      </main>
+          {nothingYet ? (
+            <FirstRun />
+          ) : (
+            <>
+              <Section
+                title="Kept"
+                count={kept.length}
+                unit="page"
+                empty="Nothing kept yet. Keep a draft and it stays at its link for good."
+              >
+                {kept}
+              </Section>
+
+              <Section
+                title="Drafts"
+                count={drafts.length}
+                unit="draft"
+                note={DRAFT_SECTION_NOTE}
+                empty="No drafts right now. Every page starts as one."
+              >
+                {drafts}
+              </Section>
+            </>
+          )}
+        </main>
+      </KeepStateProvider>
     </ClockProvider>
   );
 }
@@ -182,8 +202,8 @@ function FirstRun() {
         Nothing kept yet
       </h2>
       <p className="max-w-[44ch] leading-relaxed text-text-secondary">
-        Drop an HTML file and it is live at its own link straight away — no
-        account needed to publish, no build step, no waiting.
+        Drop an HTML file and it is live at its own link straight away — no account
+        needed to publish, no build step, no waiting.
       </p>
       <p className="max-w-[44ch] text-sm leading-relaxed text-text-muted">
         {DRAFT_SECTION_NOTE}

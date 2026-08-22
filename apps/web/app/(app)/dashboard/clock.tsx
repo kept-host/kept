@@ -38,6 +38,8 @@ import { SiteStatusDot } from "@/components/kept/live-url";
 import { effectiveStatus } from "@/lib/sites/display";
 import { cn } from "@/lib/utils";
 
+import { useSiteClock } from "./keep-state";
+
 /**
  * Half a minute. The labels have minute granularity, which the PRD accepts, so
  * a full-minute interval would let "1 hour left" sit on screen up to 59 seconds
@@ -99,26 +101,54 @@ function useNow(): number {
  * "Draft · expired", and rendering both put "Expired · Draft · expired" on the
  * card, which is how it looked the first time this screen was rendered. A draft
  * gets a dot only for a status E07 actually wrote, which the clock cannot say.
+ *
+ * ── THE CLOCK CAN ALSO MOVE BECAUSE OF A WRITE (E06 task 007) ────────────────
+ * A keep or a swap changes `expires_at` while this screen is open, and the whole
+ * point of `SwapResult` carrying both halves is that both cards flip from that
+ * one response. So the value rendered is `useSiteClock`'s — the server's, until
+ * a parsed response has moved it — and `expiresAt` below is the seed, not the
+ * authority. Nothing here predicts; the override only ever holds what the
+ * database already committed.
  */
 export function SiteState({
+  siteId,
   status,
   expiresAt,
   className,
 }: {
+  /** Which row this is, so a write can find its card. */
+  siteId: string;
   status: SiteStatus;
-  /** The draft clock. `null` → kept, and there is no other split. */
+  /** The draft clock as the server rendered it. `null` → kept, and no other split. */
   expiresAt: Date | null;
   className?: string;
 }) {
   const now = new Date(useNow());
-  const { phase } = draftCountdown(expiresAt, now);
+  const clock = useSiteClock(siteId, expiresAt);
+  const { phase } = draftCountdown(clock, now);
   const shown = effectiveStatus(status, phase === "expired");
-  const isDraft = expiresAt !== null;
+  const isDraft = clock !== null;
+
+  // The card is honest about itself the instant the transaction commits; the
+  // *grouping* around it was rendered by the server and cannot move without a
+  // refetch the acceptance rule forbids. Saying so is cheaper than a wall that
+  // quietly disagrees with its own headings.
+  const regrouped = isDraft !== (expiresAt !== null);
 
   return (
-    <div className={cn("flex flex-wrap items-center gap-x-3 gap-y-2", className)}>
-      {isDraft && status === "live" ? null : <SiteStatusDot status={shown} />}
-      {isDraft ? <DraftChip expiresAt={expiresAt} now={now} /> : null}
+    <div className={cn("flex flex-col gap-2", className)}>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        {isDraft && status === "live" ? null : <SiteStatusDot status={shown} />}
+        {isDraft ? <DraftChip expiresAt={clock} now={now} /> : null}
+      </div>
+
+      {regrouped ? (
+        <p className="mono-label text-[10px] leading-relaxed text-text-muted">
+          {isDraft
+            ? "Moves into Drafts next time this screen loads."
+            : "Moves into Kept next time this screen loads."}
+        </p>
+      ) : null}
     </div>
   );
 }

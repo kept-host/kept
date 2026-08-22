@@ -18,10 +18,16 @@
  * card gets two and lets the rest go.
  *
  * WHAT THIS CARD DELIBERATELY DOES NOT HAVE: a thumbnail (task 010 mints the OG
- * card and wires it in here), a keep/swap action (task 007), a drop target
- * (task 009). Their absence is sequencing, not omission — and the restriction
- * copy below is exported so that when they land they *refuse and explain* on a
- * flagged page rather than quietly disappearing from it.
+ * card and wires it in here) or a drop target (task 009). Their absence is
+ * sequencing, not omission — and the restriction copy below is exported so that
+ * when they land they *refuse and explain* on a flagged page rather than quietly
+ * disappearing from it.
+ *
+ * TASK 007 ADDED KEEP, AND ONLY TO A DRAFT. A kept page has nothing to keep, so
+ * the button is absent rather than disabled there; on a flagged draft it is
+ * present and disabled, pointed at the refusal sentence below. Demote lives on
+ * the detail screen (task 008), not here — a wall is for finding a page, and one
+ * irreversible-looking verb per card is enough.
  */
 import Link from "next/link";
 import { ArrowUpRight } from "lucide-react";
@@ -33,11 +39,13 @@ import {
   formatBytes,
   formatUpdatedAt,
   managementRefusal,
+  pageName,
   siteHref,
 } from "@/lib/sites/display";
 import { cn } from "@/lib/utils";
 
 import { SiteState } from "./clock";
+import { KeepAction } from "./keep-action";
 
 export function SiteCard({
   site,
@@ -53,7 +61,7 @@ export function SiteCard({
   liveUrl: string;
   className?: string;
 }) {
-  const name = site.title ?? site.slug;
+  const name = pageName(site);
   // The slug is the part that is theirs; the suffix is ours. Split on the real
   // host so no hostname literal lands in this file.
   const hostSuffix = new URL(liveUrl).host.slice(site.slug.length);
@@ -63,6 +71,10 @@ export function SiteCard({
   // a page on its owner's dashboard would otherwise leave this blank.
   const updatedAt = site.versionCreatedAt ?? site.updatedAt;
   const refusal = managementRefusal(site.status);
+  // Stable and derived, not `useId` — this is a server component, and the id has
+  // to survive into the client island that points `aria-describedby` at it.
+  const refusalId = `site-refusal-${site.id}`;
+  const isDraft = site.expiresAt !== null;
 
   return (
     <article
@@ -76,7 +88,7 @@ export function SiteCard({
         className,
       )}
     >
-      <SiteState status={site.status} expiresAt={site.expiresAt} />
+      <SiteState siteId={site.id} status={site.status} expiresAt={site.expiresAt} />
 
       <div className="min-w-0">
         <h3 className="font-display text-lg font-semibold leading-snug text-text">
@@ -98,7 +110,10 @@ export function SiteCard({
       </div>
 
       {refusal ? (
-        <p className="rounded-[var(--r-md)] border border-border bg-sunken px-3 py-2 text-xs leading-relaxed text-text-secondary">
+        <p
+          id={refusalId}
+          className="rounded-[var(--r-md)] border border-border bg-sunken px-3 py-2 text-xs leading-relaxed text-text-secondary"
+        >
           {refusal}
         </p>
       ) : null}
@@ -113,7 +128,7 @@ export function SiteCard({
 
         {/* `relative` lifts these above the stretched link's overlay; without it
             the card swallows its own buttons. */}
-        <div className="relative flex items-center gap-1">
+        <div className="relative flex items-end gap-1">
           <CopyLinkButton
             liveUrl={liveUrl}
             label={
@@ -136,6 +151,23 @@ export function SiteCard({
               <span className="sr-only"> {site.slug}</span>
             </a>
           </Button>
+
+          {isDraft ? (
+            <KeepAction
+              site={{
+                id: site.id,
+                name,
+                slug: site.slug,
+                liveUrl,
+                status: site.status,
+                // Crossing into the client, so ISO rather than a `Date`. The
+                // island treats it as a seed; `useSiteClock` is the authority
+                // once a keep or a swap has answered.
+                expiresAt: site.expiresAt?.toISOString() ?? null,
+              }}
+              refusalId={refusalId}
+            />
+          ) : null}
         </div>
       </div>
     </article>
