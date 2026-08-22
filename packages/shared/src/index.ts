@@ -11,3 +11,4 @@ export * from "./types";
 export * from "./kv-manifest";
 export * from "./publish";
 export * from "./keep";
+export * from "./manage";

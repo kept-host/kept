@@ -47,8 +47,15 @@ export class SlugUnavailableError extends Error {
  * answers a question that stops being true the instant it returns. The unique
  * index is the only authority, so a collision is detected by inserting and
  * reading the constraint name off the error.
+ *
+ * ⚠️ EXPORTED FOR E06's RENAME (task 005), which applies the identical posture
+ * to a CALLER-supplied candidate: it updates the slug and reads the constraint
+ * name off the failure, instead of asking whether the name is free and then
+ * racing itself. A second copy of this predicate is a second answer to "was
+ * that a collision or a real error", and the wrong answer is a 500 shown to
+ * somebody whose only mistake was picking a taken name.
  */
-function isSlugCollision(err: unknown): boolean {
+export function isSlugCollision(err: unknown): boolean {
   for (let cursor: unknown = err, depth = 0; cursor && depth < 5; depth++) {
     const candidate = cursor as { code?: unknown; constraint_name?: unknown; cause?: unknown };
     if (candidate.code === "23505" && candidate.constraint_name === "sites_slug_key") {

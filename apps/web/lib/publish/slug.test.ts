@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { slugSchema } from "@kept/shared";
+import { SLUG_MAX_LENGTH, slugSchema } from "@kept/shared";
 
 import {
   RESERVED_SLUGS,
   SLUG_ALPHABET,
   SLUG_LENGTH,
+  checkChosenSlug,
   containsProfanity,
   isReservedSlug,
   mintSlugCandidate,
@@ -62,6 +63,58 @@ test("profane substrings are rejected and never minted", () => {
   assert.equal(containsProfanity("k3nt5wqz"), false);
   for (let i = 0; i < SAMPLE; i++) {
     assert.equal(containsProfanity(mintSlugCandidate()), false);
+  }
+});
+
+test("`site` and `settings` are reserved — E06's own two control-plane routes", () => {
+  // `/site/[slug]` and `/settings`. The list already carries `dashboard`,
+  // `auth`, `p` and `keep` for exactly this reason; these two joined it when
+  // E06 added the routes, and the rename endpoint is the first path that lets a
+  // human ask for either.
+  for (const label of ["site", "settings"]) {
+    assert.ok(RESERVED_SLUGS.includes(label as (typeof RESERVED_SLUGS)[number]));
+    assert.equal(checkChosenSlug(label)?.reason, "reserved");
+  }
+});
+
+test("a chosen slug is refused for shape, reserved label or profanity — and for nothing else", () => {
+  // Shape: the rule is `slugSchema`'s, not a second regex.
+  for (const bad of [
+    "Has-Capitals",
+    "under_scores",
+    "-leading",
+    "trailing-",
+    "double--hyphen",
+    "spaces here",
+    "",
+    "a".repeat(SLUG_MAX_LENGTH + 1),
+    "dots.in.it",
+  ]) {
+    assert.equal(checkChosenSlug(bad)?.reason, "shape", bad);
+  }
+
+  assert.equal(checkChosenSlug("dashboard")?.reason, "reserved");
+  assert.equal(checkChosenSlug("app")?.reason, "reserved");
+  assert.equal(checkChosenSlug("my-ass-page")?.reason, "profanity");
+
+  // Acceptable, including at the length limit and with digits.
+  for (const good of [
+    "my-notes",
+    "a",
+    "2026-review",
+    "a".repeat(SLUG_MAX_LENGTH),
+    mintSlugCandidate(),
+  ]) {
+    assert.equal(checkChosenSlug(good), null, good);
+  }
+
+  // ⚠️ THE E07 DEFERRAL, ASSERTED SO IT IS A DECISION AND NOT A SURPRISE.
+  // Impersonation, typosquatting and homoglyph tricks are NOT covered by these
+  // three rules and are explicitly E07's. If a future change starts refusing
+  // these, this expectation is the place to record that the policy arrived —
+  // not a bug to fix by loosening it back.
+  for (const unpoliced of ["paypal-verify", "signin-microsoft", "paypa1-secure", "g00gle-docs"]) {
+    assert.equal(checkChosenSlug(unpoliced), null, unpoliced);
   }
 });
 

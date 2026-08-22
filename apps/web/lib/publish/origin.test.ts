@@ -187,6 +187,33 @@ test("the refusal is the publish family's closed error shape, uncacheable", asyn
   assert.equal(body.message.includes(HOSTED), false);
 });
 
+test("every cookie-authenticated mutating route imports the gate", async () => {
+  // THE POSITIVE HALF OF THE PIN. The list below is the whole set of routes
+  // whose authority is the `__Host-` session cookie, and each one must call
+  // `refuseUntrustedOrigin` — the negative list further down is the set that
+  // must not. A new mutating route under `/api/sites/` is added HERE, in the
+  // task that ships it, rather than discovered red later.
+  const { readFile } = await import("node:fs/promises");
+  const cookieRoutes = [
+    "app/api/sites/[id]/keep/route.ts",
+    "app/api/sites/[id]/demote/route.ts",
+    "app/api/sites/swap/route.ts",
+    // E06 task 005 — rename. The only owner route that writes KV, which makes
+    // an unguarded cross-origin call able to move somebody's permanent link.
+    "app/api/sites/[id]/slug/route.ts",
+    // The anonymous keep carries TWO credentials (bearer token in the path AND
+    // a session cookie), so it is gated like a cookie route.
+    "app/api/anon/[anonToken]/keep/route.ts",
+  ];
+  for (const path of cookieRoutes) {
+    const source = await readFile(new URL(`../../${path}`, import.meta.url), "utf8");
+    assert.ok(
+      source.includes("refuseUntrustedOrigin"),
+      `${path} spends the session cookie and must refuse a foreign origin first.`,
+    );
+  }
+});
+
 test("the five bearer-credential routes do not import the gate", async () => {
   const { readFile } = await import("node:fs/promises");
   const bearerRoutes = [
@@ -420,6 +447,54 @@ test(
     );
 
     assert.equal(res.status, 403);
+    assert.equal(await snapshot(kept), before);
+  },
+);
+
+test(
+  "a cross-origin rename is 403 and the slug is untouched on re-read",
+  { skip: skipDb },
+  async () => {
+    const { PATCH } = await import("../../app/api/sites/[id]/slug/route");
+    const { appOrigin } = await import("../storage/env");
+    const owner = await makeProfile();
+    const kept = await makeSite(owner, true);
+    const before = await snapshot(kept);
+    const body = { slug: `e05a-006-renamed-${kept.slice(0, 8)}` };
+
+    const res = await PATCH(
+      new Request(`https://app.kept-dev.xyz/api/sites/${kept}/slug`, {
+        method: "PATCH",
+        headers: { cookie: COOKIE, origin: HOSTED, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      { params: Promise.resolve({ id: kept }) },
+    );
+
+    assert.equal(res.status, 403);
+    assert.equal(publishErrorSchema.parse(await res.json()).error, "invalid_request");
+    // The claim that matters. A refused rename that had already written the new
+    // KV manifest would be a 403 with the page moved — worse than no check.
+    assert.equal(await snapshot(kept), before);
+
+    // The same call from the app's own origin gets past the gate. It cannot
+    // COMPLETE out here (`getSession()` needs a Next request scope), which is
+    // itself the proof the gate runs before the session lookup.
+    const allowed = await statusOrThrow(() =>
+      PATCH(
+        new Request(`https://app.kept-dev.xyz/api/sites/${kept}/slug`, {
+          method: "PATCH",
+          headers: {
+            cookie: COOKIE,
+            origin: appOrigin(),
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(body),
+        }),
+        { params: Promise.resolve({ id: kept }) },
+      ),
+    );
+    assert.notEqual(allowed, 403);
     assert.equal(await snapshot(kept), before);
   },
 );

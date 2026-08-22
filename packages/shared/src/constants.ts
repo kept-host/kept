@@ -3,6 +3,14 @@
 /** Maximum size of a single published page's HTML, in bytes (5 MB). */
 export const MAX_PAGE_BYTES = 5 * 1024 * 1024;
 
+/**
+ * Longest a slug may be — the DNS limit on a single hostname label, since a slug
+ * becomes the first label of `{slug}.kept.host`. Named rather than inlined
+ * because E06's rename shows the rule to a human in an inline validation
+ * message, and a message that disagrees with `slugSchema` is worse than none.
+ */
+export const SLUG_MAX_LENGTH = 63 as const;
+
 /** Pages an account may keep forever, free. */
 export const KEPT_PAGE_LIMIT = 3 as const;
 
