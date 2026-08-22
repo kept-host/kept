@@ -5,6 +5,7 @@
  * `POST /api/sites` (E06 task 004)
  * `PATCH /api/sites/:id/slug` (E06 task 005)
  * `POST /api/sites/:id/replace` · `DELETE /api/sites/:id` (E06 task 006)
+ * `DELETE /api/account` (E06 task 011)
  *
  * ── WHAT THIS MODULE IS FOR ────────────────────────────────────────────────
  * Validation and result→response mapping, and nothing else. Every database
@@ -49,6 +50,9 @@
  * the enum is closed and shared with `apps/edge`'s consumers.
  */
 import {
+  ACCOUNT_DELETION_CONFIRMATION,
+  accountDeletionRequestSchema,
+  accountDeletionResultSchema,
   deleteResultSchema,
   demoteResultSchema,
   keepResultSchema,
@@ -57,6 +61,7 @@ import {
   renameResultSchema,
   replaceResultSchema,
   swapResultSchema,
+  type AccountDeletionResult,
   type DeleteResult,
   type DemoteResult,
   type KeepResult,
@@ -79,6 +84,7 @@ import {
   type PublisherContext,
 } from "../publish/pipeline";
 import { checkChosenSlug } from "../publish/slug";
+import { AccountDeletionStoreError, deleteAccount } from "./account-deletion";
 import { demoteSite, keepSite, SiteNotFoundError, swapKept } from "./keep";
 import {
   deleteSite,
@@ -501,5 +507,72 @@ export async function deleteOwnedSite(
       });
     }
     return unexpected("delete", err);
+  }
+}
+
+/**
+ * `DELETE /api/account` — the only irreversible action in the product.
+ * E06 task 011, epic decision **D3**.
+ *
+ * ⚠️ THERE IS NO ID PARAMETER, AND THERE MUST NEVER BE ONE. The profile id comes
+ * from the session the route handler resolved, so the endpoint cannot be pointed
+ * at another account by any request a caller can construct. An `id` here — even
+ * one that was checked — would be a deletion verb that *takes a victim's name*,
+ * one forgotten early return away from working.
+ *
+ * ⚠️ THE BODY IS THE SECOND HALF OF D3'S DOUBLE GATE. `accountDeletionRequestSchema`
+ * requires the literal `ACCOUNT_DELETION_CONFIRMATION`, so the request itself
+ * carries the intent and the gate is real even for a caller that never rendered a
+ * dialog. The first half — a dialog stating the account's REAL kept/draft counts
+ * from `getAccountDeletionSummary`, with the button disabled until the phrase
+ * matches — is task 012's, and this refusal is what makes it more than decoration.
+ * A bare "are you sure?" is not acceptable for an act that kills permanent links
+ * other people may be pointing at.
+ *
+ * 400, not 422: a body without the phrase is a caller that did not ask for this,
+ * and the message names the phrase because a developer wiring the dialog is the
+ * only person who will ever read it.
+ *
+ * ⚠️ ARCHIVE IS THE OTHER VERB. This one ends every page in `removed` with a
+ * `purge_after` — see `./account-deletion.ts` for why the two terminal states
+ * differ on purpose, and why the R2 objects deliberately survive this call.
+ */
+export async function deleteOwnAccount(
+  raw: unknown,
+  profileId: string,
+): Promise<OwnerOutcome<AccountDeletionResult>> {
+  const parsed = accountDeletionRequestSchema.safeParse(raw);
+  if (!parsed.success) {
+    return fail(400, {
+      error: "invalid_request",
+      message: `Send \`{ confirm: "${ACCOUNT_DELETION_CONFIRMATION}" }\` — deleting an account is permanent and has to be typed out.`,
+    });
+  }
+
+  try {
+    const result = await deleteAccount(profileId);
+    return { ok: true, status: 200, body: accountDeletionResultSchema.parse(result) };
+  } catch (err) {
+    if (err instanceof AccountDeletionStoreError) {
+      // Nothing was deleted — the throw happens before the transaction opens —
+      // so "nothing changed" is literally true and a retry is safe.
+      console.error(`[owner-routes] account deletion refused — ${err.message}`);
+      return fail(503, {
+        error: "internal_error",
+        message:
+          "kept could not take your pages off the internet just now, so nothing was deleted. Your account and every page are exactly as they were. Try again in a moment.",
+      });
+    }
+    // NOT `unexpected()`: its body says "this page" and promises nothing was
+    // half-written. Neither is true here — the unwind may have taken pages off
+    // the edge before the throw — so this says what a retry actually does.
+    console.error(
+      `[owner-routes] account deletion failed unexpectedly — ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return fail(500, {
+      error: "internal_error",
+      message:
+        "kept could not finish deleting your account. Some of your pages may already have stopped being served; retrying the deletion is safe and will finish the job.",
+    });
   }
 }

@@ -213,6 +213,13 @@ test("every cookie-authenticated mutating route imports the gate", async () => {
     // account — and, at the cap, silently demote nothing while consuming the
     // slot they were saving.
     "app/api/sites/route.ts",
+    // E06 task 011 — ACCOUNT DELETION, the only irreversible verb in the
+    // product. Ungated, a script on a hosted page could destroy its visitor's
+    // whole account — every kept page, every permanent link somebody else may
+    // be pointing at — using nothing but the session cookie the browser
+    // attaches for it. The typed confirmation phrase in the body is the second
+    // gate; this is the first.
+    "app/api/account/route.ts",
 
     // The anonymous keep carries TWO credentials (bearer token in the path AND
     // a session cookie), so it is gated like a cookie route.
@@ -656,6 +663,59 @@ test(
       ),
     );
     assert.notEqual(allowed, 403);
+  },
+);
+
+test(
+  "a cross-origin account deletion is 403, and the account and its pages survive",
+  { skip: skipDb },
+  async () => {
+    const { DELETE } = await import("../../app/api/account/route");
+    const { appOrigin } = await import("../storage/env");
+    const { ACCOUNT_DELETION_CONFIRMATION } = await import("@kept/shared");
+    const owner = await makeProfile();
+    const kept = await makeSite(owner, true);
+    const before = await snapshot(kept);
+    const body = JSON.stringify({ confirm: ACCOUNT_DELETION_CONFIRMATION });
+
+    const res = await DELETE(
+      new Request("https://app.kept-dev.xyz/api/account", {
+        method: "DELETE",
+        headers: { cookie: COOKIE, origin: HOSTED, "content-type": "application/json" },
+        body,
+      }),
+    );
+
+    assert.equal(res.status, 403);
+    assert.equal(publishErrorSchema.parse(await res.json()).error, "invalid_request");
+    // THE CLAIM THAT MATTERS, on the one irreversible verb in the product: the
+    // page is still `live` and still owned. A refused deletion that had already
+    // unwound the edge would be a 403 with the account's pages dark.
+    assert.equal(await snapshot(kept), before);
+    const client = await db();
+    const { user } = await import("../db/schema");
+    const { eq } = await import("drizzle-orm");
+    const rows = await client.select({ id: user.id }).from(user).where(eq(user.id, owner));
+    assert.equal(rows.length, 1, "the user row must survive a refused deletion");
+
+    // The same call from the app's own origin gets past the gate and fails
+    // later, on the session — proof the refusal is origin-dependent rather than
+    // blanket, and that the gate runs BEFORE `getSession()`.
+    const allowed = await statusOrThrow(() =>
+      DELETE(
+        new Request("https://app.kept-dev.xyz/api/account", {
+          method: "DELETE",
+          headers: {
+            cookie: COOKIE,
+            origin: appOrigin(),
+            "content-type": "application/json",
+          },
+          body,
+        }),
+      ),
+    );
+    assert.notEqual(allowed, 403);
+    assert.equal(await snapshot(kept), before);
   },
 );
 

@@ -178,3 +178,83 @@ export const deleteResultSchema = z.object({
   status: z.literal("archived"),
   quota: keptQuotaSchema,
 });
+
+/**
+ * The literal a user types to arm account deletion — `DELETE /api/account`
+ * (E06 task 011, epic decision **D3**).
+ *
+ * ⚠️ IT LIVES HERE BECAUSE BOTH HALVES OF THE GATE READ IT. The settings dialog
+ * (task 012) renders it and compares what was typed so the destructive button
+ * can enable; the route below parses the request body against it so the gate is
+ * real even for a caller that never rendered a dialog. One value, so the button
+ * can never enable on a string the server would refuse — and so a stray
+ * `fetch("/api/account", { method: "DELETE" })` from the app's own origin cannot
+ * destroy an account by arriving.
+ *
+ * ⚠️ EXACT MATCH, DELIBERATELY. No trim, no case-folding, no "close enough".
+ * This is the only irreversible action in the product and it kills permanent
+ * links other people may be pointing at; the typing IS the deliberation. Task
+ * 012 owns the surrounding copy and may change these words — change them HERE
+ * and both halves follow — but it must stay a literal phrase compared exactly,
+ * and the input must be rendered with autocapitalisation off so a phone does not
+ * fight the user.
+ *
+ * NOT the account's email address: this string ends up in a request body, and
+ * an address there is one log line away from being somewhere it should not be.
+ */
+export const ACCOUNT_DELETION_CONFIRMATION = "delete my account" as const;
+
+/**
+ * The body of `DELETE /api/account`. One field, and it must be the phrase.
+ *
+ * A delete that carried no body would be a delete that any misrouted request
+ * could perform; requiring the phrase makes the request itself carry the
+ * intent, which is the same reason the dialog requires typing it.
+ */
+export const accountDeletionRequestSchema = z.object({
+  confirm: z.literal(ACCOUNT_DELETION_CONFIRMATION),
+});
+
+export type AccountDeletionRequest = z.infer<typeof accountDeletionRequestSchema>;
+
+/**
+ * What deleting a whole ACCOUNT returns — `DELETE /api/account`.
+ *
+ * ⚠️ `status` IS PINNED TO `removed`, AND IT IS NOT `DeleteResult`'s `archived`.
+ * The two delete verbs end in deliberately different terminal states (D3):
+ *
+ *   · one page   → `archived` — the row and the R2 object are retained so the
+ *                  OWNER can still download them during E07's window.
+ *   · one account → `removed` + `purge_after` — because the owner is precisely
+ *                  who no longer exists. There is nobody to offer a download to,
+ *                  and `status IN (expired, removed) AND purge_after < now()` is
+ *                  exactly what E07's daily purge job selects on, so the bytes
+ *                  are collected by machinery that is already designed.
+ *
+ * **That is not drift and must not be harmonised.** See the epic's locked
+ * decisions before touching either literal.
+ *
+ * There is no `quota`: the account it would describe is gone. There is no
+ * `siteId`/`slug` either — the affected pages are every page the account had,
+ * and enumerating them into a response body nobody is left to read would only
+ * be a list of names for whoever holds the session next.
+ *
+ * ⚠️ `purgeAfter` IS A HANDOFF, NOT A PROMISE THAT THE BYTES ARE GONE. E07's
+ * purge job does not exist yet, so R2 objects legitimately persist after this
+ * returns. Deletion copy may say "your pages stop being served immediately; the
+ * files are erased shortly after"; it may **not** say "erased immediately".
+ */
+export interface AccountDeletionResult {
+  /** How many rows were flipped to `removed` — every page the account had. */
+  pagesRemoved: number;
+  /** Always `removed` — never `archived`, which belongs to the single-page delete. */
+  status: "removed";
+  /** The deadline E07's purge orders on. Already in the past when this returns. */
+  purgeAfter: string;
+}
+
+export const accountDeletionResultSchema = z.object({
+  pagesRemoved: z.number().int().nonnegative(),
+  status: z.literal("removed"),
+  purgeAfter: z.string().datetime(),
+});
