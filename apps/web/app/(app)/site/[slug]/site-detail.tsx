@@ -47,13 +47,13 @@ import type { KeptQuota } from "@kept/shared";
 import { PagePreview } from "@/components/kept/page-preview";
 import { CopyLinkButton } from "@/components/kept/live-url";
 import { OwnerReplaceDrop } from "@/components/kept/owner-replace-drop";
+import { ProRows } from "@/components/kept/pro-rows";
 import type { SwapPage } from "@/components/kept/swap-dialog";
 import { Button } from "@/components/ui/button";
 import { managementRefusal } from "@/lib/sites/display";
 
 import { SiteState } from "../../dashboard/clock";
 import { ActionsPanel } from "./actions-panel";
-import { ProRows } from "./pro-rows";
 import { RenameField } from "./rename-field";
 
 /** The subject, serialised for the browser. `expiresAt` is the server's seed. */

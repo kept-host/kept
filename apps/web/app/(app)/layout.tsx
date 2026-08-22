@@ -20,6 +20,8 @@
  * publishes, gets a live link, and only meets this gate if they choose to keep
  * the page forever.
  */
+import Link from "next/link";
+
 import { requireSession } from "@/lib/auth/session";
 
 import { SignOutButton } from "./sign-out-button";
@@ -40,8 +42,25 @@ export default async function AppLayout({
 
   return (
     <div className="min-h-dvh">
-      <header className="flex items-center justify-between gap-4 border-b border-border px-6 py-4">
-        <p className="mono-label text-text-muted">kept</p>
+      <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border px-6 py-4">
+        <div className="flex items-baseline gap-5">
+          <Link
+            href="/dashboard"
+            className="mono-label rounded-[var(--r-sm)] text-text-muted outline-none hover:text-text focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
+          >
+            kept
+          </Link>
+          {/* The only route in this group a user cannot otherwise reach: the
+              dashboard links to each page, and each page links back, but
+              settings has no card to be clicked. A screen with no way in is a
+              screen that is not shipped. */}
+          <Link
+            href="/settings"
+            className="mono-label rounded-[var(--r-sm)] text-[11px] text-text-muted outline-none hover:text-text focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
+          >
+            Settings
+          </Link>
+        </div>
         <div className="flex items-center gap-3">
           <span className="text-sm text-text-secondary">{session.user.email}</span>
           <SignOutButton />

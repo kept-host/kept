@@ -1,5 +1,12 @@
 /**
- * The five things Pro will unlock — E06 task 008.
+ * The five things Pro will unlock — E06 task 008, shared with task 012.
+ *
+ * ⚠️ ONE COMPONENT, TWO CALL SITES: the site-detail aside and the settings Plan
+ * panel. It lives here rather than beside either of them because the second
+ * screen that needed it would otherwise have hand-built a near-identical list,
+ * and two lists of what Pro includes drift the moment E11 changes one of them.
+ * The Plan panel supplies the "Free · your plan" half above it; this component
+ * owns the locked half and nothing else.
  *
  * ⚠️ FINISHED MARKUP, NOT SCAFFOLDING, AND THE DIFFERENCE IS THE WHOLE POINT.
  * There is no feature flag here, no entitlement check, no `plan === "premium"`

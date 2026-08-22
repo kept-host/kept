@@ -13,6 +13,7 @@
  * which is pure by design precisely so this file can call it.
  */
 import {
+  accountDeletionResultSchema,
   deleteResultSchema,
   demoteResultSchema,
   keepResultSchema,
@@ -22,6 +23,7 @@ import {
   renameResultSchema,
   replaceResultSchema,
   swapResultSchema,
+  type AccountDeletionResult,
   type DeleteResult,
   type DemoteResult,
   type KeepResult,
@@ -527,6 +529,82 @@ export async function deletePage(
         error: "internal_error",
         message:
           "kept answered with something this page could not read. Reload to see whether the page was deleted.",
+      },
+    };
+  }
+  return { ok: true, result: parsed.data };
+}
+
+/**
+ * An account teardown: what was destroyed, or why nothing was.
+ *
+ * `signedOut` is its own branch rather than a message, because the only useful
+ * response to it is a navigation to sign-in — printing "Sign in to manage this
+ * page" inside a dialog on a screen that already rendered a session would read
+ * as a bug.
+ */
+export type AccountDeletionOutcome =
+  | { ok: true; result: AccountDeletionResult }
+  | { ok: false; signedOut: true }
+  | { ok: false; signedOut?: false; error: PublishError };
+
+/**
+ * `DELETE /api/account` — a signed-in user destroys their own account
+ * (E06 task 011's route, epic decision **D3**).
+ *
+ * ⚠️ THE PHRASE IS THE REQUEST, NOT MERELY THE UI'S GATE. `confirm` is checked
+ * server-side against `accountDeletionRequestSchema`, so a stray
+ * `fetch("/api/account", { method: "DELETE" })` from this app's own origin
+ * cannot destroy an account by arriving. That is also why this function takes
+ * the phrase rather than hardcoding it: the caller passes what the user actually
+ * typed, and a mismatch is refused by the server rather than smoothed over here.
+ *
+ * ⚠️ NO PATH SEGMENT NAMING A VICTIM, EVER. The route resolves the profile from
+ * the session; there is nothing for this function to send that says whose
+ * account to delete, and adding one would turn "delete my account" into a
+ * deletion endpoint that takes an argument.
+ *
+ * The four refusals the route can produce all arrive as `{ error, message }`
+ * with the server's own sentence, and the caller shows it verbatim:
+ *   · 400 — the phrase did not match exactly
+ *   · 401 — the session is gone (its own branch above)
+ *   · 403 — the request did not come from the app's configured origin
+ *   · 503 — a page could not be taken off the edge, so **nothing** was deleted
+ *
+ * Never throws, including on abort.
+ */
+export async function deleteAccount(
+  confirm: string,
+  signal?: AbortSignal,
+): Promise<AccountDeletionOutcome> {
+  let response: Response;
+  try {
+    response = await fetch("/api/account", {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirm }),
+      signal,
+    });
+  } catch {
+    return { ok: false, error: unreachable("deleted") };
+  }
+
+  if (response.status === 401) return { ok: false, signedOut: true };
+
+  if (response.status !== 200) {
+    return { ok: false, error: await readError(response, "delete your account") };
+  }
+
+  const parsed = accountDeletionResultSchema.safeParse(
+    await response.json().catch(() => null),
+  );
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: {
+        error: "internal_error",
+        message:
+          "kept answered with something this page could not read. Sign out and sign in again to see whether your account is still there.",
       },
     };
   }
