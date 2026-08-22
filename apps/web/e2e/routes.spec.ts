@@ -101,7 +101,7 @@ test.describe("the (app) route gate", () => {
       page.getByRole("heading", { name: "Sign in to kept" }),
     ).toBeVisible();
     await expect(
-      page.getByRole("heading", { name: "Dashboard placeholder" }),
+      page.getByRole("heading", { name: "Your pages" }),
     ).toHaveCount(0);
 
     // Asserted decoded, because the contract is the path — not the exact
