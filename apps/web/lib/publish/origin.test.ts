@@ -238,6 +238,32 @@ test("the five bearer-credential routes do not import the gate", async () => {
   }
 });
 
+test("the public read routes do not import the gate", async () => {
+  // A THIRD CATEGORY, kept separate from the two above on purpose. These are
+  // neither cookie-authenticated nor bearer-credentialed: they authenticate
+  // nobody and mutate nothing. `refuseUntrustedOrigin` exists for ambient
+  // session authority spent on a state change (E05a D3), and a read that has
+  // neither gains nothing from it while losing every consumer it exists for.
+  const { readFile } = await import("node:fs/promises");
+  const publicRoutes = [
+    // E06 task 010 — the OG card. Fetched as an `<img>` by the dashboard and as
+    // `og:image` by crawlers and social previews, which send no `Origin` at all
+    // and frequently a foreign one. Gating it would break every one of them.
+    // Recorded here rather than left to silence, which is what the criterion
+    // asks for: the absence of the gate on this route is a decision.
+    "app/api/og/[siteId]/route.tsx",
+    "app/api/health/route.ts",
+  ];
+  for (const path of publicRoutes) {
+    const source = await readFile(new URL(`../../${path}`, import.meta.url), "utf8");
+    assert.equal(
+      source.includes("refuseUntrustedOrigin"),
+      false,
+      `${path} authenticates nobody and mutates nothing — a gate here only breaks callers.`,
+    );
+  }
+});
+
 // ── 2. THE WIRING, against the real dev database ────────────────────────────
 
 const createdSites = new Set<string>();
