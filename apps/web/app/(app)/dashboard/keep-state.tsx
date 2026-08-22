@@ -29,12 +29,18 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
   type ReactNode,
 } from "react";
 
-import type { KeepResult, KeptQuota, SwapResult } from "@kept/shared";
+import type {
+  KeepResult,
+  KeptQuota,
+  OwnedPublishResult,
+  SwapResult,
+} from "@kept/shared";
 
 import { KeptQuotaChip } from "@/components/kept/kept-quota";
 import type { SwapPage } from "@/components/kept/swap-dialog";
@@ -57,6 +63,7 @@ interface KeepState {
   pages: Record<string, DashboardPage>;
   applyKeep: (result: KeepResult) => void;
   applySwap: (result: SwapResult) => void;
+  applyPublish: (result: OwnedPublishResult) => void;
 }
 
 const KeepStateContext = createContext<KeepState | null>(null);
@@ -76,6 +83,21 @@ export function KeepStateProvider({
 }) {
   const [pages, setPages] = useState(() => index(initialPages));
   const [quota, setQuota] = useState(initialQuota);
+
+  // ── THE SERVER WINS WHENEVER IT SPEAKS AGAIN (E06 task 009) ────────────────
+  // A publish adds a row this screen has never seen, and no local state can
+  // render its card — size, version stamp and thumbnail are all server-side. So
+  // the drop-zone follows its `applyPublish` with a `router.refresh()`, and this
+  // re-seeds from the RSC payload that comes back.
+  //
+  // It cannot clobber anything: these props only change when the server tree
+  // re-renders, and a tree rendered *after* a keep or a swap committed already
+  // contains it. Client state is the authority only for the window between a
+  // response landing and the server being asked again.
+  useEffect(() => {
+    setPages(index(initialPages));
+    setQuota(initialQuota);
+  }, [initialPages, initialQuota]);
 
   /** Move one page's clock, leaving a page this screen does not know untouched. */
   const setClock = useCallback((siteId: string, expiresAt: string | null) => {
@@ -107,9 +129,34 @@ export function KeepStateProvider({
     [setClock],
   );
 
+  /**
+   * A page that did not exist when this screen rendered — E06 task 009.
+   *
+   * Registered so the two things that must not wait for the refresh do not: the
+   * allowance (the header and the drop-zone print it from THIS response, so they
+   * cannot disagree) and the swap chooser's target (an `owned_draft` offers a
+   * swap immediately, and the page being kept has to be a real entry).
+   *
+   * `status` is `live` by construction rather than by assumption: the row was
+   * inserted by this request, and `publishOwnedSite` inserts nothing else. E07
+   * is the only thing that writes another value, and it cannot have run yet.
+   */
+  const applyPublish = useCallback((result: OwnedPublishResult) => {
+    const page: DashboardPage = {
+      id: result.siteId,
+      name: result.title ?? result.slug,
+      slug: result.slug,
+      liveUrl: result.liveUrl,
+      status: "live",
+      expiresAt: result.outcome === "kept" ? null : result.expiresAt,
+    };
+    setPages((prev) => ({ ...prev, [page.id]: page }));
+    setQuota(result.quota);
+  }, []);
+
   const value = useMemo(
-    () => ({ quota, pages, applyKeep, applySwap }),
-    [quota, pages, applyKeep, applySwap],
+    () => ({ quota, pages, applyKeep, applySwap, applyPublish }),
+    [quota, pages, applyKeep, applySwap, applyPublish],
   );
 
   return (
@@ -163,9 +210,12 @@ export function useSwapCandidates(): DashboardPage[] {
 }
 
 /** Applying a parsed response is the ONLY way anything above changes. */
-export function useApplyResults(): Pick<KeepState, "applyKeep" | "applySwap"> {
-  const { applyKeep, applySwap } = useKeepState();
-  return { applyKeep, applySwap };
+export function useApplyResults(): Pick<
+  KeepState,
+  "applyKeep" | "applySwap" | "applyPublish"
+> {
+  const { applyKeep, applySwap, applyPublish } = useKeepState();
+  return { applyKeep, applySwap, applyPublish };
 }
 
 /**

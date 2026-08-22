@@ -32,11 +32,8 @@
  * rules, mono meta-labels, warm canvas. A later reconciliation pass against the
  * export is a known follow-up.
  */
-import Link from "next/link";
-
 import { DRAFT_SECTION_NOTE } from "@/components/kept/draft-chip";
 import { Mascot } from "@/components/kept/mascot";
-import { Button } from "@/components/ui/button";
 import { getSession } from "@/lib/auth/session";
 import { getDashboardSites, type OwnedSite } from "@/lib/db/queries/dashboard";
 import { getProfileForSession } from "@/lib/db/queries/profile";
@@ -45,6 +42,7 @@ import { pageName } from "@/lib/sites/display";
 
 import { ClockProvider } from "./clock";
 import { KeepStateProvider, LiveKeptQuota, type DashboardPage } from "./keep-state";
+import { PublishDropzone } from "./publish-dropzone";
 import { SiteCard } from "./site-card";
 
 export default async function DashboardPage() {
@@ -97,6 +95,13 @@ export default async function DashboardPage() {
               `KeptQuota`, so they cannot disagree. */}
             <LiveKeptQuota note className="mt-6" />
           </header>
+
+          {/* Publishing lives HERE now, not on the landing — task 009. It is
+              persistent rather than conditional: a person with three kept pages
+              is exactly the person the at-cap branch has something to say to,
+              and a control that appears only when the account is empty would
+              never show it. */}
+          <PublishDropzone className="mt-10" />
 
           {nothingYet ? (
             <FirstRun />
@@ -190,9 +195,11 @@ function Section({
  * size and colour, the component owns motion, and E06 changes neither it nor
  * `packages/shared/src/mascot/`.
  *
- * The button points at the landing's drop box because that is where publishing
- * lives today; task 009 puts a real drop zone on this screen and takes this
- * button's place.
+ * ⚠️ NO BUTTON, AND THAT IS THE POINT (task 009). It used to send people to the
+ * landing's drop box, because that was the only place a page could be published
+ * from. The drop-zone directly above this panel is now the real thing, so a
+ * second call to action here would be a button competing with the control it is
+ * pointing at — and one of the two would have to be the wrong place to start.
  */
 function FirstRun() {
   return (
@@ -202,15 +209,13 @@ function FirstRun() {
         Nothing kept yet
       </h2>
       <p className="max-w-[44ch] leading-relaxed text-text-secondary">
-        Drop an HTML file and it is live at its own link straight away — no account
-        needed to publish, no build step, no waiting.
+        Drop an HTML file in the box above and it is live at its own link straight
+        away — no build step, no waiting, and it belongs to this account from its
+        first byte.
       </p>
       <p className="max-w-[44ch] text-sm leading-relaxed text-text-muted">
         {DRAFT_SECTION_NOTE}
       </p>
-      <Button asChild className="mt-1">
-        <Link href="/">Publish your first page</Link>
-      </Button>
     </section>
   );
 }

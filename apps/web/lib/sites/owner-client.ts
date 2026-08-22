@@ -17,6 +17,7 @@ import {
   demoteResultSchema,
   keepResultSchema,
   MANIFEST_KV_CACHE_TTL_SECONDS,
+  ownedPublishResultSchema,
   publishErrorSchema,
   renameResultSchema,
   replaceResultSchema,
@@ -24,6 +25,7 @@ import {
   type DeleteResult,
   type DemoteResult,
   type KeepResult,
+  type OwnedPublishResult,
   type PublishError,
   type PublishRequest,
   type RenameRequest,
@@ -33,6 +35,11 @@ import {
 } from "@kept/shared";
 
 export { checkChosenSlug, type SlugRefusal, type SlugRefusalReason } from "../publish/slug";
+
+/** An owned publish: the page the account now has, or why it never landed. */
+export type OwnedPublishOutcome =
+  | { ok: true; page: OwnedPublishResult }
+  | { ok: false; error: PublishError };
 
 /** A rename attempt: the moved page, or an error from the closed enum. */
 export type RenameOutcome =
@@ -114,6 +121,65 @@ function unreachable(verb: string): PublishError {
     error: "internal_error",
     message: `kept couldn't be reached, so nothing was ${verb}. Check your connection and try again.`,
   };
+}
+
+/**
+ * `POST /api/sites` — a signed-in publish, from the dashboard drop-zone.
+ *
+ * ⚠️ NOT `POST /api/publish`, AND THE TWO MUST NEVER BE SWAPPED HERE. That route
+ * is the keyless one: it mints an anonymous bearer token, leaves `owner_id` null
+ * and starts a clock. Sending a signed-in user down it hands their browser a
+ * second authority for a page their account already owns, and routes them
+ * through the endpoint E07's volume governors exist to throttle. Epic decision
+ * **D1**: one product verb, two authority models, two doors.
+ *
+ * ⚠️ BEING AT THE CAP IS NOT AN ERROR. The route answers **200** either way and
+ * the branch is on `outcome`, never on the status code — `kept` under the cap,
+ * `owned_draft` at it, with the page live and its countdown already running. A
+ * caller that treated `owned_draft` as a failure would be showing an error for a
+ * page that published perfectly, which is the one thing the cap branch exists to
+ * prevent. `ok: false` here means the request genuinely did not land.
+ *
+ * `application/json` with `{ html }`, like every other browser caller; the route
+ * accepts multipart and raw `text/html` for callers that cannot build JSON.
+ *
+ * Never throws, including on abort.
+ */
+export async function publishOwnedHtml(
+  html: string,
+  signal?: AbortSignal,
+): Promise<OwnedPublishOutcome> {
+  const body: Pick<PublishRequest, "html"> = { html };
+  let response: Response;
+  try {
+    response = await fetch("/api/sites", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch {
+    return { ok: false, error: unreachable("published") };
+  }
+
+  if (response.status !== 200) {
+    return { ok: false, error: await readError(response, "publish the page") };
+  }
+
+  const parsed = ownedPublishResultSchema.safeParse(
+    await response.json().catch(() => null),
+  );
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: {
+        error: "internal_error",
+        message:
+          "kept answered with something this page could not read. Reload to see whether the page was published.",
+      },
+    };
+  }
+  return { ok: true, page: parsed.data };
 }
 
 /**

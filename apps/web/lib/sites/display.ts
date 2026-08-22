@@ -148,6 +148,41 @@ export function demoteConsequence(name: string): string {
   return `${name} becomes a draft again and expires in ${DRAFT_TTL_DAYS} days. Nothing is deleted, the page stays at the same link, and you can keep it again while a slot is free.`;
 }
 
+/**
+ * What a signed-in publish that landed *kept* says — E06 task 009.
+ *
+ * Short on purpose. Nothing was traded, nothing has a deadline, and the card
+ * that appears on the wall a moment later says the rest. The only fact worth
+ * spending a sentence on is the one the product is actually selling: the link
+ * works now and will keep working.
+ */
+export function publishedKeptNotice(name: string): string {
+  return `${name} is live at its link and kept for good.`;
+}
+
+/**
+ * What a signed-in publish that landed *at the cap* says — E06 task 009.
+ *
+ * ⚠️ THIS IS A SUCCESS SENTENCE AND IT MUST NOT READ LIKE A REJECTION. The route
+ * answers HTTP 200 (`outcome: "owned_draft"`, epic D1): the page was published,
+ * it is serving right now, the account owns it, and the only difference is that
+ * it carries a clock. Copy that opens with what went wrong contradicts the
+ * locked decision that the cap degrades rather than errors — which is the whole
+ * reason this branch exists instead of a 4xx.
+ *
+ * It states the consequence and stops. The route out — swap, or Pro — is
+ * `AT_CAP_NOTE` in `components/kept/kept-quota.tsx`, printed underneath by the
+ * same component the header and the chooser use, so there is exactly one
+ * sentence in the product describing what to do about a full account.
+ *
+ * `DRAFT_TTL_DAYS` is substituted for `swapConsequence`'s reason: the day the
+ * clock moves, a typed number is the product lying to somebody at the moment
+ * they are deciding whether to trust it.
+ */
+export function atCapPublishNotice(name: string): string {
+  return `${name} is published and live at its link right now. It landed as a draft rather than a kept page, so it expires in ${DRAFT_TTL_DAYS} days unless you keep it first. Nothing failed and nothing was lost.`;
+}
+
 const BYTES_PER_KB = 1024;
 const BYTES_PER_MB = BYTES_PER_KB * BYTES_PER_KB;
 

@@ -18,10 +18,13 @@
  * card gets two and lets the rest go.
  *
  * WHAT THIS CARD DELIBERATELY DOES NOT HAVE: a thumbnail (task 010 mints the OG
- * card and wires it in here) or a drop target (task 009). Their absence is
- * sequencing, not omission — and the restriction copy below is exported so that
- * when they land they *refuse and explain* on a flagged page rather than quietly
- * disappearing from it.
+ * card and wires it in here). Its absence is sequencing, not omission.
+ *
+ * TASK 009 ADDED THE DROP TARGET, through `./card-replace.tsx` — a mount of task
+ * 006's shared component, never a second copy of it. A file dropped on a card
+ * replaces that page's bytes at the same URL and does not touch its clock; a
+ * file dropped anywhere else on the screen belongs to the publish drop-zone, and
+ * that precedence is decided once, in `publish-dropzone.tsx`'s window listener.
  *
  * TASK 007 ADDED KEEP, AND ONLY TO A DRAFT. A kept page has nothing to keep, so
  * the button is absent rather than disabled there; on a flagged draft it is
@@ -44,6 +47,7 @@ import {
 } from "@/lib/sites/display";
 import { cn } from "@/lib/utils";
 
+import { CardReplaceDrop } from "./card-replace";
 import { SiteState } from "./clock";
 import { KeepAction } from "./keep-action";
 
@@ -117,6 +121,18 @@ export function SiteCard({
           {refusal}
         </p>
       ) : null}
+
+      {/* Task 006's component, mounted — task 009 wires it, task 008 mounts the
+          same one on the detail screen, and neither of them re-implements it. It
+          refuses with `managementRefusal`'s sentence on a flagged page rather
+          than disappearing from it, and it carries `REPLACE_CLOCK_NOTE` on a
+          draft, because re-dropping a file does not buy another seven days. */}
+      <CardReplaceDrop
+        siteId={site.id}
+        name={name}
+        status={site.status}
+        expiresAt={site.expiresAt}
+      />
 
       <div className="mt-auto flex items-end justify-between gap-3 border-t border-border pt-3">
         <p className="mono-label text-[10px] leading-relaxed text-text-muted">

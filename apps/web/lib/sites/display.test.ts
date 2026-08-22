@@ -12,6 +12,7 @@ import test from "node:test";
 import { DRAFT_TTL_DAYS, SITE_STATUSES, type SiteStatus } from "@kept/shared";
 
 import {
+  atCapPublishNotice,
   demoteConsequence,
   effectiveStatus,
   formatBytes,
@@ -19,6 +20,7 @@ import {
   isManagementRestricted,
   managementRefusal,
   pageName,
+  publishedKeptNotice,
   siteHref,
   swapConsequence,
   swapRefusal,
@@ -140,4 +142,33 @@ test("the demote warning names the page, states the fresh clock and destroys not
   assert.match(sentence, /same link/);
   // One page, not two: the swap sentence's second name has no meaning here.
   assert.doesNotMatch(sentence, /is kept for good/);
+});
+
+test("a kept publish says the link works and promises nothing about a clock", () => {
+  const sentence = publishedKeptNotice("Recipe notes");
+
+  assert.match(sentence, /Recipe notes/);
+  assert.match(sentence, /kept for good/);
+  // There is no deadline on a kept page, so there must be no word about one.
+  assert.doesNotMatch(sentence, /expires|draft|days/i);
+});
+
+test("an at-cap publish reads as a success with a clock, never as a refusal", () => {
+  const sentence = atCapPublishNotice("Recipe notes");
+
+  assert.match(sentence, /Recipe notes/);
+  // The page IS published — HTTP 200, epic D1. Copy that led with the failure
+  // would contradict the locked decision that the cap degrades, never errors.
+  assert.match(sentence, /published and live/);
+  assert.match(sentence, /Nothing failed/);
+  assert.match(sentence, new RegExp(`expires in ${DRAFT_TTL_DAYS} days`));
+  assert.doesNotMatch(sentence, /could not|couldn't|failed to|error/i);
+});
+
+test("neither publish sentence types the draft clock as a literal", () => {
+  for (const sentence of [publishedKeptNotice("A"), atCapPublishNotice("A")]) {
+    // The only digits allowed are the ones the constant put there.
+    const digits = sentence.match(/\d+/g) ?? [];
+    for (const digit of digits) assert.equal(digit, String(DRAFT_TTL_DAYS));
+  }
 });
