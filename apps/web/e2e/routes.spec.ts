@@ -122,13 +122,40 @@ test.describe("the (app) route gate", () => {
  * boring 404, and must not answer with a `Location`.
  *
  * The retired-path test needs no credentials — a made-up token is enough,
- * because the assertion is that the route does not exist at all. The live
+ * because the assertion is that the token buys nothing there. The live
  * `/api/anon/` counterpart does need them, and skips without; see `SKIP_LIVE`.
+ *
+ * ── ⚠️ E06 RE-OCCUPIED TWO OF THESE URLS, AND THE ASSERTION MOVED WITH IT ────
+ *
+ * Until E06 nothing at all lived under `/api/sites/:something`, so "retired"
+ * and "404" were the same sentence and this test asserted the status code.
+ * E06 task 006 added the OWNER verbs at exactly those shapes — `DELETE
+ * /api/sites/:id` and `POST /api/sites/:id/replace` — which is the epic's
+ * specified route list, not drift: `/api/sites/` is the session-authenticated
+ * namespace and `/api/anon/` is the bearer one, which is the whole of E05 D3.
+ * So a retired URL now reaches a real, cookie-gated handler and answers **401**
+ * rather than 404, and `POST …/reminder` still 404s because no owner verb has
+ * that name.
+ *
+ * A STATUS CODE WAS NEVER THE SECURITY PROPERTY. Two things are, and both are
+ * asserted below unchanged:
+ *
+ *   1. **No `Location`, ever.** These paths carry a BEARER CREDENTIAL in the
+ *      path segment. A 301/307 would hand that token to whatever the redirect
+ *      resolved to and leak it again through `Referer`. This is the assertion
+ *      that must never be relaxed.
+ *   2. **The token buys nothing.** The retired anonymous semantics are gone:
+ *      the response is never a success, and the handler that now answers reads
+ *      the segment as a site id belonging to the *caller's account*, so a token
+ *      in that position resolves to nothing whether or not anyone is signed in.
+ *
+ * Tightened rather than loosened: the old test allowed any 404, this one pins
+ * the exact set and additionally requires that no response is a success.
  */
 test.describe("the retired anonymous API paths", () => {
   const RETIRED_TOKEN = "e05012retiredpathprobe000000000000000000";
 
-  test("the pre-D3 `/api/sites/:anonToken/*` URLs 404 and never redirect", async ({
+  test("the pre-D3 `/api/sites/:anonToken/*` URLs buy nothing and never redirect", async ({
     request,
   }) => {
     const attempts: [string, "get" | "post" | "delete"][] = [
@@ -139,8 +166,12 @@ test.describe("the retired anonymous API paths", () => {
 
     for (const [path, method] of attempts) {
       const response = await request[method](path, { maxRedirects: 0 });
-      expect(response.status(), `${method.toUpperCase()} ${path}`).toBe(404);
-      expect(response.headers()["location"], `${method.toUpperCase()} ${path}`).toBeUndefined();
+      const where = `${method.toUpperCase()} ${path}`;
+      // 404 where no route was ever added; 401 where E06's cookie-gated owner
+      // verb now lives. Never a 2xx, and never a 3xx — see the header.
+      expect([401, 404], where).toContain(response.status());
+      expect(response.ok(), `${where} must never succeed`).toBe(false);
+      expect(response.headers()["location"], where).toBeUndefined();
     }
   });
 

@@ -1,0 +1,205 @@
+import { ownedPublishResultSchema } from "@kept/shared";
+import { expect, type Page } from "@playwright/test";
+import { config } from "dotenv";
+import { eq, inArray } from "drizzle-orm";
+
+import { db, schema } from "../lib/db";
+
+import { SKIP_LIVE_PUBLISH } from "./live-publish";
+
+/**
+ * The signed-in browser harness the four E06 screen specs share — task 013.
+ *
+ * Not a `*.spec.ts`, so Playwright never collects it as a test file.
+ *
+ * ── WHY THIS EXISTS RATHER THAN FOUR COPIES ──────────────────────────────────
+ *
+ * `dashboard`, `site-detail`, `swap-chooser` and `settings` all need the same
+ * three things and nothing else: a real magic-link session inside a real browser
+ * context, real owned pages published through `POST /api/sites`, and a teardown
+ * that removes every row, KV key and R2 object it created. Written four times
+ * that is four chances to forget the teardown, and a forgotten teardown here is
+ * a real page serving on the dev track — not a stale fixture in a test database.
+ *
+ * ⚠️ NOTHING IS MOCKED, AND NOTHING HERE MAY START. Every page is published
+ * through the same route a browser posts to: Postgres, R2, KV and a real edge
+ * purge. The API specs (`owner-publish-api`, `owner-rename-api`, …) already
+ * assert what that route *returns*; these fixtures exist so the screen specs can
+ * assert what the SCREENS do with it.
+ *
+ * ── WHY `page.request` AND NOT `jarlessContext()` ────────────────────────────
+ *
+ * The opposite of `session-request.ts`'s reasoning, for the opposite need.
+ * Those specs juggle two identities inside one test and must therefore share no
+ * jar. These specs drive a browser that *is* one identity: `page.request` speaks
+ * through the page's own context, so the `__Host-` cookie the magic-link verify
+ * sets is the same cookie the subsequent navigation sends. A jarless context
+ * here would publish pages the signed-in screen then could not see.
+ *
+ * `origin` is still passed by hand — `refuseUntrustedOrigin` requires it on every
+ * cookie-authenticated mutation, and an `APIRequestContext` sends none. See the
+ * long note in `session-request.ts`; this is the same honesty, not a loosening.
+ */
+config({ path: ".env.local", quiet: true });
+
+const authMissing = ["BETTER_AUTH_SECRET"].filter((name) => !process.env[name]?.trim());
+
+/**
+ * `false` when a signed-in screen spec can really run, otherwise the reason to
+ * skip. Feed it straight to `test.skip(...)`.
+ *
+ * CI runs fork PRs with no environment, so these skip there exactly as the rest
+ * of the live family does. A skip is not a pass and is not treated as one.
+ */
+export const SKIP_OWNER_UI: string | false =
+  SKIP_LIVE_PUBLISH ||
+  (authMissing.length > 0
+    ? `auth credentials absent (${authMissing.join(", ")}) — run locally with apps/web/.env.local`
+    : false);
+
+/** Everything one spec file created, so `cleanup()` can unwind all of it. */
+export interface OwnerScope {
+  userIds: string[];
+  siteIds: string[];
+  slugs: Set<string>;
+}
+
+export function newScope(): OwnerScope {
+  return { userIds: [], siteIds: [], slugs: new Set() };
+}
+
+/**
+ * Sign `page`'s browser context in as a brand-new account, through the REAL
+ * magic-link verify endpoint.
+ *
+ * A fresh address every time, and never a shared fixture user: these specs fill
+ * the kept cap, swap pages and delete accounts, so two tests sharing an identity
+ * would race each other's quota. The `.invalid` TLD is reserved by RFC 2606 and
+ * can never be delivered to.
+ */
+export async function signInAs(
+  page: Page,
+  baseURL: string,
+  scope: OwnerScope,
+): Promise<{ userId: string; email: string }> {
+  const { auth } = await import("../lib/auth");
+  const ctx = await auth.$context;
+  const token = crypto.randomUUID().replace(/-/g, "");
+  const email = `e06-013-${token.slice(0, 8)}@kept-e06-013.invalid`;
+
+  await ctx.internalAdapter.createVerificationValue({
+    identifier: token,
+    value: JSON.stringify({ email, name: "E06-013 screen drill" }),
+    expiresAt: new Date(Date.now() + 300_000),
+  });
+
+  // Through the page's own request context, so the `__Host-` cookie lands in the
+  // jar the next `page.goto` will send from.
+  const response = await page.request.get(
+    `${baseURL}/api/auth/magic-link/verify?token=${token}`,
+  );
+  expect(response.status(), await response.text()).toBe(200);
+  const body = (await response.json()) as { user: { id: string } };
+  scope.userIds.push(body.user.id);
+  return { userId: body.user.id, email };
+}
+
+/** A minimal valid document carrying a specific `<title>`. */
+export const titledHtml = (title: string, body = title): string =>
+  `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${title}</title></head><body><h1>${body}</h1></body></html>\n`;
+
+export interface OwnedPage {
+  siteId: string;
+  slug: string;
+  liveUrl: string;
+  /** `title ?? slug` — what every surface calls this page. */
+  name: string;
+  title: string | null;
+  /** `kept` under the cap, `owned_draft` at it. Never an error either way. */
+  outcome: "kept" | "owned_draft";
+  html: string;
+}
+
+/**
+ * Publish one page straight into the signed-in account — `POST /api/sites`,
+ * epic D1. No anon token is minted and none is available; an owned page has one
+ * authority and it is the account.
+ *
+ * Deliberately NOT asserting which branch came back: the caller decides whether
+ * it wanted `kept` or `owned_draft`, and a fixture that insisted on `kept` could
+ * not be used to build the at-cap cases three of these specs are about.
+ */
+export async function publishOwned(
+  page: Page,
+  baseURL: string,
+  scope: OwnerScope,
+  title: string,
+): Promise<OwnedPage> {
+  const html = titledHtml(`${title} ${crypto.randomUUID().slice(0, 8)}`);
+  const response = await page.request.post(`${baseURL}/api/sites`, {
+    headers: { origin: new URL(baseURL).origin, "content-type": "text/html" },
+    data: html,
+  });
+  expect(response.status(), await response.text()).toBe(200);
+  const result = ownedPublishResultSchema.parse(await response.json());
+
+  scope.siteIds.push(result.siteId);
+  scope.slugs.add(result.slug);
+
+  return {
+    siteId: result.siteId,
+    slug: result.slug,
+    liveUrl: result.liveUrl,
+    name: result.title ?? result.slug,
+    title: result.title,
+    outcome: result.outcome,
+    html,
+  };
+}
+
+/** The row as Postgres holds it right now. The authority every assertion re-reads. */
+export async function readSite(id: string) {
+  const [row] = await db.select().from(schema.sites).where(eq(schema.sites.id, id));
+  expect(row, `site ${id} vanished`).toBeDefined();
+  return row!;
+}
+
+/**
+ * Unwind everything the spec created: the edge first, then the bytes, then the
+ * rows.
+ *
+ * Edge first for `deletePage`'s reason — the dangerous half-state is a deleted
+ * row whose page keeps serving. Best-effort throughout: a teardown that threw
+ * would mask the assertion that already passed above it, and would leave the
+ * REST of the fixtures behind as well.
+ */
+export async function cleanup(scope: OwnerScope): Promise<void> {
+  const { removeManifest } = await import("../lib/storage/manifest");
+  const { pageObjectKey, r2Store } = await import("../lib/storage/r2");
+
+  for (const slug of scope.slugs) {
+    await removeManifest(slug).catch(() => undefined);
+  }
+
+  for (const id of scope.siteIds) {
+    const versions = await db
+      .select({ id: schema.siteVersions.id })
+      .from(schema.siteVersions)
+      .where(eq(schema.siteVersions.siteId, id));
+    for (const version of versions) {
+      await r2Store()
+        .delete(pageObjectKey(id, version.id))
+        .catch(() => undefined);
+    }
+  }
+
+  // By id, never by owner: a spec that deleted its own account leaves rows whose
+  // `owner_id` the FK has already nulled, and an owner-scoped delete would walk
+  // straight past exactly the rows it most needs to collect.
+  if (scope.siteIds.length) {
+    await db.delete(schema.sites).where(inArray(schema.sites.id, scope.siteIds));
+  }
+  if (scope.userIds.length) {
+    await db.delete(schema.user).where(inArray(schema.user.id, scope.userIds));
+  }
+}

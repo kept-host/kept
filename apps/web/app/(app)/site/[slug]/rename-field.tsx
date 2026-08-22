@@ -28,6 +28,24 @@
  * navigation 404s on the user's own page. `replace`, not `push` — the old
  * address is not a place to go Back to.
  *
+ * ── ⚠️ …AND THE NAVIGATION TAKES THIS COMPONENT'S STATE WITH IT ──────────────
+ * Found by task 013's browser drill: `/site/a` → `/site/b` is a change of
+ * dynamic segment VALUE, so the App Router replaces that subtree and every
+ * client component under it remounts. A `setNotice(...)` immediately before
+ * `router.replace(...)` is therefore discarded ~instantly, and the success copy
+ * D2 requires — the measured, honest sentence about the old address still
+ * answering for a little while — was never once seen by a user.
+ *
+ * So the notice travels **in the URL** and is rebuilt on the other side, which
+ * is exactly how `/settings` already carries `?linked=` and `?error=` across
+ * Better Auth's OAuth round trip: the server component reads the parameter and
+ * hands it down as a prop, and no client component parses `location` itself.
+ * `renamedFrom` is the previous slug, which is all `renameNotice` needs beyond
+ * what this component already has.
+ *
+ * The no-op rename (a page renamed to the name it already has) does NOT
+ * navigate, so its notice is set directly — there is no remount to survive.
+ *
  * ── ON ANY REFUSAL, NOTHING CHANGED ──────────────────────────────────────────
  * No navigation, no optimistic slug swap, no repainted address. The field keeps
  * what was typed so it can be corrected, and the page is still at the name it
@@ -82,23 +100,40 @@ type Verdict =
 export function RenameField({
   siteId,
   slug,
+  liveUrl,
   hostSuffix,
   refusal,
   refusalId,
+  renamedFrom,
 }: {
   siteId: string;
   slug: string;
+  /** The page's public address, built by the server from configuration. */
+  liveUrl: string;
   /** `.kept.host` and friends — split off the real host by the caller. */
   hostSuffix: string;
   /** Why renaming is unavailable on a flagged page, or `null`. */
   refusal: string | null;
   refusalId?: string;
+  /**
+   * The slug this page was renamed *from*, when the current navigation is the
+   * one the rename itself performed. Read from `?renamedFrom=` by the server
+   * component — see the header. `null` on an ordinary visit.
+   */
+  renamedFrom?: string | null;
 }) {
   const router = useRouter();
   const [phase, setPhase] = useState<Phase>("idle");
   const [value, setValue] = useState(slug);
   const [verdict, setVerdict] = useState<Verdict | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  // Seeded from the URL so the success copy survives the remount the rename's
+  // own navigation causes. `renameNotice` is the single owner of the sentence
+  // either way; nothing here composes a second version of it.
+  const [notice, setNotice] = useState<string | null>(() =>
+    renamedFrom && renamedFrom !== slug
+      ? renameNotice({ siteId, slug, previousSlug: renamedFrom, liveUrl })
+      : null,
+  );
   const inputRef = useRef<HTMLInputElement | null>(null);
   const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abort = useRef<AbortController | null>(null);
@@ -201,16 +236,27 @@ export function RenameField({
       return;
     }
 
+    setPhase("idle");
+    setVerdict(null);
+
     // Measured and truthful: the old address keeps working for a couple of
     // minutes in the worst case and nobody following an old link is dropped.
     // `renameNotice` owns that sentence and derives its bound from the KV cache
     // TTL — it must never be tightened into an instant cutover.
-    setNotice(renameNotice(outcome.page));
-    setPhase("idle");
-    setVerdict(null);
+    if (outcome.page.slug === outcome.page.previousSlug) {
+      // A no-op rename does not move the route, so nothing remounts and the
+      // notice can simply be set.
+      setNotice(renameNotice(outcome.page));
+      return;
+    }
+
     // The route is keyed by slug. Without this the next navigation 404s on the
-    // user's own page.
-    router.replace(siteHref(outcome.page.slug));
+    // user's own page — and because the segment value changes, this component
+    // is about to be replaced, so the notice goes in the URL rather than in
+    // state that is a millisecond from being discarded. See the header.
+    router.replace(
+      `${siteHref(outcome.page.slug)}?renamedFrom=${encodeURIComponent(outcome.page.previousSlug)}`,
+    );
   }
 
   return (

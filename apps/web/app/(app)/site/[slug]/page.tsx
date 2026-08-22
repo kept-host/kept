@@ -130,10 +130,23 @@ function configuredBase(): URL | undefined {
 
 export default async function SiteDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ slug: string }>;
+  /**
+   * `?renamedFrom=` is where a successful rename lands its own navigation, so
+   * the success copy survives the remount that navigation causes. Read here and
+   * handed down as a prop, exactly as `/settings` does with `?linked=`, so no
+   * client component parses the URL itself.
+   */
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const { slug } = await params;
+  const params_ = await searchParams;
+  const renamedFromParam = params_.renamedFrom;
+  const renamedFrom = Array.isArray(renamedFromParam)
+    ? (renamedFromParam[0] ?? null)
+    : (renamedFromParam ?? null);
 
   // A read, not a gate — the group layout already turned a signed-out visitor
   // away. `null` here is "no such page of yours", and says nothing more.
@@ -211,6 +224,7 @@ export default async function SiteDetailPage({
           // 003 deferred it to this screen rather than pay for N encoded SVGs in
           // the wall's RSC payload.
           qr={<QrCode value={url} label={`QR code for ${url}`} />}
+          renamedFrom={renamedFrom}
         />
       </main>
     </ClockProvider>

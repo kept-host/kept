@@ -72,6 +72,7 @@ export function SiteDetail({
   quota: initialQuota,
   candidates,
   qr,
+  renamedFrom,
 }: {
   site: DetailPage;
   /** Already formatted by `formatBytes`; `null` when the row records no size. */
@@ -94,6 +95,13 @@ export function SiteDetail({
   candidates: SwapPage[];
   /** The QR, encoded in the server component. No encoder in this bundle. */
   qr: React.ReactNode;
+  /**
+   * The slug this page was renamed from, when this navigation is the rename's
+   * own. Read from `?renamedFrom=` by the server component and passed straight
+   * through — see the header of `./rename-field.tsx` for why the notice has to
+   * travel in the URL at all.
+   */
+  renamedFrom?: string | null;
 }) {
   const [clock, setClock] = useState<Date | null>(
     site.expiresAt === null ? null : new Date(site.expiresAt),
@@ -179,9 +187,11 @@ export function SiteDetail({
           <RenameField
             siteId={site.id}
             slug={site.slug}
+            liveUrl={site.liveUrl}
             hostSuffix={hostSuffix}
             refusal={refusal}
             refusalId={refusal ? refusalId : undefined}
+            renamedFrom={renamedFrom}
           />
         </div>
 
