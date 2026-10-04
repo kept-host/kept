@@ -1,5 +1,4 @@
 import {
-  MANIFEST_KV_CACHE_TTL_SECONDS,
   nameChangeResultSchema,
   nameCheckResultSchema,
   publishErrorSchema,
@@ -21,6 +20,9 @@ import {
   publishViaApi,
   servingDomain,
   SKIP_LIVE_PUBLISH,
+  STALE_EDGE_WINDOW_MS,
+  urlsFor,
+  waitUntilGone,
 } from "./live-publish";
 import { jarlessContext, sessionHeaders } from "./session-request";
 
@@ -76,19 +78,6 @@ const SKIP: string | false =
   (authMissing.length > 0
     ? `auth credentials absent (${authMissing.join(", ")}) — run locally with apps/web/.env.local`
     : false);
-
-/**
- * How long the old URL may still answer, worst case: the delayed re-purge's own
- * deadline. Derived from the shared constant — never a literal — for the same
- * reason `lib/storage/manifest.ts` derives `KV_REPURGE_DELAY_MS` from it.
- */
-const OLD_URL_WINDOW_MS = (2 * MANIFEST_KV_CACHE_TTL_SECONDS + 5) * 1000;
-
-/** A page URL, both forms — the two entries `slugPurgeUrls` covers. */
-const urlsFor = (slug: string): string[] => [
-  `https://${slug}.${servingDomain()}/`,
-  `https://${slug}.${servingDomain()}/index.html`,
-];
 
 test.describe("owner rename", () => {
   test.skip(!!SKIP, SKIP || undefined);
@@ -238,28 +227,13 @@ test.describe("owner rename", () => {
   /** A fresh name the free plan accepts: long enough, nothing reserved in it. */
   const freshName = (label: string) => `e06-006-${label}-${crypto.randomUUID().slice(0, 8)}`;
 
-  /** Poll a URL until it stops serving, or until the architectural bound. */
-  async function waitUntilGone(url: string): Promise<number> {
-    const started = Date.now();
-    for (;;) {
-      const probe = await probeEdge(url);
-      if (probe.status !== 200) return Date.now() - started;
-      if (Date.now() - started > OLD_URL_WINDOW_MS) {
-        throw new Error(
-          `${url} still served 200 after ${Math.round(OLD_URL_WINDOW_MS / 1000)}s — past the delayed re-purge, which means a purge did not land.`,
-        );
-      }
-      await new Promise((resolve) => setTimeout(resolve, 2_000));
-    }
-  }
-
   test("AC18: the new URL serves immediately, the old one returns the branded 404, and R2 never moved", async ({
     request,
     baseURL,
   }) => {
     // The poll for the old URL is bounded by the architecture, not by the
     // measurement, so the budget has to cover the worst case plus a sign-in.
-    test.setTimeout(LIVE_STACK_TIMEOUT + OLD_URL_WINDOW_MS + 30_000);
+    test.setTimeout(LIVE_STACK_TIMEOUT + STALE_EDGE_WINDOW_MS + 30_000);
 
     const cookie = await signIn(baseURL!);
     const page = await ownedPage(request, baseURL!, cookie);
@@ -303,7 +277,7 @@ test.describe("owner rename", () => {
     // other would leave a year-long stale copy behind exactly here.
     for (const url of urlsFor(page.slug)) {
       const elapsed = await waitUntilGone(url);
-      expect(elapsed).toBeLessThanOrEqual(OLD_URL_WINDOW_MS);
+      expect(elapsed).toBeLessThanOrEqual(STALE_EDGE_WINDOW_MS);
       // …and what answers instead is the Worker's branded 404, not an error.
       const gone = await probeEdge(url);
       expect(gone.status, url).toBe(404);

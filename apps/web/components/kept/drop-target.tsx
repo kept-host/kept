@@ -15,8 +15,8 @@
  *   · `zone` — the dashed box in the publish sheet and the empty state: a real
  *     `<button>` that is a drop target and opens the file picker when pressed.
  *
- * It replaced the dashboard's `publish-dropzone` and `card-replace` and the
- * `[slug]` screen's `owner-replace-drop` (deleted by tasks 011 and 012): the
+ * It replaced the three per-screen drop zones the dashboard and the old
+ * slug-keyed detail screen each carried (deleted by tasks 011 and 012): the
  * window-level precedence rule (`DROP_TARGET_ATTR`, the one coordinate a card
  * and the window agree on) and the drag listeners are theirs, carried over.
  *

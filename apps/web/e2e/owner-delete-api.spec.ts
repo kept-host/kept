@@ -22,6 +22,8 @@ import {
   servingDomain,
   SKIP_LIVE_PUBLISH,
   STALE_EDGE_WINDOW_MS,
+  urlsFor,
+  waitUntilGone,
 } from "./live-publish";
 import { jarlessContext, sessionHeaders } from "./session-request";
 
@@ -75,12 +77,6 @@ function expectGraceFromNow(purgeAfter: Date | null): void {
   const expected = Date.now() + DRAFT_GRACE_DAYS * MS_PER_DAY;
   expect(Math.abs(purgeAfter!.getTime() - expected)).toBeLessThan(SLACK_MS);
 }
-
-/** Both URL forms: `/index.html` is a separate cache entry from `/`. */
-const urlsFor = (slug: string): string[] => [
-  `https://${slug}.${servingDomain()}/`,
-  `https://${slug}.${servingDomain()}/index.html`,
-];
 
 test.describe("owner delete", () => {
   test.skip(!!SKIP, SKIP || undefined);
@@ -204,21 +200,6 @@ test.describe("owner delete", () => {
     request.delete(`${baseURL}/api/sites/${siteId}`, {
       headers: sessionHeaders(cookie, baseURL),
     });
-
-  /** Poll a URL until it stops serving, or until the architectural bound. */
-  async function waitUntilGone(url: string): Promise<number> {
-    const started = Date.now();
-    for (;;) {
-      const probe = await probeEdge(url);
-      if (probe.status !== 200) return Date.now() - started;
-      if (Date.now() - started > STALE_EDGE_WINDOW_MS) {
-        throw new Error(
-          `${url} still served 200 after ${Math.round(STALE_EDGE_WINDOW_MS / 1000)}s — past the delayed re-purge, which means a purge did not land.`,
-        );
-      }
-      await new Promise((resolve) => setTimeout(resolve, 2_000));
-    }
-  }
 
   test("the page stops serving, the row is archived with E07's deadline and retained, the slot frees, and the owner can still download it", async ({
     request,

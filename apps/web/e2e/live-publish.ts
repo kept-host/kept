@@ -197,3 +197,27 @@ export async function waitForBytes(url: string, expected: string): Promise<numbe
     await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
 }
+
+/** Both URL forms of a page — `/index.html` is a separate cache entry from `/`, and `slugPurgeUrls` purges both. */
+export const urlsFor = (slug: string): string[] => [
+  `https://${slug}.${servingDomain()}/`,
+  `https://${slug}.${servingDomain()}/index.html`,
+];
+
+/**
+ * Poll a served URL until it stops answering 200, or throw at the same bound
+ * as `waitForBytes`. Returns how long it took.
+ */
+export async function waitUntilGone(url: string): Promise<number> {
+  const started = Date.now();
+  for (;;) {
+    const probe = await probeEdge(url);
+    if (probe.status !== 200) return Date.now() - started;
+    if (Date.now() - started > STALE_EDGE_WINDOW_MS) {
+      throw new Error(
+        `${url} still served 200 after ${Math.round(STALE_EDGE_WINDOW_MS / 1000)}s — past the delayed re-purge, which means a purge did not land.`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+}

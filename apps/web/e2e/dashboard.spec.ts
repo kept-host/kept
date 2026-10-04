@@ -17,10 +17,13 @@ import {
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
 import {
   cleanup,
+  drop,
+  hydrated,
   newScope,
   publishOwned,
   readSite,
   seedKept,
+  seedVisits,
   signInAs,
   titledHtml,
   SKIP_OWNER_UI,
@@ -120,11 +123,6 @@ test.describe("the Pages home", () => {
     return { siteId: id, slug };
   }
 
-  async function seedVisits(siteId: string, views: number) {
-    const yesterday = new Date(Date.now() - DAY).toISOString().slice(0, 10);
-    await db.insert(schema.pageViewsDaily).values({ siteId, day: yesterday, views });
-  }
-
   const card = (page: Page, siteId: string) =>
     page.locator(`[data-testid="home-card"][data-site-id="${siteId}"]`);
 
@@ -136,34 +134,6 @@ test.describe("the Pages home", () => {
     list.locator('[data-testid="home-card"]').evaluateAll((items) =>
       items.map((item) => item.getAttribute("data-site-id")),
     );
-
-  /**
-   * Wait until the screen is interactive. Opening the publish sheet is proof:
-   * it only opens because the hydrated `onClick` ran, so every listener this
-   * screen attaches — including the window's drop target — is attached too.
-   */
-  async function hydrated(page: Page) {
-    await page.waitForLoadState("networkidle");
-    await page.getByRole("button", { name: "Publish", exact: true }).click();
-    await expect(page.getByTestId("publish-sheet")).toBeVisible();
-    await page.keyboard.press("Escape");
-    await expect(page.getByTestId("publish-sheet")).toBeHidden();
-  }
-
-  /** A real drop: dragover then drop, with a real `File` in a real `DataTransfer`. */
-  async function drop(
-    page: Page,
-    target: Locator,
-    file: { name: string; type: string; body: string },
-  ) {
-    const transfer = await page.evaluateHandle(({ name, type, body }) => {
-      const data = new DataTransfer();
-      data.items.add(new File([body], name, { type }));
-      return data;
-    }, file);
-    await target.dispatchEvent("dragover", { dataTransfer: transfer });
-    await target.dispatchEvent("drop", { dataTransfer: transfer });
-  }
 
   /** Every text node in the document except scripts and styles — hidden ones included. */
   const domText = (page: Page) =>

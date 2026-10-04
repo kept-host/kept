@@ -30,7 +30,6 @@
  * object created here is removed in `after`.
  */
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdtemp, open, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,6 +39,8 @@ import vm from "node:vm";
 
 import { DRAFT_GRACE_DAYS, DRAFT_TTL_DAYS, studioErrorSchema } from "@kept/shared";
 import { config } from "dotenv";
+
+import { hasUnzip, unzip } from "../testing/unzip";
 
 config({ path: ".env.local", quiet: true });
 
@@ -55,15 +56,6 @@ const LIVE_VARS = [
   "KEPT_BASE_DOMAIN",
   "PUBLISHER_HASH_SALT",
 ] as const;
-
-function hasUnzip(): boolean {
-  try {
-    execFileSync("unzip", ["-v"], { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 const missing = LIVE_VARS.filter((name) => !process.env[name]?.trim());
 const skip: string | false =
@@ -296,10 +288,6 @@ interface ExportEntryOnDisk {
   created_at: string;
   updated_at: string;
   url: string;
-}
-
-function unzip(args: string[]): Buffer {
-  return execFileSync("unzip", args, { maxBuffer: 64 * 1024 * 1024 });
 }
 
 test(

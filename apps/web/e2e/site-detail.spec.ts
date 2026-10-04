@@ -1,6 +1,12 @@
 import { readFileSync } from "node:fs";
 
-import { DRAFT_GRACE_DAYS, DRAFT_TTL_DAYS, limitsFor, PAGE_TITLE_MAX_LENGTH } from "@kept/shared";
+import {
+  ABUSE_CONTACT_EMAIL,
+  DRAFT_GRACE_DAYS,
+  DRAFT_TTL_DAYS,
+  limitsFor,
+  PAGE_TITLE_MAX_LENGTH,
+} from "@kept/shared";
 import { expect, test, type Page } from "@playwright/test";
 import { eq } from "drizzle-orm";
 
@@ -77,6 +83,15 @@ const domText = (page: Page) =>
     return body.textContent ?? "";
   });
 
+/** AC10 over what is mounted right now: no later-epic text, no later-epic nav. */
+async function expectNoLaterEpicText(page: Page, where: string) {
+  await expect(page.getByRole("link", { name: /^(Wall|Explore|Referrals)$/ })).toHaveCount(0);
+  const text = await domText(page);
+  for (const pattern of LATER_EPIC_TEXT) {
+    expect(text, `${where}: ${pattern} belongs to a later epic`).not.toMatch(pattern);
+  }
+}
+
 /**
  * AC10 for this screen: walk all three tabs (inactive panels are not mounted)
  * and assert no later-epic text, and that the tabs and the nav are exactly the
@@ -84,13 +99,9 @@ const domText = (page: Page) =>
  */
 async function expectNoLaterEpics(page: Page) {
   await expect(page.getByRole("tab")).toHaveText(["General", "Visits", "Versions"]);
-  await expect(page.getByRole("link", { name: /^(Wall|Explore|Referrals)$/ })).toHaveCount(0);
   for (const tab of ["General", "Visits", "Versions"]) {
     await page.getByRole("tab", { name: tab }).click();
-    const text = await domText(page);
-    for (const pattern of LATER_EPIC_TEXT) {
-      expect(text, `${tab}: ${pattern} belongs to a later epic`).not.toMatch(pattern);
-    }
+    await expectNoLaterEpicText(page, tab);
   }
   await page.getByRole("tab", { name: "General" }).click();
 }
@@ -564,6 +575,7 @@ test.describe("the page detail screen", () => {
     );
     await expect(page.getByTestId("download-page")).toHaveAttribute("href", `/api/sites/${site.siteId}/download`);
     await expect(page.getByRole("tab")).toHaveCount(0);
+    await expectNoLaterEpicText(page, "archived");
   });
 
   test("the status matrix: under review, quarantined and expired show only what PRD §5.2 allows; the appeal is a mailto naming the page", async ({
@@ -583,7 +595,7 @@ test.describe("the page detail screen", () => {
     const appeal = banner.getByTestId("appeal-link");
     await expect(appeal).toHaveText("Appeal this review");
     const href = await appeal.getAttribute("href");
-    expect(href).toMatch(/^mailto:abuse@kept\.host\?subject=/);
+    expect(href!.startsWith(`mailto:${ABUSE_CONTACT_EMAIL}?subject=`), href!).toBe(true);
     expect(decodeURIComponent(href!.split("subject=")[1]!)).toContain(host);
     await expect(page.getByTestId("title-input")).toBeVisible();
     await expect(page.getByTestId("explore-toggle")).toBeDisabled();
@@ -610,6 +622,7 @@ test.describe("the page detail screen", () => {
     await expect(page.getByTestId("delete-button")).toBeVisible();
     await expect(page.getByTestId("rename-start")).toHaveCount(0);
     await expect(page.getByTestId("keep-button")).toHaveCount(0);
+    await expectNoLaterEpics(page);
 
     // ── expired in grace (a draft): keep (late), download, delete.
     await db
@@ -627,6 +640,7 @@ test.describe("the page detail screen", () => {
     await expect(page.getByTestId("review-banner")).toHaveCount(0);
     await expect(page.getByTestId("delete-button")).toBeVisible();
     await expect(page.getByTestId("download-page")).toBeVisible();
+    await expectNoLaterEpics(page);
 
     expect((await readSite(site.siteId)).status, "rendering a state must not change it").toBe("expired");
   });

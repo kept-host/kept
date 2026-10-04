@@ -12,6 +12,7 @@ import {
   publishOwned,
   readSite,
   seedKept,
+  seedVisits,
   signInAs,
   SKIP_OWNER_UI,
   type OwnedPage,
@@ -82,11 +83,6 @@ test.describe("the swap chooser", () => {
         ),
       );
     return rows.length;
-  }
-
-  async function seedVisits(siteId: string, views: number) {
-    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    await db.insert(schema.pageViewsDaily).values({ siteId, day: yesterday, views });
   }
 
   test("AC12: least visited first, searchable, a confirm step naming both pages, then Swapped. and both cards move", async ({

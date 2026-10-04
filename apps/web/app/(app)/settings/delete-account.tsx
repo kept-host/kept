@@ -45,6 +45,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { signInHref } from "@/lib/auth/return-path";
+import { NAME_HOLD_PERIOD } from "@/lib/names/messages";
 import { deleteAccount } from "@/lib/sites/owner-client";
 
 import { SettingsCard } from "./settings-card";
@@ -64,7 +65,7 @@ export interface DeletionSummaryView {
 }
 
 /** D4/D16: chosen names go into a hold, not straight back into the pool. */
-const NAMES_HELD = "Your page names are held for 12 months before anyone else can take them.";
+const NAMES_HELD = `Your page names are held for ${NAME_HOLD_PERIOD} before anyone else can take them.`;
 
 /** PRD §5.8, verbatim. */
 const DELETE_ACCOUNT_COPY = `All your pages go offline within about 2 minutes. You can't undo this. ${NAMES_HELD}`;

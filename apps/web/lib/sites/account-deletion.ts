@@ -112,18 +112,18 @@ function message(err: unknown): string {
  * 012's read (D3: **real counts**, read at render time, never a generic
  * warning).
  *
- * `kept + drafts` does NOT necessarily equal `total`, and that is correct rather
- * than a rounding error: `kept` is the *quota* predicate, so an `archived` or
- * `removed` page with no clock is in `total` and in neither category. The
- * dialog names the two things a person recognises; `total` is every row the
- * teardown touches.
+ * `total` is exactly `kept + drafts`: every page the Pages home lists. It is
+ * NOT every row the teardown touches — `archived`, `removed` and past-grace
+ * drafts are absent from `getDashboardSites` (task 011), so they are in no
+ * count here, although the deletion still leaves them ownerless. Settings
+ * reads `total === 0` as "nothing to export, nothing goes offline".
  */
 export interface AccountDeletionSummary {
   /** Permanent pages, from `isKeptCondition` via `keptQuotaFor` — never recounted. */
   kept: number;
-  /** `expires_at != null`. The one draft split there is. */
+  /** `expires_at != null`, as the Pages home lists them. The one draft split there is. */
   drafts: number;
-  /** Every page the account owns, in every status. All of them end ownerless. */
+  /** `kept + drafts` — the pages the home lists, never archived/removed/past-grace rows. */
   total: number;
 }
 

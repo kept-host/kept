@@ -5,8 +5,13 @@ import { expect, test, type Page } from "@playwright/test";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
+import { EXPORT_MANIFEST_NAME, type ExportEntry } from "../lib/sites/export";
+import { pointerKey } from "../lib/storage/manifest";
+import { pageObjectKey, r2Store } from "../lib/storage/r2";
+import { hasUnzip, unzip } from "../lib/testing/unzip";
 
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
+import { STALE_EDGE_WINDOW_MS, urlsFor, waitForBytes, waitUntilGone } from "./live-publish";
 import {
   cleanup,
   newScope,
@@ -333,6 +338,59 @@ test.describe("the settings screen", () => {
     await expect(button).toHaveText("Download export");
   });
 
+  test("AC40 drill: the browser's export is a valid zip whose kept-export.json lists every page but the archived one, and whose files are R2's bytes", async ({
+    page,
+    baseURL,
+  }) => {
+    test.skip(!hasUnzip(), "no `unzip` binary to read the archive with an independent reader");
+    const origin = { origin: new URL(baseURL!).origin };
+
+    await signInAs(page, baseURL!, scope);
+    const kept = await publishOwned(page, baseURL!, scope, "E06 export kept");
+    const draft = await publishOwned(page, baseURL!, scope, "E06 export draft");
+    const archived = await publishOwned(page, baseURL!, scope, "E06 export deleted");
+    const demoted = await page.request.post(`${baseURL}/api/sites/${draft.siteId}/demote`, { headers: origin });
+    expect(demoted.status(), await demoted.text()).toBe(200);
+    const deleted = await page.request.delete(`${baseURL}/api/sites/${archived.siteId}`, { headers: origin });
+    expect(deleted.status(), await deleted.text()).toBe(200);
+
+    await page.goto("/settings");
+    await openSection(page, "Your data");
+    const [download] = await Promise.all([
+      page.waitForEvent("download"),
+      page.getByTestId("export-download").click(),
+    ]);
+    const file = (await download.path())!;
+
+    // An independent reader: CRCs and structure, then the entry list.
+    unzip(["-tq", file]);
+    const exported = [kept, draft];
+    expect(unzip(["-Z1", file]).toString("utf8").trim().split("\n").sort()).toEqual(
+      [EXPORT_MANIFEST_NAME, ...exported.map((site) => `${site.slug}/index.html`)].sort(),
+    );
+
+    // The list: every non-archived page, as Postgres holds it.
+    const manifest = JSON.parse(unzip(["-p", file, EXPORT_MANIFEST_NAME]).toString("utf8")) as ExportEntry[];
+    expect(manifest.map((entry) => entry.name).sort()).toEqual(exported.map((site) => site.slug).sort());
+    for (const site of exported) {
+      const row = await readSite(site.siteId);
+      expect(manifest.find((entry) => entry.name === site.slug)).toEqual({
+        name: site.slug,
+        title: row.title,
+        status: row.status,
+        kind: row.expiresAt === null ? "kept" : "draft",
+        created_at: row.createdAt.toISOString(),
+        updated_at: row.updatedAt.toISOString(),
+        url: site.liveUrl,
+      });
+      // The files: the current version's bytes, exactly as R2 holds them.
+      expect(unzip(["-p", file, `${site.slug}/index.html`]).toString("utf8"), site.slug).toBe(
+        await r2Store().get(pageObjectKey(site.siteId, row.currentVersionId!)),
+      );
+    }
+    expect(manifest.find((entry) => entry.name === draft.slug)?.kind).toBe("draft");
+  });
+
   test("sign out leaves the studio for the apex landing, signed out", async ({ page, baseURL }) => {
     await signInAs(page, baseURL!, scope);
 
@@ -445,6 +503,86 @@ test.describe("the settings screen", () => {
     expect(await db.select({ id: schema.user.id }).from(schema.user).where(eq(schema.user.id, userId))).toEqual([]);
 
     // The session is gone in this browser: the gate turns the tab away.
+    await page.goto("/dashboard");
+    await expect(page).toHaveURL(/\/auth\?/, { timeout: LIVE_STACK_TIMEOUT });
+  });
+
+  test("AC43 drill: deleted in one browser, the same account's other browser is signed out on its next request; every page archived and dark; the chosen name held with no owner", async ({
+    page,
+    browser,
+    baseURL,
+  }) => {
+    test.setTimeout(LIVE_STACK_TIMEOUT + 3 * STALE_EDGE_WINDOW_MS);
+    const origin = { origin: new URL(baseURL!).origin };
+
+    const { userId, email } = await signInAs(page, baseURL!, scope);
+    const kept = await publishOwned(page, baseURL!, scope, "E06 two devices kept");
+    const draft = await publishOwned(page, baseURL!, scope, "E06 two devices draft");
+    const demoted = await page.request.post(`${baseURL}/api/sites/${draft.siteId}/demote`, { headers: origin });
+    expect(demoted.status(), await demoted.text()).toBe(200);
+    const chosen = `e06-014-${crypto.randomUUID().slice(0, 8)}`;
+    const renamed = await page.request.patch(`${baseURL}/api/sites/${kept.siteId}/name`, {
+      headers: origin,
+      data: { name: chosen },
+    });
+    expect(renamed.status(), await renamed.text()).toBe(200);
+    scope.slugs.add(chosen);
+    const served = [
+      { siteId: kept.siteId, slug: chosen, html: kept.html },
+      { siteId: draft.siteId, slug: draft.slug, html: draft.html },
+    ];
+    for (const site of served) await waitForBytes(urlsFor(site.slug)[0]!, site.html);
+
+    // The same account, signed in on a second device: its own context, its own session.
+    const otherDevice = await browser.newContext({ ignoreHTTPSErrors: true });
+    try {
+      const second = await otherDevice.newPage();
+      expect((await signInAs(second, baseURL!, scope, email)).userId, "the same account").toBe(userId);
+      expect(
+        await db.select({ id: schema.session.id }).from(schema.session).where(eq(schema.session.userId, userId)),
+        "two devices, two sessions",
+      ).toHaveLength(2);
+      await second.goto("/dashboard");
+      await expect(second.getByRole("heading", { level: 1, name: "Your pages" })).toBeVisible();
+
+      // Delete from the first device, through the typed-email gate.
+      await page.goto("/settings");
+      await openSection(page, "Danger zone");
+      await page.getByTestId("delete-account-open").click();
+      await page.getByTestId("delete-account-input").fill(email);
+      await page.getByTestId("delete-account-confirm").click();
+      await page.waitForURL((url) => url.pathname === "/", { timeout: LIVE_STACK_TIMEOUT });
+
+      // Edge case 19: the other device's next request is signed out — a
+      // mutation is 401, and the studio sends it to sign in.
+      const replayed = await second.request.delete(`${baseURL}/api/sites/${kept.siteId}`, { headers: origin });
+      expect(replayed.status(), await replayed.text()).toBe(401);
+      await second.goto("/dashboard");
+      await expect(second).toHaveURL(/\/auth\?/, { timeout: LIVE_STACK_TIMEOUT });
+    } finally {
+      await otherDevice.close();
+    }
+
+    // Every page archived with no owner, and offline.
+    for (const site of served) {
+      const row = await readSite(site.siteId);
+      expect(row.status, site.slug).toBe("archived");
+      expect(row.ownerId, `${site.slug}: no owner left`).toBeNull();
+      expect(row.purgeAfter, `${site.slug} must be sweepable by E07`).not.toBeNull();
+      expect(await r2Store().get(pointerKey(site.slug)), site.slug).toBeNull();
+      for (const url of urlsFor(site.slug)) await waitUntilGone(url);
+    }
+    // The chosen name held with no owner (D16); the user's rows gone.
+    const [hold] = await db.select().from(schema.nameHolds).where(eq(schema.nameHolds.name, chosen));
+    expect(hold, "a chosen name is held after its account is deleted").toBeDefined();
+    expect(hold!.userId).toBeNull();
+    expect(hold!.reason).toBe("account_deleted");
+    expect(await db.select({ id: schema.user.id }).from(schema.user).where(eq(schema.user.id, userId))).toEqual([]);
+    expect(
+      await db.select({ id: schema.session.id }).from(schema.session).where(eq(schema.session.userId, userId)),
+    ).toEqual([]);
+
+    // And the first device, on the apex, is signed out too.
     await page.goto("/dashboard");
     await expect(page).toHaveURL(/\/auth\?/, { timeout: LIVE_STACK_TIMEOUT });
   });

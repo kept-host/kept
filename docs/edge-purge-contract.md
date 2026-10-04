@@ -2,10 +2,12 @@
 
 **This document is a contract. E03 writes it; it does not call it.** The callers
 are the write-side epics: **E04** (publish, replace), **E06** (rename, delete,
-demote), **E07** (status flip, draft expiry). The serving Worker never purges —
-it never calls the control plane at all.
+restore, late keep, account deletion), **E07** (status flip, draft expiry). The
+serving Worker never purges — it never calls the control plane at all.
 
 Written 2026-08-04 against the E03 cache policy in `apps/edge/src/cache.ts`.
+Amended 2026-10-04 by E06: restore is the replace event (§5, §7.3); rename is
+unchanged; keep and demote are recorded as not purging, as built.
 Secret **values** never appear here; names refer to the GitHub Environment keys
 defined in E02 task 004.
 
@@ -106,10 +108,11 @@ and the list is unbounded. The database row is the authority on what URLs exist.
 | --- | --- | --- |
 | First publish of a new slug | E04 | Yes — a prior 404 for that slug may be cached for up to 60s (`s-maxage=60`); purge makes the new page appear immediately |
 | Version replace | E04 | Yes — all URL forms of the slug |
-| Rename `old` → `new` | E06 | Yes — **both** slugs. `old` must stop serving; `new` may hold a cached 404 |
-| Delete | E06 | Yes — all URL forms of the slug |
-| Demote kept → draft | E06 | Yes — status stays `live`, but the 7-day clock restarts and the manifest changed |
-| Keep draft → kept | E06 | Yes — same reason |
+| Restore a previous version | E06 | Yes — **restore is the replace event.** The manifest (and pointer) is rewritten to an older `versionId` whose object is already in R2; no page object is written. Same targets, same delayed second purge, same `writeManifest` call as a replace (`apps/web/lib/sites/restore.ts`) |
+| Rename `old` → `new` | E06 | Yes — **both** slugs. `old` must stop serving; `new` may hold a cached 404. Unchanged by E06's names work: still `writeManifest(new)` then `removeManifest(old)` |
+| Delete | E06 | Yes — all URL forms of the slug (the row is archived; account deletion does the same per active page) |
+| Demote kept → draft | E06 | **No, as built.** The manifest carries no clock and the status stays `live`, so nothing served changes and demote is Postgres-only. Becomes a purge event when the badge differs between draft and kept (E10) |
+| Keep draft → kept | E06 | **No, as built** — same reason; the manifest's `ownerId` is knowingly left stale because nothing in `apps/edge` reads it (`apps/web/lib/sites/keep.ts` header). The exception is a **late keep** (`expired` within grace → `live`), which rewrites the manifest through `writeManifest` and so purges |
 | Status flip to `under_review` / `quarantined` / `removed` | E07 | Yes — **mandatory**, this is a moderation action; see §6 |
 | Draft expiry (`live` → `expired`) | E07 | Yes |
 | Grace-period purge / hard delete | E07 | Yes |
@@ -253,6 +256,7 @@ serves content the control plane already changed.
 | Write | Order | Why |
 | --- | --- | --- |
 | Publish / replace / any manifest change | **R2 object → `slugs/{slug}.json` → KV** | The pointer must be readable before the KV entry exists, or the propagation window is not covered at all |
+| Restore a previous version (E06) | **`slugs/{slug}.json` → KV** (no R2 object write — the older version's object already exists; `restore.ts` only `get`s it) | The replace row minus its first step: the object being pointed at was written when that version was published |
 | Rename `old` → `new` | write `slugs/{new}.json` → write KV `new` → **delete `slugs/{old}.json`** → delete KV `old` | Same rule applied twice: create pointer-first, remove pointer-first |
 | Delete / hard delete | **delete `slugs/{slug}.json` → delete KV `{slug}`** | Reverse of publish. Deleting KV first leaves a window where the Worker misses KV, finds the pointer, and **resurrects a deleted page** |
 | Status flip (`under_review`, `quarantined`, `removed`, `expired`) | **write `slugs/{slug}.json` → write KV** | A moderation flip that updates KV but not the pointer leaves a `live` pointer that serves the page whenever KV misses |

@@ -20,7 +20,9 @@ import {
   servingDomain,
   SKIP_LIVE_PUBLISH,
   STALE_EDGE_WINDOW_MS,
+  urlsFor,
   waitForBytes,
+  waitUntilGone,
 } from "./live-publish";
 import { jarlessContext, sessionHeaders } from "./session-request";
 
@@ -69,12 +71,6 @@ const SKIP: string | false =
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 /** Clock slack between this process and the control plane. */
 const SLACK_MS = 5 * 60_000;
-
-/** Both URL forms: `/index.html` is a separate cache entry from `/`. */
-const urlsFor = (slug: string): string[] => [
-  `https://${slug}.${servingDomain()}/`,
-  `https://${slug}.${servingDomain()}/index.html`,
-];
 
 test.describe("account deletion", () => {
   test.skip(!!SKIP, SKIP || undefined);
@@ -209,21 +205,6 @@ test.describe("account deletion", () => {
       headers: { ...sessionHeaders(cookie, baseURL), "content-type": "application/json" },
       data: JSON.stringify({ email }),
     });
-
-  /** Poll a URL until it stops serving, or until the architectural bound. */
-  async function waitUntilGone(url: string): Promise<void> {
-    const started = Date.now();
-    for (;;) {
-      const probe = await probeEdge(url);
-      if (probe.status !== 200) return;
-      if (Date.now() - started > STALE_EDGE_WINDOW_MS) {
-        throw new Error(
-          `${url} still served 200 after ${Math.round(STALE_EDGE_WINDOW_MS / 1000)}s — past the delayed re-purge, which means a purge did not land.`,
-        );
-      }
-      await new Promise((resolve) => setTimeout(resolve, 2_000));
-    }
-  }
 
   test("every page goes dark and lands `archived` with no owner, its chosen name is held, the bytes stay, and another account is untouched", async ({
     request,

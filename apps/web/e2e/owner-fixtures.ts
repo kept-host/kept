@@ -1,5 +1,5 @@
 import { ownedPublishResultSchema } from "@kept/shared";
-import { expect, type Page } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
 import { config } from "dotenv";
 import { eq, inArray } from "drizzle-orm";
 
@@ -76,16 +76,20 @@ export function newScope(): OwnerScope {
  * the kept cap, swap pages and delete accounts, so two tests sharing an identity
  * would race each other's quota. The `.invalid` TLD is reserved by RFC 2606 and
  * can never be delivered to.
+ *
+ * Pass `email` to sign ANOTHER browser context into an account this spec
+ * already created — a second device, with its own session row (task 014's
+ * AC43 drill). The magic link signs an existing user in by address.
  */
 export async function signInAs(
   page: Page,
   baseURL: string,
   scope: OwnerScope,
+  email = `e06-013-${crypto.randomUUID().slice(0, 8)}@kept-e06-013.invalid`,
 ): Promise<{ userId: string; email: string }> {
   const { auth } = await import("../lib/auth");
   const ctx = await auth.$context;
   const token = crypto.randomUUID().replace(/-/g, "");
-  const email = `e06-013-${token.slice(0, 8)}@kept-e06-013.invalid`;
 
   await ctx.internalAdapter.createVerificationValue({
     identifier: token,
@@ -100,7 +104,7 @@ export async function signInAs(
   );
   expect(response.status(), await response.text()).toBe(200);
   const body = (await response.json()) as { user: { id: string } };
-  scope.userIds.push(body.user.id);
+  if (!scope.userIds.includes(body.user.id)) scope.userIds.push(body.user.id);
   return { userId: body.user.id, email };
 }
 
@@ -213,6 +217,43 @@ export async function readSite(id: string) {
 }
 
 /**
+ * One day of visits for a page, dated yesterday (UTC) — the shape the visits
+ * sync writes. A real `page_views_daily` row; it cascades with its site.
+ */
+export async function seedVisits(siteId: string, views: number): Promise<void> {
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  await db.insert(schema.pageViewsDaily).values({ siteId, day: yesterday, views });
+}
+
+/**
+ * Wait until the Pages home is interactive. Opening the publish sheet is proof:
+ * it only opens because the hydrated `onClick` ran, so every listener the screen
+ * attaches — including the window's drop target — is attached too.
+ */
+export async function hydrated(page: Page): Promise<void> {
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("button", { name: "Publish", exact: true }).click();
+  await expect(page.getByTestId("publish-sheet")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("publish-sheet")).toBeHidden();
+}
+
+/** A real drop: dragover then drop, with a real `File` in a real `DataTransfer`. */
+export async function drop(
+  page: Page,
+  target: Locator,
+  file: { name: string; type: string; body: string },
+): Promise<void> {
+  const transfer = await page.evaluateHandle(({ name, type, body }) => {
+    const data = new DataTransfer();
+    data.items.add(new File([body], name, { type }));
+    return data;
+  }, file);
+  await target.dispatchEvent("dragover", { dataTransfer: transfer });
+  await target.dispatchEvent("drop", { dataTransfer: transfer });
+}
+
+/**
  * Unwind everything the spec created: the edge first, then the bytes, then the
  * rows.
  *
@@ -245,6 +286,10 @@ export async function cleanup(scope: OwnerScope): Promise<void> {
   // `owner_id` the FK has already nulled, and an owner-scoped delete would walk
   // straight past exactly the rows it most needs to collect.
   if (scope.siteIds.length) {
+    // A rename's history and any hold a rename or delete left carry the site id
+    // with no FK, so they outlive the row unless they are collected here.
+    await db.delete(schema.nameEvents).where(inArray(schema.nameEvents.siteId, scope.siteIds));
+    await db.delete(schema.nameHolds).where(inArray(schema.nameHolds.siteId, scope.siteIds));
     await db.delete(schema.sites).where(inArray(schema.sites.id, scope.siteIds));
   }
   if (scope.userIds.length) {
