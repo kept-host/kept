@@ -1,86 +1,101 @@
 /**
- * Plan — Free now, Pro later, and no machinery in between. E06 task 012.
+ * Plan — the badge, the usage meters and, on Free, what Pro adds. PRD §5.8;
+ * E06 task 012 built it, task 013 restyled it to `kept Settings
+ * Screen.dc.html` (section `plan`).
  *
- * ⚠️ NO ENTITLEMENT PLUMBING, ON PURPOSE. `plan` is read from `profiles.plan`
- * and *displayed*; nothing on this screen or anywhere it links to branches on
- * it. `PLANS` is `free | premium` after E05's migration `0002`, and the day a
- * `premium` row exists this panel names it correctly without a single
- * `plan === "premium" ? …` gate having been written in advance. Five of those
- * gates written now would be five places for an entitlement bug to hide while
- * nothing is on sale.
+ * The design's "Usage" card becomes two meters, `Kept {k} / {limit}` and
+ * `Names {c} / {quota}`, under the plan badge. Its plan cards (Free / Founding
+ * / Pro with prices and "Apply as a founding creator") are not rendered: prices
+ * and Founding are E11's. What stays is the short Pro list as `LockedRow`s
+ * (D15) — `PRO_LIST`, the same list the page detail screen reads — and only on
+ * Free. A Pro account sees its own limits in the meters and nothing locked.
  *
- * ⚠️ NO BILLING, NO PRICES, NO MERCHANT OF RECORD. E11 owns all three. A number
- * printed here would be a price the product cannot honour, and the MoR question
- * is explicitly open.
- *
- * The locked half is `PRO_LIST` (`lib/plans/pro-list.ts`) as `LockedRow`s
- * (D15) — the same list the site-detail aside renders, not a second one. This
- * file owns only the "you are on Free" half above it.
+ * ⚠️ NO TYPED LIMIT. `kept` is `keptQuotaFor`'s answer (the cap's own count and
+ * `limitsFor(plan).keptPages`) and the name quota is `limitsFor(plan)` (D1), so
+ * the copy moves the day a limit does.
  */
-import { Check } from "lucide-react";
-
 import { limitsFor, type Plan } from "@kept/shared";
 
 import { LockedRow } from "@/components/kept/locked-row";
-import { PLAN_LABEL } from "@/components/kept/plan-badge";
+import { PlanBadge } from "@/components/kept/plan-badge";
 import { PRO_LIST } from "@/lib/plans/pro-list";
+import { cn } from "@/lib/utils";
 
-/**
- * What the account's plan actually gives it, in the product's own vocabulary.
- *
- * ⚠️ NO TYPED LIMIT. `limitsFor(plan)` composes the sentence (D1), so the day
- * the cap moves — or this account changes plan — the copy moves with it instead
- * of turning the product into a liar. The draft clock is deliberately described
- * without a number here — the drafts section on the dashboard states
- * `DRAFT_TTL_DAYS` from the constant and two copies of the same promise drift.
- */
-function planIncludes(plan: Plan): readonly string[] {
-  return [
-    `${limitsFor(plan).keptPages} pages kept forever, at links that never expire`,
-    "Unlimited drafts, live the moment you drop a file",
-    "Rename, replace and delete any page you own",
-  ];
+import { SettingsCard } from "./settings-card";
+
+export function PlanPanel({
+  plan,
+  kept,
+  names,
+}: {
+  plan: Plan;
+  /** `keptQuotaFor(profile.id)`'s `used` and `limit`. */
+  kept: { used: number; limit: number };
+  /** `chosenNameCount(profile.id)`. */
+  names: number;
+}) {
+  return (
+    <>
+      <SettingsCard title="Plan" aside={<PlanBadge plan={plan} />}>
+        <Meter id="kept" label="Kept" used={kept.used} limit={kept.limit} />
+        <Meter id="names" label="Names" used={names} limit={limitsFor(plan).chosenNames} />
+        <p className="text-[13px] text-text-secondary">
+          Drafts are unlimited. Past {kept.limit}, new pages land as drafts.
+        </p>
+      </SettingsCard>
+
+      {plan === "free" ? (
+        <SettingsCard title="Pro" data-testid="pro-list">
+          <ul className="-my-3 divide-y divide-border">
+            {PRO_LIST.map((line) => (
+              <li key={line}>
+                <LockedRow>{line}</LockedRow>
+              </li>
+            ))}
+          </ul>
+        </SettingsCard>
+      ) : null}
+    </>
+  );
 }
 
-export function PlanPanel({ plan }: { plan: Plan }) {
+/**
+ * One usage meter: the mono count line and the design's 6px bar. A full meter
+ * turns `--warning`, the same rule the Pages counters use at the kept limit.
+ */
+function Meter({
+  id,
+  label,
+  used,
+  limit,
+}: {
+  id: string;
+  label: string;
+  used: number;
+  limit: number;
+}) {
+  const full = used >= limit;
+  const share = limit > 0 ? Math.min(100, (used / limit) * 100) : 100;
+
   return (
-    <section className="rounded-[var(--r-lg)] border border-border bg-surface p-6 shadow-[var(--shadow-sm)]">
-      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b border-border pb-4">
-        <h2 className="font-display text-xl font-semibold text-text">Plan</h2>
-        <p className="mono-label text-[11px] text-text-muted">
-          Pro funds the free tier
-        </p>
+    <div data-testid={`meter-${id}`} className="flex flex-col gap-2">
+      <div
+        className={cn(
+          "flex items-baseline justify-between gap-3 font-mono text-xs font-medium uppercase tracking-[0.08em]",
+          full ? "text-warning" : "text-text",
+        )}
+      >
+        <span className={full ? undefined : "text-text-secondary"}>{label}</span>
+        <span>
+          {used} / {limit}
+        </span>
       </div>
-
-      <div className="mt-5 rounded-[var(--r-md)] border border-accent bg-accent-soft px-4 py-3.5">
-        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-          <p className="font-display text-base font-semibold text-text">
-            {PLAN_LABEL[plan]}
-          </p>
-          <p className="mono-label text-[10px] text-accent">Your plan</p>
-        </div>
-        <ul className="mt-3 flex flex-col gap-1.5">
-          {planIncludes(plan).map((line) => (
-            <li key={line} className="flex items-start gap-2.5">
-              <Check
-                aria-hidden="true"
-                className="mt-0.5 size-3.5 shrink-0 text-accent"
-              />
-              <span className="text-sm leading-relaxed text-text-secondary">
-                {line}
-              </span>
-            </li>
-          ))}
-        </ul>
+      <div aria-hidden="true" className="flex h-1.5 rounded-[3px] bg-sunken">
+        <span
+          className={cn("rounded-[3px]", full ? "bg-warning" : "bg-accent")}
+          style={{ width: `${share}%` }}
+        />
       </div>
-
-      <ul className="mt-5 divide-y divide-border border-y border-border">
-        {PRO_LIST.map((line) => (
-          <li key={line}>
-            <LockedRow>{line}</LockedRow>
-          </li>
-        ))}
-      </ul>
-    </section>
+    </div>
   );
 }

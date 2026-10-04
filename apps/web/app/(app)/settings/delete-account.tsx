@@ -1,37 +1,33 @@
 "use client";
 
 /**
- * The only irreversible act in the product — epic decision **D16**.
+ * Delete account — the only irreversible act in the product, epic decision
+ * **D16** (PRD §5.8). E06 task 008 switched its gate to the account email; task
+ * 013 restyled it to `kept Settings Screen.dc.html` (section `danger`) and owns
+ * its copy.
  *
- * ── TWO CONFIRMATIONS, NOT ONE ───────────────────────────────────────────────
+ * ── WHAT THE CARD SAYS, AND WHAT THE DESIGN SAID ────────────────────────────
+ * The design's "Here's exactly what happens:" list, with the account's REAL
+ * counts read at render time (never a generic warning, never a typed number).
+ * Three of the design's lines are wrong for this product and are not rendered
+ * (each is a PR note): "download everything for 30 days from the link we email
+ * you" (D13 — exports are streamed, nothing is emailed, and after deletion there
+ * is nobody to give a file back to), "addresses are released after 30 days"
+ * (D4/D16 — names are held for 12 months), and "Remixes … stay theirs" (no
+ * remixes until a later epic).
  *
- *   1. **An explanatory dialog stating the REAL counts** — "this destroys 3 kept
- *      pages and 2 drafts" — read from `getAccountDeletionSummary()` in the
- *      server component at render time. Never a generic warning, never a number
- *      typed into copy.
- *   2. **The account's email, typed.** The destructive button stays disabled
- *      until it matches (`confirmsAccountEmail` from `@kept/shared` — the same
- *      rule the route refuses with, so this button can never enable on a value
- *      the server would refuse).
- *
- * Cancelling at either stage sends nothing. Stage two is reached by a press, not
- * by scrolling past stage one, so there is a real second decision.
- *
- * E06 task 008 switched the gate from a phrase to the email, minimally; task
- * 013 restyles this screen to the design and owns its copy.
- *
- * ── THE COPY IS TRUE ABOUT THE BYTES ─────────────────────────────────────────
- * E07's purge job does not exist yet, so a deleted account's R2 objects
- * legitimately persist until it ships. *"your pages stop being served
- * immediately; the files are erased shortly after"* is true and is the sentence
- * shipped below. **"erased immediately" would be a lie** and must not appear
- * here however tempting it reads.
+ * ── THE GATE IS THE ACCOUNT EMAIL, IN A DIALOG ──────────────────────────────
+ * The PRD's dialog, not the design's inline `delete {handle}` (there is no
+ * handle until E10). The destructive button stays disabled until the typed
+ * value matches (`confirmsAccountEmail` from `@kept/shared` — the rule the route
+ * refuses with, so this button can never arm on a value the server would
+ * refuse). Cancelling sends nothing.
  *
  * ── AND THE USER DOES NOT STAY IN A SHELL THEY NO LONGER HAVE ────────────────
- * On success: sign out, then a full-document navigation to the apex. Not
- * `router.replace` — the destination is a different origin once the deploy has
- * two hostnames, and a hard load is also what discards every RSC payload
- * rendered while the account still existed.
+ * The route clears the session cookie with its 200; this then makes a
+ * full-document navigation to the apex — a different origin once the deploy has
+ * two hostnames, and a hard load discards every RSC payload rendered while the
+ * account existed.
  */
 import { confirmsAccountEmail } from "@kept/shared";
 import { useEffect, useId, useRef, useState } from "react";
@@ -48,62 +44,46 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { signInHref } from "@/lib/auth/return-path";
 import { deleteAccount } from "@/lib/sites/owner-client";
 
+import { SettingsCard } from "./settings-card";
+
 /**
- * The counts, as the server component serialises them.
- *
- * Structurally the `AccountDeletionSummary` from `lib/sites/account-deletion.ts`
- * — restated here rather than type-imported, for the reason every client island
- * in this epic restates its props: that module reaches Postgres, R2 and KV, and
- * this file must not name it even in a position the compiler erases.
+ * The counts, as the server component serialises them — structurally
+ * `AccountDeletionSummary` from `lib/sites/account-deletion.ts`, restated rather
+ * than type-imported because that module reaches Postgres, R2 and KV.
  */
 export interface DeletionSummaryView {
-  /** Permanent pages, from the same predicate the quota is counted with. */
+  /** Permanent pages, from the predicate the kept cap counts with. */
   kept: number;
   /** `expires_at != null`. */
   drafts: number;
-  /**
-   * Every page the account owns, in every status.
-   *
-   * ⚠️ NOT NECESSARILY `kept + drafts`. An archived or quarantined page with no
-   * clock is in neither bucket, so the copy below names the two a person
-   * recognises and then states `total` on its own rather than implying a sum.
-   */
+  /** Every page the deletion takes offline: `kept + drafts`. */
   total: number;
 }
+
+/** D4/D16: chosen names go into a hold, not straight back into the pool. */
+const NAMES_HELD = "Your page names are held for 12 months before anyone else can take them.";
+
+/** PRD §5.8, verbatim. */
+const DELETE_ACCOUNT_COPY = `All your pages go offline within about 2 minutes. You can't undo this. ${NAMES_HELD}`;
 
 /** "1 draft" / "4 drafts" — plain plurals, no library. */
 function count(n: number, noun: string): string {
   return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }
 
-/**
- * What is about to be destroyed, in the account's own real numbers.
- *
- * ⚠️ NO HARDCODED NUMBER ANYWHERE IN THIS FUNCTION. Every figure comes off the
- * summary the server read at render time; a generic "all your pages" would fail
- * D3 on the one screen where being believed matters most.
- */
-function destroysSentence(summary: DeletionSummaryView): string {
-  if (summary.total === 0) {
-    return "There is nothing published on this account, so no page goes offline. Your sign-in details, your connected providers and everything else we hold go, and that is all.";
-  }
-
-  const other = summary.total - summary.kept - summary.drafts;
-  const head = `This destroys ${count(summary.kept, "kept page")} and ${count(summary.drafts, "draft")}`;
-  if (other <= 0) return `${head}.`;
-
-  // Archived or flagged rows have no clock and are not kept, so they belong to
-  // neither figure above — but the teardown takes them too, and `total` is the
-  // number that says so.
-  return `${head}, plus ${count(other, "page")} that ${other === 1 ? "is" : "are"} archived or flagged — ${summary.total} in all.`;
+/** The design's list, in this account's own numbers and the PRD's rules. */
+function consequences(summary: DeletionSummaryView): readonly string[] {
+  return [
+    summary.total === 0
+      ? "Nothing is published on this account, so no page goes offline."
+      : `Your ${count(summary.kept, "kept page")} and ${count(summary.drafts, "draft")} go offline and are archived.`,
+    NAMES_HELD,
+    "Nothing can be downloaded afterwards. Export everything first if you want a copy.",
+  ];
 }
-
-/** Which half of the gate is showing. `none` is a closed dialog. */
-type Stage = "none" | "explain" | "confirm";
 
 export function DeleteAccount({
   summary,
@@ -117,30 +97,22 @@ export function DeleteAccount({
   farewellHref: string;
 }) {
   const router = useRouter();
-  const [stage, setStage] = useState<Stage>("none");
+  const [open, setOpen] = useState(false);
   const [typed, setTyped] = useState("");
   const [pending, setPending] = useState(false);
-  const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputId = useId();
-  const inputRef = useRef<HTMLInputElement>(null);
   const abort = useRef<AbortController | null>(null);
 
   useEffect(() => {
     return () => abort.current?.abort();
   }, []);
 
-  // The second stage is a typing task, so the caret belongs in the field the
-  // moment it appears — a keyboard user should not have to hunt for it.
-  useEffect(() => {
-    if (stage === "confirm") inputRef.current?.focus();
-  }, [stage]);
-
   const armed = confirmsAccountEmail(typed, email);
 
   function close() {
-    if (pending || done) return;
-    setStage("none");
+    if (pending) return;
+    setOpen(false);
     setTyped("");
     setError(null);
   }
@@ -158,67 +130,55 @@ export function DeleteAccount({
     if (!outcome.ok) {
       setPending(false);
       if (outcome.signedOut) {
-        // The session went while the dialog was open. Nothing was deleted; the
-        // only useful move is the sign-in screen, with a way back to here.
+        // The session went while the dialog was open. Nothing was deleted.
         router.replace(signInHref("/settings"));
         return;
       }
-      // The route's own sentence, verbatim. It differs per failure and each one
-      // is honest about what did or did not change: a mismatched email (400), a
-      // foreign origin (403), an edge that would not let go (503, nothing
-      // deleted), or a teardown that stopped half way (500, retry finishes it).
+      // The route's own sentence, verbatim: a mismatched email (400), an edge
+      // that would not let go (503, nothing deleted), a teardown that stopped
+      // half way (500, retry finishes it) — or "Couldn't save. Try again."
       setError(outcome.error.message);
       return;
     }
 
-    // Deliberately NOT clearing `pending`: the account is gone and this screen
-    // is about to be replaced. Re-enabling the button would invite a second call
-    // that can only fail.
-    setDone(true);
-    // The route cleared the session cookie with its 200.
+    // `pending` stays true: the account is gone and this screen is about to be
+    // replaced, so nothing here may be pressed again.
     window.location.replace(farewellHref);
   }
 
   return (
-    <section
-      data-testid="delete-account-panel"
-      className="rounded-[var(--r-lg)] border border-danger bg-surface p-6 shadow-[var(--shadow-sm)]"
-    >
-      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b border-border pb-4">
-        <h2 className="font-display text-xl font-semibold text-text">
-          Delete this account
-        </h2>
-        <p className="mono-label text-[11px] text-danger">Cannot be undone</p>
-      </div>
-
-      <p className="mt-5 max-w-[62ch] leading-relaxed text-text-secondary">
-        {destroysSentence(summary)}
-      </p>
-      <p className="mt-3 max-w-[62ch] text-sm leading-relaxed text-text-secondary">
-        Deleting one page archives it and keeps the file for you. Deleting the
-        whole account does not — there would be nobody left to give it back to.
-        {summary.total > 0
-          ? " If you want your files, download them from each page first."
-          : ""}
-      </p>
+    <SettingsCard title="Delete account" danger data-testid="delete-account-panel">
+      <p className="text-[15px] text-text">Here&rsquo;s exactly what happens:</p>
+      <ul className="flex flex-col gap-2 text-[15px] leading-[1.45] text-text">
+        {consequences(summary).map((line, index) => (
+          <li
+            key={line}
+            data-testid={index === 0 ? "delete-account-counts" : undefined}
+            className="flex gap-2.5"
+          >
+            <span aria-hidden="true" className="mt-[9px] size-1.5 shrink-0 rounded-full bg-danger" />
+            {line}
+          </li>
+        ))}
+      </ul>
 
       <Button
         type="button"
-        variant="ghost"
+        variant="secondary"
         data-testid="delete-account-open"
         onClick={() => {
           setError(null);
           setTyped("");
-          setStage("explain");
+          setOpen(true);
         }}
-        className="mt-5 text-danger hover:bg-sunken hover:text-danger"
+        className="h-10 self-start rounded-[var(--r-md)] border-danger px-4 font-body font-medium"
       >
-        <Trash2 aria-hidden="true" />
+        <Trash2 aria-hidden="true" strokeWidth={1.5} className="text-danger" />
         Delete my account
       </Button>
 
       <Dialog
-        open={stage !== "none"}
+        open={open}
         onOpenChange={(next) => {
           if (!next) close();
         }}
@@ -226,155 +186,71 @@ export function DeleteAccount({
         <DialogContent
           data-testid="delete-account-dialog"
           className="max-w-lg"
-          // Escape, the overlay and the close button all funnel through the same
-          // refusal while a teardown is in flight: abandoning a request that may
-          // already have committed leaves this screen unable to say what
-          // happened, on the one action where that is unforgivable.
+          // Escape, the overlay and the close button all refuse while a
+          // teardown is in flight: abandoning a request that may already have
+          // committed would leave this screen unable to say what happened.
           onEscapeKeyDown={(event) => {
-            if (pending || done) event.preventDefault();
-          }}
-          onPointerDownOutside={(event) => {
-            if (pending || done) event.preventDefault();
+            if (pending) event.preventDefault();
           }}
           onInteractOutside={(event) => {
-            if (pending || done) event.preventDefault();
+            if (pending) event.preventDefault();
           }}
         >
-          {done ? (
-            <div role="status">
-              <DialogHeader>
-                <p className="mono-label text-[11px] text-text-muted">Deleted</p>
-                <DialogTitle>Your account is gone</DialogTitle>
-                <DialogDescription>
-                  Everything it held has stopped being served. Taking you back to
-                  kept now. Thank you for trying it.
-                </DialogDescription>
-              </DialogHeader>
-            </div>
-          ) : stage === "explain" ? (
-            <>
-              <DialogHeader>
-                <p className="mono-label text-[11px] text-danger">
-                  Permanent · no undo
-                </p>
-                <DialogTitle>Delete your kept account?</DialogTitle>
-                <DialogDescription data-testid="delete-account-counts">
-                  {destroysSentence(summary)}
-                </DialogDescription>
-              </DialogHeader>
+          <DialogHeader>
+            <DialogTitle>Delete your account?</DialogTitle>
+            <DialogDescription data-testid="delete-account-copy">{DELETE_ACCOUNT_COPY}</DialogDescription>
+          </DialogHeader>
 
-              <p className="text-sm leading-relaxed text-text-secondary">
-                Every one of those links stops working the moment you confirm —
-                including permanent ones other people may have saved or linked
-                to. Your pages stop being served immediately; the files are
-                erased shortly after.
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor={inputId} className="text-sm text-text">
+              Type <span className="break-all font-mono font-medium">{email}</span> to confirm
+            </label>
+            <Input
+              id={inputId}
+              data-testid="delete-account-input"
+              value={typed}
+              onChange={(event) => setTyped(event.target.value)}
+              disabled={pending}
+              type="email"
+              // A keyboard that corrects or underlines an address is a keyboard
+              // fighting the user.
+              autoCapitalize="none"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck={false}
+              aria-invalid={error ? true : undefined}
+              aria-describedby={error ? `${inputId}-error` : undefined}
+              className="h-11 rounded-[var(--r-sm)] font-mono text-sm shadow-none"
+            />
+            {error ? (
+              <p
+                id={`${inputId}-error`}
+                role="alert"
+                data-testid="delete-account-error"
+                className="text-[13px] leading-relaxed text-danger"
+              >
+                {error}
               </p>
-              <p className="text-sm leading-relaxed text-text-secondary">
-                There is no way to put an account back, and nothing is kept aside
-                for you to download later.
-              </p>
+            ) : null}
+          </div>
 
-              <DialogFooter>
-                <Button type="button" variant="secondary" onClick={close}>
-                  Keep my account
-                </Button>
-                <Button
-                  type="button"
-                  variant="destructive"
-                  data-testid="delete-account-continue"
-                  onClick={() => {
-                    setError(null);
-                    setStage("confirm");
-                  }}
-                >
-                  Continue
-                </Button>
-              </DialogFooter>
-            </>
-          ) : (
-            <>
-              <DialogHeader>
-                <p className="mono-label text-[11px] text-danger">
-                  Last step · no undo
-                </p>
-                <DialogTitle>Type your email to confirm</DialogTitle>
-                <DialogDescription>
-                  {summary.total > 0
-                    ? `${count(summary.total, "page")} and this account will be destroyed. Nothing is sent until the email below matches.`
-                    : "This account will be destroyed. Nothing is sent until the email below matches."}
-                </DialogDescription>
-              </DialogHeader>
-
-              <div>
-                <Label htmlFor={inputId} className="mb-2 block text-text-muted">
-                  Email
-                </Label>
-                <p
-                  id={`${inputId}-instruction`}
-                  className="mb-2 text-sm leading-relaxed text-text-secondary"
-                >
-                  Type{" "}
-                  <code className="rounded-[var(--r-sm)] bg-sunken px-1.5 py-0.5 font-mono text-[0.8125rem] normal-case tracking-normal text-text">
-                    {email}
-                  </code>{" "}
-                  to confirm.
-                </p>
-                <Input
-                  id={inputId}
-                  ref={inputRef}
-                  data-testid="delete-account-input"
-                  value={typed}
-                  onChange={(event) => setTyped(event.target.value)}
-                  disabled={pending}
-                  type="email"
-                  // A keyboard that corrects or underlines an address is a
-                  // keyboard fighting the user.
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  autoComplete="off"
-                  spellCheck={false}
-                  aria-describedby={`${inputId}-instruction`}
-                  className="h-auto rounded-[var(--r-sm)] bg-sunken py-[0.8125rem] text-[0.9375rem] shadow-none"
-                />
-              </div>
-
-              {error ? (
-                <p
-                  role="alert"
-                  data-testid="delete-account-error"
-                  className="text-xs leading-relaxed text-danger"
-                >
-                  {error}
-                </p>
-              ) : null}
-
-              <DialogFooter>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  disabled={pending}
-                  onClick={() => {
-                    setTyped("");
-                    setError(null);
-                    setStage("explain");
-                  }}
-                >
-                  Back
-                </Button>
-                <Button
-                  type="button"
-                  variant="destructive"
-                  data-testid="delete-account-confirm"
-                  disabled={!armed || pending}
-                  onClick={() => void destroy()}
-                >
-                  {pending ? "Deleting…" : "Delete my account"}
-                </Button>
-              </DialogFooter>
-            </>
-          )}
+          <DialogFooter>
+            <Button type="button" variant="secondary" disabled={pending} onClick={close}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              data-testid="delete-account-confirm"
+              disabled={!armed || pending}
+              onClick={() => void destroy()}
+            >
+              <Trash2 aria-hidden="true" strokeWidth={1.5} />
+              {pending ? "Deleting…" : "Delete my account"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
-    </section>
+    </SettingsCard>
   );
 }
