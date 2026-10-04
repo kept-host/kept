@@ -13,15 +13,16 @@
  * printed here would be a price the product cannot honour, and the MoR question
  * is explicitly open.
  *
- * The locked half is `components/kept/pro-rows.tsx` — the same component the
- * site-detail aside mounts, not a second list. This file owns only the "you are
- * on Free" half above it.
+ * The locked half is `PRO_LIST` (`lib/plans/pro-list.ts`) as `LockedRow`s
+ * (D15) — the same list the site-detail aside renders, not a second one. This
+ * file owns only the "you are on Free" half above it.
  */
 import { Check } from "lucide-react";
 
 import { limitsFor, type Plan } from "@kept/shared";
 
-import { ProRows } from "@/components/kept/pro-rows";
+import { LockedRow } from "@/components/kept/locked-row";
+import { PRO_LIST } from "@/lib/plans/pro-list";
 
 /**
  * What the account's plan actually gives it, in the product's own vocabulary.
@@ -78,9 +79,13 @@ export function PlanPanel({ plan }: { plan: Plan }) {
         </ul>
       </div>
 
-      <div className="mt-5">
-        <ProRows />
-      </div>
+      <ul className="mt-5 divide-y divide-border border-y border-border">
+        {PRO_LIST.map((line) => (
+          <li key={line}>
+            <LockedRow>{line}</LockedRow>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }

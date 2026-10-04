@@ -9,14 +9,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { DRAFT_TTL_DAYS, SITE_STATUSES, type SiteStatus } from "@kept/shared";
+import {
+  DRAFT_GRACE_DAYS,
+  DRAFT_TTL_DAYS,
+  SITE_STATUSES,
+  type SiteStatus,
+} from "@kept/shared";
 
 import {
+  DRAFT_URGENT_HOURS,
   atCapPublishNotice,
   demoteConsequence,
   effectiveStatus,
+  expiredDraftNotice,
   formatBytes,
   formatUpdatedAt,
+  isDraftUrgent,
   isManagementRestricted,
   managementRefusal,
   pageName,
@@ -171,4 +179,54 @@ test("neither publish sentence types the draft clock as a literal", () => {
     const digits = sentence.match(/\d+/g) ?? [];
     for (const digit of digits) assert.equal(digit, String(DRAFT_TTL_DAYS));
   }
+});
+
+// ── The drafts strip (E06 task 010; PRD §5.1, §9.1, AC9) ──────────────────────
+
+const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
+
+test("AC9: a draft turns urgent inside its last DRAFT_URGENT_HOURS, not before", () => {
+  const now = new Date("2026-10-04T12:00:00Z");
+  const at = (ms: number) => new Date(now.getTime() + ms);
+  assert.equal(isDraftUrgent(at(DRAFT_URGENT_HOURS * HOUR + 1), now), false);
+  assert.equal(isDraftUrgent(at(DRAFT_URGENT_HOURS * HOUR), now), true);
+  assert.equal(isDraftUrgent(at(1), now), true);
+  // Past `expires_at` it is expired, which is a different state, not "urgent".
+  assert.equal(isDraftUrgent(at(0), now), false);
+  assert.equal(isDraftUrgent(at(-HOUR), now), false);
+});
+
+test("an expired draft in grace says how long ago, and how long is left to keep it", () => {
+  const expiresAt = new Date("2026-10-01T12:00:00Z");
+  const purgeAfter = new Date(expiresAt.getTime() + DRAFT_GRACE_DAYS * DAY);
+  const now = new Date(expiresAt.getTime() + 3 * DAY + HOUR);
+  assert.equal(
+    expiredDraftNotice(expiresAt, purgeAfter, now),
+    `Expired 3 days ago — keep within ${DRAFT_GRACE_DAYS - 3} days`,
+  );
+});
+
+test("an expired notice says 'today' and '1 day' rather than '0 days' or '1 days'", () => {
+  const expiresAt = new Date("2026-10-01T12:00:00Z");
+  assert.equal(
+    expiredDraftNotice(expiresAt, new Date(expiresAt.getTime() + DAY), new Date(expiresAt.getTime() + HOUR)),
+    "Expired today — keep within 1 day",
+  );
+  assert.equal(
+    expiredDraftNotice(
+      expiresAt,
+      new Date(expiresAt.getTime() + 10 * DAY),
+      new Date(expiresAt.getTime() + DAY),
+    ),
+    "Expired 1 day ago — keep within 9 days",
+  );
+});
+
+test("past purge_after, or with no grace recorded, the notice promises nothing", () => {
+  const expiresAt = new Date("2026-10-01T12:00:00Z");
+  const purgeAfter = new Date(expiresAt.getTime() + 2 * DAY);
+  const now = new Date(expiresAt.getTime() + 2 * DAY + HOUR);
+  assert.equal(expiredDraftNotice(expiresAt, purgeAfter, now), "Expired 2 days ago");
+  assert.equal(expiredDraftNotice(expiresAt, null, now), "Expired 2 days ago");
 });

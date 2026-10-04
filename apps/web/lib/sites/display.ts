@@ -46,6 +46,48 @@ export function effectiveStatus(
   return expiredByClock && status === "live" ? "expired" : status;
 }
 
+const MS_PER_HOUR = 60 * 60 * 1000;
+const MS_PER_DAY = 24 * MS_PER_HOUR;
+
+/** `1 day`, `3 days`. Shared with `components/kept/draft-chip.tsx`. */
+export function plural(count: number, unit: string): string {
+  return `${count} ${unit}${count === 1 ? "" : "s"}`;
+}
+
+/**
+ * How close to `expires_at` a draft's chip turns `--warning` — PRD §9.1, AC9:
+ * "Drafts in their last 48 hours show the warning chip". A display rule, not a
+ * plan limit, so it lives here and not in `limitsFor`.
+ */
+export const DRAFT_URGENT_HOURS = 48;
+
+/** Whether a draft is still live but inside its last `DRAFT_URGENT_HOURS`. */
+export function isDraftUrgent(expiresAt: Date, now: Date): boolean {
+  const remaining = expiresAt.getTime() - now.getTime();
+  return remaining > 0 && remaining <= DRAFT_URGENT_HOURS * MS_PER_HOUR;
+}
+
+/**
+ * What an expired draft in its grace window says on its card — PRD §5.1:
+ * "Expired {n} days ago — keep within {m} days".
+ *
+ * `m` is counted to the row's own `purge_after` (set at publish from
+ * `DRAFT_GRACE_DAYS`), never re-derived from the constant. Past `purge_after`
+ * there is nothing left to keep (edge case 13), so the clause is dropped rather
+ * than promising "keep within 0 days".
+ */
+export function expiredDraftNotice(
+  expiresAt: Date,
+  purgeAfter: Date | null,
+  now: Date,
+): string {
+  const daysAgo = Math.floor((now.getTime() - expiresAt.getTime()) / MS_PER_DAY);
+  const since = daysAgo < 1 ? "Expired today" : `Expired ${plural(daysAgo, "day")} ago`;
+  if (purgeAfter === null) return since;
+  const left = Math.ceil((purgeAfter.getTime() - now.getTime()) / MS_PER_DAY);
+  return left > 0 ? `${since} — keep within ${plural(left, "day")}` : since;
+}
+
 /**
  * Why a page's management verbs are unavailable, or `null` when they are not.
  *

@@ -74,12 +74,17 @@ export function ClockProvider({
   return <NowContext.Provider value={now}>{children}</NowContext.Provider>;
 }
 
-function useNow(): number {
+/**
+ * The screen's one "now", in epoch ms. Exported for `components/kept/site-card.tsx`
+ * (E06 task 010), whose draft countdown reads this ticker rather than starting
+ * a second one.
+ */
+export function useNow(): number {
   const now = useContext(NowContext);
   if (now === null) {
     // Falling back to `Date.now()` here would hydrate to a different value than
     // the server rendered and hide the wiring mistake behind a mismatch warning.
-    throw new Error("<SiteState> must be rendered inside <ClockProvider>.");
+    throw new Error("This component must be rendered inside <ClockProvider>.");
   }
   return now;
 }

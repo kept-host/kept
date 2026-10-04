@@ -84,11 +84,12 @@
   --radius-md: var(--r-md);
   --radius-lg: var(--r-lg);
   --radius-xl: var(--r-xl);
-  /* Claude Design v2: Geist display · Inter body · JetBrains Mono.
+  /* The design's faces: Hanken Grotesk display · Geist body · JetBrains Mono.
      next/font binds the actual face files to these variables; fall back to the
      family names so a stock screen still reads as kept. */
-  --font-display: var(--font-geist-sans, "Geist"), system-ui, sans-serif;
-  --font-body: var(--font-body-face, "Inter"), system-ui, sans-serif;
+  --font-display:
+    var(--font-display-face, "Hanken Grotesk"), system-ui, sans-serif;
+  --font-body: var(--font-geist-sans, "Geist"), system-ui, sans-serif;
   --font-mono:
     var(--font-mono-face, "JetBrains Mono"), ui-monospace, monospace;
 

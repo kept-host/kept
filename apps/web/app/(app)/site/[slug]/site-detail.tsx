@@ -47,9 +47,10 @@ import type { KeptQuota } from "@kept/shared";
 import { PagePreview } from "@/components/kept/page-preview";
 import { CopyLinkButton } from "@/components/kept/live-url";
 import { OwnerReplaceDrop } from "@/components/kept/owner-replace-drop";
-import { ProRows } from "@/components/kept/pro-rows";
+import { LockedRow } from "@/components/kept/locked-row";
 import type { SwapPage } from "@/components/kept/swap-dialog";
 import { Button } from "@/components/ui/button";
+import { PRO_LIST } from "@/lib/plans/pro-list";
 import { managementRefusal } from "@/lib/sites/display";
 
 import { SiteState } from "../../dashboard/clock";
@@ -298,7 +299,16 @@ export function SiteDetail({
             onQuota={setQuota}
           />
 
-          <ProRows />
+          <section className="rounded-[var(--r-lg)] border border-border bg-sunken p-5 shadow-[var(--shadow-sm)]">
+            <h2 className="font-display text-base font-semibold text-text">Pro</h2>
+            <ul className="mt-2 divide-y divide-border">
+              {PRO_LIST.map((line) => (
+                <li key={line}>
+                  <LockedRow>{line}</LockedRow>
+                </li>
+              ))}
+            </ul>
+          </section>
         </aside>
       </div>
     </>

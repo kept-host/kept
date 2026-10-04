@@ -14,14 +14,16 @@
  *
  * ── WHAT IT IS ALLOWED TO SELECT ────────────────────────────────────────────
  *
- * Five columns, and no more: slug, title, status, `expires_at`,
- * `current_version_id`. It does not reuse `getDashboardSites`' projection, does
- * not join anything it does not draw, and **does not read R2** — the card is a
- * generated still, not a screenshot, so the page's bytes are never fetched.
+ * Three columns, and no more: slug, title, status. It does not reuse
+ * `getDashboardSites`' projection, does not join anything it does not draw, and
+ * **does not read R2** — the card is a generated still, not a screenshot, so the
+ * page's bytes are never fetched.
  *
- * `size_bytes`, `owner_id`, `anon_token_hash`, `purge_after` and the timestamps
- * are all deliberately absent. Nothing on the card can show them, so nothing
- * here should be able to.
+ * `updated_at` is deliberately absent: it is the cache key in `?v=`
+ * (`lib/og/card-url.ts`), which the route never reads — a stale or absent token
+ * still renders the row's current state. `size_bytes`, `owner_id`,
+ * `anon_token_hash`, the draft clocks and every other timestamp are absent too.
+ * Nothing on the card can show them, so nothing here should be able to.
  */
 import type { SiteStatus } from "@kept/shared";
 import { eq } from "drizzle-orm";
@@ -32,13 +34,10 @@ import { sites } from "../schema";
 /** Exactly what the card can draw, and nothing the card cannot draw. */
 export interface OgCardSite {
   slug: string;
-  /** The page's `<title>`, or `null`. The route renders `title ?? slug`. */
+  /** The page's title, or `null`. The route renders `title ?? slug`. */
   title: string | null;
+  /** Only a `live` page is named on its card (D10). */
   status: SiteStatus;
-  /** The draft clock. `isDraft = expires_at != null`. */
-  expiresAt: Date | null;
-  /** Part of the caller's cache key, never drawn. */
-  currentVersionId: string | null;
 }
 
 /**
@@ -55,8 +54,6 @@ export async function getOgCardSite(siteId: string): Promise<OgCardSite | null> 
       slug: sites.slug,
       title: sites.title,
       status: sites.status,
-      expiresAt: sites.expiresAt,
-      currentVersionId: sites.currentVersionId,
     })
     .from(sites)
     .where(eq(sites.id, siteId))

@@ -11,11 +11,10 @@
  * existence oracle on site ids and (b) a disclosure surface for whatever it
  * draws. Two consequences, both load-bearing:
  *
- *   1. **It draws only what is already public.** The page's own `<title>` —
- *      which the page itself serves to the world — or its slug, which is its
- *      hostname. Plus the draft/kept chip and the brand mark. Nothing else; see
- *      `lib/og/card.tsx` and the five-column read in
- *      `lib/db/queries/og-card.ts`.
+ *   1. **It draws only what is already public.** The page's title — which the
+ *      page itself serves to the world — or its name, which is its hostname.
+ *      Plus the brand mark. Nothing else; see `lib/og/card.tsx` and the
+ *      three-column read in `lib/db/queries/og-card.ts`.
  *   2. **Unknown, malformed and non-existent ids answer exactly like real
  *      ones**: HTTP 200, `image/png`, the same `Cache-Control`, the same
  *      dimensions, the same frame, the same brand mark. A 404 for one and a 200
@@ -49,14 +48,9 @@ import { ImageResponse } from "next/og";
 import { z } from "zod";
 
 import { getOgCardSite } from "../../../../lib/db/queries/og-card";
-import {
-  OG_CARD_HEIGHT,
-  OG_CARD_WIDTH,
-  type OgCardPhase,
-  OgCard,
-  clampOgTitle,
-} from "../../../../lib/og/card";
-import { ogFonts } from "../../../../lib/og/font";
+import { OgCard, ogHeadline } from "../../../../lib/og/card";
+import { OG_CARD_HEIGHT, OG_CARD_WIDTH } from "../../../../lib/og/card-url";
+import { ogTypefaces } from "../../../../lib/og/font";
 import { servingBaseDomain } from "../../../../lib/storage/env";
 
 /**
@@ -72,9 +66,9 @@ export const runtime = "nodejs";
  * would be the existence oracle re-introduced through a header.
  *
  * `immutable` is honest because the URL carries a revision token: consumers link
- * through `ogCardPath`, which puts `current_version_id` plus the draft/kept bit
- * in `?v=`, so a replace or a keep changes the address and the old bytes are
- * simply never asked for again. See `lib/og/card-url.ts`.
+ * through `ogCardPath`, which puts `sites.updated_at` in `?v=`, so a replace, a
+ * rename or a title edit changes the address and the old bytes are simply never
+ * asked for again. See `lib/og/card-url.ts`.
  */
 const CACHE_CONTROL = "public, max-age=31536000, immutable";
 
@@ -86,15 +80,16 @@ const CACHE_CONTROL = "public, max-age=31536000, immutable";
 const siteIdSchema = z.string().uuid();
 
 /**
- * The statuses whose page may be named on a card.
+ * Only a `live` page is named on its card (D10, edge case 17, AC45).
  *
- * A `quarantined`, `removed`, `archived` or `expired` page renders the **generic
- * card**: it is either not serving or actively flagged, and an `og:image` is a
- * promotional surface with a year-long cache on it. `under_review` is included
- * because E07's review flag does not stop a page serving and the page is still
- * the owner's; the card must not pre-judge it.
+ * Every other status — `under_review`, `quarantined`, `expired`, `archived`,
+ * `removed` — renders the **generic card** with no title: an `og:image` is a
+ * promotional surface with a year-long cache on it, and a page that is flagged,
+ * clocked out or deleted has nothing to promote. A status change is an
+ * `UPDATE sites`, so it moves `?v=` and a page that returns to `live` gets its
+ * named card back under a new key.
  */
-const NAMEABLE: ReadonlySet<string> = new Set(["live", "under_review"]);
+const NAMEABLE = "live";
 
 export async function GET(
   _request: Request,
@@ -105,26 +100,25 @@ export async function GET(
   const parsed = siteIdSchema.safeParse(siteId);
   const site = parsed.success ? await getOgCardSite(parsed.data) : null;
 
+  const { fonts, coverage } = await ogTypefaces();
+
   let headline: string | null = null;
   let host: string | null = null;
-  let phase: OgCardPhase | null = null;
 
-  if (site && NAMEABLE.has(site.status)) {
-    // `title ?? slug` — the fallback migration `0004` deliberately does not
-    // backfill, clamped to what the card can hold. The title is untrusted,
-    // stranger-authored input: `extractPageTitle` already trimmed, collapsed and
-    // capped it at write time, and `clampOgTitle` bounds it again for *this*
-    // surface, because a storage cap is not a layout.
-    headline = clampOgTitle(site.title ?? site.slug);
-    // `isDraft = expires_at != null`. Nothing else decides the chip.
-    phase = site.expiresAt === null ? "kept" : "draft";
+  if (site?.status === NAMEABLE) {
+    // `title ?? name`, reduced to what the vendored faces can draw and clamped
+    // to what the template holds. The title is untrusted, stranger-authored
+    // input: `extractPageTitle` already trimmed, collapsed and capped it at
+    // write time, and `ogHeadline` bounds it again for *this* surface, because
+    // a storage cap is not a layout.
+    headline = ogHeadline(site.title, site.slug, coverage);
     host = servingHost(site.slug);
   }
 
-  return new ImageResponse(<OgCard headline={headline} host={host} phase={phase} />, {
+  return new ImageResponse(<OgCard headline={headline} host={host} />, {
     width: OG_CARD_WIDTH,
     height: OG_CARD_HEIGHT,
-    fonts: await ogFonts(),
+    fonts,
     headers: { "cache-control": CACHE_CONTROL },
   });
 }

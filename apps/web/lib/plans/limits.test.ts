@@ -125,6 +125,10 @@ const NOT_A_LIMIT: Record<string, { occurrences: number; reason: string }> = {
     occurrences: 1,
     reason: "1000 ms per second, inside MS_PER_HOUR",
   },
+  "components/kept/drop-target.tsx": {
+    occurrences: 2,
+    reason: "Tailwind `z-50` / `opacity-50`",
+  },
   "components/kept/kept-engine.ts": {
     occurrences: 7,
     reason: "canvas geometry (`W / 2 - 50`), ms ↔ s conversions, CSS `50%`",
@@ -133,6 +137,7 @@ const NOT_A_LIMIT: Record<string, { occurrences: number; reason: string }> = {
     occurrences: 2,
     reason: "ms → s conversion on the rAF clock",
   },
+  "components/kept/site-card.tsx": { occurrences: 1, reason: "Tailwind `opacity-50`" },
   "components/ui/button.tsx": { occurrences: 1, reason: "Tailwind `opacity-50`" },
   "components/ui/dialog.tsx": { occurrences: 2, reason: "Tailwind `z-50`" },
   "components/ui/dropdown-menu.tsx": {
@@ -151,7 +156,9 @@ const NOT_A_LIMIT: Record<string, { occurrences: number; reason: string }> = {
   },
   "lib/email/draft-reminder.ts": { occurrences: 1, reason: "1000 ms per second, inside MS_PER_DAY" },
   "lib/publish/pipeline.ts": { occurrences: 1, reason: "1000 ms per second, inside MS_PER_DAY" },
+  "lib/sites/display.ts": { occurrences: 1, reason: "1000 ms per second, inside MS_PER_HOUR" },
   "lib/storage/manifest.ts": { occurrences: 1, reason: "s → ms for the KV re-purge delay" },
+  "lib/testing/names-drill.ts": { occurrences: 1, reason: "1000 ms per second, inside MS_PER_DAY" },
   "scripts/smoke-release.ts": { occurrences: 1, reason: "ms → s for a log line" },
 };
 

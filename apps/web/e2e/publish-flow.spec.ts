@@ -284,8 +284,9 @@ test.describe("publish flow", () => {
     });
 
     await expect(face(page, "error")).toHaveCSS("opacity", "1");
+    // The PRD's sentence (E06 AC7), naming what was actually dropped.
     await expect(face(page, "error")).toContainText(
-      "kept hosts a single HTML document",
+      "That's a .txt. kept publishes HTML pages — drop an .html file.",
     );
     expect(requests, "a non-HTML file reached the network").toBe(0);
 

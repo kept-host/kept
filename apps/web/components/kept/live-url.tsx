@@ -31,7 +31,8 @@ import { cn } from "@/lib/utils";
  * region on a screen that would be the one to get it wrong.
  */
 
-const STATUS_LABEL: Record<SiteStatus, string> = {
+/** A status in words. Exported for the studio's `SiteCard` status chip (E06 task 010). */
+export const STATUS_LABEL: Record<SiteStatus, string> = {
   live: "Live",
   archived: "Not serving",
   expired: "Expired",

@@ -1,5 +1,6 @@
 import { DRAFT_GRACE_DAYS, DRAFT_TTL_DAYS } from "@kept/shared";
 
+import { plural } from "@/lib/sites/display";
 import { cn } from "@/lib/utils";
 
 /**
@@ -61,10 +62,6 @@ export const REPLACE_CLOCK_NOTE = `Replacing swaps the file and keeps the URL. I
  * belongs to whichever screen is saying it, and would read twice if it were here.
  */
 export const DELETE_GRACE_NOTE = `Nothing is destroyed today — the page stays recoverable for ${DRAFT_GRACE_DAYS} days before it is deleted for good.`;
-
-function plural(count: number, unit: string): string {
-  return `${count} ${unit}${count === 1 ? "" : "s"}`;
-}
 
 /**
  * Resolve a page's clock into a phase and a label.

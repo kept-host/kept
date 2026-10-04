@@ -30,8 +30,10 @@ import {
  * exact answer: publish two pages whose ONLY difference is their `<title>`, and
  * assert the two cards differ. Identical inputs but for the title, differing
  * outputs — the title is in the image, and no glyph recognition was involved.
- * `lib/og/card.tsx` and its unit tests cover what the headline *says*; this file
- * covers that the pipeline carries it.
+ * `lib/og/card.tsx` and its unit tests cover what the headline *says* and that
+ * the template holds edge case 17's titles; this file covers that the pipeline
+ * carries it, that the cache key moves (D10) and that a non-`live` page is not
+ * named (AC45).
  */
 
 /** The card's shape, asserted identically for every response the route emits. */
@@ -44,8 +46,7 @@ async function siteBySlug(slug: string) {
   const [row] = await db
     .select({
       id: schema.sites.id,
-      currentVersionId: schema.sites.currentVersionId,
-      expiresAt: schema.sites.expiresAt,
+      updatedAt: schema.sites.updatedAt,
       title: schema.sites.title,
     })
     .from(schema.sites)
@@ -141,10 +142,12 @@ test.describe("OG card", () => {
     // lookup finds the row again.
     const after = await siteBySlug(slugA);
 
-    // A new version row means a new revision token, so every cache in the world
-    // misses and re-fetches. That is the entire invalidation strategy — there is
-    // no purge call on this path and there must not be one.
-    expect(after!.currentVersionId).not.toBe(before!.currentVersionId);
+    // The replace is an `UPDATE sites`, so `$onUpdate` moved `updated_at` — the
+    // revision token — and every cache in the world misses and re-fetches. That
+    // is the entire invalidation strategy (D10): there is no purge call on this
+    // path and there must not be one. Rename (task 006) and title edits (task
+    // 012) assert the same column moves; this file asserts the URL follows it.
+    expect(after!.updatedAt.getTime()).toBeGreaterThan(before!.updatedAt.getTime());
     expect(ogCardPath(after!)).not.toBe(beforePath);
     // Task 001 re-extracts on replace: a title set on publish but not on replace
     // would leave the card confidently showing the previous page's name.
@@ -152,6 +155,35 @@ test.describe("OG card", () => {
 
     const card = Buffer.from(await (await request.get(ogCardPath(after!))).body());
     expect(card.equals(firstCard)).toBe(false);
+  });
+
+  test("AC45: a page that is not live gets the generic card, with no title", async ({
+    request,
+  }) => {
+    // Flagged by hand — E07 owns the real flip; E06 only renders it.
+    await db
+      .update(schema.sites)
+      .set({ status: "under_review" })
+      .where(eq(schema.sites.id, siteId));
+    try {
+      const row = await siteBySlug(slugA);
+      const flagged = await request.get(ogCardPath(row!));
+      expect(flagged.status()).toBe(200);
+      expect(flagged.headers()["content-type"]).toContain("image/png");
+      expect(flagged.headers()["cache-control"]).toBe(CACHE_CONTROL);
+
+      // No OCR needed: the generic card is ONE image, so "contains no title"
+      // is "is byte-identical to the card an id that names nothing gets".
+      const generic = await request.get(`/api/og/${crypto.randomUUID()}`);
+      expect(Buffer.from(await flagged.body()).equals(Buffer.from(await generic.body()))).toBe(
+        true,
+      );
+    } finally {
+      await db
+        .update(schema.sites)
+        .set({ status: "live" })
+        .where(eq(schema.sites.id, siteId));
+    }
   });
 
   test("an unknown id answers exactly like a real one", async ({ request }) => {
