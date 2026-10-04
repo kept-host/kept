@@ -11,14 +11,8 @@
  * live above all three. Everything else — the row itself, the bytes, the QR — is
  * settled on the server and arrives as props.
  *
- * The dashboard solves the same problem with `KeepStateProvider`, and this
- * screen deliberately does NOT mount it. That provider exists to let a single
- * `SwapResult` repaint two cards on a wall of twenty; here there is one page,
- * and `useSiteClock` is written to fall back to its `serverValue` when no
- * provider is present — which is exactly the seam this component uses to hand
- * `SiteState` a live clock. Mounting the provider would also mean a plain
- * demote had nowhere to land: it has no `applyDemote`, and adding one is an edit
- * to a file task 009 owns.
+ * The clock lives in this component's state and is handed to `SiteState` as a
+ * prop, so a keep, demote or swap repaints the chip from the response.
  *
  * ── THE CLOCK COMPONENT IS TASK 003'S, AND THERE IS STILL ONE INTERVAL ───────
  * `ClockProvider` is mounted by the server component above; `SiteState` reads it.
@@ -203,13 +197,7 @@ export function SiteDetail({
             reach, which here would be the delete button. */}
         <aside className="min-w-0 space-y-6">
           <section className="rounded-[var(--r-lg)] border border-border bg-surface p-5 shadow-[var(--shadow-sm)]">
-            <SiteState
-              siteId={site.id}
-              status={site.status}
-              // `useSiteClock` finds no provider on this screen and hands this
-              // value straight back, which is what makes the chip live.
-              expiresAt={clock}
-            />
+            <SiteState status={site.status} expiresAt={clock} />
 
             <p className="mono-label mt-4 break-all text-[11px] text-text-secondary">
               {site.slug}

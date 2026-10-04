@@ -1,24 +1,24 @@
 "use client";
 
 /**
- * The dashboard when its read failed — E06 task 003.
+ * The Pages home when its read failed — PRD §9.1 full load error (`kept Studio
+ * Screen.dc.html`, `view: error`, with the mascot `dim` in place of the icon).
  *
- * A RECOVERABLE STATE, NOT A CRASH. Next's default boundary is a blank page in
- * production; this one names what happened, says what it did *not* do, and hands
- * back a working control. `reset()` re-runs the server component — a real retry
- * against Postgres, not a page reload that discards the router.
+ * Says what happened and what did NOT: the serve path is 100% Cloudflare, so a
+ * control-plane failure cannot take a hosted page offline, and this screen is
+ * entitled to say so. Retry re-runs the server component — `router.refresh()`
+ * then `reset()` in one transition, which is what re-fetches a server
+ * component's data in Next 15 (a bare `reset()` would re-render the same
+ * failed payload).
  *
- * IT DOES NOT APOLOGISE AND IT DOES NOT SPECULATE (§10). The one thing the owner
- * of a hosting product needs to hear first is that their pages are still being
- * served, because the serve path is 100% Cloudflare and a control-plane outage
- * cannot take a hosted page offline. That is the architecture's promise, so this
- * screen is entitled to make it.
- *
- * `error.digest` is deliberately the only detail shown: the message is a server
- * exception's text and may name a table, a column or a connection string.
+ * `error.digest` is the only detail shown: the message is a server exception's
+ * text and may name a table, a column or a connection string.
  */
+import { useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { RotateCw } from "lucide-react";
 
+import { Mascot } from "@/components/kept/mascot";
 import { Button } from "@/components/ui/button";
 
 export default function DashboardError({
@@ -28,32 +28,51 @@ export default function DashboardError({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  const router = useRouter();
+  const [retrying, startRetry] = useTransition();
+
   return (
-    <main className="mx-auto flex w-full max-w-[34rem] flex-col items-start gap-5 px-6 py-20 md:px-8">
-      <p className="mono-label text-[11px] text-danger">Could not load</p>
-
-      <h1 className="font-display text-[clamp(1.8rem,4.6vw,2.5rem)] font-bold text-text">
-        Your pages did not load
+    <div className="flex flex-col gap-7 px-4 pb-24 pt-8 md:px-10 md:pt-24">
+      <h1 className="font-display text-[40px] font-bold leading-[1.1] tracking-[-0.03em] text-text">
+        Your pages
       </h1>
-
-      <p className="leading-relaxed text-text-secondary">
-        Something went wrong reading your account. Nothing was changed, and every
-        page you have published is still being served at its own link — this
-        screen is the only thing that is down.
-      </p>
-
-      <div className="flex flex-wrap items-center gap-3">
-        <Button type="button" onClick={reset}>
-          <RotateCw aria-hidden="true" />
-          Try again
-        </Button>
-      </div>
-
-      {error.digest ? (
-        <p className="mono-label text-[10px] text-text-muted">
-          Reference {error.digest}
+      <div
+        role="alert"
+        className="flex flex-col items-center gap-3 rounded-[var(--r-xl)] border border-border bg-surface px-6 py-14 text-center"
+      >
+        {/* The `dim` mood: the same frame, drained (02 §7). On a wrapper,
+            because the mascot's own `filter` carries its drop shadow. */}
+        <span className="[filter:grayscale(0.5)_opacity(0.5)]">
+          <Mascot className="block size-20 text-accent" />
+        </span>
+        <h2 className="mt-1 font-display text-2xl font-semibold leading-tight tracking-[-0.03em] text-text">
+          We couldn&rsquo;t load your pages.
+        </h2>
+        <p className="max-w-[46ch] text-[15px] text-pretty text-text-secondary">
+          Your pages are still online — only this view failed. Check your connection and
+          try again.
         </p>
-      ) : null}
-    </main>
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={retrying}
+          onClick={() =>
+            startRetry(() => {
+              router.refresh();
+              reset();
+            })
+          }
+          className="mt-2 h-10 font-body font-medium"
+        >
+          <RotateCw aria-hidden="true" strokeWidth={1.5} />
+          {retrying ? "Retrying…" : "Retry"}
+        </Button>
+        {error.digest ? (
+          <span className="font-mono text-xs tracking-[0.08em] text-text-secondary">
+            REFERENCE {error.digest}
+          </span>
+        ) : null}
+      </div>
+    </div>
   );
 }

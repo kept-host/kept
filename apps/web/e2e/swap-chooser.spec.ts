@@ -1,9 +1,9 @@
 import { limitsFor } from "@kept/shared";
 import { expect, test, type Page } from "@playwright/test";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, notInArray } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
-import { swapConsequence } from "../lib/sites/display";
+import { SWAPPED_TOAST, swapConsequence } from "../lib/sites/display";
 
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
 import {
@@ -19,30 +19,18 @@ import {
 } from "./owner-fixtures";
 
 /**
- * The swap chooser, driven from both surfaces that mount it — E06 task 013,
- * verification criterion **9**.
+ * The swap chooser, driven from both surfaces that mount it — E06 tasks 011
+ * (AC12, UI half) and 013.
  *
  * NO MOCKS. `POST /api/sites/swap` runs `swapKept` in one Postgres transaction
- * and `owner-sites-api.spec.ts` already proves that transaction is atomic. What
- * that spec cannot prove is the moment before it: that the chooser names BOTH
- * pages, states the consequence in `DRAFT_TTL_DAYS` terms, and — the part with
- * no server-side equivalent at all — that both cards repaint from the SINGLE
- * response without a refetch.
+ * and `owner-sites-api.spec.ts` already proves it atomic. This spec proves the
+ * moment before it: pick (least visited first, searchable) → confirm (the
+ * demote warning naming both pages) → done ("Swapped.", and both cards move
+ * with the refresh that follows — PRD §5.1: no live updates).
  *
- * ── WHY "FROM THE SINGLE RESPONSE" IS THE ASSERTION AND NOT "EVENTUALLY" ─────
- *
- * `SwapResult` carries both halves and a post-swap `KeptQuota` on each precisely
- * so the screen never has to ask again. A test that reloaded and then found the
- * right state would pass against an implementation that guessed, refetched, or
- * repainted optimistically and disagreed with the committed transaction. So the
- * assertions below happen on the SAME page instance, with no navigation between
- * the confirm and the check.
- *
- * The account's kept pages are real rows SEEDED by direct insert (`seedKept`):
- * the chooser lists them and the swap transaction demotes them like any kept
- * page, and publishing `limitsFor("free").keptPages` of them per test would
- * multiply this spec's runtime for no extra proof. The draft being kept — the
- * page the assertions are about — is published for real.
+ * The account's kept pages are real rows SEEDED by direct insert (`seedKept`);
+ * their visits are real `page_views_daily` rows. The draft being kept is
+ * published for real.
  *
  * SKIPS without dev credentials: CI runs fork PRs with no secrets.
  */
@@ -68,8 +56,7 @@ test.describe("the swap chooser", () => {
 
   /**
    * A signed-in account holding exactly its limit of kept pages plus one owned
-   * draft — the only state in which this dialog exists — and the owner id every
-   * assertion re-counts against (`profiles.id` IS the user id).
+   * draft — the only state in which this dialog opens from a Keep.
    */
   async function accountAtCap(
     page: Page,
@@ -78,9 +65,7 @@ test.describe("the swap chooser", () => {
     const { userId } = await signInAs(page, baseURL, scope);
     const kept = await seedKept(scope, userId, FREE_LIMIT);
     const draft = await publishOwned(page, baseURL, scope, "E06 swap draft");
-    expect(draft.outcome, "the cap degrades to a draft, it never errors").toBe(
-      "owned_draft",
-    );
+    expect(draft.outcome, "the cap degrades to a draft, it never errors").toBe("owned_draft");
     return { kept, draft, ownerId: userId };
   }
 
@@ -93,71 +78,76 @@ test.describe("the swap chooser", () => {
         and(
           eq(schema.sites.ownerId, ownerId),
           isNull(schema.sites.expiresAt),
-          eq(schema.sites.status, "live"),
+          notInArray(schema.sites.status, ["archived", "removed"]),
         ),
       );
     return rows.length;
   }
 
-  test("the chooser names both pages, states the consequence, and flips both cards from one response", async ({
+  async function seedVisits(siteId: string, views: number) {
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    await db.insert(schema.pageViewsDaily).values({ siteId, day: yesterday, views });
+  }
+
+  test("AC12: least visited first, searchable, a confirm step naming both pages, then Swapped. and both cards move", async ({
     page,
     baseURL,
   }) => {
     const { kept, draft, ownerId } = await accountAtCap(page, baseURL!);
+    const [mostVisited, someVisits] = kept;
+    await seedVisits(mostVisited!.siteId, 30);
+    await seedVisits(someVisits!.siteId, 10);
 
     await page.goto("/dashboard");
+    await page.waitForLoadState("networkidle");
 
-    // At the cap the Keep button sends NO request — it opens the chooser. That
-    // is the whole reason this dialog exists, and a keep that fired a POST here
-    // would be the cap behaving like an error.
-    const draftCard = page.locator("article").filter({ hasText: draft.name });
+    // At the limit the draft's action reads Swap… and sends nothing: it opens
+    // the chooser.
+    const draftCard = page.locator(`[data-testid="home-card"][data-site-id="${draft.siteId}"]`);
+    await expect(draftCard.getByTestId("keep-button")).toHaveText(/^Swap…/);
     await draftCard.getByTestId("keep-button").click();
 
     const dialog = page.getByTestId("swap-dialog");
     await expect(dialog).toBeVisible();
-    // The page being kept is never offered as a sacrifice — `demote === keep` is
-    // unconstructable from this UI, which is why the route's only 400 is
-    // unreachable here.
+    // The page being kept is never offered.
     await expect(dialog.getByTestId(`swap-candidate-${draft.slug}`)).toHaveCount(0);
 
-    // Before a choice, the consequence line says nothing it cannot yet know.
-    const consequence = dialog.getByTestId("swap-consequence");
-    await expect(consequence).toContainText("Pick a page above");
+    // LEAST VISITED FIRST: pages with no data count as none, so the two with
+    // visits come last, the busier one at the very end.
+    const candidates = dialog.locator('label[data-testid^="swap-candidate-"]');
+    const order = await candidates.evaluateAll((rows) =>
+      rows.map((row) => row.getAttribute("data-testid")),
+    );
+    expect(order).toHaveLength(FREE_LIMIT);
+    expect(order.at(-1)).toBe(`swap-candidate-${mostVisited!.slug}`);
+    expect(order.at(-2)).toBe(`swap-candidate-${someVisits!.slug}`);
 
-    const victim = kept[0]!;
+    // Searchable.
+    const victim = kept[2]!;
+    await dialog.getByTestId("swap-search").fill(victim.slug);
+    await expect(candidates).toHaveCount(1);
     await dialog.getByTestId(`swap-candidate-${victim.slug}`).click();
 
-    // BOTH PAGES NAMED, AND THE WINDOW IN `DRAFT_TTL_DAYS` TERMS. Asserted
-    // against the shared function, so a literal `7` typed into the dialog would
-    // fail here as well as in the unit suite.
-    await expect(consequence).toHaveText(swapConsequence(victim.name, draft.name));
-
-    // Nothing is written until the button is pressed.
+    // Nothing is written at the pick — the next step is the warning.
     expect((await readSite(victim.siteId)).expiresAt).toBeNull();
+    await dialog.getByTestId("swap-next").click();
+    await expect(dialog.getByTestId("swap-consequence")).toHaveText(
+      swapConsequence(victim.name, draft.name),
+    );
 
-    await page.getByTestId("swap-confirm").click();
+    await dialog.getByTestId("swap-confirm").click();
     await expect(dialog).toBeHidden({ timeout: LIVE_STACK_TIMEOUT });
-    await expect(page.getByTestId("swap-error")).toHaveCount(0);
+    await expect(page.getByText(SWAPPED_TOAST)).toBeVisible();
 
-    // ── BOTH CARDS, FROM THE ONE RESPONSE, WITHOUT A NAVIGATION ──────────────
-    // The demoted page grows a countdown and says it will regroup on the next
-    // load; the kept page loses its. Neither card was refetched.
-    await expect(draftCard.getByText(/^Draft · /)).toHaveCount(0);
-    await expect(draftCard.getByText("Moves into Kept next time this screen loads.")).toBeVisible();
-
-    const victimCard = page.locator("article").filter({ hasText: victim.name });
-    await expect(victimCard.getByText(/^Draft · /)).toBeVisible();
+    // Both cards move with the refresh: the draft onto the wall, the victim
+    // into the drafts strip.
     await expect(
-      victimCard.getByText("Moves into Drafts next time this screen loads."),
+      page.getByTestId("kept-wall").locator(`[data-site-id="${draft.siteId}"]`),
+    ).toBeVisible({ timeout: LIVE_STACK_TIMEOUT });
+    await expect(
+      page.getByTestId("drafts-strip").locator(`[data-site-id="${victim.siteId}"]`),
     ).toBeVisible();
 
-    // The header quota came off the same parsed `KeptQuota`, so it cannot
-    // disagree — the account is still exactly full, never over.
-    await expect(
-      page.locator("header").getByText(`Kept · ${FREE_LIMIT} of ${FREE_LIMIT}`),
-    ).toBeVisible();
-
-    // And the database agrees with all of it.
     expect((await readSite(draft.siteId)).expiresAt).toBeNull();
     expect((await readSite(victim.siteId)).expiresAt).not.toBeNull();
     expect(
@@ -172,9 +162,7 @@ test.describe("the swap chooser", () => {
   }) => {
     const { kept, draft, ownerId } = await accountAtCap(page, baseURL!);
 
-    // The detail screen of the DRAFT — the page about to be kept. Its own Keep
-    // button is the one that opens the chooser here, and the screen it updates
-    // is the one being read.
+    // The detail screen of the DRAFT. Its route is re-keyed by id in task 012.
     await page.goto(`/site/${draft.slug}`);
     await expect(page.getByText(/^Draft · /)).toBeVisible();
 
@@ -184,6 +172,7 @@ test.describe("the swap chooser", () => {
 
     const victim = kept[1]!;
     await dialog.getByTestId(`swap-candidate-${victim.slug}`).click();
+    await dialog.getByTestId("swap-next").click();
     await expect(dialog.getByTestId("swap-consequence")).toHaveText(
       swapConsequence(victim.name, draft.name),
     );

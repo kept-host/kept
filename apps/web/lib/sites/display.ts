@@ -55,6 +55,14 @@ export function plural(count: number, unit: string): string {
 }
 
 /**
+ * `1 visit`, `4,210 visits` — the card and the swap chooser say it the same way.
+ * Vocabulary is "visits", never "views" (PRD design call 7).
+ */
+export function visitsLabel(visits: number): string {
+  return `${visits.toLocaleString("en-US")} ${visits === 1 ? "visit" : "visits"}`;
+}
+
+/**
  * How close to `expires_at` a draft's chip turns `--warning` — PRD §9.1, AC9:
  * "Drafts in their last 48 hours show the warning chip". A display rule, not a
  * plan limit, so it lives here and not in `limitsFor`.
@@ -191,38 +199,47 @@ export function demoteConsequence(name: string): string {
 }
 
 /**
- * What a signed-in publish that landed *kept* says — E06 task 009.
+ * The studio's toasts and banners — PRD §5.1 / §5.3 / §9.1, verbatim (E06 task
+ * 011). Every limit is the caller's `limitsFor(plan)` value, never typed: a Pro
+ * account must not be told the free number.
  *
- * Short on purpose. Nothing was traded, nothing has a deadline, and the card
- * that appears on the wall a moment later says the rest. The only fact worth
- * spending a sentence on is the one the product is actually selling: the link
- * works now and will keep working.
+ * ⚠️ AT THE LIMIT IS A SUCCESS, NOT A REFUSAL. A publish past the kept limit
+ * lands as a draft (D9) — the page is live — so its sentence opens with
+ * "Published", never with what went wrong.
  */
-export function publishedKeptNotice(name: string): string {
-  return `${name} is live at its link and kept for good.`;
+export const PUBLISHED_KEPT_TOAST = "Published. It's kept.";
+
+export function atLimitPublishToast(limit: number): string {
+  return `Published as a draft — you're keeping ${limit} of ${limit}. Swap one out to keep it.`;
 }
 
+export const KEPT_TOAST = "Kept. It's permanent now.";
+
+export const SWAPPED_TOAST = "Swapped.";
+
+/** The dismissible banner on the home while the account is at its kept limit. */
+export function atLimitBanner(limit: number): string {
+  return `You're keeping ${limit} of ${limit}. New pages land as drafts — swap one out to keep it.`;
+}
+
+/** A replace that wrote a new version (PRD §5.5); the toast carries Undo. */
+export const REPLACED_TOAST = "Replaced. Same link, new version.";
+
+/** After Undo restored the version that was current before the replace. */
+export const UNDONE_TOAST = "Restored the previous version.";
+
 /**
- * What a signed-in publish that landed *at the cap* says — E06 task 009.
- *
- * ⚠️ THIS IS A SUCCESS SENTENCE AND IT MUST NOT READ LIKE A REJECTION. The route
- * answers HTTP 200 (`outcome: "owned_draft"`, epic D1): the page was published,
- * it is serving right now, the account owns it, and the only difference is that
- * it carries a clock. Copy that opens with what went wrong contradicts the
- * locked decision that the cap degrades rather than errors — which is the whole
- * reason this branch exists instead of a 4xx.
- *
- * It states the consequence and stops. The route out — swap, or Pro — is
- * `atCapNote` in `components/kept/kept-quota.tsx`, printed underneath by the
- * same component the header and the chooser use, so there is exactly one
- * sentence in the product describing what to do about a full account.
- *
- * `DRAFT_TTL_DAYS` is substituted for `swapConsequence`'s reason: the day the
- * clock moves, a typed number is the product lying to somebody at the moment
- * they are deciding whether to trust it.
+ * Added to the replace toast, once per session, when the free plan's version
+ * limit pruned the oldest version (PRD §5.5). The count is the plan's.
  */
-export function atCapPublishNotice(name: string): string {
-  return `${name} is published and live at its link right now. It landed as a draft rather than a kept page, so it expires in ${DRAFT_TTL_DAYS} days unless you keep it first. Nothing failed and nothing was lost.`;
+export function prunedVersionsNote(previousVersions: number): string {
+  const kept = previousVersions === 1 ? "one previous version" : plural(previousVersions, "previous version");
+  return `Free accounts keep ${kept}.`;
+}
+
+/** The home's search found nothing. */
+export function noSearchResults(query: string): string {
+  return `No pages match '${query}'.`;
 }
 
 /**
@@ -274,8 +291,8 @@ export function formatUpdatedAt(date: Date): string {
 }
 
 /**
- * Where a card points. `/site/[slug]` lands in task 008; the link exists from
- * task 003 so the card's shape is settled before its destination is.
+ * Where a card points: the page-detail screen. Task 012 re-keys it by id
+ * (`/site/[id]`, D2) and updates the home's call site with it.
  */
 export function siteHref(slug: string): string {
   return `/site/${slug}`;

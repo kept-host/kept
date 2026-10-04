@@ -47,7 +47,7 @@ import { DraftChip, draftCountdown } from "@/components/kept/draft-chip";
 import { STATUS_LABEL } from "@/components/kept/live-url";
 import { Badge } from "@/components/ui/badge";
 import { OG_CARD_HEIGHT, OG_CARD_WIDTH, type OgCardSubject, ogCardPath } from "@/lib/og/card-url";
-import { expiredDraftNotice, isDraftUrgent, pageName } from "@/lib/sites/display";
+import { expiredDraftNotice, isDraftUrgent, pageName, visitsLabel } from "@/lib/sites/display";
 import { cn } from "@/lib/utils";
 
 /** What a card needs from a row. Structurally satisfied by `OwnedSite`. */
@@ -176,7 +176,7 @@ function Visits({ visits }: { visits: number | null | undefined }) {
       title={`Visits in the last ${VISITS_RECENT_DAYS} days`}
       className="whitespace-nowrap font-mono text-xs text-text-secondary"
     >
-      {visits.toLocaleString("en-US")} {visits === 1 ? "visit" : "visits"}
+      {visitsLabel(visits)}
     </span>
   );
 }

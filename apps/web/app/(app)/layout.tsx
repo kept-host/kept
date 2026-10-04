@@ -1,8 +1,9 @@
 /**
- * The gate for the whole `(app)` route group — E05 task 004.
+ * The gate and the shell for the whole `(app)` route group — E05 task 004
+ * (the gate), E06 task 011 (the studio shell).
  *
- * GATING THE GROUP LAYOUT IS THE POINT. Every route added under `(app)` — E06's
- * dashboard, site detail and settings — is gated the moment it exists, without
+ * GATING THE GROUP LAYOUT IS THE POINT. Every route added under `(app)` — the
+ * Pages home, page detail and settings — is gated the moment it exists, without
  * its page remembering to call anything. A page that had to opt in is a page
  * that can be shipped opted out.
  *
@@ -16,15 +17,25 @@
  *
  * WHAT IS NOT GATED, AND MUST NOT BECOME GATED: the landing page,
  * `POST /api/publish`, `/p/[anonToken]` and `/keep/[anonToken]`. None of them is
- * in this group. Publish-before-signup is the product — an anonymous visitor
- * publishes, gets a live link, and only meets this gate if they choose to keep
- * the page forever.
+ * in this group. Publish-before-signup is the product.
+ *
+ * ── THE SHELL (`kept Studio Screen.dc.html`) ─────────────────────────────────
+ * Desktop: a sidebar with the wordmark, the nav, the plan card and the avatar
+ * menu. Phone: a bottom tab bar with the same nav and the avatar menu. Each
+ * screen owns its own top bar. The nav is Pages and Settings ONLY (AC10) — see
+ * `./studio-nav.tsx`. The plan card shows the plan and the kept allowance, from
+ * the same `keptQuotaFor` the cap enforces with; the design's "Apply for
+ * Founding" is E11's and is not rendered. Tasks 012 and 013 mount inside this
+ * shell and do not edit it.
  */
-import Link from "next/link";
-
+import { PlanBadge } from "@/components/kept/plan-badge";
 import { requireSession } from "@/lib/auth/session";
+import { getProfileForSession } from "@/lib/db/queries/profile";
+import { keptQuotaFor } from "@/lib/sites/keep";
 
-import { SignOutButton } from "./sign-out-button";
+import { AccountMenu } from "./account-menu";
+import { StudioNav } from "./studio-nav";
+import { Wordmark } from "./wordmark";
 
 /**
  * Applies to every segment under `(app)`. A gated, per-user surface has no
@@ -39,34 +50,43 @@ export default async function AppLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   // Redirects to `/auth?next=<the path that was requested>` when signed out.
   const session = await requireSession();
+  const profile = await getProfileForSession(session);
+  if (!profile) {
+    // Unreachable past `requireSession` unless the profile bootstrap failed.
+    // Throwing lands on the nearest error boundary, which offers a retry.
+    throw new Error("Signed in, but no profile resolved for the session.");
+  }
+  const quota = await keptQuotaFor(profile.id);
+
+  const account = {
+    name: session.user.name ?? "",
+    email: session.user.email,
+    plan: profile.plan,
+  };
 
   return (
-    <div className="min-h-dvh">
-      <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border px-6 py-4">
-        <div className="flex items-baseline gap-5">
-          <Link
-            href="/dashboard"
-            className="mono-label rounded-[var(--r-sm)] text-text-muted outline-none hover:text-text focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
-          >
-            kept
-          </Link>
-          {/* The only route in this group a user cannot otherwise reach: the
-              dashboard links to each page, and each page links back, but
-              settings has no card to be clicked. A screen with no way in is a
-              screen that is not shipped. */}
-          <Link
-            href="/settings"
-            className="mono-label rounded-[var(--r-sm)] text-[11px] text-text-muted outline-none hover:text-text focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
-          >
-            Settings
-          </Link>
+    <div className="min-h-dvh md:flex">
+      <aside className="sticky top-0 hidden h-dvh w-[232px] shrink-0 flex-col gap-7 border-r border-border px-3 pb-4 pt-5 md:flex">
+        <Wordmark className="px-3 py-1 text-[26px]" />
+        <StudioNav variant="sidebar" />
+
+        <div className="mt-auto flex flex-col gap-3">
+          <div className="flex items-center justify-between gap-2 rounded-[var(--r-md)] border border-border bg-surface p-3">
+            <PlanBadge plan={profile.plan} />
+            <span className="font-mono text-xs font-medium tracking-[0.08em] text-text-secondary">
+              {quota.used} / {quota.limit}
+            </span>
+          </div>
+          <AccountMenu variant="sidebar" {...account} />
         </div>
-        <div className="flex items-center gap-3">
-          <span className="text-sm text-text-secondary">{session.user.email}</span>
-          <SignOutButton />
-        </div>
-      </header>
-      {children}
+      </aside>
+
+      <div className="min-w-0 flex-1 pb-[88px] md:pb-0">{children}</div>
+
+      <div className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-3 border-t border-border bg-surface px-1 pb-5 pt-1 md:hidden">
+        <StudioNav variant="tabs" />
+        <AccountMenu variant="tabs" {...account} />
+      </div>
     </div>
   );
 }

@@ -12,13 +12,15 @@ import test from "node:test";
 import {
   DRAFT_GRACE_DAYS,
   DRAFT_TTL_DAYS,
+  limitsFor,
   SITE_STATUSES,
   type SiteStatus,
 } from "@kept/shared";
 
 import {
   DRAFT_URGENT_HOURS,
-  atCapPublishNotice,
+  atLimitBanner,
+  atLimitPublishToast,
   demoteConsequence,
   effectiveStatus,
   expiredDraftNotice,
@@ -28,7 +30,13 @@ import {
   isManagementRestricted,
   managementRefusal,
   pageName,
-  publishedKeptNotice,
+  prunedVersionsNote,
+  KEPT_TOAST,
+  REPLACED_TOAST,
+  noSearchResults,
+  PUBLISHED_KEPT_TOAST,
+  SWAPPED_TOAST,
+  visitsLabel,
   siteHref,
   swapConsequence,
   swapRefusal,
@@ -152,33 +160,40 @@ test("the demote warning names the page, states the fresh clock and destroys not
   assert.doesNotMatch(sentence, /is kept for good/);
 });
 
-test("a kept publish says the link works and promises nothing about a clock", () => {
-  const sentence = publishedKeptNotice("Recipe notes");
-
-  assert.match(sentence, /Recipe notes/);
-  assert.match(sentence, /kept for good/);
-  // There is no deadline on a kept page, so there must be no word about one.
-  assert.doesNotMatch(sentence, /expires|draft|days/i);
+test("the studio's toasts and banner are the PRD's sentences, with the limit interpolated", () => {
+  assert.equal(PUBLISHED_KEPT_TOAST, "Published. It's kept.");
+  assert.equal(KEPT_TOAST, "Kept. It's permanent now.");
+  assert.equal(SWAPPED_TOAST, "Swapped.");
+  assert.equal(
+    atLimitPublishToast(1234),
+    "Published as a draft — you're keeping 1234 of 1234. Swap one out to keep it.",
+  );
+  assert.equal(
+    atLimitBanner(1234),
+    "You're keeping 1234 of 1234. New pages land as drafts — swap one out to keep it.",
+  );
+  assert.equal(noSearchResults("tide"), "No pages match 'tide'.");
+  assert.equal(REPLACED_TOAST, "Replaced. Same link, new version.");
 });
 
-test("an at-cap publish reads as a success with a clock, never as a refusal", () => {
-  const sentence = atCapPublishNotice("Recipe notes");
-
-  assert.match(sentence, /Recipe notes/);
-  // The page IS published — HTTP 200, epic D1. Copy that led with the failure
-  // would contradict the locked decision that the cap degrades, never errors.
-  assert.match(sentence, /published and live/);
-  assert.match(sentence, /Nothing failed/);
-  assert.match(sentence, new RegExp(`expires in ${DRAFT_TTL_DAYS} days`));
-  assert.doesNotMatch(sentence, /could not|couldn't|failed to|error/i);
+test("the pruned-version note follows the plan's count", () => {
+  assert.equal(
+    prunedVersionsNote(limitsFor("free").previousVersions),
+    "Free accounts keep one previous version.",
+  );
+  assert.equal(prunedVersionsNote(3), "Free accounts keep 3 previous versions.");
 });
 
-test("neither publish sentence types the draft clock as a literal", () => {
-  for (const sentence of [publishedKeptNotice("A"), atCapPublishNotice("A")]) {
-    // The only digits allowed are the ones the constant put there.
-    const digits = sentence.match(/\d+/g) ?? [];
-    for (const digit of digits) assert.equal(digit, String(DRAFT_TTL_DAYS));
-  }
+test("visits are counted in words the card and the chooser share", () => {
+  assert.equal(visitsLabel(1), "1 visit");
+  assert.equal(visitsLabel(0), "0 visits");
+  assert.equal(visitsLabel(4210), "4,210 visits");
+});
+
+test("an at-limit publish reads as a success, never as a refusal", () => {
+  const sentence = atLimitPublishToast(9);
+  assert.match(sentence, /^Published/);
+  assert.doesNotMatch(sentence, /could not|couldn't|failed|error/i);
 });
 
 // ── The drafts strip (E06 task 010; PRD §5.1, §9.1, AC9) ──────────────────────

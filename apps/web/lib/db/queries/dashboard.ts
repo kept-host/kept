@@ -1,47 +1,44 @@
 /**
- * Every SQL statement the signed-in owner's screens read — E06 task 002.
+ * Every SQL statement the signed-in owner's screens read — E06 tasks 002, 011.
  *
  * Same split as `./publish.ts` and `./reminders.ts`: route handlers and server
  * components hold HTTP and JSX, this module holds the queries. `/dashboard`,
- * `/site/[slug]` and `/settings` are RSC **reads** and go straight to Postgres
+ * the page-detail screen and `/settings` are RSC **reads** and go straight to Postgres
  * from the server component (the locked rule); every mutation goes through the
  * owner routes and never through here.
  *
- * ── THREE THINGS THIS MODULE DELIBERATELY DOES NOT DO ─────────────────────────
+ * ── WHAT THE HOME SHOWS (PRD §5.1) ───────────────────────────────────────────
  *
- * 1. **It does not define kept-ness.** `owner_id = ? AND expires_at IS NULL AND
- *    status NOT IN ('archived','removed')` lives once, in `lib/sites/keep.ts`'s
- *    `isKeptCondition`, and the number the dashboard prints comes from
- *    `keptQuotaFor` — the same function the cap branch counts with. A dashboard
- *    that computes its own quota is a dashboard that will eventually disagree
- *    with the endpoint that enforces it.
+ * - **Kept** is `isKeptCondition` from `lib/sites/keep.ts` — the one definition
+ *   the cap counts with — so the wall and the `KEPT k / limit` counter can never
+ *   disagree. `archived` and `removed` are not kept (latent bug 5: archived kept
+ *   rows used to leak onto the wall).
+ * - **Drafts** are the owner's clocked pages that are still `live`,
+ *   `under_review` or `quarantined`, plus `expired` ones still inside their grace
+ *   window (`purge_after > now()`) — those can still be kept late (§5.3).
+ *   Flagged pages are shown, labelled, never hidden: a page that vanishes when it
+ *   is flagged is indistinguishable from data loss.
  *
- * 2. **It does not hide rows.** `archived`, `quarantined`, `under_review` and
- *    `expired` all come back. The dashboard *renders* those states; a page that
- *    vanishes when it is flagged is indistinguishable from data loss. `archived`
- *    is excluded from the **quota** — by `isKeptCondition`'s status clause, one
- *    layer down — and that is a different question from what a screen may read.
- *
- * 3. **It does not derive a phase.** `isDraft = expires_at != null` is the split
- *    below and nothing more. Whether a draft has already run out is the clock's
- *    business, resolved at render time by `components/kept/draft-chip.tsx` —
- *    never by `status`, because an expired-but-unswept row still says `live`
- *    until E07's sweep runs.
+ * `isDraft = expires_at != null` is the split and nothing more. Whether a draft
+ * has already run out is the clock's business, resolved at render time — never
+ * by `status`, because an expired-but-unswept row still says `live` until E07's
+ * sweep runs.
  */
-import type { SiteStatus } from "@kept/shared";
-import type { KeptQuota } from "@kept/shared";
-import { and, desc, eq } from "drizzle-orm";
+import { type KeptQuota, type SiteStatus } from "@kept/shared";
+import { and, desc, eq, gt, inArray, isNotNull, or, sql } from "drizzle-orm";
 
-import { keptQuotaFor } from "../../sites/keep";
+import { chosenNameCount } from "../../names/check";
+import { isKeptCondition, keptQuotaFor } from "../../sites/keep";
 import { db } from "../index";
 import { siteVersions, sites } from "../schema";
+import { lastVisitsSync, recentVisitsByOwner } from "./visits";
 
 /**
  * One of the owner's pages, with everything a card or the detail screen needs.
  *
- * EXPORTED SO NO CONSUMER RE-DECLARES IT (E06 tasks 003 / 008 / 009 / 010).
- * `Date` rather than ISO strings: this never crosses the wire — a server
- * component reads it and hands the `Date` to `draftCountdown`, which takes one.
+ * EXPORTED SO NO CONSUMER RE-DECLARES IT. `Date` rather than ISO strings: a
+ * server component reads it and hands it on; React serialises a `Date` across
+ * the client boundary intact.
  */
 export interface OwnedSite {
   id: string;
@@ -66,21 +63,29 @@ export interface OwnedSite {
   versionCreatedAt: Date | null;
 }
 
+/** A page on the home: the row plus its recent visits. */
+export interface DashboardSite extends OwnedSite {
+  /** The `VISITS_RECENT_DAYS` sum; `null` when the sync has no rows for it. */
+  visits: number | null;
+}
+
 /** Everything `/dashboard` renders, from one read of the owner's rows. */
 export interface DashboardSites {
-  /** `expires_at IS NULL`. Permanent pages — the wall. */
-  kept: OwnedSite[];
-  /** `expires_at != null`. Owned drafts, on a clock — the drafts section. */
-  drafts: OwnedSite[];
-  /**
-   * The kept allowance, from `keptQuotaFor` — NOT counted from `kept.length`.
-   *
-   * They can legitimately differ: `kept` above holds every clockless row the
-   * account owns, including an `archived` one, while the quota counts only what
-   * the cap counts. Deriving the number from the array would quietly reinstate
-   * the second definition this whole task exists to delete.
-   */
+  /** `isKeptCondition` — the wall, most recently updated first. */
+  kept: DashboardSite[];
+  /** The drafts strip, soonest `expires_at` first. */
+  drafts: DashboardSite[];
+  /** The kept allowance, from `keptQuotaFor` — the cap's own count and plan limit. */
   quota: KeptQuota;
+  /** Chosen names counted against the name quota (`chosenNameCount`, D3). */
+  names: number;
+  /** When the visits sync last succeeded; `null` when it never has. */
+  visitsAsOf: Date | null;
+  /**
+   * The visits read failed. The pages are complete — only their visits are
+   * missing — so the home renders and says so (PRD §9.1 partial load error).
+   */
+  visitsFailed: boolean;
 }
 
 /**
@@ -100,45 +105,77 @@ const OWNED_SITE_COLUMNS = {
   versionCreatedAt: siteVersions.createdAt,
 } as const;
 
+/** A draft still serving, or under review: on the home whatever its clock says. */
+const ACTIVE_DRAFT_STATUSES = [
+  "live",
+  "under_review",
+  "quarantined",
+] as const satisfies readonly SiteStatus[];
+
+/** The owner's drafts the home shows — see the header. */
+function homeDraftCondition(profileId: string) {
+  return and(
+    eq(sites.ownerId, profileId),
+    isNotNull(sites.expiresAt),
+    or(
+      inArray(sites.status, [...ACTIVE_DRAFT_STATUSES]),
+      and(eq(sites.status, "expired"), gt(sites.purgeAfter, sql`now()`)),
+    ),
+  );
+}
+
 /**
- * Everything the dashboard needs for one owner.
+ * Everything the home needs for one owner.
  *
- * ONE ROW QUERY FOR THE WHOLE SCREEN — not five, and emphatically not one per
- * card. The join to `site_versions` is a LEFT join on `sites.current_version_id`
- * so a row whose version is missing still appears (with `versionCreatedAt`
- * null); an INNER join would silently drop a page from its owner's own
- * dashboard, which is the worst failure this screen has.
+ * ONE ROW QUERY FOR THE WHOLE SCREEN. The join to `site_versions` is a LEFT join
+ * so a row whose version is missing still appears; an INNER join would silently
+ * drop a page from its owner's own home. The quota and the names count run
+ * concurrently with it, so the screen costs one round trip of latency.
  *
- * The quota is the *second* statement and it runs CONCURRENTLY with the rows, so
- * the screen still costs one round trip of latency. It is a separate statement
- * on purpose: it must be `keptQuotaFor`'s count and no other, for the reason in
- * `DashboardSites.quota`.
+ * Visits are secondary: if their read fails the pages still render, with
+ * `visitsFailed` set, rather than the whole home failing over a number that is
+ * approximate by design (D8).
  *
  * An account with no pages returns two empty arrays and a `0 of {its plan's
- * limit}` quota. Empty is a state, not an error — nothing here throws for it.
+ * limit}` quota. Empty is a state, not an error.
  */
 export async function getDashboardSites(profileId: string): Promise<DashboardSites> {
-  const [rows, quota] = await Promise.all([
+  const [rows, quota, names, visitsRead] = await Promise.all([
     db
       .select(OWNED_SITE_COLUMNS)
       .from(sites)
       .leftJoin(siteVersions, eq(siteVersions.id, sites.currentVersionId))
-      .where(eq(sites.ownerId, profileId))
-      // Most recently touched first — the page you just published or replaced is
-      // the one you came back to look at.
+      .where(or(isKeptCondition(profileId), homeDraftCondition(profileId)))
       .orderBy(desc(sites.updatedAt)),
     keptQuotaFor(profileId),
+    chosenNameCount(profileId),
+    Promise.all([recentVisitsByOwner(profileId), lastVisitsSync()]).then(
+      ([visits, asOf]) => ({ ok: true as const, visits, asOf }),
+      (error: unknown) => {
+        console.error("[dashboard] visits read failed; rendering without visits", error);
+        return { ok: false as const };
+      },
+    ),
   ]);
 
-  const kept: OwnedSite[] = [];
-  const drafts: OwnedSite[] = [];
+  const kept: DashboardSite[] = [];
+  const drafts: DashboardSite[] = [];
   for (const row of rows) {
-    // `isDraft = expires_at != null`. There is no draft status, no `is_draft`
-    // column and no second predicate — see `../schema.ts` on `sites.expiresAt`.
-    (row.expiresAt === null ? kept : drafts).push(row);
+    const site = { ...row, visits: visitsRead.ok ? (visitsRead.visits.get(row.id) ?? null) : null };
+    (row.expiresAt === null ? kept : drafts).push(site);
   }
+  // Soonest deadline first: the draft that needs a decision soonest leads.
+  // Every row here has a clock — that is what put it in `drafts`.
+  drafts.sort((a, b) => (a.expiresAt?.getTime() ?? 0) - (b.expiresAt?.getTime() ?? 0));
 
-  return { kept, drafts, quota };
+  return {
+    kept,
+    drafts,
+    quota,
+    names,
+    visitsAsOf: visitsRead.ok ? visitsRead.asOf : null,
+    visitsFailed: !visitsRead.ok,
+  };
 }
 
 /**

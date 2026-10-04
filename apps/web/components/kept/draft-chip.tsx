@@ -36,21 +36,12 @@ export interface DraftCountdown {
 export const DRAFT_PROMISE = `No account needed to share. Keep it within ${DRAFT_TTL_DAYS} days — free — or this draft expires (recoverable for ${DRAFT_GRACE_DAYS} days after).`;
 
 /**
- * The same promise, told to somebody who is already signed in — the dashboard's
- * drafts section header (E06 task 003).
- *
- * A SECOND SENTENCE RATHER THAN A SECOND COPY OF THE NUMBERS. It lives here, in
- * the file that owns every sentence the clock appears in, for exactly the reason
- * at the top: `DRAFT_TTL_DAYS` and `DRAFT_GRACE_DAYS` are substituted, never
- * typed, so the day the cap moves there is one file to change and no screen left
- * telling the old story.
- *
- * `DRAFT_PROMISE` could not simply be reused: it opens with "No account needed
- * to share", which is true on `/p/[anonToken]` and false on a dashboard the
- * reader had to sign in to reach. Copy that is wrong about who it is talking to
- * is worse than copy that is merely duplicated.
+ * The same promise, told to somebody who is already signed in — the Pages
+ * home's drafts strip heading (E06 task 011; the design's line, with the number
+ * substituted). `DRAFT_PROMISE` opens with "No account needed to share", which
+ * is false on a screen the reader had to sign in to reach.
  */
-export const DRAFT_SECTION_NOTE = `Drafts are live at their link from the moment you publish. Keep one within ${DRAFT_TTL_DAYS} days and it stays for good; leave it and it expires, recoverable for ${DRAFT_GRACE_DAYS} days after that.`;
+export const DRAFT_SECTION_NOTE = `Live now. Each one expires after ${DRAFT_TTL_DAYS} days unless you keep it.`;
 
 /** What a replace does and does not do to the clock. Task 006 enforces it. */
 export const REPLACE_CLOCK_NOTE = `Replacing swaps the file and keeps the URL. It does not extend the draft — the ${DRAFT_TTL_DAYS}-day clock keeps running from when this page was first published.`;

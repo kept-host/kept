@@ -1,50 +1,41 @@
 "use client";
 
 /**
- * The swap chooser — E06 task 007.
+ * The swap chooser — E06 tasks 007 and 011 (PRD §5.3, AC12).
  *
  * ── WHAT THIS IS, AND WHAT IT DELIBERATELY IS NOT ────────────────────────────
  * `POST /api/sites/swap` already exists, is origin-gated, and runs `swapKept` in
  * ONE Postgres transaction that refuses `demote === keep`. This file builds no
- * endpoint, changes no server logic and adds no second atomicity mechanism. It
- * is the moment before that write: an account at its kept limit presses Keep
- * on a draft and has to decide which of its permanent pages stops being
- * permanent.
+ * endpoint and adds no second atomicity mechanism. It is the moment before that
+ * write: an account at its kept limit presses Swap… on a draft and decides which
+ * of its permanent pages stops being permanent.
  *
- * ── THE WARNING NAMES BOTH PAGES ─────────────────────────────────────────────
- * "Swap a page?" is not a warning. The consequence sentence comes from
- * `swapConsequence` in `lib/sites/display.ts` — both names, and the clock in
- * `DRAFT_TTL_DAYS` terms rather than a typed `7`, because demote sets a FRESH
- * clock and the day that constant moves this sentence must move with it. It
- * lives in `lib/` so the unit suite can assert it; a copy rule that cannot be
- * run is a copy rule that gets edited back to a literal.
+ * ── PICK → CONFIRM → DONE (PRD §9.2) ─────────────────────────────────────────
+ * 1. **Pick.** The kept pages, LEAST VISITED FIRST (the `VISITS_RECENT_DAYS`
+ *    sum; a page with no visit data yet counts as none) — the page that matters
+ *    least to visitors is the natural one to give back. Searchable by name and
+ *    address, because an account at its limit has a long list.
+ * 2. **Confirm.** The demote warning, naming both pages: `swapConsequence` in
+ *    `lib/sites/display.ts`, which puts the clock in `DRAFT_TTL_DAYS` terms
+ *    because demote sets a FRESH clock. Nothing is written before this step.
+ * 3. **Done.** `onSwapped` hands the caller both halves; the caller toasts
+ *    "Swapped." and calls `router.refresh()` (PRD §5.1: no live updates), so
+ *    both cards move with the next server render.
  *
  * ── `demote === keep` IS UNCONSTRUCTABLE HERE ────────────────────────────────
  * The page being kept is never in the candidate list — the caller passes it as
  * `keepTarget` and the list is filtered on its id. The route's 400 is therefore
  * unreachable from this UI, which is exactly why it is surfaced verbatim rather
- * than swallowed if it ever arrives: it would mean this screen and the database
- * disagree about which page is which, and hiding that would be the worst
- * possible response.
- *
- * ── ONE REQUEST, BOTH CARDS ──────────────────────────────────────────────────
- * `SwapResult` carries both halves and a post-swap `KeptQuota` on each, so
- * `onSwapped` hands the caller everything the two cards and the header quota
- * need. No refetch, no `router.refresh()`, and no optimistic guess that can
- * disagree with the transaction that just committed.
+ * than swallowed if it ever arrives.
  *
  * ── ONE COMPONENT, TWO SURFACES ──────────────────────────────────────────────
- * The dashboard card mounts it (task 007) and `/site/[slug]` mounts the same one
- * (task 008). It therefore owns no data fetching and no routing: everything it
- * knows arrives as props and everything it learns leaves through `onSwapped`.
- *
- * DESIGNED FROM TOKENS, NOT IMPORTED. `kept Dashboard.dc.html` was unavailable
- * to this task; the dialog is composed from `globals.css`'s tokens in the house
- * language — hairline rules, mono meta-labels, accent reserved for the one row
- * that has been chosen. A later reconciliation pass against the export is a
- * known follow-up.
+ * The Pages home's draft cards mount it (task 011) and the page-detail screen
+ * mounts the same one (`/site/[id]`, task 012). It owns no data fetching and no
+ * routing: everything it knows arrives as props and everything it learns leaves
+ * through `onSwapped`.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Search } from "lucide-react";
 
 import { type KeptQuota, type SiteStatus, type SwapResult } from "@kept/shared";
 
@@ -58,14 +49,19 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { managementRefusal, swapConsequence, swapRefusal } from "@/lib/sites/display";
+import {
+  managementRefusal,
+  swapConsequence,
+  swapRefusal,
+  visitsLabel,
+} from "@/lib/sites/display";
 import { swapPages } from "@/lib/sites/owner-client";
 import { cn } from "@/lib/utils";
 
 /**
- * One page as the chooser needs it. Exported so the dashboard and the detail
- * screen build the SAME shape rather than two near-identical ones — the second
- * of which would be the one that forgets `status` and starts offering a
+ * One page as the chooser needs it. Exported so the home and the detail screen
+ * build the SAME shape rather than two near-identical ones — the second of
+ * which would be the one that forgets `status` and starts offering a
  * quarantined page as a swap target.
  */
 export interface SwapPage {
@@ -75,12 +71,21 @@ export interface SwapPage {
   slug: string;
   liveUrl: string;
   status: SiteStatus;
+  /** The `VISITS_RECENT_DAYS` sum; `null`/absent when there is no data yet. */
+  visits?: number | null;
 }
 
 /** The slug is the part that is theirs; the suffix is ours. No hostname literal. */
 function hostSuffixOf(page: SwapPage): string {
   return new URL(page.liveUrl).host.slice(page.slug.length);
 }
+
+/** Least visited first; no data counts as no visits. Stable for ties. */
+function leastVisitedFirst(pages: SwapPage[]): SwapPage[] {
+  return [...pages].sort((a, b) => (a.visits ?? 0) - (b.visits ?? 0));
+}
+
+type Step = "pick" | "confirm";
 
 export function SwapDialog({
   open,
@@ -104,6 +109,8 @@ export function SwapDialog({
   /** Both halves of the committed transaction. Called once, on success. */
   onSwapped: (result: SwapResult) => void;
 }) {
+  const [step, setStep] = useState<Step>("pick");
+  const [query, setQuery] = useState("");
   const [demoteId, setDemoteId] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -113,6 +120,8 @@ export function SwapDialog({
   // a second swap must not inherit the first one's selection.
   useEffect(() => {
     if (!open) return;
+    setStep("pick");
+    setQuery("");
     setDemoteId(null);
     setError(null);
   }, [open]);
@@ -126,7 +135,17 @@ export function SwapDialog({
   // is mounted from two surfaces and must not depend on both remembering.
   const targetRefusal = managementRefusal(keepTarget.status);
 
-  const options = candidates.filter((page) => page.id !== keepTarget.id);
+  const options = useMemo(
+    () => leastVisitedFirst(candidates.filter((page) => page.id !== keepTarget.id)),
+    [candidates, keepTarget.id],
+  );
+  const needle = query.trim().toLowerCase();
+  const shown = needle
+    ? options.filter(
+        (page) =>
+          page.name.toLowerCase().includes(needle) || page.slug.includes(needle),
+      )
+    : options;
   const chosen = options.find((page) => page.id === demoteId) ?? null;
 
   /**
@@ -193,15 +212,11 @@ export function SwapDialog({
           // Nothing to choose: the page this flow started from cannot be kept at
           // all, so offering a list of pages to sacrifice for it would be a trap.
           <DialogFooter>
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => onOpenChange(false)}
-            >
+            <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>
               Close
             </Button>
           </DialogFooter>
-        ) : (
+        ) : step === "pick" ? (
           <>
             <KeptQuotaChip quota={quota} />
 
@@ -213,17 +228,28 @@ export function SwapDialog({
             ) : (
               <fieldset
                 // A native radio group: arrow keys move within it, one name means
-                // one answer, and the browser owns all of that. Re-implementing it
-                // on divs is how a chooser ends up unusable from a keyboard.
+                // one answer, and the browser owns all of that.
                 className="min-w-0"
-                disabled={pending}
               >
                 <legend className="mono-label mb-2 text-[11px] text-text-muted">
-                  Which page becomes a draft?
+                  Which page becomes a draft? Least visited first.
                 </legend>
 
+                <label className="mb-2 flex h-10 items-center gap-2 rounded-[var(--r-sm)] border border-border bg-surface px-3 text-text-secondary focus-within:border-accent focus-within:ring-2 focus-within:ring-accent">
+                  <Search aria-hidden="true" className="size-4 shrink-0" strokeWidth={1.5} />
+                  <input
+                    type="search"
+                    data-testid="swap-search"
+                    aria-label="Search your kept pages"
+                    placeholder="Search your kept pages"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    className="h-7 min-w-0 flex-1 bg-transparent text-sm text-text outline-none placeholder:text-text-muted"
+                  />
+                </label>
+
                 <div className="max-h-[min(44vh,19rem)] space-y-2 overflow-y-auto pr-1">
-                  {options.map((page) => (
+                  {shown.map((page) => (
                     <CandidateRow
                       key={page.id}
                       page={page}
@@ -231,22 +257,42 @@ export function SwapDialog({
                       onSelect={() => setDemoteId(page.id)}
                     />
                   ))}
+                  {shown.length === 0 ? (
+                    <p className="px-1 py-3 text-sm text-text-secondary">
+                      No kept page matches &lsquo;{query.trim()}&rsquo;.
+                    </p>
+                  ) : null}
                 </div>
               </fieldset>
             )}
 
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="secondary"
+                data-testid="swap-cancel"
+                onClick={() => onOpenChange(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                data-testid="swap-next"
+                // Inert until a page is chosen: the next step names it.
+                disabled={!chosen}
+                onClick={() => setStep("confirm")}
+              >
+                Continue
+              </Button>
+            </DialogFooter>
+          </>
+        ) : (
+          <>
             <p
               data-testid="swap-consequence"
-              className={cn(
-                "rounded-[var(--r-md)] border px-4 py-3 text-sm leading-relaxed",
-                chosen
-                  ? "border-accent bg-accent-soft text-text"
-                  : "border-border bg-sunken text-text-muted",
-              )}
+              className="rounded-[var(--r-md)] border border-[color-mix(in_srgb,var(--warning)_45%,var(--surface))] bg-[color-mix(in_srgb,var(--warning)_14%,var(--surface))] px-4 py-3 text-sm leading-relaxed text-text"
             >
-              {chosen
-                ? swapConsequence(chosen.name, keepTarget.name)
-                : "Pick a page above and this will say exactly what changes."}
+              {chosen ? swapConsequence(chosen.name, keepTarget.name) : null}
             </p>
 
             {error ? (
@@ -265,18 +311,15 @@ export function SwapDialog({
               <Button
                 type="button"
                 variant="secondary"
-                data-testid="swap-cancel"
+                data-testid="swap-back"
                 disabled={pending}
-                onClick={() => onOpenChange(false)}
+                onClick={() => setStep("pick")}
               >
-                Cancel
+                Back
               </Button>
               <Button
                 type="button"
                 data-testid="swap-confirm"
-                // Disabled until a page is chosen, which is also why focus can
-                // never land here first: the consequential control is inert until
-                // the consequence on screen is true.
                 disabled={!chosen || pending}
                 onClick={confirm}
               >
@@ -345,6 +388,11 @@ function CandidateRow({
           {page.slug}
           <span className="text-text-muted">{hostSuffixOf(page)}</span>
         </span>
+        {page.visits !== null && page.visits !== undefined ? (
+          <span className="mt-0.5 block font-mono text-[11px] text-text-secondary">
+            {visitsLabel(page.visits)}
+          </span>
+        ) : null}
         {refusal ? (
           <span className="mt-1.5 block text-xs leading-relaxed text-text-secondary">
             {refusal}

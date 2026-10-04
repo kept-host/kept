@@ -22,6 +22,7 @@ import { Check } from "lucide-react";
 import { limitsFor, type Plan } from "@kept/shared";
 
 import { LockedRow } from "@/components/kept/locked-row";
+import { PLAN_LABEL } from "@/components/kept/plan-badge";
 import { PRO_LIST } from "@/lib/plans/pro-list";
 
 /**
@@ -40,12 +41,6 @@ function planIncludes(plan: Plan): readonly string[] {
     "Rename, replace and delete any page you own",
   ];
 }
-
-/** Better Auth has no opinion about plans; the label mapping lives here. */
-const PLAN_LABEL: Record<Plan, string> = {
-  free: "Free",
-  premium: "Pro",
-};
 
 export function PlanPanel({ plan }: { plan: Plan }) {
   return (

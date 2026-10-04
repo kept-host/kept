@@ -1,9 +1,18 @@
-import { demoteResultSchema, limitsFor } from "@kept/shared";
-import { expect, test, type Page } from "@playwright/test";
-import { eq } from "drizzle-orm";
+import { DRAFT_GRACE_DAYS, demoteResultSchema, limitsFor } from "@kept/shared";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import { and, eq } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
-import { atCapNote } from "../components/kept/kept-quota";
+import {
+  ALREADY_PUBLISHED_NOTICE,
+  KEPT_TOAST,
+  PUBLISHED_KEPT_TOAST,
+  REPLACED_TOAST,
+  UNDONE_TOAST,
+  atLimitBanner,
+  atLimitPublishToast,
+  noSearchResults,
+} from "../lib/sites/display";
 
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
 import {
@@ -15,52 +24,57 @@ import {
   signInAs,
   titledHtml,
   SKIP_OWNER_UI,
-  type OwnedPage,
-  type SeededPage,
 } from "./owner-fixtures";
 import { waitForTokensApplied } from "./tokens-applied";
 
 /**
- * `/dashboard` in a real browser, against the REAL dev stack — E06 task 013,
- * verification criteria **1, 2, 3 and 11**.
+ * The Pages home `/dashboard` in a real browser, against the REAL dev stack —
+ * E06 task 011 (PRD §5.1, §9.1): AC2 (UI), AC4–AC9, AC10, AC11 (UI), and the
+ * card drop → replace.
  *
- * NO MOCKS. Every page an assertion is about is published through
- * `POST /api/sites` by a real magic-link session, so Postgres, R2, KV and the
- * edge cache all genuinely hold it before a single assertion runs. The slots
- * that only FILL an account to its kept limit are real rows seeded by direct
- * insert (`seedKept`) — the cap and the screens count them like any kept page,
- * and publishing `limitsFor("free").keptPages` pages per test would multiply
- * this spec's runtime for no extra proof.
+ * NO MOCKS. Pages an assertion is about are published through `POST /api/sites`
+ * by a real magic-link session; rows that only FILL an account (to its kept
+ * limit, or to give a list something to sort) are real rows inserted straight
+ * into Postgres (`seedKept`, `seedDraft`) — the screens and the cap count them
+ * like any page. Visits are real `page_views_daily` rows.
  *
- * ── WHAT THIS SPEC OWNS THAT THE API SPECS CANNOT ────────────────────────────
- *
- * `owner-publish-api.spec.ts` already proves what `POST /api/sites` *returns* at
- * and under the cap. It cannot prove that the screen splits its two sections on
- * `expires_at != null`, that the four places printing the allowance agree with
- * the function that enforces it, or that a card flips itself when its clock runs
- * out while nobody is looking. Those are the four claims below, and every one of
- * them is a browser fact.
- *
- * ── ⚠️ CRITERION 11 IS A REAL WAIT, AND THAT IS THE ARCHITECTURE ─────────────
- *
- * A draft that crosses `expires_at` is **still `status = 'live'`** in Postgres
- * until E07's sweep runs — that sweep does not exist yet. The card must
- * therefore flip from the CLOCK, client-side, on `ClockProvider`'s 30 s tick,
- * and the row must be re-read afterwards to prove it is still `live` and that
- * the screen was not just echoing a status somebody wrote. Asserting a shorter
- * window than `TICK_MS` provides would be asserting a product that does not
- * exist, so the wait is budgeted honestly rather than tightened.
+ * Drops are real `DragEvent`s carrying a real `DataTransfer` with a real `File`,
+ * dispatched at the element a user would drop on; the window-level target and
+ * the card targets receive them exactly as they would a drag from the desktop.
  *
  * SKIPS without dev credentials: CI runs fork PRs with no secrets.
  */
 const scope = newScope();
+const FREE = limitsFor("free");
+const PRO = limitsFor("premium");
+const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
 
-/** `ClockProvider`'s tick, plus room for a render. Not tightened — see above. */
-const CLOCK_TICK_BUDGET_MS = 45_000;
+const PNG_REFUSAL = "That's a .png. kept publishes HTML pages — drop an .html file.";
 
-test.describe("the dashboard", () => {
+/** Text a later epic owns. None of it may exist anywhere in the home's DOM (AC10). */
+const LATER_EPIC_TEXT: readonly RegExp[] = [
+  /\bWall\b/,
+  /\bExplore\b/,
+  /\bReferrals\b/,
+  /\bAgents?\b/,
+  /\bProfile\b/,
+  /\bBadge\b/,
+  /\bPassword\b/,
+  /Share kit/i,
+  /Getting started/i,
+  /Copy (the )?prompt/i,
+  /Claim your handle/i,
+  /Ask your agent/i,
+  /MCP/,
+  /Make room/i,
+  /Apply for Founding/i,
+  /\bSoon\b/,
+];
+
+test.describe("the Pages home", () => {
   test.skip(!!SKIP_OWNER_UI, SKIP_OWNER_UI || undefined);
-  test.describe.configure({ timeout: LIVE_STACK_TIMEOUT });
+  test.describe.configure({ timeout: LIVE_STACK_TIMEOUT * 2 });
 
   test.beforeAll(async () => {
     if (SKIP_OWNER_UI) return;
@@ -73,16 +87,6 @@ test.describe("the dashboard", () => {
     await closeDb();
   });
 
-  /**
-   * The free plan's limit — every account here is new, and new accounts are
-   * free. Read from `limitsFor`, never typed.
-   */
-  const FREE_LIMIT = limitsFor("free").keptPages;
-  const AT_CAP_NOTE = atCapNote(FREE_LIMIT);
-
-  /** The one string the allowance is ever allowed to read. No typed limit. */
-  const quotaText = (used: number) => `Kept · ${used} of ${FREE_LIMIT}`;
-
   /** Demote through the real route, so the fixture and the product agree. */
   async function demote(page: Page, baseURL: string, siteId: string) {
     const response = await page.request.post(`${baseURL}/api/sites/${siteId}/demote`, {
@@ -92,287 +96,494 @@ test.describe("the dashboard", () => {
     return demoteResultSchema.parse(await response.json());
   }
 
-  /**
-   * Fill the account to its kept limit — real kept rows, seeded rather than
-   * published (`seedKept`): what these tests assert is the screen at the cap,
-   * not the publishes that got it there.
-   */
-  function fillCap(ownerId: string): Promise<SeededPage[]> {
-    return seedKept(scope, ownerId, FREE_LIMIT);
+  /** An owned draft row, straight into Postgres — for clocks and ordering. */
+  async function seedDraft(
+    ownerId: string,
+    expiresAt: Date,
+    extra: Partial<typeof schema.sites.$inferInsert> = {},
+  ): Promise<{ siteId: string; slug: string }> {
+    const id = crypto.randomUUID();
+    const slug = `e06-draft-${id.slice(0, 8)}${id.slice(9, 13)}`;
+    await db.insert(schema.sites).values({
+      id,
+      slug,
+      ownerId,
+      publisherHash: "e06-e2e-seed",
+      claimedAt: new Date(),
+      contentHash: "e06-e2e-seed",
+      sizeBytes: 128,
+      expiresAt,
+      purgeAfter: new Date(expiresAt.getTime() + DRAFT_GRACE_DAYS * DAY),
+      ...extra,
+    });
+    scope.siteIds.push(id);
+    return { siteId: id, slug };
   }
 
-  test("the wall splits on the clock, names each page by its title, and hides nobody else's", async ({
-    page,
-    browser,
-    baseURL,
-  }) => {
-    await signInAs(page, baseURL!, scope);
+  async function seedVisits(siteId: string, views: number) {
+    const yesterday = new Date(Date.now() - DAY).toISOString().slice(0, 10);
+    await db.insert(schema.pageViewsDaily).values({ siteId, day: yesterday, views });
+  }
 
-    const kept = await publishOwned(page, baseURL!, scope, "E06 wall kept");
-    const willBeDraft = await publishOwned(page, baseURL!, scope, "E06 wall draft");
-    await demote(page, baseURL!, willBeDraft.siteId);
+  const card = (page: Page, siteId: string) =>
+    page.locator(`[data-testid="home-card"][data-site-id="${siteId}"]`);
 
-    // A STRANGER'S PAGE, published by a genuinely separate account in a
-    // genuinely separate browser context — not a row forged with a different
-    // `owner_id`, because the thing under test is a query boundary and a forged
-    // row could pass it for the wrong reason.
-    const strangerContext = await browser.newContext({ ignoreHTTPSErrors: true });
-    let stranger: OwnedPage;
-    try {
-      const strangerPage = await strangerContext.newPage();
-      await signInAs(strangerPage, baseURL!, scope);
-      stranger = await publishOwned(strangerPage, baseURL!, scope, "E06 stranger");
-    } finally {
-      await strangerContext.close();
-    }
+  const summaryItem = (page: Page, label: string) =>
+    page.getByRole("list", { name: "Summary" }).getByRole("listitem").filter({ hasText: label });
 
-    await page.goto("/dashboard");
-    await expect(page.getByRole("heading", { name: "Your pages" })).toBeVisible();
-
-    // The two groups exist as headings whatever they contain — the split IS the
-    // product's model of a page, and both sections render even when one is empty.
-    const keptSection = page.locator("section").filter({
-      has: page.getByRole("heading", { level: 2, name: "Kept", exact: true }),
-    });
-    const draftSection = page.locator("section").filter({
-      has: page.getByRole("heading", { level: 2, name: "Drafts", exact: true }),
-    });
-
-    // Split by `expires_at != null` and by nothing else: the demoted page moved
-    // group without its `status` changing at all.
-    await expect(keptSection.getByRole("link", { name: kept.name })).toBeVisible();
-    await expect(draftSection.getByRole("link", { name: willBeDraft.name })).toBeVisible();
-    await expect(draftSection.getByRole("link", { name: kept.name })).toHaveCount(0);
-    await expect(keptSection.getByRole("link", { name: willBeDraft.name })).toHaveCount(0);
-    expect((await readSite(willBeDraft.siteId)).status).toBe("live");
-
-    // `title ?? slug`: both pages carried a `<title>`, so neither card is named
-    // by its eight random characters — the whole reason `0004` exists.
-    expect(kept.title).not.toBeNull();
-    await expect(keptSection.getByRole("link", { name: kept.name })).toHaveText(kept.title!);
-
-    // The slug and the serving host are both on the card, and the countdown is
-    // on the draft rather than on the kept page. Scoped to the card rather than
-    // to the section: the slug legitimately appears several times inside one card
-    // (the address line, and the accessible names of Copy and Open), and a bare
-    // text match would be a strict-mode violation rather than an assertion.
-    const keptCard = keptSection.locator("article").filter({ hasText: kept.name });
-    await expect(keptCard).toContainText(kept.slug);
-    await expect(draftSection.getByText(/^Draft · /)).toBeVisible();
-
-    // CRITERION 1's second half: another account's page is invisible under EVERY
-    // URL — absent from the wall, and a plain 404 at its own detail route. "Not
-    // yours" and "doesn't exist" are byte-identical by design.
-    await expect(page.getByText(stranger.slug)).toHaveCount(0);
-    const direct = await page.goto(`/site/${stranger.slug}`);
-    expect(direct?.status(), "a stranger's slug must not resolve").toBe(404);
-  });
-
-  test("a brand-new account gets the invitation, not an empty grid", async ({
-    page,
-    baseURL,
-  }) => {
-    // Publishes nothing on purpose — this is the only state in which `FirstRun`
-    // renders, and it is the first thing every account ever sees.
-    await signInAs(page, baseURL!, scope);
-    await page.goto("/dashboard");
-
-    await expect(page.getByRole("heading", { name: "Nothing kept yet" })).toBeVisible();
-    await expect(page.locator("article")).toHaveCount(0);
-
-    // The allowance is honest about an empty account, and the at-cap sentence is
-    // nowhere near it.
-    await expect(page.locator("header").getByText(quotaText(0))).toBeVisible();
-    await expect(page.getByText(AT_CAP_NOTE)).toHaveCount(0);
-
-    // ⚠️ NO SECOND CALL TO ACTION (task 009). The drop-zone above IS the way to
-    // publish, so a button here would be a control competing with the control it
-    // points at — and one of the two would have to be the wrong place to start.
-    await expect(page.getByTestId("publish-dropzone")).toBeVisible();
-    await expect(
-      page.getByRole("link", { name: /drop|publish|get started/i }),
-    ).toHaveCount(0);
-  });
-
-  test("the allowance reads the same in every place that prints it, and moves together", async ({
-    page,
-    baseURL,
-  }) => {
-    const { userId } = await signInAs(page, baseURL!, scope);
-    const pages = await fillCap(userId);
-
-    await page.goto("/dashboard");
-
-    // 1 & 2 — the header and the drop-zone, at the cap. Both are `KeptQuotaChip`
-    // reading one `KeptQuota`, so a disagreement here means two counts exist.
-    const header = page.locator("header");
-    const dropzone = page.getByTestId("publish-dropzone");
-    await expect(header.getByText(quotaText(FREE_LIMIT))).toBeVisible();
-    await expect(dropzone.getByText(quotaText(FREE_LIMIT))).toBeVisible();
-
-    // 3 — the way out, printed once and only when the account is full. The cap
-    // degrades rather than erroring, so this must be present and must not read
-    // like a failure.
-    await expect(header.getByText(AT_CAP_NOTE)).toBeVisible();
-
-    // 4 — the chooser. Reached from a draft's Keep button, which at the cap
-    // sends no request at all: it opens the dialog, which prints the SAME chip.
-    const draft = await publishOwned(page, baseURL!, scope, "E06 quota draft");
-    expect(draft.outcome, "publishing at the cap must land a draft, never a 4xx").toBe(
-      "owned_draft",
+  /** The order the cards appear in, by site id. */
+  const order = (list: Locator) =>
+    list.locator('[data-testid="home-card"]').evaluateAll((items) =>
+      items.map((item) => item.getAttribute("data-site-id")),
     );
 
-    await page.reload();
-    await page.getByTestId("keep-button").first().click();
-    const dialog = page.getByTestId("swap-dialog");
-    await expect(dialog).toBeVisible();
-    await expect(dialog.getByText(quotaText(FREE_LIMIT))).toBeVisible();
-    await page.getByTestId("swap-cancel").click();
-    await expect(dialog).toBeHidden();
-
-    // CHANGE A PAGE'S STATE AND ALL OF THEM MOVE. Demote one kept page through
-    // the real route and every surface must read one lower — including the
-    // at-cap sentence, which must now be gone entirely.
-    await demote(page, baseURL!, pages[0]!.siteId);
-    await page.goto("/dashboard");
-
-    await expect(header.getByText(quotaText(FREE_LIMIT - 1))).toBeVisible();
-    await expect(dropzone.getByText(quotaText(FREE_LIMIT - 1))).toBeVisible();
-    await expect(page.getByText(AT_CAP_NOTE)).toHaveCount(0);
-    await expect(page.getByText(quotaText(FREE_LIMIT))).toHaveCount(0);
-  });
-
-  test("dropping a file at the cap publishes an owned draft with a supportive notice", async ({
-    page,
-    baseURL,
-  }) => {
-    const { userId } = await signInAs(page, baseURL!, scope);
-    await fillCap(userId);
-
-    await page.goto("/dashboard");
-
-    // THE REAL CONTROL, not a synthesised drag: `publish-dropzone` carries a real
-    // `<input type="file">` behind a real button, and drag is the enhancement on
-    // top of it (task 009). Driving the button is driving the keyboard path too.
-    //
-    // ⚠️ THE BUTTON, NOT `setInputFiles` ON THE INPUT. Calling `setInputFiles`
-    // directly dispatches `change` at whatever moment the test reaches it, and on
-    // a fast machine that is BEFORE React has hydrated this island — so the
-    // `onChange` handler does not exist yet, the event is dropped, and the screen
-    // sits idle with no notice and no error. That failure is silent and looks
-    // exactly like a broken publish. Going through `filechooser` cannot race it:
-    // the dialog only opens because the hydrated `onClick` called `input.click()`,
-    // so observing the chooser IS the proof that the handler is attached.
+  /**
+   * Wait until the screen is interactive. Opening the publish sheet is proof:
+   * it only opens because the hydrated `onClick` ran, so every listener this
+   * screen attaches — including the window's drop target — is attached too.
+   */
+  async function hydrated(page: Page) {
     await page.waitForLoadState("networkidle");
-    const title = `E06 at-cap drop ${crypto.randomUUID().slice(0, 8)}`;
-    const [chooser] = await Promise.all([
-      page.waitForEvent("filechooser"),
-      page.getByTestId("publish-choose-file").click(),
-    ]);
-    await chooser.setFiles({
-      name: "at-cap.html",
-      mimeType: "text/html",
-      buffer: Buffer.from(titledHtml(title)),
+    await page.getByRole("button", { name: "Publish", exact: true }).click();
+    await expect(page.getByTestId("publish-sheet")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("publish-sheet")).toBeHidden();
+  }
+
+  /** A real drop: dragover then drop, with a real `File` in a real `DataTransfer`. */
+  async function drop(
+    page: Page,
+    target: Locator,
+    file: { name: string; type: string; body: string },
+  ) {
+    const transfer = await page.evaluateHandle(({ name, type, body }) => {
+      const data = new DataTransfer();
+      data.items.add(new File([body], name, { type }));
+      return data;
+    }, file);
+    await target.dispatchEvent("dragover", { dataTransfer: transfer });
+    await target.dispatchEvent("drop", { dataTransfer: transfer });
+  }
+
+  /** Every text node in the document except scripts and styles — hidden ones included. */
+  const domText = (page: Page) =>
+    page.evaluate(() => {
+      const body = document.body.cloneNode(true) as HTMLElement;
+      body.querySelectorAll("script, style, noscript").forEach((node) => node.remove());
+      return body.textContent ?? "";
     });
 
-    // The at-cap branch, painted in the accent rather than in `--danger`, with
-    // the page's own name in it. NEVER the error region.
-    const notice = page.getByTestId("publish-at-cap-notice");
-    await expect(notice).toBeVisible({ timeout: LIVE_STACK_TIMEOUT });
-    await expect(notice).toContainText(title);
-    await expect(page.getByTestId("publish-error")).toHaveCount(0);
-
-    // And the row it actually created: owned, clocked, and carrying NO bearer
-    // token. A signed-in user must never be handed a second authority on their
-    // own page — the whole of epic D1.
-    const [row] = await db
-      .select()
-      .from(schema.sites)
-      .where(eq(schema.sites.title, title));
-    expect(row, "the drop must have created a row").toBeDefined();
-    scope.siteIds.push(row!.id);
-    scope.slugs.add(row!.slug);
-
-    expect(row!.ownerId, "the page belongs to the account").not.toBeNull();
-    expect(row!.anonTokenHash, "no anon token may be minted for a signed-in publish").toBeNull();
-    expect(row!.expiresAt, "at the cap the page lands as a draft").not.toBeNull();
-    expect(row!.status).toBe("live");
-
-    // The countdown is visible on the wall the moment the screen reloads.
-    await page.reload();
-    const card = page.locator("article").filter({ hasText: title });
-    await expect(card.getByText(/^Draft · /)).toBeVisible();
-  });
-
-  test("a draft that runs out while the screen is open flips its own card, and the row does not", async ({
-    page,
-    baseURL,
-  }) => {
-    test.setTimeout(LIVE_STACK_TIMEOUT + CLOCK_TICK_BUDGET_MS);
-    const { userId } = await signInAs(page, baseURL!, scope);
-    await fillCap(userId);
-
-    const draft = await publishOwned(page, baseURL!, scope, "E06 expiring");
-    expect(draft.outcome).toBe("owned_draft");
-
-    // Seconds away, not already past: the point is that the card is CORRECT when
-    // the screen loads and then changes its mind on the clock's own tick. A draft
-    // that was already expired at first paint would prove only the initial render.
-    await db
-      .update(schema.sites)
-      .set({ expiresAt: new Date(Date.now() + 12_000) })
-      .where(eq(schema.sites.id, draft.siteId));
-
-    await page.goto("/dashboard");
-
-    const card = page.locator("article").filter({ hasText: draft.name });
-    await expect(card.getByText("Draft · under an hour left")).toBeVisible();
-
-    // The flip, driven by `ClockProvider`'s tick and nothing else. No reload, no
-    // refetch, no navigation between these two assertions.
-    await expect(card.getByText("Draft · expired")).toBeVisible({
-      timeout: CLOCK_TICK_BUDGET_MS,
-    });
-
-    // AND IT DOES NOT CLAIM TO BE LIVE. The row is still `live` — E07's sweep is
-    // what flips it and E07 does not exist — so a card reading `status` verbatim
-    // would have said "Live" all the way through this test.
-    expect(
-      (await readSite(draft.siteId)).status,
-      "the row is stale by design until E07 sweeps it",
-    ).toBe("live");
-    await expect(card.getByText("Live", { exact: true })).toHaveCount(0);
-  });
-
-  test("the screen paints from tokens, so it is correct in dark too (D4)", async ({
+  test("AC10: the shell has exactly Pages and Settings, a plan badge and an avatar menu — and no later epic", async ({
     page,
     baseURL,
   }) => {
     await signInAs(page, baseURL!, scope);
-    await publishOwned(page, baseURL!, scope, "E06 dark");
+    await publishOwned(page, baseURL!, scope, "E06 shell page");
+    await page.goto("/dashboard");
+    await expect(page.getByRole("heading", { level: 1, name: "Your pages" })).toBeVisible();
 
+    // Both presentations of the nav — the sidebar and the phone's tab bar —
+    // carry exactly two links, in the DOM, whichever one is on screen.
+    for (const nav of await page.locator('nav[aria-label="Studio"]').all()) {
+      const links = await nav
+        .locator("a")
+        .evaluateAll((anchors) =>
+          anchors.map((a) => [a.textContent?.trim(), a.getAttribute("href")]),
+        );
+      expect(links).toEqual([
+        ["Pages", "/dashboard"],
+        ["Settings", "/settings"],
+      ]);
+    }
+    await expect(page.locator('nav[aria-label="Studio"]')).toHaveCount(2);
+
+    await expect(page.getByTestId("plan-badge").first()).toHaveText("Free");
+
+    await page.getByTestId("account-menu-sidebar").click();
+    await expect(page.getByRole("menuitem", { name: "Sign out" })).toBeVisible();
+    await page.keyboard.press("Escape");
+
+    // No later epic's element exists anywhere — on the home, nor in the open
+    // publish sheet (whose agent and MCP blocks are E08/E09's).
+    for (const pattern of LATER_EPIC_TEXT) expect(await domText(page)).not.toMatch(pattern);
+    await page.getByRole("button", { name: "Publish", exact: true }).click();
+    await expect(page.getByTestId("publish-sheet")).toBeVisible();
+    for (const pattern of LATER_EPIC_TEXT) expect(await domText(page)).not.toMatch(pattern);
+  });
+
+  test("AC4: an account with no pages sees the mascot, the line and a large drop zone — and no counters", async ({
+    page,
+    baseURL,
+  }) => {
+    await signInAs(page, baseURL!, scope);
+    await page.goto("/dashboard");
+
+    const empty = page.getByTestId("empty-state");
+    await expect(empty.getByRole("heading", { name: "Nothing kept yet. Drop a file to begin." })).toBeVisible();
+    await expect(empty.locator("svg[data-mascot]")).toHaveAttribute("aria-hidden", "true");
+    await expect(empty.getByRole("button", { name: /Drop an \.html file/ })).toBeVisible();
+    await expect(page.getByRole("list", { name: "Summary" })).toHaveCount(0);
+    await expect(page.getByTestId("home-card")).toHaveCount(0);
+
+    // Phone width: same state, no horizontal scroll.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(empty).toBeVisible();
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    ).toBe(true);
+  });
+
+  test("AC5 + AC6 + AC9: counters, drafts by soonest expiry with the 48-hour chip, search, sort and ?view=list", async ({
+    page,
+    baseURL,
+  }) => {
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const alpha = await publishOwned(page, baseURL!, scope, "Alpha Tide");
+    const beta = await publishOwned(page, baseURL!, scope, "Beta Orbit");
+    const seeded = await seedKept(scope, userId, 2);
+    const later = await seedDraft(userId, new Date(Date.now() + 5 * DAY));
+    const urgent = await seedDraft(userId, new Date(Date.now() + 20 * HOUR));
+    const middle = await seedDraft(userId, new Date(Date.now() + 3 * DAY));
+    await seedVisits(alpha.siteId, 5);
+    await seedVisits(beta.siteId, 40);
+
+    await page.goto("/dashboard");
+
+    // AC5 — the counters, limits from limitsFor("free"), and the drafts strip.
+    await expect(summaryItem(page, "Kept")).toContainText(`4 / ${FREE.keptPages}`);
+    await expect(summaryItem(page, "Names")).toContainText(`0 / ${FREE.chosenNames}`);
+    await expect(summaryItem(page, "Drafts")).toContainText("3");
+
+    const strip = page.getByTestId("drafts-strip");
+    const wall = page.getByTestId("kept-wall");
+    await expect.poll(() => order(strip)).toEqual([urgent.siteId, middle.siteId, later.siteId]);
+
+    // AC9 — the last-48-hours chip is `--warning`; the others are not.
+    // The chip is the `<time>`'s parent.
+    const chip = (siteId: string, label: RegExp) =>
+      card(page, siteId).getByText(label).locator("xpath=..");
+    await expect(chip(urgent.siteId, /^Draft · \d+ hours left$/)).toHaveClass(/--warning/);
+    await expect(chip(middle.siteId, /^Draft · \d+ days left$/)).not.toHaveClass(/--warning/);
+
+    // AC6 — search over title and name, client-side.
+    const search = page.getByRole("searchbox", { name: "Search your pages" });
+    await search.fill("beta orbit");
+    await expect.poll(() => order(wall)).toEqual([beta.siteId]);
+    await expect(strip).toHaveCount(0);
+    await search.fill(seeded[1]!.slug);
+    await expect.poll(() => order(wall)).toEqual([seeded[1]!.siteId]);
+
+    // No results, and the way back.
+    await search.fill("zzz-nothing-here");
+    await expect(page.getByText(noSearchResults("zzz-nothing-here"))).toBeVisible();
+    await page.getByRole("button", { name: "Clear search" }).click();
+    await expect(search).toHaveValue("");
+    await expect.poll(async () => (await order(wall)).length).toBe(4);
+
+    // Most visited: the 7-day sum, descending — and pages with no data LAST.
+    await page.getByRole("button", { name: "Most visited" }).click();
+    await expect.poll(async () => (await order(wall))[0]).toBe(beta.siteId);
+    const byVisits = await order(wall);
+    expect(byVisits.slice(0, 2)).toEqual([beta.siteId, alpha.siteId]);
+    expect(byVisits.slice(2).sort()).toEqual(seeded.map((row) => row.siteId).sort());
+    await expect(card(page, beta.siteId)).toContainText("40 visits");
+
+    // Name: A → Z by what the card calls the page.
+    await page.getByRole("button", { name: "Name", exact: true }).click();
+    await expect.poll(async () => (await order(wall))[0]).toBe(alpha.siteId);
+
+    // ?view=list renders list rows and survives a reload.
+    await page.getByRole("button", { name: "List" }).click();
+    await expect(wall).toHaveAttribute("data-view", "list");
+    await expect(page).toHaveURL(/[?&]view=list\b/);
+    await page.reload();
+    await expect(page.getByTestId("kept-wall")).toHaveAttribute("data-view", "list");
+    await expect(page.getByRole("button", { name: "List" })).toHaveAttribute("aria-pressed", "true");
+
+    // Phone width: no horizontal page scroll (the strip scrolls inside itself).
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.getByTestId("kept-wall")).toBeVisible();
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    ).toBe(true);
+  });
+
+  test("AC9: a draft past expires_at flips to expired on the next tick, without a reload; expired-in-grace says how long is left", async ({
+    page,
+    baseURL,
+  }) => {
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const expiring = await seedDraft(userId, new Date(Date.now() + 20_000));
+    const inGrace = await seedDraft(userId, new Date(Date.now() - 2 * DAY - HOUR), {
+      status: "expired",
+      purgeAfter: new Date(Date.now() + 10 * DAY + HOUR),
+    });
+
+    // The browser's clock, under the test's control — the ROW is real and
+    // untouched; only the minute tick is advanced instead of waited for.
+    await page.clock.install();
+    await page.goto("/dashboard");
+
+    const flipping = card(page, expiring.siteId);
+    await expect(flipping.getByText("Draft · under an hour left")).toBeVisible();
+    await page.clock.fastForward("01:00");
+    await expect(flipping.getByText("Draft · expired")).toBeVisible();
+    await expect(flipping.getByText(/^Expired today — keep within \d+ days$/)).toBeVisible();
+    expect((await readSite(expiring.siteId)).status, "E07 flips the row, not this screen").toBe("live");
+
+    // Expired inside its grace: muted, with the PRD's sentence and a Keep.
+    const grace = card(page, inGrace.siteId);
+    await expect(grace.getByText("Expired 2 days ago — keep within 11 days")).toBeVisible();
+    await expect(grace.getByTestId("keep-button")).toHaveText(/^Keep/);
+  });
+
+  test("AC7 + AC8: a dropped HTML file publishes, a .png is refused without a request, and the same bytes twice make one page", async ({
+    page,
+    baseURL,
+  }) => {
+    const { userId } = await signInAs(page, baseURL!, scope);
+    await publishOwned(page, baseURL!, scope, "E06 drop neighbour");
+    await page.goto("/dashboard");
+    await hydrated(page);
+
+    const posts: string[] = [];
+    page.on("request", (request) => {
+      if (request.method() === "POST" && new URL(request.url()).pathname === "/api/sites") {
+        posts.push(request.url());
+      }
+    });
+
+    // A .png anywhere on the home: the PRD's sentence, and nothing sent.
+    const anywhere = page.getByRole("heading", { level: 1, name: "Your pages" });
+    await drop(page, anywhere, { name: "shot.png", type: "image/png", body: "\u0089PNG" });
+    await expect(page.getByTestId("publish-error")).toHaveText(PNG_REFUSAL);
+    expect(posts, "a refused file never becomes a request").toEqual([]);
+
+    // An HTML file anywhere on the home: published, kept, toasted, highlighted.
+    const title = `E06 dropped ${crypto.randomUUID().slice(0, 8)}`;
+    const html = titledHtml(title);
+    await drop(page, anywhere, { name: "dropped.html", type: "text/html", body: html });
+    await expect(page.getByText(PUBLISHED_KEPT_TOAST)).toBeVisible({ timeout: LIVE_STACK_TIMEOUT });
+    expect(posts).toHaveLength(1);
+
+    const rows = () =>
+      db
+        .select({ id: schema.sites.id, slug: schema.sites.slug, expiresAt: schema.sites.expiresAt })
+        .from(schema.sites)
+        .where(and(eq(schema.sites.ownerId, userId), eq(schema.sites.title, title)));
+    const [row] = await rows();
+    expect(row, "the drop created the page").toBeDefined();
+    scope.siteIds.push(row!.id);
+    scope.slugs.add(row!.slug);
+    expect(row!.expiresAt, "under the limit it lands kept").toBeNull();
+    await expect(card(page, row!.id)).toHaveAttribute("data-highlighted", "true");
+
+    // AC8 — the same bytes again: no new page, the toast, the card highlighted.
+    await expect(card(page, row!.id)).not.toHaveAttribute("data-highlighted", "true", { timeout: 10_000 });
+    await drop(page, anywhere, { name: "dropped-again.html", type: "text/html", body: html });
+    await expect(page.getByText(ALREADY_PUBLISHED_NOTICE)).toBeVisible({ timeout: LIVE_STACK_TIMEOUT });
+    await expect(card(page, row!.id)).toHaveAttribute("data-highlighted", "true");
+    expect(await rows(), "publishing identical bytes twice creates one page").toHaveLength(1);
+
+    // Paste (design ↔ PRD call 9): the sheet posts { html } to the same route.
+    const pasted = `E06 pasted ${crypto.randomUUID().slice(0, 8)}`;
+    await page.getByRole("button", { name: "Publish", exact: true }).click();
+    const sheet = page.getByTestId("publish-sheet");
+    await sheet.getByRole("button", { name: "Or paste HTML" }).click();
+    await sheet.getByRole("textbox", { name: "Paste HTML" }).fill(titledHtml(pasted));
+    await sheet.getByRole("button", { name: "Publish pasted HTML" }).click();
+    await expect(sheet).toBeHidden({ timeout: LIVE_STACK_TIMEOUT });
+    const [pastedRow] = await db
+      .select({ id: schema.sites.id, slug: schema.sites.slug })
+      .from(schema.sites)
+      .where(and(eq(schema.sites.ownerId, userId), eq(schema.sites.title, pasted)));
+    expect(pastedRow, "the paste created the page").toBeDefined();
+    scope.siteIds.push(pastedRow!.id);
+    scope.slugs.add(pastedRow!.slug);
+    await expect(card(page, pastedRow!.id)).toBeVisible();
+  });
+
+  test("AC2 (UI): at the kept limit — KEPT turns warning, the banner dismisses for the session, and a publish lands as a draft", async ({
+    page,
+    baseURL,
+  }) => {
+    const { userId } = await signInAs(page, baseURL!, scope);
+    await seedKept(scope, userId, FREE.keptPages - 1);
+    const last = await publishOwned(page, baseURL!, scope, "E06 last slot");
+    expect(last.outcome).toBe("kept");
+
+    await page.goto("/dashboard");
+    await hydrated(page);
+
+    await expect(summaryItem(page, "Kept")).toContainText(`${FREE.keptPages} / ${FREE.keptPages}`);
+    await expect(summaryItem(page, "Kept")).toHaveClass(/text-warning/);
+
+    const banner = page.getByTestId("limit-banner");
+    await expect(banner).toContainText(atLimitBanner(FREE.keptPages));
+    await expect(banner).toContainText(`Keep ${PRO.keptPages.toLocaleString("en-US")} pages with Pro`);
+    await banner.getByRole("button", { name: "Dismiss" }).click();
+    await expect(banner).toHaveCount(0);
+
+    const title = `E06 at limit ${crypto.randomUUID().slice(0, 8)}`;
+    await drop(page, page.getByRole("heading", { level: 1, name: "Your pages" }), {
+      name: "at-limit.html",
+      type: "text/html",
+      body: titledHtml(title),
+    });
+    await expect(page.getByText(atLimitPublishToast(FREE.keptPages))).toBeVisible({
+      timeout: LIVE_STACK_TIMEOUT,
+    });
+
+    const [row] = await db
+      .select({ id: schema.sites.id, slug: schema.sites.slug, expiresAt: schema.sites.expiresAt })
+      .from(schema.sites)
+      .where(and(eq(schema.sites.ownerId, userId), eq(schema.sites.title, title)));
+    expect(row).toBeDefined();
+    scope.siteIds.push(row!.id);
+    scope.slugs.add(row!.slug);
+    expect(row!.expiresAt, "at the limit the page lands as a draft, never an error").not.toBeNull();
+
+    // The new draft is in the strip, and at the limit its action is Swap….
+    const draftCard = page.getByTestId("drafts-strip").locator(`[data-site-id="${row!.id}"]`);
+    await expect(draftCard.getByTestId("keep-button")).toHaveText(/^Swap…/);
+    // The dismissal outlived the refresh that brought the new card in.
+    await expect(page.getByTestId("limit-banner")).toHaveCount(0);
+  });
+
+  test("Pro: the counters read the premium limits", async ({ page, baseURL }) => {
+    const { userId } = await signInAs(page, baseURL!, scope);
+    await db.update(schema.profiles).set({ plan: "premium" }).where(eq(schema.profiles.id, userId));
+    await publishOwned(page, baseURL!, scope, "E06 pro page");
+    await page.goto("/dashboard");
+
+    await expect(summaryItem(page, "Kept")).toContainText(`1 / ${PRO.keptPages}`);
+    await expect(summaryItem(page, "Names")).toContainText(`0 / ${PRO.chosenNames}`);
+    await expect(page.getByTestId("plan-badge").first()).toHaveText("Pro");
+    await expect(page.getByText(/with Pro/)).toHaveCount(0);
+  });
+
+  test("AC11 (UI): Keep below the limit, late keep in grace, and a 409 at_kept_limit race switches the card to Swap…", async ({
+    page,
+    baseURL,
+  }) => {
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const draft = await publishOwned(page, baseURL!, scope, "E06 keep me");
+    await demote(page, baseURL!, draft.siteId);
+    const late = await publishOwned(page, baseURL!, scope, "E06 keep me late");
+    await demote(page, baseURL!, late.siteId);
+    await db
+      .update(schema.sites)
+      .set({
+        status: "expired",
+        expiresAt: new Date(Date.now() - DAY - HOUR),
+        purgeAfter: new Date(Date.now() + 20 * DAY),
+      })
+      .where(eq(schema.sites.id, late.siteId));
+
+    await page.goto("/dashboard");
+    await hydrated(page);
+    const wall = page.getByTestId("kept-wall");
+
+    // Below the limit: Keep → the toast → the card moves to the wall.
+    await card(page, draft.siteId).getByTestId("keep-button").click();
+    await expect(page.getByText(KEPT_TOAST).first()).toBeVisible({ timeout: LIVE_STACK_TIMEOUT });
+    await expect(wall.locator(`[data-site-id="${draft.siteId}"]`)).toBeVisible({ timeout: LIVE_STACK_TIMEOUT });
+    expect((await readSite(draft.siteId)).expiresAt).toBeNull();
+
+    // Late keep: an expired draft inside its grace is restored and kept.
+    await card(page, late.siteId).getByTestId("keep-button").click();
+    await expect(wall.locator(`[data-site-id="${late.siteId}"]`)).toBeVisible({ timeout: LIVE_STACK_TIMEOUT });
+    const restored = await readSite(late.siteId);
+    expect(restored.status).toBe("live");
+    expect(restored.expiresAt).toBeNull();
+
+    // The race: one slot left when the screen renders, filled in another tab
+    // before the click. The server answers 409 at_kept_limit; the card turns
+    // into Swap… and the chooser opens.
+    const racer = await publishOwned(page, baseURL!, scope, "E06 racer");
+    await demote(page, baseURL!, racer.siteId);
+    await seedKept(scope, userId, FREE.keptPages - 3);
+    await page.goto("/dashboard");
+    await hydrated(page);
+    const racerButton = card(page, racer.siteId).getByTestId("keep-button");
+    await expect(racerButton).toHaveText(/^Keep/);
+    await seedKept(scope, userId, 1);
+    await racerButton.click();
+    await expect(page.getByTestId("swap-dialog")).toBeVisible({ timeout: LIVE_STACK_TIMEOUT });
+    await page.getByTestId("swap-cancel").click();
+    await expect(racerButton).toHaveText(/^Swap…/);
+    expect((await readSite(racer.siteId)).expiresAt, "nothing was written").not.toBeNull();
+
+    // And on a fresh render at the limit, the action simply reads Swap….
+    await page.reload();
+    await expect(card(page, racer.siteId).getByTestId("keep-button")).toHaveText(/^Swap…/);
+  });
+
+  test("card drop: identical bytes are a no-op, new bytes replace with Undo, and an under-review card takes no drop", async ({
+    page,
+    baseURL,
+  }) => {
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const target = await publishOwned(page, baseURL!, scope, "E06 replace me");
+    const [flagged] = await seedKept(scope, userId, 1);
+    await db
+      .update(schema.sites)
+      .set({ status: "under_review" })
+      .where(eq(schema.sites.id, flagged!.siteId));
+    const original = (await readSite(target.siteId)).currentVersionId;
+
+    await page.goto("/dashboard");
+    await hydrated(page);
+    const article = card(page, target.siteId).locator("article");
+
+    await drop(page, article, { name: "same.html", type: "text/html", body: target.html });
+    await expect(page.getByText("No changes — that's already the live version.")).toBeVisible({
+      timeout: LIVE_STACK_TIMEOUT,
+    });
+    expect((await readSite(target.siteId)).currentVersionId).toBe(original);
+
+    await drop(page, article, {
+      name: "new.html",
+      type: "text/html",
+      body: titledHtml(`E06 replaced ${crypto.randomUUID().slice(0, 8)}`),
+    });
+    const toast = page.locator("[data-sonner-toast]").filter({ hasText: REPLACED_TOAST });
+    await expect(toast).toBeVisible({ timeout: LIVE_STACK_TIMEOUT });
+    const replaced = (await readSite(target.siteId)).currentVersionId;
+    expect(replaced).not.toBe(original);
+
+    await toast.getByRole("button", { name: "Undo" }).click();
+    await expect(page.getByText(UNDONE_TOAST)).toBeVisible({ timeout: LIVE_STACK_TIMEOUT });
+    expect((await readSite(target.siteId)).currentVersionId, "Undo restores the previous version").toBe(
+      original,
+    );
+
+    // Edge case 10: a page under review cannot be replaced, so it is no drop
+    // target and offers no Replace file.
+    const reviewed = card(page, flagged!.siteId);
+    await expect(reviewed.locator("[data-drop-target]")).toHaveCount(0);
+    await expect(reviewed.getByRole("button", { name: /Replace file/ })).toHaveCount(0);
+  });
+
+  test("the screen paints from tokens, so it is correct in dark too", async ({ page, baseURL }) => {
+    await signInAs(page, baseURL!, scope);
+    await publishOwned(page, baseURL!, scope, "E06 dark");
     await page.goto("/dashboard");
     await waitForTokensApplied(page);
 
-    const surface = page.locator("article").first();
+    const surface = page.locator('[data-testid="home-card"] article').first();
     const readColours = () =>
       surface.evaluate((node) => {
         const style = getComputedStyle(node);
         return { bg: style.backgroundColor, fg: style.color };
       });
-
     const light = await readColours();
 
-    // Imperatively, exactly as `auth-screen`, `anon-keep-flow` and `smoke` do it:
-    // v1 pins `forcedTheme="light"` and there is no toggle, so the ONLY way to
-    // assert the `[data-theme="dark"]` block still resolves on a new screen is to
-    // stamp the attribute. This is what keeps dark correct for the day it is
-    // switched on; it is not a claim that dark is shipped.
-    await page.evaluate(() =>
-      document.documentElement.setAttribute("data-theme", "dark"),
-    );
+    // Imperatively, as `auth-screen` and `smoke` do: v1 pins light and has no
+    // toggle, so stamping the attribute is the only way to prove the dark token
+    // block still resolves on this screen. Not a claim that dark ships.
+    await page.evaluate(() => document.documentElement.setAttribute("data-theme", "dark"));
     const dark = await readColours();
-
     expect(dark.bg, "a card painted from tokens repaints in dark").not.toBe(light.bg);
     expect(dark.fg, "and so does its text").not.toBe(light.fg);
   });

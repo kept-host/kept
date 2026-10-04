@@ -142,10 +142,13 @@ after(async () => {
 });
 
 test(
-  "the split is expires_at != null, and every status is returned rather than hidden",
+  "the split is expires_at != null; flagged pages are shown, archived and past-grace ones are not",
   { skip: skipLive },
   async () => {
     const { getDashboardSites } = await import("./dashboard");
+    const db = await client();
+    const { sites } = await schema();
+    const { eq } = await import("drizzle-orm");
     const profileId = await makeProfile();
 
     const keptLive = await makeSite({
@@ -160,28 +163,33 @@ test(
       kept: true,
       status: "quarantined",
     });
-    const archived = await makeSite({ ownerId: profileId, kept: true, status: "archived" });
-    const expired = await makeSite({ ownerId: profileId, kept: false, status: "expired" });
+    const reviewedDraft = await makeSite({ ownerId: profileId, kept: false, status: "under_review" });
+    await makeSite({ ownerId: profileId, kept: true, status: "archived" });
+    const expiredInGrace = await makeSite({ ownerId: profileId, kept: false, status: "expired" });
+    const expiredPastGrace = await makeSite({ ownerId: profileId, kept: false, status: "expired" });
+    await db
+      .update(sites)
+      .set({ purgeAfter: new Date(Date.now() - MS_PER_DAY) })
+      .where(eq(sites.id, expiredPastGrace.id));
 
-    const { kept, drafts, quota } = await getDashboardSites(profileId);
+    const { kept, drafts, quota, names } = await getDashboardSites(profileId);
 
     assert.deepEqual(
       [...kept.map((s) => s.id)].sort(),
-      [keptLive.id, quarantined.id, archived.id].sort(),
-      "clockless rows are kept-side regardless of status — the split is the clock, only the clock",
+      [keptLive.id, quarantined.id].sort(),
+      "the wall is isKeptCondition: a flagged kept page stays, an archived one does not",
     );
     assert.deepEqual(
       [...drafts.map((s) => s.id)].sort(),
-      [draft.id, expired.id].sort(),
-      "an expired-but-unswept row is still a draft: it has a clock",
+      [draft.id, reviewedDraft.id, expiredInGrace.id].sort(),
+      "drafts: serving or flagged, plus expired inside the grace window — not past it",
     );
 
-    // The quota is NOT kept.length. Three clockless rows, two slots used: the
-    // quarantined page still holds its slot (a flag is not a deletion); the
-    // archived one does not (E06 task 004's kept predicate).
-    assert.equal(kept.length, 3);
+    // The wall and the counter are the same predicate now, so they agree.
     const { keptPages } = limitsFor("free");
     assert.deepEqual(quota, { limit: keptPages, used: 2, remaining: keptPages - 2 });
+    assert.equal(kept.length, quota.used);
+    assert.equal(names, 0, "no page here has a chosen name");
 
     const row = kept.find((s) => s.id === keptLive.id);
     assert.ok(row, "the kept page is present");
@@ -191,6 +199,7 @@ test(
     assert.equal(row.expiresAt, null);
     assert.equal(row.purgeAfter, null);
     assert.equal(row.sizeBytes, 256);
+    assert.equal(row.visits, null, "no page_views_daily rows → null, never 0");
     assert.ok(row.currentVersionId, "the join key is projected");
     assert.equal(
       row.versionCreatedAt?.getTime(),
@@ -198,7 +207,7 @@ test(
       "the current version joined in on one round trip",
     );
 
-    const versionless = kept.find((s) => s.id === archived.id);
+    const versionless = kept.find((s) => s.id === quarantined.id);
     assert.ok(versionless, "a row with no current version is NOT dropped by the join");
     assert.equal(versionless.currentVersionId, null);
     assert.equal(versionless.versionCreatedAt, null);
@@ -207,6 +216,39 @@ test(
       null,
       "a titleless page is a permanent, correct state — the caller renders `title ?? slug`",
     );
+  },
+);
+
+test(
+  "drafts come back soonest expires_at first, and each page carries its recent visits",
+  { skip: skipLive },
+  async () => {
+    const { getDashboardSites } = await import("./dashboard");
+    const db = await client();
+    const { pageViewsDaily, sites } = await schema();
+    const { eq } = await import("drizzle-orm");
+    const profileId = await makeProfile();
+
+    const later = await makeSite({ ownerId: profileId, kept: false });
+    const sooner = await makeSite({ ownerId: profileId, kept: false });
+    await db
+      .update(sites)
+      .set({ expiresAt: new Date(Date.now() + 2 * MS_PER_DAY) })
+      .where(eq(sites.id, sooner.id));
+    // Touched last, so an `updated_at` order would put it first — it must not.
+    await db.update(sites).set({ updatedAt: new Date() }).where(eq(sites.id, later.id));
+
+    const yesterday = new Date(Date.now() - MS_PER_DAY).toISOString().slice(0, 10);
+    await db.insert(pageViewsDaily).values({ siteId: sooner.id, day: yesterday, views: 9 });
+
+    const { drafts, visitsFailed } = await getDashboardSites(profileId);
+    assert.deepEqual(
+      drafts.map((s) => s.id),
+      [sooner.id, later.id],
+    );
+    assert.equal(drafts[0]?.visits, 9);
+    assert.equal(drafts[1]?.visits, null);
+    assert.equal(visitsFailed, false);
   },
 );
 
@@ -287,9 +329,30 @@ test(
       const result = await getDashboardSites(profileId);
       assert.deepEqual(result.kept, []);
       assert.deepEqual(result.drafts, []);
+      assert.equal(result.names, 0);
       assert.deepEqual(result.quota, { limit: keptPages, used: 0, remaining: keptPages }, plan);
 
       assert.equal(await getOwnedSiteBySlug(profileId, "e06-002-nothing-here"), null);
     }
+  },
+);
+
+test(
+  "bug 5: an archived kept row is absent from both arrays",
+  { skip: skipLive },
+  async () => {
+    const { getDashboardSites } = await import("./dashboard");
+    const profileId = await makeProfile();
+
+    const live = await makeSite({ ownerId: profileId, kept: true });
+    const archivedKept = await makeSite({ ownerId: profileId, kept: true, status: "archived" });
+    const archivedDraft = await makeSite({ ownerId: profileId, kept: false, status: "archived" });
+
+    const { kept, drafts } = await getDashboardSites(profileId);
+    const ids = [...kept, ...drafts].map((s) => s.id);
+
+    assert.ok(ids.includes(live.id), "the live kept page is on the home");
+    assert.ok(!ids.includes(archivedKept.id), "an archived kept page is not on the home");
+    assert.ok(!ids.includes(archivedDraft.id), "an archived draft is not on the home");
   },
 );
