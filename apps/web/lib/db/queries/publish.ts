@@ -12,8 +12,8 @@
  * inconsistency with a defined unwind (`deleteSiteCascade`) rather than an
  * object in R2 that nobody can name.
  */
-import type { Region, SiteStatus } from "@kept/shared";
-import { and, desc, eq, gt, sql } from "drizzle-orm";
+import type { PublishChannel, Region, SiteStatus } from "@kept/shared";
+import { and, desc, eq, gt, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 
 import { mintSlugCandidate } from "../../publish/slug";
 import { db, type Tx } from "../index";
@@ -154,6 +154,59 @@ export async function claimDedupCandidate(input: {
   });
 }
 
+/**
+ * The statuses in which an owned page still counts as "already published" for
+ * the studio's dedup (PRD §5.1, AC8): the ones a page can hold while it is
+ * still the owner's page on the internet, including E07's two flags. `expired`
+ * is not here, and neither is a `live` draft whose clock has run out but which
+ * the expiry sweep has not reached yet — both are offline (or about to be), so
+ * re-publishing their bytes mints a fresh page instead of pointing at a dead
+ * one. `archived` and `removed` are gone.
+ */
+export const OWNER_DEDUP_STATUSES = [
+  "live",
+  "under_review",
+  "quarantined",
+] as const satisfies readonly SiteStatus[];
+
+/**
+ * The studio's dedup probe: this OWNER's newest active page with these exact
+ * bytes, or `null` — E06 task 005, PRD §5.1, AC8.
+ *
+ * ⚠️ IT TAKES THE CALLER'S TRANSACTION, WHICH MUST ALREADY HOLD `lockOwner`.
+ * That lock is what makes two identical publishes from two tabs converge: the
+ * second waits on the first, then probes a snapshot that includes the first's
+ * row. A probe outside the lock is a check-then-insert race that mints two.
+ *
+ * Scoped by `owner_id`, never global and never by `publisher_hash` — the
+ * keyless probe above is per publisher because a stranger must never be handed
+ * somebody else's page; here the account IS the authority, so the same bytes
+ * from a second device are still this account's one page.
+ *
+ * Returns the id only; the caller reads the row it answers with through the
+ * same transaction.
+ */
+export async function findOwnedDuplicate(
+  tx: Tx,
+  ownerId: string,
+  contentHash: string,
+): Promise<string | null> {
+  const [row] = await tx
+    .select({ id: sites.id })
+    .from(sites)
+    .where(
+      and(
+        eq(sites.ownerId, ownerId),
+        eq(sites.contentHash, contentHash),
+        inArray(sites.status, OWNER_DEDUP_STATUSES),
+        or(isNull(sites.expiresAt), gt(sites.expiresAt, sql`now()`)),
+      ),
+    )
+    .orderBy(desc(sites.createdAt))
+    .limit(1);
+  return row?.id ?? null;
+}
+
 export interface AnonymousDraftInput {
   /** Pre-generated so the R2 key is known before the row exists. */
   siteId: string;
@@ -173,6 +226,11 @@ export interface AnonymousDraftInput {
    * path cannot forget it and quietly ship a wall of slugs.
    */
   title: string | null;
+  /**
+   * The door these bytes came through (§5.9): `web` or `api` on this path.
+   * REQUIRED for the reason `title` is — the column's default is a guess.
+   */
+  publishedVia: PublishChannel;
 }
 
 /**
@@ -223,6 +281,7 @@ export async function insertAnonymousDraft(
           r2Key: input.r2Key,
           contentHash: input.contentHash,
           sizeBytes: input.sizeBytes,
+          publishedVia: input.publishedVia,
         });
       });
       return { slug };
@@ -255,6 +314,8 @@ export interface OwnedPageInput {
   purgeAfter: Date | null;
   /** When the page became this account's. On this path, its creation. */
   claimedAt: Date;
+  /** The door these bytes came through (§5.9) — `studio` for `POST /api/sites`. */
+  publishedVia: PublishChannel;
 }
 
 /**
@@ -308,6 +369,7 @@ export async function insertOwnedPage(tx: Tx, input: OwnedPageInput): Promise<vo
     r2Key: input.r2Key,
     contentHash: input.contentHash,
     sizeBytes: input.sizeBytes,
+    publishedVia: input.publishedVia,
   });
 }
 
@@ -444,9 +506,23 @@ export interface ReplaceVersionInput {
    * Re-extracted from the NEW bytes. Required, and set in the SAME statement as
    * the `current_version_id` swap below: a replace that updates the bytes but
    * not the title leaves the dashboard confidently displaying the PREVIOUS
-   * page's name, which is worse than displaying the slug.
+   * page's name, which is worse than displaying the slug. Unless the OWNER set
+   * the title — see `htmlTitle`.
    */
   title: string | null;
+  /** The door these bytes came through (§5.9). */
+  publishedVia: PublishChannel;
+}
+
+/**
+ * `sites.title` for a write that carries new bytes (D11): the HTML's title,
+ * unless the owner set one (`title_source = 'owner'`), which no replace may
+ * overwrite. Decided IN the UPDATE, against the row as it is at that instant,
+ * so an owner's title edit racing a replace can never be lost to a value read
+ * a moment earlier.
+ */
+function htmlTitle(title: string | null): SQL {
+  return sql`case when ${sites.titleSource} = 'owner' then ${sites.title} else ${title} end`;
 }
 
 /**
@@ -463,8 +539,8 @@ export interface ReplaceVersionInput {
  */
 export async function insertReplacementVersion(
   input: ReplaceVersionInput,
-): Promise<void> {
-  await db.transaction(async (tx) => {
+): Promise<{ title: string | null }> {
+  return db.transaction(async (tx) => {
     await tx.insert(siteVersions).values({
       id: input.versionId,
       siteId: input.siteId,
@@ -472,17 +548,21 @@ export async function insertReplacementVersion(
       r2Key: input.r2Key,
       contentHash: input.contentHash,
       sizeBytes: input.sizeBytes,
+      publishedVia: input.publishedVia,
     });
-    await tx
+    const [row] = await tx
       .update(sites)
       .set({
         currentVersionId: input.versionId,
-        title: input.title,
+        title: htmlTitle(input.title),
         contentHash: input.contentHash,
         sizeBytes: input.sizeBytes,
         updatedAt: new Date(),
       })
-      .where(eq(sites.id, input.siteId));
+      .where(eq(sites.id, input.siteId))
+      // The title the row ENDED UP with — the owner's, when they set one.
+      .returning({ title: sites.title });
+    return { title: row?.title ?? null };
   });
 }
 
@@ -507,7 +587,8 @@ export async function revertReplacementVersion(input: {
       .update(sites)
       .set({
         currentVersionId: input.previous.versionId,
-        title: input.previous.title,
+        // Guarded like the forward write: an owner title set in between stays.
+        title: htmlTitle(input.previous.title),
         contentHash: input.previous.contentHash,
         sizeBytes: input.previous.sizeBytes,
         updatedAt: new Date(),

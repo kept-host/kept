@@ -22,13 +22,13 @@ import type { NextResponse } from "next/server";
 import { getSession } from "../../../../../lib/auth/session";
 import { getProfileForSession } from "../../../../../lib/db/queries/profile";
 import {
-  errorResponse,
   readPageBody,
   UnreadableBodyError,
 } from "../../../../../lib/publish/http";
 import { refuseUntrustedOrigin } from "../../../../../lib/publish/origin";
 import {
   ownerResponse,
+  refuse,
   replaceOwnedSite,
   signedOut,
 } from "../../../../../lib/sites/owner-routes";
@@ -58,7 +58,7 @@ export async function POST(
     body = await readPageBody(request);
   } catch (err) {
     if (err instanceof UnreadableBodyError) {
-      return errorResponse(400, { error: "invalid_request", message: err.message });
+      return ownerResponse(refuse("invalid_request", err.message));
     }
     throw err;
   }

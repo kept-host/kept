@@ -3,6 +3,7 @@ import {
   MAX_PAGE_BYTES,
   ownedPublishResultSchema,
   publishErrorSchema,
+  studioErrorSchema,
 } from "@kept/shared";
 import { expect, test, type APIRequestContext } from "@playwright/test";
 import { config } from "dotenv";
@@ -17,8 +18,8 @@ import { seedKept } from "./owner-fixtures";
 import { jarlessContext, sessionHeaders } from "./session-request";
 
 /**
- * `POST /api/sites` over the wire, against the REAL dev stack — E06 task 004,
- * epic decision **D1**.
+ * `POST /api/sites` over the wire, against the REAL dev stack — decision **D9**,
+ * acceptance criteria **2** (route half), **8** and **44** (this route).
  *
  * NO MOCKS. Every page an assertion is about is published through the real
  * endpoint by a real session minted through the real magic-link verify, so each
@@ -36,15 +37,18 @@ import { jarlessContext, sessionHeaders } from "./session-request";
  *      row**, read out of the database rather than inferred from the response.
  *      A signed-in publish that minted a bearer token would put two authorities
  *      on one page, which is the exact shape D1 rejects.
- *   2. **The cap degrades, it never errors.** At the plan's kept limit the page
- *      still lands — owned, serving, with both clocks set — at HTTP **200**.
- *      There is no 4xx for being full and there must never be one.
- *   3. **Two tabs cannot exceed the cap.** Two publishes fired concurrently one
- *      slot short of the limit produce exactly one `kept` and one
- *      `owned_draft`, proven by RACING REAL REQUESTS rather than by reading the
- *      transaction that is supposed to prevent it.
- *   4. **Every refusal creates nothing** — signed out, cross-origin, empty and
- *      oversized bodies all leave the account with the pages it had.
+ *   2. **The cap degrades, it never errors (AC2).** With one slot left the page
+ *      lands kept at **201**; the next lands as an owned draft — serving, both
+ *      clocks set — at **201** too. There is no 4xx for being full.
+ *   3. **Two tabs cannot exceed the cap.** Two DIFFERENT publishes fired
+ *      concurrently one slot short of the limit produce exactly one kept page
+ *      and one owned draft, proven by RACING REAL REQUESTS.
+ *   4. **The same bytes are one page (AC8).** Published twice — one after the
+ *      other, or racing — the account gets ONE page, and the second answer is
+ *      `200 { site, duplicate: true }` pointing at it.
+ *   5. **Every refusal creates nothing** — signed out (401), cross-origin (E05a's
+ *      flat 403, AC44), empty and oversized bodies (the studio envelope's
+ *      `invalid_file` / `file_too_large`) all leave the account as it was.
  *
  * SKIPS without dev credentials: CI runs on fork PRs with no secrets.
  */
@@ -152,7 +156,15 @@ test.describe("owned publish", () => {
       data: { html },
     });
 
-  /** Publish and parse through the shared schema, recording the row for teardown. */
+  /** Parse a success through the shared schema, recording the page for teardown. */
+  async function parsed(response: Awaited<ReturnType<typeof publish>>) {
+    const body = ownedPublishResultSchema.parse(await response.json());
+    if (!createdSiteIds.includes(body.site.id)) createdSiteIds.push(body.site.id);
+    createdSlugs.add(body.site.slug);
+    return body;
+  }
+
+  /** Publish a NEW page: 201, whichever side of the cap it lands on. */
   async function publishOk(
     request: APIRequestContext,
     baseURL: string,
@@ -161,11 +173,10 @@ test.describe("owned publish", () => {
   ) {
     const html = pageHtml(marker);
     const response = await publish(request, baseURL, cookie, html);
-    expect(response.status(), await response.text()).toBe(200);
-    const body = ownedPublishResultSchema.parse(await response.json());
-    createdSiteIds.push(body.siteId);
-    createdSlugs.add(body.slug);
-    return { body, html };
+    expect(response.status(), await response.text()).toBe(201);
+    const body = await parsed(response);
+    expect(body.duplicate, "a new page is not a duplicate").toBeUndefined();
+    return { site: body.site, html };
   }
 
   const readSite = async (id: string) => {
@@ -208,29 +219,27 @@ test.describe("owned publish", () => {
     return last;
   }
 
-  test("under the cap: the page is kept, owned, tokenless — and it serves", async ({
+  test("under the cap: 201, the page is kept, owned, tokenless, studio — and it serves", async ({
     request,
     baseURL,
   }) => {
     const { cookie, profileId } = await signIn(baseURL!);
-    const marker = `e06-004-${crypto.randomUUID().slice(0, 8)}`;
-    const { body, html } = await publishOk(request, baseURL!, cookie, marker);
+    const marker = `e06-005-${crypto.randomUUID().slice(0, 8)}`;
+    const { site, html } = await publishOk(request, baseURL!, cookie, marker);
 
-    expect(body.outcome).toBe("kept");
-    expect(body.liveUrl).toBe(`https://${body.slug}.${servingDomain()}`);
+    expect(site.expiresAt, "under the cap the page is kept: no clock").toBeNull();
+    expect(site.purgeAfter).toBeNull();
+    expect(site.status).toBe("live");
+    expect(site.liveUrl).toBe(`https://${site.slug}.${servingDomain()}`);
     // `pageHtml` puts the marker in `<title>`, so the card gets a human name.
-    expect(body.title).toBe(marker);
-    // The quota reflects the state AFTER this publish, so the dashboard repaints
-    // from the response without a refetch.
-    expect(body.quota.limit).toBe(FREE_LIMIT);
-    expect(body.quota.used).toBe(1);
-    expect(body.quota.remaining).toBe(FREE_LIMIT - 1);
+    expect(site.title).toBe(marker);
 
-    const row = await readSite(body.siteId);
+    const row = await readSite(site.id);
+    expect(site.updatedAt, "the answer is the row, read back").toBe(row.updatedAt.toISOString());
     expect(row.ownerId).toBe(profileId);
     // THE ASSERTION THIS FILE EXISTS FOR, read off the ROW rather than the
     // response: a signed-in publish mints no bearer credential, ever. Two
-    // authorities on one page is the bug D1 is written against.
+    // authorities on one page is the bug D9 is written against.
     expect(row.anonTokenHash).toBeNull();
     // …and `publisher_hash` IS recorded: an owned publish is still a publish,
     // and E07's volume governors key on that column.
@@ -241,47 +250,53 @@ test.describe("owned publish", () => {
     expect(row.status).toBe("live");
     expect(row.title).toBe(marker);
 
-    // R2 is keyed by siteId, never by slug.
-    expect(await r2Store().get(pageObjectKey(body.siteId, row.currentVersionId!))).toBe(html);
+    // §5.9: the version records the studio door.
+    const [version] = await db
+      .select({ publishedVia: schema.siteVersions.publishedVia })
+      .from(schema.siteVersions)
+      .where(eq(schema.siteVersions.id, row.currentVersionId!));
+    expect(version?.publishedVia).toBe("studio");
 
-    const served = await waitForServe(urlFor(body.slug));
+    // R2 is keyed by siteId, never by slug.
+    expect(await r2Store().get(pageObjectKey(site.id, row.currentVersionId!))).toBe(html);
+
+    const served = await waitForServe(urlFor(site.slug));
     expect(served.status).toBe(200);
     expect(served.body).toBe(html);
   });
 
-  test("at the cap: the page lands as an owned draft at HTTP 200, never a 4xx", async ({
+  test("AC2: one slot left, the next publish is 201 kept and the one after is 201 owned draft — never a 4xx", async ({
     request,
     baseURL,
   }) => {
     const { cookie, profileId } = await signIn(baseURL!);
 
-    // Fill the account to its limit: real kept rows, seeded rather than published.
-    await seedKept({ siteIds: createdSiteIds }, profileId, FREE_LIMIT);
+    // Fill the account to one short of its limit: real kept rows, seeded rather
+    // than published.
+    await seedKept({ siteIds: createdSiteIds }, profileId, FREE_LIMIT - 1);
+    expect(await countKept(profileId)).toBe(FREE_LIMIT - 1);
+
+    const last = await publishOk(request, baseURL!, cookie, `e06-005-last-${crypto.randomUUID().slice(0, 8)}`);
+    expect(last.site.expiresAt, "the last slot is a kept page").toBeNull();
     expect(await countKept(profileId)).toBe(FREE_LIMIT);
 
-    const marker = `e06-004-atcap-${crypto.randomUUID().slice(0, 8)}`;
-    const { body, html } = await publishOk(request, baseURL!, cookie, marker);
+    const marker = `e06-005-atcap-${crypto.randomUUID().slice(0, 8)}`;
+    const { site, html } = await publishOk(request, baseURL!, cookie, marker);
 
-    // THE CAP IS A BRANCH, NOT AN ERROR. `publishOk` already asserted 200.
-    expect(body.outcome).toBe("owned_draft");
-    expect(body.quota.limit).toBe(FREE_LIMIT);
-    expect(body.quota.used).toBe(FREE_LIMIT);
-    expect(body.quota.remaining).toBe(0);
+    // THE CAP IS A BRANCH, NOT AN ERROR. `publishOk` already asserted 201.
+    expect(site.expiresAt, "past the limit the page lands as a draft").not.toBeNull();
+    expect(site.purgeAfter).not.toBeNull();
 
-    const row = await readSite(body.siteId);
+    const row = await readSite(site.id);
     expect(row.ownerId, "the page is OWNED, it just has a clock").toBe(profileId);
     expect(row.anonTokenHash, "still no bearer token, even at the cap").toBeNull();
-    expect(row.expiresAt).not.toBeNull();
-    expect(row.purgeAfter).not.toBeNull();
     // The response's clocks are the row's, not a second computation.
-    const draft = body.outcome === "owned_draft" ? body : null;
-    expect(draft, "the page past the cap must carry the draft branch").not.toBeNull();
-    expect(draft!.expiresAt).toBe(row.expiresAt!.toISOString());
-    expect(draft!.purgeAfter).toBe(row.purgeAfter!.toISOString());
+    expect(site.expiresAt).toBe(row.expiresAt!.toISOString());
+    expect(site.purgeAfter).toBe(row.purgeAfter!.toISOString());
 
     // A draft is `live` and serves exactly like a kept page — the clock is the
     // only difference, and the edge knows nothing about it.
-    const served = await waitForServe(urlFor(body.slug));
+    const served = await waitForServe(urlFor(site.slug));
     expect(served.status).toBe(200);
     expect(served.body).toBe(html);
 
@@ -290,7 +305,7 @@ test.describe("owned publish", () => {
     expect(await countOwned(profileId)).toBe(FREE_LIMIT + 1);
   });
 
-  test("two concurrent publishes one slot short produce exactly one kept page", async ({
+  test("two different publishes racing one slot short produce exactly one kept page", async ({
     request,
     baseURL,
   }) => {
@@ -304,43 +319,74 @@ test.describe("owned publish", () => {
     // outside the insert's transaction lets both of these see the same count and
     // both land kept, producing one page more than the account may hold.
     const [first, second] = await Promise.all([
-      publish(request, baseURL!, cookie, pageHtml(`e06-004-race-a-${crypto.randomUUID().slice(0, 8)}`)),
-      publish(request, baseURL!, cookie, pageHtml(`e06-004-race-b-${crypto.randomUUID().slice(0, 8)}`)),
+      publish(request, baseURL!, cookie, pageHtml(`e06-005-race-a-${crypto.randomUUID().slice(0, 8)}`)),
+      publish(request, baseURL!, cookie, pageHtml(`e06-005-race-b-${crypto.randomUUID().slice(0, 8)}`)),
     ]);
 
-    expect(first.status(), await first.text()).toBe(200);
-    expect(second.status(), await second.text()).toBe(200);
-    const bodies = [
-      ownedPublishResultSchema.parse(await first.json()),
-      ownedPublishResultSchema.parse(await second.json()),
-    ];
-    for (const body of bodies) {
-      createdSiteIds.push(body.siteId);
-      createdSlugs.add(body.slug);
-    }
+    expect(first.status(), await first.text()).toBe(201);
+    expect(second.status(), await second.text()).toBe(201);
+    const bodies = [await parsed(first), await parsed(second)];
 
-    const outcomes = bodies.map((body) => body.outcome).sort();
-    expect(outcomes, "exactly one of the two may take the last slot").toEqual([
-      "kept",
-      "owned_draft",
-    ]);
-    // Both slugs are distinct pages: neither request was lost or deduped.
-    expect(bodies[0]!.siteId).not.toBe(bodies[1]!.siteId);
-    expect(bodies[0]!.slug).not.toBe(bodies[1]!.slug);
+    const branches = bodies.map((body) => (body.site.expiresAt === null ? "kept" : "draft")).sort();
+    expect(branches, "exactly one of the two may take the last slot").toEqual(["draft", "kept"]);
+    // Different bytes are different pages: neither request was lost or deduped.
+    expect(bodies[0]!.site.id).not.toBe(bodies[1]!.site.id);
+    expect(bodies[0]!.site.slug).not.toBe(bodies[1]!.site.slug);
 
     // And the database agrees with the responses.
     expect(await countKept(profileId)).toBe(FREE_LIMIT);
     expect(await countOwned(profileId)).toBe(FREE_LIMIT + 1);
   });
 
-  test("signed out is 401 and publishes nothing", async ({ request, baseURL }) => {
-    const marker = `e06-004-signed-out-${crypto.randomUUID().slice(0, 8)}`;
+  test("AC8: the same bytes twice are one page — the second answer is 200 { site, duplicate: true }", async ({
+    request,
+    baseURL,
+  }) => {
+    const { cookie, profileId } = await signIn(baseURL!);
+    const { site, html } = await publishOk(
+      request,
+      baseURL!,
+      cookie,
+      `e06-005-dup-${crypto.randomUUID().slice(0, 8)}`,
+    );
+
+    const again = await publish(request, baseURL!, cookie, html);
+    expect(again.status(), await again.text()).toBe(200);
+    const body = await parsed(again);
+    expect(body.duplicate).toBe(true);
+    expect(body.site, "the answer points at the FIRST page, as it stands").toEqual(site);
+    expect(await countOwned(profileId), "no second page was made").toBe(1);
+  });
+
+  test("AC8: two identical publishes racing converge on one page", async ({ request, baseURL }) => {
+    const { cookie, profileId } = await signIn(baseURL!);
+    const html = pageHtml(`e06-005-dup-race-${crypto.randomUUID().slice(0, 8)}`);
+
+    // The probe runs INSIDE the owner lock, so the second request waits for the
+    // first to commit and then finds its row — never two pages.
+    const responses = await Promise.all([
+      publish(request, baseURL!, cookie, html),
+      publish(request, baseURL!, cookie, html),
+    ]);
+
+    expect(responses.map((response) => response.status()).sort()).toEqual([200, 201]);
+    const bodies = await Promise.all(responses.map(parsed));
+    expect(bodies[0]!.site.id).toBe(bodies[1]!.site.id);
+    expect(bodies.filter((body) => body.duplicate === true)).toHaveLength(1);
+    expect(await countOwned(profileId)).toBe(1);
+  });
+
+  test("signed out is 401 in the studio envelope and publishes nothing", async ({
+    request,
+    baseURL,
+  }) => {
+    const marker = `e06-005-signed-out-${crypto.randomUUID().slice(0, 8)}`;
     const response = await request.post(`${baseURL}/api/sites`, {
       data: { html: pageHtml(marker) },
     });
 
     expect(response.status(), "the gate must hold before any store work").toBe(401);
-    publishErrorSchema.parse(await response.json());
+    studioErrorSchema.parse(await response.json());
 
     // No row exists carrying those bytes. Titles are extracted at write time, so
     // a page that was published despite the 401 would be findable by its name.
@@ -351,7 +397,7 @@ test.describe("owned publish", () => {
     expect(rows, "a refused publish creates no page").toHaveLength(0);
   });
 
-  test("a publish from a hosted page's origin is refused and creates nothing", async ({
+  test("AC44: a publish from a hosted page's origin is refused with E05a's own body and creates nothing", async ({
     request,
     baseURL,
   }) => {
@@ -360,25 +406,27 @@ test.describe("owned publish", () => {
       request,
       baseURL!,
       cookie,
-      `e06-004-csrf-seed-${crypto.randomUUID().slice(0, 8)}`,
+      `e06-005-csrf-seed-${crypto.randomUUID().slice(0, 8)}`,
     );
 
-    const marker = `e06-004-csrf-${crypto.randomUUID().slice(0, 8)}`;
+    const marker = `e06-005-csrf-${crypto.randomUUID().slice(0, 8)}`;
     const refused = await request.post(`${baseURL}/api/sites`, {
       // A REAL session cookie carrying a HOSTED page's origin: same-site, so
       // `SameSite=Lax` does not block it. A script on a page kept hosts filling
       // its visitor's account — and, at the cap, silently spending the slot they
       // were saving — is exactly the attack E05a exists for.
-      headers: { cookie, origin: `https://${seed.body.slug}.${servingDomain()}` },
+      headers: { cookie, origin: `https://${seed.site.slug}.${servingDomain()}` },
       data: { html: pageHtml(marker) },
     });
 
     expect(refused.status()).toBe(403);
+    // E05a's FLAT body, deliberately not the studio envelope: the gate runs
+    // before any route code and is pinned by `origin.test.ts`.
     expect(publishErrorSchema.parse(await refused.json()).error).toBe("invalid_request");
     expect(await countOwned(profileId), "the account gained no page").toBe(1);
   });
 
-  test("an empty and an oversized body are both refused, and nothing is created", async ({
+  test("an empty and an oversized body are refused in the envelope, and nothing is created", async ({
     request,
     baseURL,
   }) => {
@@ -386,7 +434,7 @@ test.describe("owned publish", () => {
 
     const empty = await publish(request, baseURL!, cookie, "");
     expect(empty.status()).toBe(400);
-    expect(publishErrorSchema.parse(await empty.json()).error).toBe("empty_page");
+    expect(studioErrorSchema.parse(await empty.json()).error.code).toBe("invalid_file");
 
     // One byte past `MAX_PAGE_BYTES`, from the shared constant — the same limit
     // the keyless path enforces, reached through the same schema.
@@ -397,7 +445,7 @@ test.describe("owned publish", () => {
       `<!doctype html><title>x</title>${"a".repeat(MAX_PAGE_BYTES)}`,
     );
     expect(oversized.status()).toBe(413);
-    expect(publishErrorSchema.parse(await oversized.json()).error).toBe("page_too_large");
+    expect(studioErrorSchema.parse(await oversized.json()).error.code).toBe("file_too_large");
 
     expect(await countOwned(profileId)).toBe(0);
   });

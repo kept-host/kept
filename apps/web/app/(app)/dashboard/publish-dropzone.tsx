@@ -11,10 +11,11 @@
  * throttle. Epic decision **D1**.
  *
  * ── THE CAP DEGRADES, IT NEVER ERRORS ────────────────────────────────────────
- * At the account's kept limit the route answers **HTTP 200** with `owned_draft`: the
- * page published, it is serving right now, the account owns it, and it carries a
- * clock. So the at-cap branch below is painted as a *result*, in the accent —
- * never in `--danger`, never with a failure verb — and it offers the concrete
+ * At the account's kept limit the route answers **HTTP 201** with an owned
+ * draft (`site.expiresAt` set): the page published, it is serving right now,
+ * the account owns it, and it carries a clock. So the at-cap branch below is
+ * painted as a *result*, in the accent — never in `--danger`, never with a
+ * failure verb — and it offers the concrete
  * way out, which is task 007's chooser mounted here rather than a sentence
  * telling somebody to go and find it. The prose route out (`atCapNote`, which
  * also names Pro) is already on screen and permanent: it is the header's
@@ -76,7 +77,12 @@ import {
   LOOKS_LIKE_MARKUP,
   publishErrorText,
 } from "@/lib/publish/client";
-import { atCapPublishNotice, pageName, publishedKeptNotice } from "@/lib/sites/display";
+import {
+  ALREADY_PUBLISHED_NOTICE,
+  atCapPublishNotice,
+  pageName,
+  publishedKeptNotice,
+} from "@/lib/sites/display";
 import { publishOwnedHtml } from "@/lib/sites/owner-client";
 import { cn } from "@/lib/utils";
 
@@ -151,18 +157,17 @@ export function PublishDropzone({ className }: { className?: string }) {
         // the input is cleared on every change, so `change` fires a second time
         // for the same choice.
         setPhase("idle");
-        setError(publishErrorText(outcome.error));
+        setError(outcome.error.message);
         return;
       }
 
       setPhase("done");
       setResult(outcome.page);
-      // The allowance, from the response that changed it — this is why the
-      // number on this card and the number in the header cannot disagree.
+      // The page, registered so the chooser can target it before the refresh.
       applyPublish(outcome.page);
-      // And the card itself, which nothing here can render: size, version stamp
-      // and thumbnail are all server-side, and the wall's two sections are a
-      // server split on `expires_at`. See the note in `keep-state.tsx`.
+      // And the card and the allowance, which nothing here can render: size,
+      // version stamp and thumbnail are all server-side, and the wall's two
+      // sections are a server split on `expires_at`. See `keep-state.tsx`.
       router.refresh();
     },
     [applyPublish, router],
@@ -276,8 +281,16 @@ export function PublishDropzone({ className }: { className?: string }) {
     return () => window.removeEventListener("paste", onPaste);
   }, [sendHtml]);
 
-  const atCap = result !== null && result.outcome === "owned_draft";
-  const name = result ? pageName(result) : "";
+  // `isDraft = expires_at != null` — the response carries no other signal. A
+  // duplicate is the account's EXISTING page, so it is neither branch.
+  const duplicate = result?.duplicate === true;
+  const atCap = result !== null && !duplicate && result.site.expiresAt !== null;
+  const name = result ? pageName(result.site) : "";
+  const notice = duplicate
+    ? ALREADY_PUBLISHED_NOTICE
+    : atCap
+      ? atCapPublishNotice(name)
+      : publishedKeptNotice(name);
 
   return (
     <section
@@ -356,9 +369,7 @@ export function PublishDropzone({ className }: { className?: string }) {
           : error
             ? error
             : result
-              ? atCap
-                ? atCapPublishNotice(name)
-                : publishedKeptNotice(name)
+              ? notice
               : ""}
       </p>
 
@@ -374,7 +385,13 @@ export function PublishDropzone({ className }: { className?: string }) {
 
       {result ? (
         <div
-          data-testid={atCap ? "publish-at-cap-notice" : "publish-kept-notice"}
+          data-testid={
+            duplicate
+              ? "publish-duplicate-notice"
+              : atCap
+                ? "publish-at-cap-notice"
+                : "publish-kept-notice"
+          }
           className={cn(
             "mt-5 flex flex-wrap items-center justify-between gap-x-6 gap-y-3 rounded-[var(--r-md)] border px-4 py-3",
             // Accent, not danger: at the cap the page published. Painting this
@@ -384,16 +401,16 @@ export function PublishDropzone({ className }: { className?: string }) {
           )}
         >
           <p className="max-w-[62ch] text-sm leading-relaxed text-text-secondary">
-            {atCap ? atCapPublishNotice(name) : publishedKeptNotice(name)}
+            {notice}
           </p>
 
           <div className="flex items-center gap-1">
             <CopyLinkButton
-              liveUrl={result.liveUrl}
+              liveUrl={result.site.liveUrl}
               label={
                 <>
                   Copy
-                  <span className="sr-only"> the link for {result.slug}</span>
+                  <span className="sr-only"> the link for {result.site.slug}</span>
                 </>
               }
               variant="ghost"
@@ -417,20 +434,18 @@ export function PublishDropzone({ className }: { className?: string }) {
       ) : null}
 
       {/* Task 007's chooser, mounted — not a copy of it. It only ever opens on
-          the `owned_draft` branch, where the account is full and the decision
+          the draft branch, where the account is full and the decision
           is which kept page stops being permanent. */}
       {result && atCap ? (
         <SwapDialog
           open={swapOpen}
           onOpenChange={setSwapOpen}
           keepTarget={{
-            id: result.siteId,
+            id: result.site.id,
             name,
-            slug: result.slug,
-            liveUrl: result.liveUrl,
-            // Just inserted by this request, and `publishOwnedSite` inserts
-            // nothing else. E07 writes every other status and cannot have run.
-            status: "live",
+            slug: result.site.slug,
+            liveUrl: result.site.liveUrl,
+            status: result.site.status,
           }}
           candidates={candidates}
           quota={quota}
@@ -438,17 +453,9 @@ export function PublishDropzone({ className }: { className?: string }) {
             applySwap(swapped);
             // Both pages changed section, and the wall's split is server-side.
             router.refresh();
-            // The notice above is now wrong about its own page: it is kept. Built
-            // field by field rather than spread, so the draft branch's clock
-            // cannot ride along into a shape that has no clock.
-            setResult({
-              outcome: "kept",
-              siteId: result.siteId,
-              slug: result.slug,
-              quota: swapped.kept.quota,
-              liveUrl: result.liveUrl,
-              title: result.title,
-            });
+            // The notice above is now wrong about its own page: it is kept, so
+            // its clocks are gone — exactly what the swap wrote to the row.
+            setResult({ site: { ...result.site, expiresAt: null, purgeAfter: null } });
           }}
         />
       ) : null}

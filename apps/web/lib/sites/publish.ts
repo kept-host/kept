@@ -1,5 +1,5 @@
 /**
- * Publishing as a signed-in owner — E06 task 004, epic decision **D1**.
+ * Publishing as a signed-in owner — `POST /api/sites`, decision **D9**.
  *
  * ── WHY THIS IS A THIRD VERB AND NOT A COMPOSITION OF TWO EXISTING ONES ──────
  *
@@ -21,7 +21,8 @@
  * `extractPageTitle`, the content check and the scan are the same `./hooks`
  * seams, the size cap is `MAX_PAGE_BYTES` through the same schema, and the slug
  * is `mintSlugCandidate` with the same generate-and-retry against
- * `sites_slug_key`. Nothing about the ordering is re-derived here.
+ * `sites_slug_key`. Nothing about the ordering is re-derived here. The version
+ * row records `published_via = 'studio'` (§5.9).
  *
  * ── WHAT DIFFERS, AND IT IS ONLY THIS ────────────────────────────────────────
  *   1. `owner_id` is set by the INSERT, and `anon_token_hash` never is.
@@ -31,10 +32,13 @@
  *      off the row `lockOwner` holds). Under the cap the page is kept (no
  *      clocks); at the cap it lands as an owned draft (both clocks set).
  *      **Never a 4xx for being full**, and there must never be one.
- *   3. There is no dedup probe. Dedup exists so an agent's retry loop converges
- *      on ONE anonymous page, and it works by rotating that page's bearer token
- *      — a mechanism this path has no token for. A signed-in user who publishes
- *      the same bytes twice asked for two pages and gets two pages.
+ *   3. Dedup is by OWNER, not by publisher (PRD §5.1, AC8): the same bytes
+ *      published twice by one account are ONE page. If the account already has
+ *      an active page (`OWNER_DEDUP_STATUSES`, clock not run out) with this
+ *      content hash, nothing is written and the existing page comes back with
+ *      `duplicate: true`. The probe runs INSIDE the `lockOwner` transaction, so
+ *      two identical publishes from two tabs queue on the lock and the second
+ *      finds the first's row. No token rotates: an owned page has none.
  *   4. There is no Turnstile check. The caller is authenticated by a `__Host-`
  *      session cookie and an origin check; a bot check on top of that protects
  *      nothing and would be a second thing to keep working.
@@ -51,11 +55,17 @@
  * the cap, the database and the store ordering. Same split as `./rename.ts` and
  * `./manage.ts`.
  */
-import { hashContent, hashPublisher, type OwnedPublishResult } from "@kept/shared";
+import {
+  hashContent,
+  hashPublisher,
+  type OwnedPublishResult,
+  type StudioSite,
+} from "@kept/shared";
 
 import { db } from "../db";
 import {
   deleteSiteCascade,
+  findOwnedDuplicate,
   insertOwnedPage,
   isSlugCollision,
   MAX_SLUG_ATTEMPTS,
@@ -65,7 +75,6 @@ import { enqueueScan } from "../publish/hooks";
 import { extractPageTitle } from "../publish/page-title";
 import {
   draftClocks,
-  liveUrl,
   writePageAndManifest,
   type PublisherContext,
 } from "../publish/pipeline";
@@ -74,16 +83,20 @@ import { publisherHashSalt } from "../storage/env";
 import { pageObjectKey } from "../storage/r2";
 
 import { keptQuotaFor, lockOwner } from "./keep";
+import { StudioRefusal } from "./studio-refusal";
+import { readStudioSite } from "./studio-site";
 
 /**
  * The bytes could not be published to the edge, and the row has been rolled
- * back. Mapped to the publish family's 500 — nothing is half-written, so the
- * honest answer is "retry", the same one `publishPage` gives for the same
- * failure.
+ * back. Nothing is half-written, so the honest answer is "retry".
  */
-export class OwnedPublishStoreError extends Error {
+export class OwnedPublishStoreError extends StudioRefusal {
   constructor(detail: string) {
-    super(`The page could not be published to the edge: ${detail}`);
+    super(
+      "internal_error",
+      "kept could not publish this page just now. Nothing was left half-written — try again in a moment.",
+      `The page could not be published to the edge: ${detail}`,
+    );
     this.name = "OwnedPublishStoreError";
   }
 }
@@ -92,30 +105,24 @@ function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** What the transaction decided: the name it took, and the cap branch it landed. */
-interface LandedRow {
-  slug: string;
-  /** `null` ⇒ kept. Set ⇒ the account was at the cap and this is an owned draft. */
-  clocks: { expiresAt: Date; purgeAfter: Date } | null;
-  /** Counted AFTER the insert, so it already includes this page. */
-  quota: Awaited<ReturnType<typeof keptQuotaFor>>;
+/** What the transaction decided: the page it inserted, or the one it already had. */
+interface Landed {
+  site: StudioSite;
+  duplicate: boolean;
 }
 
 /**
- * The cap decision and the insert, in ONE transaction, retried on a slug
- * collision with a fresh candidate.
+ * The dedup probe, the cap decision and the insert, in ONE transaction, retried
+ * on a slug collision with a fresh candidate.
  *
  * ⚠️ THE RETRY RE-OPENS THE TRANSACTION, WHICH RE-TAKES THE LOCK. A collision
  * aborts the transaction in Postgres, so the attempt cannot be continued in
- * place — and re-locking is correct rather than merely necessary: the cap must
- * be decided against the state that exists when the row is finally written, not
- * against a snapshot taken before another tab's publish committed.
+ * place — and re-locking is correct rather than merely necessary: the probe and
+ * the cap must be decided against the state that exists when the row is finally
+ * written, not against a snapshot taken before another tab's publish committed.
  *
- * The quota is read TWICE inside the lock, on purpose. The first read decides
- * the branch; the second, after the insert, is the number the dashboard
- * repaints from — it sees this page and needs no arithmetic to say so. Deriving
- * the second from the first would be a second implementation of the cap
- * arithmetic that `keptQuotaFor` exists to hold once.
+ * The `site` it returns is read back inside the lock, so its clocks and
+ * `updatedAt` are the row's, never a second computation of them.
  */
 async function insertWithMintedSlug(input: {
   siteId: string;
@@ -125,20 +132,27 @@ async function insertWithMintedSlug(input: {
   title: string | null;
   contentHash: string;
   sizeBytes: number;
-}): Promise<LandedRow> {
+}): Promise<Landed> {
   for (let attempt = 0; attempt < MAX_SLUG_ATTEMPTS; attempt++) {
     const slug = mintSlugCandidate();
     try {
-      return await db.transaction(async (tx) => {
+      return await db.transaction(async (tx): Promise<Landed> => {
         // THE SERIALISATION POINT. Everything below reads and writes behind it.
         await lockOwner(tx, input.ownerId);
 
+        // Behind the lock, so an identical publish from another tab has either
+        // committed (and is found here) or is queued behind this one.
+        const duplicateId = await findOwnedDuplicate(tx, input.ownerId, input.contentHash);
+        if (duplicateId !== null) {
+          return { site: await readStudioSite(tx, duplicateId), duplicate: true };
+        }
+
         // Plan-aware: `keptQuotaFor` reads the plan from the row locked above,
         // so a premium account is measured against its own limit, not the free one.
-        const before = await keptQuotaFor(input.ownerId, tx);
+        const quota = await keptQuotaFor(input.ownerId, tx);
         // The cap DEGRADES, it never errors: out of slots means this page lands
         // as an owned draft with a countdown, not a refused publish.
-        const clocks = before.remaining > 0 ? null : draftClocks(new Date());
+        const clocks = quota.remaining > 0 ? null : draftClocks(new Date());
 
         await insertOwnedPage(tx, {
           siteId: input.siteId,
@@ -155,9 +169,10 @@ async function insertWithMintedSlug(input: {
           // The page is this account's from its first byte, so the stamp that
           // records when it stopped being anonymous is its creation.
           claimedAt: new Date(),
+          publishedVia: "studio",
         });
 
-        return { slug, clocks, quota: await keptQuotaFor(input.ownerId, tx) };
+        return { site: await readStudioSite(tx, input.siteId), duplicate: false };
       });
     } catch (err) {
       if (!isSlugCollision(err)) throw err;
@@ -171,6 +186,8 @@ async function insertWithMintedSlug(input: {
  *
  * The caller has already validated the body and run the content heuristics.
  *
+ * @returns `{ site }` for a new page, `{ site, duplicate: true }` when this
+ *   account already has these bytes live — nothing is written for a duplicate.
  * @throws {SlugUnavailableError} minting exhausted its attempts — a 503
  * @throws {OwnedPublishStoreError} R2 or KV refused; the row is rolled back
  */
@@ -213,8 +230,12 @@ export async function publishOwnedPage(args: {
     sizeBytes,
   });
 
+  // The account already has this page. No row, no object, no manifest, no scan:
+  // the bytes are already live at the existing page's address.
+  if (landed.duplicate) return { site: landed.site, duplicate: true };
+
   const stored = await writePageAndManifest({
-    slug: landed.slug,
+    slug: landed.site.slug,
     siteId,
     versionId,
     r2Key,
@@ -224,13 +245,13 @@ export async function publishOwnedPage(args: {
 
   if (!stored.ok) {
     console.error(
-      `[kept] owned publish: store write failed for site ${siteId} (slug "${landed.slug}", object "${r2Key}") — ${stored.error}`,
+      `[kept] owned publish: store write failed for site ${siteId} (slug "${landed.site.slug}", object "${r2Key}") — ${stored.error}`,
     );
     try {
       await deleteSiteCascade(siteId);
     } catch (err) {
       console.error(
-        `[kept] ROLLBACK INCOMPLETE — orphan rows for site ${siteId} (slug "${landed.slug}"): ${message(err)}. E07 DIVERGENCE AUDIT: Postgres is the authority, never an R2 list (contract §7.5).`,
+        `[kept] ROLLBACK INCOMPLETE — orphan rows for site ${siteId} (slug "${landed.site.slug}"): ${message(err)}. E07 DIVERGENCE AUDIT: Postgres is the authority, never an R2 list (contract §7.5).`,
       );
     }
     throw new OwnedPublishStoreError(stored.error);
@@ -241,20 +262,5 @@ export async function publishOwnedPage(args: {
   // other path that stores bytes.
   void enqueueScan(siteId, versionId);
 
-  const common = {
-    siteId,
-    slug: landed.slug,
-    liveUrl: liveUrl(landed.slug),
-    title,
-    quota: landed.quota,
-  };
-
-  return landed.clocks === null
-    ? { outcome: "kept", ...common }
-    : {
-        outcome: "owned_draft",
-        ...common,
-        expiresAt: landed.clocks.expiresAt.toISOString(),
-        purgeAfter: landed.clocks.purgeAfter.toISOString(),
-      };
+  return { site: landed.site };
 }

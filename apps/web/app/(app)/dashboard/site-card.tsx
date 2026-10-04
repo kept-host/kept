@@ -14,8 +14,8 @@
  *
  * THE TITLE IS UNTRUSTED STRANGER-AUTHORED INPUT. React escapes it, task 001
  * trims and caps it at storage, and the clamp below is a *visual* limit on top
- * of that — `PAGE_TITLE_MAX_CHARS` is 120, which is three lines of card, so the
- * card gets two and lets the rest go.
+ * of that — `PAGE_TITLE_MAX_LENGTH` (80) is up to two full lines of card, so
+ * the clamp keeps it to two and lets the rest go.
  *
  * WHAT THIS CARD DELIBERATELY DOES NOT HAVE: a thumbnail (task 010 mints the OG
  * card and wires it in here). Its absence is sequencing, not omission.

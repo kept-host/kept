@@ -225,12 +225,9 @@ export function RenameField({
       setPhase("resolved");
       setVerdict({
         kind: "refused",
-        // The only signal the closed error enum leaves for "somebody has that
-        // name" is the handler's own 409 sentence, which `owner-routes.ts`
-        // writes as `"<slug>" is already taken.` — matched here ONLY to label
-        // the state, never to build the message shown, which stays the
-        // handler's verbatim.
-        reason: /already taken/i.test(outcome.error.message) ? "taken" : "refused",
+        // The studio envelope's `code` labels the state; the message shown
+        // stays the handler's verbatim.
+        reason: outcome.error.code === "name_taken" ? "taken" : "refused",
         message: outcome.error.message,
       });
       return;

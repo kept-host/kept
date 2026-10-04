@@ -9,7 +9,7 @@
  * makes uncallable outside a Next request scope and which
  * `e2e/owner-sites-api.spec.ts` covers over the wire instead.
  *
- * TWO PROPERTIES ARE LOAD-BEARING HERE and are asserted byte for byte rather
+ * THREE PROPERTIES ARE LOAD-BEARING HERE and are asserted byte for byte rather
  * than by status code alone:
  *
  *   1. A site that does not exist, a site owned by somebody else and an id that
@@ -17,6 +17,8 @@
  *      existence oracle over other people's pages.
  *   2. Being at the plan's kept limit is HTTP 200 with `outcome: "owned_draft"`,
  *      never a 4xx. The cap degrades; it does not reject.
+ *   3. Every refusal is the studio envelope `{ error: { code, message } }`
+ *      (E06 task 005) — one typed-failure table, never a flat `PublishError`.
  *
  * Drill accounts are `free`, so the cap is `limitsFor("free").keptPages` (D1) —
  * never a literal. Cap-filling rows are seeded in ONE multi-row insert: real
@@ -38,9 +40,12 @@ import { after, test } from "node:test";
 import {
   DRAFT_GRACE_DAYS,
   DRAFT_TTL_DAYS,
+  MAX_PAGE_BYTES,
+  STUDIO_ERROR_CODES,
   demoteResultSchema,
   keepResultSchema,
   limitsFor,
+  studioErrorSchema,
   swapResultSchema,
 } from "@kept/shared";
 import { config } from "dotenv";
@@ -404,6 +409,7 @@ test(
 
     assert.equal(outcome.ok, false);
     assert.equal(outcome.status, 400);
+    assert.equal(studioErrorSchema.parse(outcome.body).error.code, "invalid_request");
     assert.equal(
       await keptCount(profileId),
       FREE_LIMIT,
@@ -495,6 +501,8 @@ test(
       1,
       `all ${bodies.length} refusals must be one body — a difference is an existence oracle: ${[...new Set(bodies)].join(" | ")}`,
     );
+    // …and that one body is the studio envelope's `not_found` (D17: never 403).
+    assert.equal(studioErrorSchema.parse(JSON.parse(bodies[0]!)).error.code, "not_found");
 
     // And their page is untouched by any of it.
     assert.equal((await readSite(theirKept.id)).ownerId, theirs);
@@ -511,9 +519,86 @@ test(
 
     assert.equal(refusal.ok, false);
     assert.equal(refusal.status, 401);
+    assert.deepEqual(studioErrorSchema.parse(refusal.body), refusal.body, "the envelope, too");
     // Distinguishable from the 404 by status, which is what a caller acts on:
     // "sign in again" and "that page is gone" are different remedies.
     const { ownerNotFound } = await import("./owner-routes");
     assert.notEqual(refusal.status, ownerNotFound().status);
+  },
+);
+
+// ── The envelope (E06 task 005) ─────────────────────────────────────────────
+
+test(
+  "a typed refusal answers its own code at the table's status; anything else is a 500 that leaks nothing",
+  { skip: skipLive },
+  async () => {
+    const { studioFailure } = await import("./owner-routes");
+    const { StudioRefusal } = await import("./studio-refusal");
+
+    // Every code in the closed enum has a status, and it is a 4xx/5xx — the
+    // table is a `Record` over the enum, so this is the runtime half of that.
+    for (const code of STUDIO_ERROR_CODES) {
+      const failure = studioFailure(new StudioRefusal(code, `sentence for ${code}`), "drill");
+      assert.equal(failure.ok, false);
+      assert.ok(failure.status >= 400 && failure.status < 600, `${code} → ${failure.status}`);
+      assert.deepEqual(failure.body, { error: { code, message: `sentence for ${code}` } });
+    }
+
+    // The detail is the LOG's: it never reaches the body.
+    const withDetail = studioFailure(
+      new StudioRefusal("internal_error", "Try again in a moment.", "R2 put: secret-ish detail"),
+      "drill",
+    );
+    assert.equal(withDetail.status, 503);
+    assert.equal(JSON.stringify(withDetail.body).includes("secret-ish"), false);
+
+    const realError = console.error;
+    console.error = () => undefined;
+    try {
+      const untyped = studioFailure(new Error("driver exploded: password=hunter2"), "keep");
+      assert.equal(untyped.status, 500);
+      assert.equal(studioErrorSchema.parse(untyped.body).error.code, "internal_error");
+      assert.equal(JSON.stringify(untyped.body).includes("hunter2"), false);
+    } finally {
+      console.error = realError;
+    }
+  },
+);
+
+test(
+  "pipeline refusals are translated at the boundary: an empty and an oversized page are invalid_file and file_too_large",
+  { skip: skipLive },
+  async () => {
+    const { publishOwnedSite, replaceOwnedSite } = await import("./owner-routes");
+    const profileId = await makeProfile();
+    const site = await makeSite({ ownerId: profileId, kept: true });
+    const publisher = { ip: "203.0.113.5", userAgent: "kept-e06-005-drill/1.0" };
+    const oversized = `<!doctype html><title>x</title>${"a".repeat(MAX_PAGE_BYTES)}`;
+
+    for (const [label, call] of [
+      ["publish", (html: unknown) => publishOwnedSite({ html }, profileId, publisher)],
+      ["replace", (html: unknown) => replaceOwnedSite(site.id, { html }, profileId)],
+    ] as const) {
+      const empty = await call("");
+      assert.equal(empty.ok, false, label);
+      assert.equal(empty.status, 400, label);
+      assert.equal(studioErrorSchema.parse(empty.body).error.code, "invalid_file", label);
+
+      const tooBig = await call(oversized);
+      assert.equal(tooBig.status, 413, label);
+      assert.equal(studioErrorSchema.parse(tooBig.body).error.code, "file_too_large", label);
+
+      const malformed = await call(42);
+      assert.equal(malformed.status, 400, label);
+      assert.equal(studioErrorSchema.parse(malformed.body).error.code, "invalid_request", label);
+    }
+
+    // None of it wrote anything: the account has exactly the page it started with.
+    const db = await client();
+    const { sites } = await schema();
+    const { eq } = await import("drizzle-orm");
+    const rows = await db.select({ id: sites.id }).from(sites).where(eq(sites.ownerId, profileId));
+    assert.deepEqual(rows.map((row) => row.id), [site.id]);
   },
 );

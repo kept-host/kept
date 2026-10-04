@@ -18,7 +18,7 @@ import { test } from "node:test";
 
 import { publishErrorSchema } from "@kept/shared";
 
-import { errorResponse } from "./http";
+import { browserChannel, errorResponse } from "./http";
 
 test("a 429 is machine-parseable, and mirrors the retry into the standard header", async () => {
   const message =
@@ -52,4 +52,17 @@ test("an error without a retry carries no Retry-After to mislead a client", asyn
   assert.equal(res.status, 400);
   assert.equal(res.headers.get("retry-after"), null);
   assert.equal(publishErrorSchema.parse(await res.json()).error, "empty_page");
+});
+
+test("an anonymous replace is `web` only when the browser says it came from the app itself", () => {
+  const replace = (headers: Record<string, string>) =>
+    new Request("https://app.kept-dev.xyz/api/anon/t/replace", { method: "POST", headers });
+
+  // The `/p/:token` manage screen: the browser computes this header, a script cannot.
+  assert.equal(browserChannel(replace({ "sec-fetch-site": "same-origin" })), "web");
+  // Everything else is an API caller: `curl`, an agent, a hosted page, another site.
+  assert.equal(browserChannel(replace({})), "api");
+  assert.equal(browserChannel(replace({ "sec-fetch-site": "same-site" })), "api");
+  assert.equal(browserChannel(replace({ "sec-fetch-site": "cross-site" })), "api");
+  assert.equal(browserChannel(replace({ "sec-fetch-site": "none" })), "api");
 });

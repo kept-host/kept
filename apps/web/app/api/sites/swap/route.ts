@@ -22,12 +22,16 @@ import type { NextResponse } from "next/server";
 import { getSession } from "../../../../lib/auth/session";
 import { getProfileForSession } from "../../../../lib/db/queries/profile";
 import {
-  errorResponse,
   readJsonOnlyBody,
   UnreadableBodyError,
 } from "../../../../lib/publish/http";
 import { refuseUntrustedOrigin } from "../../../../lib/publish/origin";
-import { ownerResponse, signedOut, swapOwnedSites } from "../../../../lib/sites/owner-routes";
+import {
+  ownerResponse,
+  refuse,
+  signedOut,
+  swapOwnedSites,
+} from "../../../../lib/sites/owner-routes";
 
 /** `postgres-js` needs TCP sockets. */
 export const runtime = "nodejs";
@@ -49,7 +53,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     body = await readJsonOnlyBody(request);
   } catch (err) {
     if (err instanceof UnreadableBodyError) {
-      return errorResponse(400, { error: "invalid_request", message: err.message });
+      return ownerResponse(refuse("invalid_request", err.message));
     }
     throw err;
   }

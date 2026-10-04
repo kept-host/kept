@@ -2,6 +2,8 @@ import {
   MANIFEST_KV_CACHE_TTL_SECONDS,
   publishErrorSchema,
   renameResultSchema,
+  studioErrorSchema,
+  type StudioErrorCode,
 } from "@kept/shared";
 import { expect, test } from "@playwright/test";
 import { config } from "dotenv";
@@ -325,24 +327,24 @@ test.describe("owner rename", () => {
     const mine = await ownedPage(request, baseURL!, cookie);
     const theirs = await ownedPage(request, baseURL!, cookie);
 
-    const cases: [string, string, number][] = [
-      // Taken — by the unique index, which is the only authority. 409 and the
-      // word "taken", never a 500.
-      ["collision", theirs.slug, 409],
-      ["reserved", "dashboard", 400],
-      ["reserved (E06's own route)", "settings", 400],
-      ["profanity", "my-ass-page", 400],
-      ["shape", "Not A Slug", 400],
-      ["shape (doubled hyphen)", "two--hyphens", 400],
+    const cases: [string, string, number, StudioErrorCode][] = [
+      // Taken — by the unique index, which is the only authority. 409 and
+      // `name_taken`, never a 500.
+      ["collision", theirs.slug, 409, "name_taken"],
+      ["reserved", "dashboard", 400, "name_reserved"],
+      ["reserved (E06's own route)", "settings", 400, "name_reserved"],
+      ["profanity", "my-ass-page", 400, "name_inappropriate"],
+      ["shape", "Not A Slug", 400, "name_invalid"],
+      ["shape (doubled hyphen)", "two--hyphens", 400, "name_invalid"],
     ];
 
-    for (const [label, slug, status] of cases) {
+    for (const [label, slug, status, code] of cases) {
       const rowBefore = await readSite(mine.siteId);
       const pointerBefore = await r2Store().get(pointerKey(mine.slug));
 
       const response = await rename(request, baseURL!, cookie, mine.siteId, slug);
       expect(response.status(), `${label}: ${await response.text()}`).toBe(status);
-      publishErrorSchema.parse(await response.json());
+      expect(studioErrorSchema.parse(await response.json()).error.code, label).toBe(code);
 
       // NOTHING APPLIED — asserted per case, not once. The whole row, the
       // pointer, and the page still serving under its old name.
@@ -388,11 +390,12 @@ test.describe("owner rename", () => {
       `e06-005-flagged-${crypto.randomUUID().slice(0, 8)}`,
     );
     expect(response.status()).toBe(409);
-    const body = publishErrorSchema.parse(await response.json());
+    const { error } = studioErrorSchema.parse(await response.json());
+    expect(error.code).toBe("not_allowed_in_status");
     // An explanation, not a bare refusal: moving a flagged page to a fresh URL
     // is the evasion the flag exists to stop, and the owner deserves to know
     // that is what happened.
-    expect(body.message.toLowerCase()).toContain("review");
+    expect(error.message.toLowerCase()).toContain("review");
     expect(await readSite(page.siteId)).toEqual(rowBefore);
   });
 
@@ -407,7 +410,7 @@ test.describe("owner rename", () => {
       data: { slug: "e06-005-signed-out" },
     });
     expect(signedOut.status(), "the gate must hold before any database work").toBe(401);
-    publishErrorSchema.parse(await signedOut.json());
+    studioErrorSchema.parse(await signedOut.json());
     expect((await readSite(mine.siteId)).slug).toBe(mine.slug);
 
     // A second account, from this account's session.
@@ -432,6 +435,7 @@ test.describe("owner rename", () => {
     expect(absent.status()).toBe(404);
     // Byte-identical: "not yours" must not be an existence oracle.
     expect(await refused.text()).toBe(await absent.text());
+    expect(studioErrorSchema.parse(await refused.json()).error.code).toBe("not_found");
     expect((await readSite(theirs.siteId)).slug).toBe(theirs.slug);
   });
 
@@ -455,6 +459,7 @@ test.describe("owner rename", () => {
     });
 
     expect(refused.status()).toBe(403);
+    // E05a's flat body, untouched — the gate runs before any studio code.
     expect(publishErrorSchema.parse(await refused.json()).error).toBe("invalid_request");
     expect(await readSite(page.siteId)).toEqual(rowBefore);
     expect(await r2Store().get(pointerKey(nextSlug))).toBeNull();

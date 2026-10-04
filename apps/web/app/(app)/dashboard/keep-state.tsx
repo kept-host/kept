@@ -44,6 +44,7 @@ import type {
 
 import { KeptQuotaChip } from "@/components/kept/kept-quota";
 import type { SwapPage } from "@/components/kept/swap-dialog";
+import { pageName } from "@/lib/sites/display";
 
 /**
  * One of the owner's pages, serialised for the browser.
@@ -132,26 +133,27 @@ export function KeepStateProvider({
   /**
    * A page that did not exist when this screen rendered — E06 task 009.
    *
-   * Registered so the two things that must not wait for the refresh do not: the
-   * allowance (the header and the drop-zone print it from THIS response, so they
-   * cannot disagree) and the swap chooser's target (an `owned_draft` offers a
-   * swap immediately, and the page being kept has to be a real entry).
+   * Registered so the swap chooser's target does not wait for the refresh: a
+   * publish that landed as a draft offers a swap immediately, and the page being
+   * kept has to be a real entry. The allowance is NOT set here — `POST
+   * /api/sites` answers `{ site }` and no quota (PRD §7), so the header and the
+   * drop-zone repaint it together from the `router.refresh()` that follows every
+   * publish, from one server read, and still cannot disagree.
    *
-   * `status` is `live` by construction rather than by assumption: the row was
-   * inserted by this request, and `publishOwnedSite` inserts nothing else. E07
-   * is the only thing that writes another value, and it cannot have run yet.
+   * Everything comes off the response's `site`, which the route read back from
+   * the row inside the transaction that wrote (or found) it.
    */
   const applyPublish = useCallback((result: OwnedPublishResult) => {
+    const { site } = result;
     const page: DashboardPage = {
-      id: result.siteId,
-      name: result.title ?? result.slug,
-      slug: result.slug,
-      liveUrl: result.liveUrl,
-      status: "live",
-      expiresAt: result.outcome === "kept" ? null : result.expiresAt,
+      id: site.id,
+      name: pageName(site),
+      slug: site.slug,
+      liveUrl: site.liveUrl,
+      status: site.status,
+      expiresAt: site.expiresAt,
     };
     setPages((prev) => ({ ...prev, [page.id]: page }));
-    setQuota(result.quota);
   }, []);
 
   const value = useMemo(

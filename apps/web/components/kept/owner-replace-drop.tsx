@@ -131,7 +131,7 @@ export function OwnerReplaceDrop({
 
       if (!outcome.ok) {
         setPhase("idle");
-        setError(publishErrorText(outcome.error));
+        setError(outcome.error.message);
         return;
       }
 

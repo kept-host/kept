@@ -1,11 +1,19 @@
 /**
- * The browser's client for the owner-scoped management routes — rename (task
- * 005), replace and delete (task 006).
+ * The browser's client for the owner-scoped (studio) routes — publish, keep,
+ * demote, swap, rename, replace, delete, and account deletion.
  *
  * Same posture as `lib/publish/client.ts`: this module knows the endpoint's URL
  * and nothing else. It serializes the request the route already accepts, parses
  * the response with the SAME `@kept/shared` schemas the route answers with, and
  * hands back a discriminated result. No retries, no state, no DOM.
+ *
+ * ── ONE ERROR SHAPE IN, ONE ERROR SHAPE OUT (E06 task 005) ─────────────────
+ * Every studio refusal arrives as the envelope `{ error: { code, message } }`
+ * and is handed to the caller as its inner `StudioError` — `code` to branch on,
+ * `message` to show verbatim. ANYTHING ELSE — a network failure, a proxy's HTML
+ * 502, E05a's origin 403 (which keeps its own flat body on purpose), a success
+ * body that does not parse — becomes `COULD_NOT_SAVE`, "Couldn't save. Try
+ * again." A caller never sees a half-parsed body or a second error shape.
  *
  * ⚠️ BROWSER-SAFE ON PURPOSE. Nothing here may import `lib/sites/rename.ts`,
  * `lib/db/*` or `lib/storage/*` — those reach Postgres, R2 and KV. The one
@@ -19,34 +27,101 @@ import {
   keepResultSchema,
   MANIFEST_KV_CACHE_TTL_SECONDS,
   ownedPublishResultSchema,
-  publishErrorSchema,
   renameResultSchema,
   replaceResultSchema,
+  studioErrorSchema,
   swapResultSchema,
   type AccountDeletionResult,
   type DeleteResult,
   type DemoteResult,
   type KeepResult,
   type OwnedPublishResult,
-  type PublishError,
   type PublishRequest,
   type RenameRequest,
   type RenameResult,
   type ReplaceResult,
+  type StudioError,
   type SwapResult,
 } from "@kept/shared";
+import type { z } from "zod";
 
 export { checkChosenSlug, type SlugRefusal, type SlugRefusalReason } from "../publish/slug";
+
+/**
+ * What every failure that is NOT the studio envelope becomes — the epic's one
+ * generic sentence. `internal_error` because nothing the caller can branch on
+ * is known about it.
+ */
+export const COULD_NOT_SAVE: StudioError = {
+  code: "internal_error",
+  message: "Couldn't save. Try again.",
+};
+
+/** What `send` hands back: the parsed success body, or the error to show. */
+type Sent<T> =
+  | { ok: true; body: T }
+  | { ok: false; status: number | null; error: StudioError };
+
+/**
+ * The one request path every call below takes. Never throws, including on
+ * abort.
+ *
+ * `accepted` are the success statuses this endpoint answers with; their body
+ * must parse as `schema` or the call is `COULD_NOT_SAVE`. Any other status is
+ * read as the envelope — the handler's own `code` and sentence — and anything
+ * that is not the envelope is `COULD_NOT_SAVE`. `status` rides along on a
+ * failure for the one caller that branches on it (`deleteAccount`'s 401);
+ * `null` means the request never got an answer.
+ */
+async function send<T>(
+  url: string,
+  init: RequestInit,
+  schema: z.ZodType<T>,
+  accepted: readonly number[] = [200],
+): Promise<Sent<T>> {
+  let response: Response;
+  try {
+    response = await fetch(url, init);
+  } catch {
+    return { ok: false, status: null, error: COULD_NOT_SAVE };
+  }
+
+  const json: unknown = await response.json().catch(() => null);
+
+  if (!accepted.includes(response.status)) {
+    const envelope = studioErrorSchema.safeParse(json);
+    return {
+      ok: false,
+      status: response.status,
+      error: envelope.success ? envelope.data.error : COULD_NOT_SAVE,
+    };
+  }
+
+  const parsed = schema.safeParse(json);
+  return parsed.success
+    ? { ok: true, body: parsed.data }
+    : { ok: false, status: response.status, error: COULD_NOT_SAVE };
+}
+
+/** A JSON request body, with the header the routes read it by. */
+function jsonInit(method: string, body: unknown, signal?: AbortSignal): RequestInit {
+  return {
+    method,
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  };
+}
 
 /** An owned publish: the page the account now has, or why it never landed. */
 export type OwnedPublishOutcome =
   | { ok: true; page: OwnedPublishResult }
-  | { ok: false; error: PublishError };
+  | { ok: false; error: StudioError };
 
 /** A rename attempt: the moved page, or an error from the closed enum. */
 export type RenameOutcome =
   | { ok: true; page: RenameResult }
-  | { ok: false; error: PublishError };
+  | { ok: false; error: StudioError };
 
 const SECONDS_PER_MINUTE = 60;
 
@@ -97,50 +172,21 @@ export function renameNotice(page: RenameResult): string {
 }
 
 /**
- * Turn a non-200 into a `PublishError`, falling back for non-handler responses.
- *
- * ⚠️ THE HANDLER'S OWN MESSAGE WINS WHENEVER THERE IS ONE, and that is what
- * carries the `demote === keep` 400 — the only 400 the owner routes emit —
- * through to the screen instead of being flattened into a generic failure. The
- * fallback exists for the responses no handler wrote: a proxy's 502, an HTML
- * error page, a body that is not JSON at all.
- *
- * `verb` names the action in that fallback only, so "kept couldn't swap the
- * pages" is never printed over a rename.
- */
-async function readError(response: Response, verb: string): Promise<PublishError> {
-  const parsed = publishErrorSchema.safeParse(await response.json().catch(() => null));
-  if (parsed.success) return parsed.data;
-  return {
-    error: "internal_error",
-    message: `kept couldn't ${verb} (HTTP ${response.status}). Nothing changed — try again.`,
-  };
-}
-
-/** The one sentence for a request that never reached the control plane. */
-function unreachable(verb: string): PublishError {
-  return {
-    error: "internal_error",
-    message: `kept couldn't be reached, so nothing was ${verb}. Check your connection and try again.`,
-  };
-}
-
-/**
  * `POST /api/sites` — a signed-in publish, from the dashboard drop-zone.
  *
  * ⚠️ NOT `POST /api/publish`, AND THE TWO MUST NEVER BE SWAPPED HERE. That route
  * is the keyless one: it mints an anonymous bearer token, leaves `owner_id` null
  * and starts a clock. Sending a signed-in user down it hands their browser a
  * second authority for a page their account already owns, and routes them
- * through the endpoint E07's volume governors exist to throttle. Epic decision
- * **D1**: one product verb, two authority models, two doors.
+ * through the endpoint E07's volume governors exist to throttle. Decision
+ * **D9**: one product verb, two authority models, two doors.
  *
- * ⚠️ BEING AT THE CAP IS NOT AN ERROR. The route answers **200** either way and
- * the branch is on `outcome`, never on the status code — `kept` under the cap,
- * `owned_draft` at it, with the page live and its countdown already running. A
- * caller that treated `owned_draft` as a failure would be showing an error for a
- * page that published perfectly, which is the one thing the cap branch exists to
- * prevent. `ok: false` here means the request genuinely did not land.
+ * ⚠️ BEING AT THE CAP IS NOT AN ERROR. A new page is **201** either way: kept
+ * under the plan's limit, an owned draft at it — `page.site.expiresAt` set, the
+ * page live and its countdown already running. **200 with `duplicate: true`**
+ * means this account already has these exact bytes live and `page.site` is that
+ * page; nothing new was made. `ok: false` here means the request genuinely did
+ * not land.
  *
  * `application/json` with `{ html }`, like every other browser caller; the route
  * accepts multipart and raw `text/html` for callers that cannot build JSON.
@@ -152,36 +198,13 @@ export async function publishOwnedHtml(
   signal?: AbortSignal,
 ): Promise<OwnedPublishOutcome> {
   const body: Pick<PublishRequest, "html"> = { html };
-  let response: Response;
-  try {
-    response = await fetch("/api/sites", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal,
-    });
-  } catch {
-    return { ok: false, error: unreachable("published") };
-  }
-
-  if (response.status !== 200) {
-    return { ok: false, error: await readError(response, "publish the page") };
-  }
-
-  const parsed = ownedPublishResultSchema.safeParse(
-    await response.json().catch(() => null),
+  const sent = await send(
+    "/api/sites",
+    jsonInit("POST", body, signal),
+    ownedPublishResultSchema,
+    [200, 201],
   );
-  if (!parsed.success) {
-    return {
-      ok: false,
-      error: {
-        error: "internal_error",
-        message:
-          "kept answered with something this page could not read. Reload to see whether the page was published.",
-      },
-    };
-  }
-  return { ok: true, page: parsed.data };
+  return sent.ok ? { ok: true, page: sent.body } : { ok: false, error: sent.error };
 }
 
 /**
@@ -205,39 +228,18 @@ export async function renamePage(
   signal?: AbortSignal,
 ): Promise<RenameOutcome> {
   const body: RenameRequest = { slug };
-  let response: Response;
-  try {
-    response = await fetch(`/api/sites/${encodeURIComponent(siteId)}/slug`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal,
-    });
-  } catch {
-    return { ok: false, error: unreachable("renamed") };
-  }
-
-  if (response.status !== 200) {
-    return { ok: false, error: await readError(response, "rename the page") };
-  }
-
-  const parsed = renameResultSchema.safeParse(await response.json().catch(() => null));
-  if (!parsed.success) {
-    return {
-      ok: false,
-      error: {
-        error: "internal_error",
-        message: "kept answered with something this page could not read. Reload to see where your page ended up.",
-      },
-    };
-  }
-  return { ok: true, page: parsed.data };
+  const sent = await send(
+    `/api/sites/${encodeURIComponent(siteId)}/slug`,
+    jsonInit("PATCH", body, signal),
+    renameResultSchema,
+  );
+  return sent.ok ? { ok: true, page: sent.body } : { ok: false, error: sent.error };
 }
 
 /** A keep attempt: the parsed outcome, or an error from the closed enum. */
 export type KeepOutcome =
   | { ok: true; result: KeepResult }
-  | { ok: false; error: PublishError };
+  | { ok: false; error: StudioError };
 
 /**
  * `POST /api/sites/:id/keep` — E06 task 007.
@@ -259,38 +261,18 @@ export async function keepPage(
   siteId: string,
   signal?: AbortSignal,
 ): Promise<KeepOutcome> {
-  let response: Response;
-  try {
-    response = await fetch(`/api/sites/${encodeURIComponent(siteId)}/keep`, {
-      method: "POST",
-      signal,
-    });
-  } catch {
-    return { ok: false, error: unreachable("kept") };
-  }
-
-  if (response.status !== 200) {
-    return { ok: false, error: await readError(response, "keep the page") };
-  }
-
-  const parsed = keepResultSchema.safeParse(await response.json().catch(() => null));
-  if (!parsed.success) {
-    return {
-      ok: false,
-      error: {
-        error: "internal_error",
-        message:
-          "kept answered with something this page could not read. Reload to see whether the page was kept.",
-      },
-    };
-  }
-  return { ok: true, result: parsed.data };
+  const sent = await send(
+    `/api/sites/${encodeURIComponent(siteId)}/keep`,
+    { method: "POST", signal },
+    keepResultSchema,
+  );
+  return sent.ok ? { ok: true, result: sent.body } : { ok: false, error: sent.error };
 }
 
 /** A demote attempt: the page and its fresh clock, or why nothing moved. */
 export type DemoteOutcome =
   | { ok: true; result: DemoteResult }
-  | { ok: false; error: PublishError };
+  | { ok: false; error: StudioError };
 
 /**
  * `POST /api/sites/:id/demote` — an owner puts a kept page back on a clock.
@@ -312,38 +294,18 @@ export async function demotePage(
   siteId: string,
   signal?: AbortSignal,
 ): Promise<DemoteOutcome> {
-  let response: Response;
-  try {
-    response = await fetch(`/api/sites/${encodeURIComponent(siteId)}/demote`, {
-      method: "POST",
-      signal,
-    });
-  } catch {
-    return { ok: false, error: unreachable("demoted") };
-  }
-
-  if (response.status !== 200) {
-    return { ok: false, error: await readError(response, "demote the page") };
-  }
-
-  const parsed = demoteResultSchema.safeParse(await response.json().catch(() => null));
-  if (!parsed.success) {
-    return {
-      ok: false,
-      error: {
-        error: "internal_error",
-        message:
-          "kept answered with something this page could not read. Reload to see whether the page is still kept.",
-      },
-    };
-  }
-  return { ok: true, result: parsed.data };
+  const sent = await send(
+    `/api/sites/${encodeURIComponent(siteId)}/demote`,
+    { method: "POST", signal },
+    demoteResultSchema,
+  );
+  return sent.ok ? { ok: true, result: sent.body } : { ok: false, error: sent.error };
 }
 
 /** A swap attempt: both halves of the transaction, or the reason there were none. */
 export type SwapOutcome =
   | { ok: true; result: SwapResult }
-  | { ok: false; error: PublishError };
+  | { ok: false; error: StudioError };
 
 /**
  * `POST /api/sites/swap` — demote one kept page and keep another, atomically.
@@ -375,40 +337,14 @@ export async function swapPages(
   signal?: AbortSignal,
 ): Promise<SwapOutcome> {
   const body: { demote: string; keep: string } = { demote, keep };
-  let response: Response;
-  try {
-    response = await fetch("/api/sites/swap", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal,
-    });
-  } catch {
-    return { ok: false, error: unreachable("swapped") };
-  }
-
-  if (response.status !== 200) {
-    return { ok: false, error: await readError(response, "swap the pages") };
-  }
-
-  const parsed = swapResultSchema.safeParse(await response.json().catch(() => null));
-  if (!parsed.success) {
-    return {
-      ok: false,
-      error: {
-        error: "internal_error",
-        message:
-          "kept answered with something this page could not read. Reload to see which pages are kept.",
-      },
-    };
-  }
-  return { ok: true, result: parsed.data };
+  const sent = await send("/api/sites/swap", jsonInit("POST", body, signal), swapResultSchema);
+  return sent.ok ? { ok: true, result: sent.body } : { ok: false, error: sent.error };
 }
 
 /** A replace attempt: the page with its new version, or why it did not land. */
 export type ReplaceOutcome =
   | { ok: true; page: ReplaceResult }
-  | { ok: false; error: PublishError };
+  | { ok: false; error: StudioError };
 
 /**
  * What to tell someone who just replaced a page's file — E06 task 006.
@@ -453,40 +389,18 @@ export async function replacePage(
   signal?: AbortSignal,
 ): Promise<ReplaceOutcome> {
   const body: Pick<PublishRequest, "html"> = { html };
-  let response: Response;
-  try {
-    response = await fetch(`/api/sites/${encodeURIComponent(siteId)}/replace`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal,
-    });
-  } catch {
-    return { ok: false, error: unreachable("replaced") };
-  }
-
-  if (response.status !== 200) {
-    return { ok: false, error: await readError(response, "replace the file") };
-  }
-
-  const parsed = replaceResultSchema.safeParse(await response.json().catch(() => null));
-  if (!parsed.success) {
-    return {
-      ok: false,
-      error: {
-        error: "internal_error",
-        message:
-          "kept answered with something this page could not read. Reload to see which file is live.",
-      },
-    };
-  }
-  return { ok: true, page: parsed.data };
+  const sent = await send(
+    `/api/sites/${encodeURIComponent(siteId)}/replace`,
+    jsonInit("POST", body, signal),
+    replaceResultSchema,
+  );
+  return sent.ok ? { ok: true, page: sent.body } : { ok: false, error: sent.error };
 }
 
 /** A delete attempt: the archived page and the freed slot, or the failure. */
 export type DeleteOutcome =
   | { ok: true; result: DeleteResult }
-  | { ok: false; error: PublishError };
+  | { ok: false; error: StudioError };
 
 /**
  * `DELETE /api/sites/:id` — take one page off the internet.
@@ -507,32 +421,12 @@ export async function deletePage(
   siteId: string,
   signal?: AbortSignal,
 ): Promise<DeleteOutcome> {
-  let response: Response;
-  try {
-    response = await fetch(`/api/sites/${encodeURIComponent(siteId)}`, {
-      method: "DELETE",
-      signal,
-    });
-  } catch {
-    return { ok: false, error: unreachable("deleted") };
-  }
-
-  if (response.status !== 200) {
-    return { ok: false, error: await readError(response, "delete the page") };
-  }
-
-  const parsed = deleteResultSchema.safeParse(await response.json().catch(() => null));
-  if (!parsed.success) {
-    return {
-      ok: false,
-      error: {
-        error: "internal_error",
-        message:
-          "kept answered with something this page could not read. Reload to see whether the page was deleted.",
-      },
-    };
-  }
-  return { ok: true, result: parsed.data };
+  const sent = await send(
+    `/api/sites/${encodeURIComponent(siteId)}`,
+    { method: "DELETE", signal },
+    deleteResultSchema,
+  );
+  return sent.ok ? { ok: true, result: sent.body } : { ok: false, error: sent.error };
 }
 
 /**
@@ -546,7 +440,7 @@ export async function deletePage(
 export type AccountDeletionOutcome =
   | { ok: true; result: AccountDeletionResult }
   | { ok: false; signedOut: true }
-  | { ok: false; signedOut?: false; error: PublishError };
+  | { ok: false; signedOut?: false; error: StudioError };
 
 /**
  * `DELETE /api/account` — a signed-in user destroys their own account
@@ -564,12 +458,12 @@ export type AccountDeletionOutcome =
  * account to delete, and adding one would turn "delete my account" into a
  * deletion endpoint that takes an argument.
  *
- * The four refusals the route can produce all arrive as `{ error, message }`
- * with the server's own sentence, and the caller shows it verbatim:
+ * The refusals the route can produce arrive as the studio envelope with the
+ * server's own sentence, and the caller shows it verbatim:
  *   · 400 — the phrase did not match exactly
  *   · 401 — the session is gone (its own branch above)
- *   · 403 — the request did not come from the app's configured origin
  *   · 503 — a page could not be taken off the edge, so **nothing** was deleted
+ * A foreign-origin 403 is not the envelope, so it reads as `COULD_NOT_SAVE`.
  *
  * Never throws, including on abort.
  */
@@ -577,36 +471,12 @@ export async function deleteAccount(
   confirm: string,
   signal?: AbortSignal,
 ): Promise<AccountDeletionOutcome> {
-  let response: Response;
-  try {
-    response = await fetch("/api/account", {
-      method: "DELETE",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ confirm }),
-      signal,
-    });
-  } catch {
-    return { ok: false, error: unreachable("deleted") };
-  }
-
-  if (response.status === 401) return { ok: false, signedOut: true };
-
-  if (response.status !== 200) {
-    return { ok: false, error: await readError(response, "delete your account") };
-  }
-
-  const parsed = accountDeletionResultSchema.safeParse(
-    await response.json().catch(() => null),
+  const sent = await send(
+    "/api/account",
+    jsonInit("DELETE", { confirm }, signal),
+    accountDeletionResultSchema,
   );
-  if (!parsed.success) {
-    return {
-      ok: false,
-      error: {
-        error: "internal_error",
-        message:
-          "kept answered with something this page could not read. Sign out and sign in again to see whether your account is still there.",
-      },
-    };
-  }
-  return { ok: true, result: parsed.data };
+  if (sent.ok) return { ok: true, result: sent.body };
+  if (sent.status === 401) return { ok: false, signedOut: true };
+  return { ok: false, error: sent.error };
 }

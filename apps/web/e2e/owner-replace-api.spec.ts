@@ -3,6 +3,7 @@ import {
   MAX_PAGE_BYTES,
   publishErrorSchema,
   replaceResultSchema,
+  studioErrorSchema,
 } from "@kept/shared";
 import { expect, test } from "@playwright/test";
 import { config } from "dotenv";
@@ -347,11 +348,12 @@ test.describe("owner replace", () => {
     );
 
     expect(response.status()).toBe(409);
-    const body = publishErrorSchema.parse(await response.json());
+    const { error } = studioErrorSchema.parse(await response.json());
+    expect(error.code).toBe("not_allowed_in_status");
     // An explanation, not a bare refusal: swapping the contents of a flagged
     // page is the evasion the flag exists to stop, and the owner deserves to
     // know that is what happened.
-    expect(body.message.toLowerCase()).toContain("review");
+    expect(error.message.toLowerCase()).toContain("review");
 
     expect(await readSite(page.siteId)).toEqual(before);
     const versions = await db
@@ -371,7 +373,7 @@ test.describe("owner replace", () => {
 
     const empty = await replace(request, baseURL!, cookie, page.siteId, "");
     expect(empty.status()).toBe(400);
-    expect(publishErrorSchema.parse(await empty.json()).error).toBe("empty_page");
+    expect(studioErrorSchema.parse(await empty.json()).error.code).toBe("invalid_file");
 
     // One byte past `MAX_PAGE_BYTES`, from the shared constant — the same limit
     // the publish path enforces, reached through the same schema.
@@ -383,7 +385,7 @@ test.describe("owner replace", () => {
       `<!doctype html><title>x</title>${"a".repeat(MAX_PAGE_BYTES)}`,
     );
     expect(oversized.status()).toBe(413);
-    expect(publishErrorSchema.parse(await oversized.json()).error).toBe("page_too_large");
+    expect(studioErrorSchema.parse(await oversized.json()).error.code).toBe("file_too_large");
 
     expect(await readSite(page.siteId)).toEqual(before);
     expect((await probeEdge(urlFor(page.slug))).body).toBe(page.html);
@@ -400,7 +402,7 @@ test.describe("owner replace", () => {
       data: { html: pageHtml("e06-006r-signed-out") },
     });
     expect(signedOut.status(), "the gate must hold before any store work").toBe(401);
-    publishErrorSchema.parse(await signedOut.json());
+    studioErrorSchema.parse(await signedOut.json());
     expect((await readSite(mine.siteId)).currentVersionId).toBe(mine.versionId);
 
     const otherCookie = await signIn(baseURL!);
@@ -424,6 +426,7 @@ test.describe("owner replace", () => {
     expect(absent.status()).toBe(404);
     // Byte-identical: "not yours" must not be an existence oracle.
     expect(await refused.text()).toBe(await absent.text());
+    expect(studioErrorSchema.parse(await refused.json()).error.code).toBe("not_found");
     expect((await readSite(theirs.siteId)).currentVersionId).toBe(theirs.versionId);
   });
 
@@ -445,6 +448,7 @@ test.describe("owner replace", () => {
     });
 
     expect(refused.status()).toBe(403);
+    // E05a's flat body, untouched — the gate runs before any studio code.
     expect(publishErrorSchema.parse(await refused.json()).error).toBe("invalid_request");
     expect(await readSite(page.siteId)).toEqual(before);
     expect((await probeEdge(urlFor(page.slug))).body).toBe(page.html);

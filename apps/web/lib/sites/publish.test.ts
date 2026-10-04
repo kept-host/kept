@@ -1,24 +1,28 @@
 /**
- * The owned publish at the kept limit, against the REAL dev stack — E06 task
- * 003, PRD acceptance criterion **2** (the library half; task 005 asserts the
- * route's status codes and task 011 the toast).
+ * The owned publish against the REAL dev stack — PRD acceptance criteria **2**
+ * (the library half; `e2e/owner-publish-api.spec.ts` asserts the route's status
+ * codes and task 011 the toast) and **8** (owner dedup).
  *
- * NO MOCKS. Both publishes per drill go through `publishOwnedPage` — the same
- * function `POST /api/sites` calls — so Postgres, R2, KV and the edge purge all
+ * NO MOCKS. Every publish goes through `publishOwnedPage` — the same function
+ * `POST /api/sites` calls — so Postgres, R2, KV and the edge purge all
  * genuinely run. Only the slots BEFORE them are seeded, by direct insert: real
  * `sites` rows that the cap's count genuinely sees, because publishing dozens of
  * pages to reach the limit would be minutes of R2/KV traffic proving nothing the
  * last two publishes do not.
  *
- * ── THE TWO CLAIMS ───────────────────────────────────────────────────────────
+ * ── THE CLAIMS ───────────────────────────────────────────────────────────────
  *
  *  1. **The limit degrades, it never errors.** A free account one slot short
- *     publishes → `kept`; publishes again → an OWNED DRAFT with both clocks set.
+ *     publishes → kept; publishes again → an OWNED DRAFT with both clocks set.
  *     Neither throws.
  *  2. **The limit is the account's plan's, not the free alias.** A premium
- *     account already holding the free limit publishes → still `kept`, and the
- *     quota it reports carries the premium number. A cap read from
- *     `KEPT_PAGE_LIMIT` passes claim 1 and fails this one.
+ *     account already holding the free limit publishes → still kept. A cap read
+ *     from `KEPT_PAGE_LIMIT` passes claim 1 and fails this one.
+ *  3. **The same bytes are one page per owner (AC8)** — sequentially, and when
+ *     two identical publishes race (`Promise.all`): the probe runs inside the
+ *     `lockOwner` transaction, so the second finds the first.
+ *  4. **An offline page is not a duplicate.** The same bytes as an archived or
+ *     an expired page mint a fresh page.
  *
  * SKIPS without dev credentials: CI runs `pnpm test` on fork PRs with no cloud
  * secrets. Run locally with `pnpm --filter @kept/web test:unit`.
@@ -30,7 +34,7 @@ import { after, test } from "node:test";
 
 import { limitsFor, type Plan } from "@kept/shared";
 import { config } from "dotenv";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 
 import { closeDb, db } from "../db";
 import { profiles, siteVersions, sites, user } from "../db/schema";
@@ -95,12 +99,35 @@ async function seedKept(profileId: string, n: number): Promise<void> {
   await db.insert(sites).values(rows);
 }
 
-async function publish(profileId: string, marker: string) {
-  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${marker}</title></head><body><h1>${marker}</h1></body></html>\n`;
+const pageHtml = (marker: string) =>
+  `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${marker}</title></head><body><h1>${marker}</h1></body></html>\n`;
+
+/** Publish exact bytes, recording whatever page came back for teardown. */
+async function publishHtml(profileId: string, html: string) {
   const result = await publishOwnedPage({ profileId, html, publisher });
-  createdSites.add(result.siteId);
-  publishedSlugs.add(result.slug);
+  createdSites.add(result.site.id);
+  publishedSlugs.add(result.site.slug);
   return result;
+}
+
+const publish = (profileId: string, marker: string) => publishHtml(profileId, pageHtml(marker));
+
+/** Every row this owner has, whatever its state — the count dedup must hold flat. */
+async function ownedCount(profileId: string): Promise<number> {
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(sites)
+    .where(eq(sites.ownerId, profileId));
+  return row?.count ?? 0;
+}
+
+/** The kept-ness predicate, asked of the database rather than of a response. */
+async function keptCount(profileId: string): Promise<number> {
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(sites)
+    .where(and(eq(sites.ownerId, profileId), isNull(sites.expiresAt), eq(sites.status, "live")));
+  return row?.count ?? 0;
 }
 
 async function readSite(siteId: string) {
@@ -143,27 +170,30 @@ test(
     const owner = await makeAccount("free");
     await seedKept(owner, FREE_LIMIT - 1);
 
-    const last = await publish(owner, "e06-003-last-slot");
-    assert.equal(last.outcome, "kept", "the last free slot is a kept page");
-    assert.deepEqual(last.quota, { limit: FREE_LIMIT, used: FREE_LIMIT, remaining: 0 });
-    const lastRow = await readSite(last.siteId);
+    const last = await publish(owner, "e06-005-last-slot");
+    assert.equal(last.duplicate, undefined, "a new page is not a duplicate");
+    assert.equal(last.site.expiresAt, null, "the last free slot is a kept page");
+    assert.equal(await keptCount(owner), FREE_LIMIT);
+    const lastRow = await readSite(last.site.id);
     assert.equal(lastRow.expiresAt, null);
     assert.equal(lastRow.purgeAfter, null);
 
-    const past = await publish(owner, "e06-003-past-the-limit");
-    assert.equal(past.outcome, "owned_draft", "past the limit the page degrades to a draft");
-    assert.deepEqual(past.quota, { limit: FREE_LIMIT, used: FREE_LIMIT, remaining: 0 });
-    const pastRow = await readSite(past.siteId);
+    const past = await publish(owner, "e06-005-past-the-limit");
+    assert.notEqual(past.site.expiresAt, null, "past the limit the page degrades to a draft");
+    assert.equal(await keptCount(owner), FREE_LIMIT, "the cap did not move");
+    const pastRow = await readSite(past.site.id);
     assert.equal(pastRow.ownerId, owner, "the draft is OWNED — the account has it");
     assert.equal(pastRow.anonTokenHash, null, "and no bearer token was minted for it");
     assert.equal(pastRow.status, "live", "it is serving right now");
     assert.ok(pastRow.expiresAt instanceof Date, "the draft clock is set");
     assert.ok(pastRow.purgeAfter instanceof Date, "and so is the grace window");
     assert.equal(
-      past.outcome === "owned_draft" && past.expiresAt,
+      past.site.expiresAt,
       pastRow.expiresAt.toISOString(),
       "the result reports the clock the row holds",
     );
+    assert.equal(past.site.purgeAfter, pastRow.purgeAfter.toISOString());
+    assert.equal(past.site.updatedAt, pastRow.updatedAt.toISOString());
   },
 );
 
@@ -177,13 +207,113 @@ test(
     const owner = await makeAccount("premium");
     await seedKept(owner, FREE_LIMIT);
 
-    const result = await publish(owner, "e06-003-premium");
-    assert.equal(result.outcome, "kept", "the plan is read, not the free alias");
-    assert.deepEqual(result.quota, {
-      limit: premium,
-      used: FREE_LIMIT + 1,
-      remaining: premium - FREE_LIMIT - 1,
-    });
-    assert.equal((await readSite(result.siteId)).expiresAt, null);
+    const result = await publish(owner, "e06-005-premium");
+    assert.equal(result.site.expiresAt, null, "the plan is read, not the free alias");
+    assert.equal(await keptCount(owner), FREE_LIMIT + 1);
+    assert.equal((await readSite(result.site.id)).expiresAt, null);
+  },
+);
+
+test(
+  "the site answer is the row: id, slug, live URL, title, status — and the version says studio",
+  { skip },
+  async () => {
+    const owner = await makeAccount("free");
+    const marker = `e06-005-shape-${crypto.randomUUID().slice(0, 8)}`;
+    const { site } = await publish(owner, marker);
+
+    const row = await readSite(site.id);
+    assert.equal(site.slug, row.slug);
+    assert.equal(site.liveUrl, `https://${row.slug}.${process.env.KEPT_BASE_DOMAIN}`);
+    assert.equal(site.title, marker);
+    assert.equal(row.title, marker);
+    assert.equal(row.titleSource, "html");
+    assert.equal(site.status, "live");
+
+    const [version] = await db
+      .select({ publishedVia: siteVersions.publishedVia })
+      .from(siteVersions)
+      .where(eq(siteVersions.siteId, site.id));
+    assert.equal(version?.publishedVia, "studio", "§5.9: a studio publish records its door");
+  },
+);
+
+test(
+  "AC8: the same bytes published twice by one owner are one page; the second answer points at it",
+  { skip },
+  async () => {
+    const owner = await makeAccount("free");
+    const html = pageHtml(`e06-005-dedup-${crypto.randomUUID().slice(0, 8)}`);
+
+    const first = await publishHtml(owner, html);
+    assert.equal(first.duplicate, undefined);
+
+    const second = await publishHtml(owner, html);
+    assert.equal(second.duplicate, true);
+    assert.deepEqual(second.site, first.site, "the duplicate IS the first page, as it stands");
+    assert.equal(await ownedCount(owner), 1, "no second row was written");
+
+    const versions = await db
+      .select({ id: siteVersions.id })
+      .from(siteVersions)
+      .where(eq(siteVersions.siteId, first.site.id));
+    assert.equal(versions.length, 1, "and no second version");
+
+    // Scoped to the OWNER: another account publishing the same bytes gets its own page.
+    const other = await makeAccount("free");
+    const theirs = await publishHtml(other, html);
+    assert.equal(theirs.duplicate, undefined);
+    assert.notEqual(theirs.site.id, first.site.id);
+  },
+);
+
+test(
+  "AC8: two identical publishes racing from two tabs converge on ONE page",
+  { skip },
+  async () => {
+    const owner = await makeAccount("free");
+    const html = pageHtml(`e06-005-race-${crypto.randomUUID().slice(0, 8)}`);
+
+    // FIRED CONCURRENTLY. A probe outside the owner lock lets both see "none"
+    // and both insert; inside it, the second waits and then finds the first.
+    const results = await Promise.all([publishHtml(owner, html), publishHtml(owner, html)]);
+
+    assert.equal(results[0].site.id, results[1].site.id, "both answers name the same page");
+    assert.deepEqual(
+      results.map((result) => result.duplicate === true).sort(),
+      [false, true],
+      "exactly one of the two made the page",
+    );
+    assert.equal(await ownedCount(owner), 1);
+  },
+);
+
+test(
+  "an offline page is not a duplicate: the same bytes as an archived or expired page mint a fresh one",
+  { skip },
+  async () => {
+    const owner = await makeAccount("free");
+    const html = pageHtml(`e06-005-offline-${crypto.randomUUID().slice(0, 8)}`);
+
+    const archived = await publishHtml(owner, html);
+    await db.update(sites).set({ status: "archived" }).where(eq(sites.id, archived.site.id));
+    const afterArchive = await publishHtml(owner, html);
+    assert.equal(afterArchive.duplicate, undefined, "an archived page is gone");
+    assert.notEqual(afterArchive.site.id, archived.site.id);
+
+    // A draft whose clock ran out but which the expiry sweep has not reached.
+    const past = new Date(Date.now() - 60_000);
+    await db
+      .update(sites)
+      .set({ expiresAt: past, purgeAfter: new Date(Date.now() + 60_000) })
+      .where(eq(sites.id, afterArchive.site.id));
+    const afterExpiry = await publishHtml(owner, html);
+    assert.equal(afterExpiry.duplicate, undefined, "an expired draft is offline");
+    assert.notEqual(afterExpiry.site.id, afterArchive.site.id);
+
+    // …and the page that IS active now is what the next identical publish finds.
+    const again = await publishHtml(owner, html);
+    assert.equal(again.duplicate, true);
+    assert.equal(again.site.id, afterExpiry.site.id);
   },
 );

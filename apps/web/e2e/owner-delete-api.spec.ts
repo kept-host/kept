@@ -3,6 +3,7 @@ import {
   deleteResultSchema,
   limitsFor,
   publishErrorSchema,
+  studioErrorSchema,
 } from "@kept/shared";
 import { expect, test } from "@playwright/test";
 import { config } from "dotenv";
@@ -339,7 +340,7 @@ test.describe("owner delete", () => {
 
     const signedOut = await request.delete(`${baseURL}/api/sites/${mine.siteId}`);
     expect(signedOut.status(), "the gate must hold before any store work").toBe(401);
-    publishErrorSchema.parse(await signedOut.json());
+    studioErrorSchema.parse(await signedOut.json());
     expect((await readSite(mine.siteId)).status).toBe("live");
 
     const otherCookie = await signIn(baseURL!);
@@ -351,6 +352,7 @@ test.describe("owner delete", () => {
     expect(absent.status()).toBe(404);
     // Byte-identical: "not yours" must not be an existence oracle.
     expect(await refused.text()).toBe(await absent.text());
+    expect(studioErrorSchema.parse(await refused.json()).error.code).toBe("not_found");
     expect((await readSite(theirs.siteId)).status).toBe("live");
     expect(await r2Store().get(pointerKey(theirs.slug))).not.toBeNull();
   });
@@ -371,6 +373,7 @@ test.describe("owner delete", () => {
     });
 
     expect(refused.status()).toBe(403);
+    // E05a's flat body, untouched — the gate runs before any studio code.
     expect(publishErrorSchema.parse(await refused.json()).error).toBe("invalid_request");
     expect(await readSite(page.siteId)).toEqual(before);
     expect(await r2Store().get(pointerKey(page.slug))).not.toBeNull();

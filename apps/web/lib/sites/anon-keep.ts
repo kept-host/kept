@@ -70,7 +70,7 @@ import { z } from "zod";
 import type { AnonSite } from "../db/queries/publish";
 import type { AnonOutcome } from "../publish/anon-manage";
 import { notFound, resolveAnonToken } from "../publish/anon-token";
-import { fail, liveUrl } from "../publish/pipeline";
+import { fail, liveUrl, type PublishFailure } from "../publish/pipeline";
 import { writeManifest } from "../storage/manifest";
 import { keepSite, restoreAndKeepSite, SiteNotFoundError } from "./keep";
 
@@ -141,6 +141,16 @@ function success(
       restored,
     }),
   };
+}
+
+/**
+ * Nobody is signed in, so the token cannot be attached to anyone. 401 in the
+ * flat `PublishError` shape every `/api/anon/*` route answers with — NOT the
+ * studio envelope `lib/sites/owner-routes.ts` uses for the same status, because
+ * this prefix's bodies are frozen. The route answers it before the token is read.
+ */
+export function signedOut(): PublishFailure {
+  return fail(401, { error: "invalid_request", message: "Sign in to manage this page." });
 }
 
 /** An unexpected throw. Logged with the site, answered without detail. */

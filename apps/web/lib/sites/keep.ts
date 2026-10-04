@@ -56,17 +56,23 @@ import { profiles, sites } from "../db/schema";
 // nothing here reaches R2, KV or the purge endpoint.
 import { draftClocks } from "../publish/pipeline";
 
+import { StudioRefusal } from "./studio-refusal";
+
 /**
  * A site that does not exist, is not owned by this profile, or is not in the
  * ownership state the caller declared.
  *
  * ONE SHAPE FOR ALL THREE. "You don't own this" is an existence oracle: it
  * tells a caller that a site id is real, which is exactly what a probe wants.
- * Route handlers map this to a 404 and nothing else.
+ * So the message is ONE constant sentence, with no id in it, and the studio
+ * routes answer it as `404 not_found` byte-identically however it was reached.
  */
-export class SiteNotFoundError extends Error {
-  constructor(siteId: string) {
-    super(`No site ${siteId} is available to this profile.`);
+export const SITE_NOT_FOUND_MESSAGE =
+  "No page with that id is available on this account. It may have been deleted, or the id may be wrong.";
+
+export class SiteNotFoundError extends StudioRefusal {
+  constructor(public readonly siteId: string) {
+    super("not_found", SITE_NOT_FOUND_MESSAGE);
     this.name = "SiteNotFoundError";
   }
 }

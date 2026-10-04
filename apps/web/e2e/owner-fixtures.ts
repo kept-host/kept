@@ -140,19 +140,21 @@ export async function publishOwned(
     headers: { origin: new URL(baseURL).origin, "content-type": "text/html" },
     data: html,
   });
-  expect(response.status(), await response.text()).toBe(200);
-  const result = ownedPublishResultSchema.parse(await response.json());
+  // 201: the bytes carry a fresh suffix, so this is never the 200 duplicate.
+  expect(response.status(), await response.text()).toBe(201);
+  const { site } = ownedPublishResultSchema.parse(await response.json());
 
-  scope.siteIds.push(result.siteId);
-  scope.slugs.add(result.slug);
+  scope.siteIds.push(site.id);
+  scope.slugs.add(site.slug);
 
   return {
-    siteId: result.siteId,
-    slug: result.slug,
-    liveUrl: result.liveUrl,
-    name: result.title ?? result.slug,
-    title: result.title,
-    outcome: result.outcome,
+    siteId: site.id,
+    slug: site.slug,
+    liveUrl: site.liveUrl,
+    name: site.title ?? site.slug,
+    title: site.title,
+    // `isDraft = expires_at != null` — the response's only signal for the cap.
+    outcome: site.expiresAt === null ? "kept" : "owned_draft",
     html,
   };
 }

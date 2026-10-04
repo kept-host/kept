@@ -4,6 +4,7 @@ import {
   accountDeletionResultSchema,
   ownedPublishResultSchema,
   publishErrorSchema,
+  studioErrorSchema,
 } from "@kept/shared";
 import { expect, test, type APIRequestContext } from "@playwright/test";
 import { config } from "dotenv";
@@ -163,23 +164,23 @@ test.describe("account deletion", () => {
       headers: { ...sessionHeaders(cookie, baseURL), "content-type": "text/html" },
       data: html,
     });
-    expect(response.status(), await response.text()).toBe(200);
-    const body = ownedPublishResultSchema.parse(await response.json());
-    createdSlugs.add(body.slug);
-    createdSiteIds.push(body.siteId);
+    expect(response.status(), await response.text()).toBe(201);
+    const { site } = ownedPublishResultSchema.parse(await response.json());
+    createdSlugs.add(site.slug);
+    createdSiteIds.push(site.id);
 
     const [row] = await db
       .select({ versionId: schema.sites.currentVersionId })
       .from(schema.sites)
-      .where(eq(schema.sites.id, body.siteId));
+      .where(eq(schema.sites.id, site.id));
     const versionId = row?.versionId;
     expect(versionId, "a published page must have a current version").toBeTruthy();
 
     return {
-      siteId: body.siteId,
-      slug: body.slug,
+      siteId: site.id,
+      slug: site.slug,
       versionId: versionId!,
-      objectKey: pageObjectKey(body.siteId, versionId!),
+      objectKey: pageObjectKey(site.id, versionId!),
       html,
     };
   }
@@ -333,7 +334,7 @@ test.describe("account deletion", () => {
       data: JSON.stringify({ confirm: ACCOUNT_DELETION_CONFIRMATION }),
     });
     expect(signedOut.status(), "the gate must hold before any store work").toBe(401);
-    publishErrorSchema.parse(await signedOut.json());
+    studioErrorSchema.parse(await signedOut.json());
     expect(await readSite(page.siteId)).toEqual(before);
 
     // A real session cookie carrying a HOSTED page's origin: same-site, so
@@ -348,6 +349,7 @@ test.describe("account deletion", () => {
       data: JSON.stringify({ confirm: ACCOUNT_DELETION_CONFIRMATION }),
     });
     expect(foreign.status()).toBe(403);
+    // E05a's flat body, untouched — the gate runs before any studio code.
     expect(publishErrorSchema.parse(await foreign.json()).error).toBe("invalid_request");
     expect(await readSite(page.siteId)).toEqual(before);
 
@@ -356,7 +358,9 @@ test.describe("account deletion", () => {
     for (const confirm of ["", "yes", "Delete My Account", `${ACCOUNT_DELETION_CONFIRMATION} `]) {
       const refused = await destroy(request, baseURL!, cookie, confirm);
       expect(refused.status(), confirm).toBe(400);
-      publishErrorSchema.parse(await refused.json());
+      expect(studioErrorSchema.parse(await refused.json()).error.code, confirm).toBe(
+        "invalid_request",
+      );
       expect(await readSite(page.siteId)).toEqual(before);
     }
     expect(await r2Store().get(pointerKey(page.slug))).not.toBeNull();

@@ -12,7 +12,8 @@
 
 import { z } from "zod";
 
-import { keepResultBranches, keptQuotaSchema, type KeepResult, type KeptQuota } from "./keep";
+import { siteStatusEnum } from "./enums";
+import { keptQuotaSchema, type KeptQuota } from "./keep";
 
 /**
  * Every code a studio (cookie-authenticated) route may answer with — the error
@@ -67,49 +68,59 @@ export const studioErrorSchema = z.object({
   }),
 });
 
+/** The inside of the envelope — what the studio client hands its callers. */
+export type StudioError = z.infer<typeof studioErrorSchema>["error"];
+
 /**
- * What a signed-in publish returns — `POST /api/sites` (task 004, epic D1).
+ * A page as the studio sees it — the `site` every studio response that changes
+ * a page carries (`POST /api/sites` first; D9).
  *
- * ⚠️ THE OUTCOME VOCABULARY IS `KeepResult`'s, NOT A NEW ONE. A signed-in
- * publish resolves the same two ways a keep does — under the cap the page is
- * `kept` and has no clock; at the cap it lands as an `owned_draft` with its
- * countdown intact and a swap prompt — so it reuses those branches verbatim
- * rather than inventing a third word for the same two states. **The cap is a
- * branch, not an error: both outcomes are HTTP 200 and there is no 4xx for
- * being full.**
+ * Wire-shaped: timestamps are ISO 8601 strings, and `liveUrl` is built by the
+ * control plane from `KEPT_BASE_DOMAIN` — a client that concatenated `slug` with
+ * a domain of its own would be wrong on dev the first time it ran.
  *
- * Two fields are added, and both exist because this response is what the
- * drop-zone repaints from without a second request:
+ * `isDraft = expiresAt != null`, exactly as on the row: a publish past the plan's
+ * kept limit comes back with its clock set, and that is the ONLY way the caller
+ * learns it landed as a draft. There is no `outcome` field to disagree with it.
  *
- *   · `liveUrl` — the page's public address, built server-side from
- *     `KEPT_BASE_DOMAIN`. A client that concatenated `slug` with a domain of its
- *     own would be wrong on dev the first time it ran.
- *   · `title` — the `<title>` extracted from the bytes just published, `null`
- *     when there is none. The card renders `title ?? slug`, so it needs the
- *     value the row was actually given, not a guess.
+ * `title` is `null` when the page has no usable `<title>`; render `title ?? slug`.
+ */
+export const studioSiteSchema = z.object({
+  id: z.string().uuid(),
+  slug: z.string(),
+  /** `https://{slug}.{base}` — built by the control plane, never by the client. */
+  liveUrl: z.string().url(),
+  title: z.string().nullable(),
+  status: siteStatusEnum,
+  /** The draft clock. Set ⇒ draft; `null` ⇒ kept. */
+  expiresAt: z.string().datetime().nullable(),
+  /** End of the post-expiry grace window; `null` on a kept page. */
+  purgeAfter: z.string().datetime().nullable(),
+  updatedAt: z.string().datetime(),
+});
+
+export type StudioSite = z.infer<typeof studioSiteSchema>;
+
+/**
+ * What `POST /api/sites` returns (D9, PRD §7).
+ *
+ * - **201 `{ site }`** — a new page. Kept while the account is under its plan's
+ *   kept limit, otherwise an OWNED DRAFT (`site.expiresAt` set). **The cap is a
+ *   branch, not an error**: there is no 4xx for being full.
+ * - **200 `{ site, duplicate: true }`** — this account already has an active
+ *   page with these exact bytes (PRD §5.1, AC8). No new page is made; `site` is
+ *   the existing one, so the studio can point at it.
  *
  * There is deliberately no `anonToken` and no `claim_url`: an owned page has one
  * authority, the account. `PublishResponse` (the keyless contract in ./publish)
- * carries both and is a different shape for a different caller — that split is
- * the whole of D1.
+ * is a different shape for a different caller.
  */
-export type OwnedPublishResult = KeepResult & {
-  /** `https://{slug}.{base}` — built by the control plane, never by the client. */
-  liveUrl: string;
-  /** Extracted from the published bytes; `null` when they carry no `<title>`. */
-  title: string | null;
-};
+export const ownedPublishResultSchema = z.object({
+  site: studioSiteSchema,
+  duplicate: z.literal(true).optional(),
+});
 
-/** The two fields the publish branches add to `keepResultBranches`. */
-const ownedPublishExtras = {
-  liveUrl: z.string().url(),
-  title: z.string().nullable(),
-} as const;
-
-export const ownedPublishResultSchema = z.discriminatedUnion("outcome", [
-  keepResultBranches.kept.extend(ownedPublishExtras),
-  keepResultBranches.ownedDraft.extend(ownedPublishExtras),
-]);
+export type OwnedPublishResult = z.infer<typeof ownedPublishResultSchema>;
 
 /**
  * `PATCH /api/sites/:id/slug`.
@@ -170,10 +181,11 @@ export const renameResultSchema = z.object({
  * the previous version is never deleted — and the rollback UI that consumes it
  * is E11's, not this epic's.
  *
- * `title` is RE-EXTRACTED from the new bytes and may legitimately be `null`
- * when the replacement carries no readable `<title>`. Carrying the old one
- * forward would make the dashboard confidently display the previous page's
- * name, which is worse than displaying the slug.
+ * `title` is the title the row holds AFTER the replace: re-extracted from the
+ * new bytes — and legitimately `null` when they carry no readable `<title>` —
+ * unless the owner named the page (`title_source = 'owner'`, D11), which no
+ * replace overwrites. Carrying an HTML title forward would make the dashboard
+ * confidently display the previous page's name, which is worse than the slug.
  *
  * There is no `slug` change and no `previousSlug`: a replace keeps the URL. That
  * is the whole point of it, and it is why the manifest is rewritten for the same
@@ -186,7 +198,7 @@ export interface ReplaceResult {
   liveUrl: string;
   /** The new version. The previous one is retained, never deleted. */
   versionId: string;
-  /** Re-extracted from the new bytes; `null` when they carry no `<title>`. */
+  /** The stored title: the new bytes' `<title>` (or `null`), or the owner's. */
   title: string | null;
   /** The UNTOUCHED draft clock. `null` ⇒ kept. */
   expiresAt: string | null;

@@ -1,19 +1,39 @@
 /**
- * The HTTP shape of the owner-scoped endpoints — E05 task 010, extended by E06.
+ * The HTTP shape of the owner-scoped (studio) endpoints — E05 task 010,
+ * extended by E06.
  *
- * `POST /api/sites/:id/keep` · `POST /api/sites/:id/demote` · `POST /api/sites/swap`
- * `POST /api/sites` (E06 task 004)
- * `PATCH /api/sites/:id/slug` (E06 task 005)
- * `POST /api/sites/:id/replace` · `DELETE /api/sites/:id` (E06 task 006)
- * `DELETE /api/account` (E06 task 011)
+ * `POST /api/sites` · `POST /api/sites/:id/keep` · `POST /api/sites/:id/demote`
+ * `POST /api/sites/swap` · `PATCH /api/sites/:id/slug`
+ * `POST /api/sites/:id/replace` · `DELETE /api/sites/:id` · `DELETE /api/account`
  *
  * ── WHAT THIS MODULE IS FOR ────────────────────────────────────────────────
  * Validation and result→response mapping, and nothing else. Every database
  * decision — the cap, the row locks, the clocks — lives in `./keep.ts` and is
- * called, never re-implemented. The three `route.ts` files above this are the
+ * called, never re-implemented. The `route.ts` files above this are the
  * session boundary: they resolve who is signed in, then hand a profile id here.
  * Splitting it that way is what makes these paths testable against the real dev
  * database without a Next request scope (`next/headers` throws outside one).
+ *
+ * ── THE ERROR ENVELOPE (E06 task 005) ──────────────────────────────────────
+ * Every studio failure answers `{ error: { code, message } }`, `code ∈
+ * STUDIO_ERROR_CODES`, parsed through `studioErrorSchema` before it leaves.
+ * Three doors lead into it, and only three:
+ *
+ *   1. A lib module THROWS a `StudioRefusal` (`./studio-refusal.ts`) —
+ *      `SiteNotFoundError`, `SiteNotReplaceableError`, the store errors, and
+ *      every refusal later tasks add. `studioFailure` maps it through ONE table,
+ *      `STUDIO_ERROR_STATUS`, so a new refusal is a `throw` in its lib module and
+ *      never a new branch in the functions below.
+ *   2. The shared publish pipeline REFUSED (`requestError`, `contentRejected`,
+ *      `slugUnavailable` — flat `PublishError`s, because `/api/publish` and
+ *      `/api/anon/*` answer agents and their bodies are frozen).
+ *      `fromPublishFailure` translates them here, at the boundary, and never by
+ *      changing what the pipeline emits.
+ *   3. `refuse(code, message)` for the few refusals this module decides itself.
+ *
+ * Two bodies stay outside it ON PURPOSE: E05a's origin 403
+ * (`refuseUntrustedOrigin`, which runs before anything here) and the 401 below,
+ * whose STATUS is the whole message.
  *
  * ⚠️ NO STORE CALLS ON THE KEEP / DEMOTE / SWAP PATHS. Keeping and demoting are
  * Postgres writes, not publishes: the manifest the Worker reads carries
@@ -21,33 +41,22 @@
  * throughout, so there is nothing for the edge to learn. No `writeManifest`, no
  * `removeManifest`, no R2, no purge — see the header of `./keep.ts` for why
  * writing the manifest "for consistency" is a real regression rather than a
- * harmless extra. The one manifest-touching branch in E05 is the late keep of an
- * `expired` row, and it belongs to the anonymous keep route, not to these.
+ * harmless extra.
  *
  * ⚠️ PUBLISH, RENAME, REPLACE AND DELETE ARE THE EXCEPTIONS, AND THEY ARE ON
  * PURPOSE. Storing a page's first bytes, moving a slug, storing new bytes and
  * taking a page off the internet are all unavoidably edge operations — but each
  * ordering lives in exactly one place, `./publish.ts`, `./rename.ts` and
- * `./manage.ts`, and this module only maps their errors onto statuses. Nothing
- * here calls `writeManifest`/`removeManifest`/`r2Store` directly, and nothing
- * new may.
+ * `./manage.ts`, and this module only maps their refusals. Nothing here calls
+ * `writeManifest`/`removeManifest`/`r2Store` directly, and nothing new may.
  *
  * ⚠️ "YOU DON'T OWN THIS" IS AN EXISTENCE ORACLE. A site that does not exist, a
  * site owned by somebody else and an id that is not even a uuid all produce the
- * byte-identical 404 below. `keepSite`/`demoteSite`/`swapKept` already collapse
- * the first two into one `SiteNotFoundError` with one message; this module must
- * not un-collapse them.
+ * byte-identical `404 not_found` below (D17: never 403). `SiteNotFoundError`
+ * carries one constant sentence; this module must not un-collapse them.
  *
- * ⚠️ THE CAP IS A BRANCH, NOT AN ERROR. Keeping at the plan's kept limit returns
- * HTTP 200 with `outcome: "owned_draft"` — the page is owned, its countdown is
- * intact, and the caller renders a swap prompt. There is no 4xx for being at
- * the cap and there must never be one.
- *
- * The error body is the publish family's closed `PublishError` shape, reused
- * rather than re-invented so the control plane fails exactly one way. The
- * *status* carries the distinction a caller acts on (401 sign in again, 404
- * gone-or-not-yours, 400 caller bug); the code stays `invalid_request` because
- * the enum is closed and shared with `apps/edge`'s consumers.
+ * ⚠️ THE CAP IS A BRANCH, NOT AN ERROR — on publish. Publishing at the plan's
+ * kept limit lands an owned draft (201), never a 4xx.
  */
 import {
   ACCOUNT_DELETION_CONFIRMATION,
@@ -60,14 +69,17 @@ import {
   renameRequestSchema,
   renameResultSchema,
   replaceResultSchema,
+  studioErrorSchema,
   swapResultSchema,
   type AccountDeletionResult,
   type DeleteResult,
   type DemoteResult,
   type KeepResult,
   type OwnedPublishResult,
+  type PublishErrorCode,
   type RenameResult,
   type ReplaceResult,
+  type StudioErrorCode,
   type SwapResult,
 } from "@kept/shared";
 import { NextResponse } from "next/server";
@@ -75,34 +87,118 @@ import { z } from "zod";
 
 import { SlugUnavailableError } from "../db/queries/publish";
 import { checkHeuristics } from "../publish/hooks";
-import { errorResponse } from "../publish/http";
 import {
-  fail,
-  internalError,
+  contentRejected,
   requestError,
+  slugUnavailable,
   type PublishFailure,
   type PublisherContext,
 } from "../publish/pipeline";
-import { checkChosenSlug } from "../publish/slug";
-import { AccountDeletionStoreError, deleteAccount } from "./account-deletion";
-import { demoteSite, keepSite, SiteNotFoundError, swapKept } from "./keep";
-import {
-  deleteSite,
-  ManageStoreError,
-  ownerPageBodySchema,
-  replaceSite,
-  SiteNotReplaceableError,
-} from "./manage";
-import { OwnedPublishStoreError, publishOwnedPage } from "./publish";
-import {
-  renameSite,
-  RenameStoreError,
-  SiteNotRenamableError,
-  SlugTakenError,
-} from "./rename";
+import { checkChosenSlug, type SlugRefusalReason } from "../publish/slug";
+import { deleteAccount } from "./account-deletion";
+import { demoteSite, keepSite, SITE_NOT_FOUND_MESSAGE, swapKept } from "./keep";
+import { deleteSite, ownerPageBodySchema, replaceSite } from "./manage";
+import { publishOwnedPage } from "./publish";
+import { renameSite } from "./rename";
+import { StudioRefusal } from "./studio-refusal";
+
+/** A studio refusal, ready to answer: the status and the validated envelope. */
+export type StudioFailure = {
+  ok: false;
+  status: number;
+  body: z.infer<typeof studioErrorSchema>;
+};
 
 /** Success bodies differ per operation; the failure shape never does. */
-export type OwnerOutcome<T> = { ok: true; status: 200; body: T } | PublishFailure;
+export type OwnerOutcome<T> = { ok: true; status: 200 | 201; body: T } | StudioFailure;
+
+/**
+ * THE ONE TABLE: the HTTP status every studio code answers with. A `Record`
+ * over the closed enum, so a code added to `STUDIO_ERROR_CODES` does not
+ * compile until it has a status here. The client branches on `code`; the status
+ * is for HTTP tooling, retries and logs.
+ *
+ * `internal_error` is 503 because a TYPED one is a known, transient store
+ * failure where nothing changed and a retry is the answer. An UNTYPED throw is
+ * not in this table — `studioFailure` answers it 500 itself.
+ */
+const STUDIO_ERROR_STATUS = {
+  not_found: 404,
+  version_not_found: 404,
+  invalid_request: 400,
+  invalid_file: 400,
+  name_invalid: 400,
+  name_too_short: 400,
+  name_pro_length: 400,
+  name_reserved: 400,
+  name_inappropriate: 400,
+  file_too_large: 413,
+  content_rejected: 422,
+  name_taken: 409,
+  name_quota: 409,
+  not_allowed_in_status: 409,
+  at_kept_limit: 409,
+  unchanged: 409,
+  last_sign_in_method: 409,
+  rename_rate_limited: 429,
+  rate_limited: 429,
+  slug_unavailable: 503,
+  internal_error: 503,
+} as const satisfies Record<StudioErrorCode, number>;
+
+/**
+ * The flat pipeline codes, in studio vocabulary. Only the body's SHAPE is
+ * translated here; what `/api/publish` emits is untouched. `turnstile_failed`
+ * cannot reach a studio route (none runs Turnstile) and lands on the generic
+ * request refusal if it ever did.
+ */
+const STUDIO_CODE_FOR: Record<PublishErrorCode, StudioErrorCode> = {
+  invalid_request: "invalid_request",
+  empty_page: "invalid_file",
+  page_too_large: "file_too_large",
+  turnstile_failed: "invalid_request",
+  rate_limited: "rate_limited",
+  content_rejected: "content_rejected",
+  slug_unavailable: "slug_unavailable",
+  internal_error: "internal_error",
+};
+
+/** The envelope, built and validated in one place. */
+function failure(status: number, code: StudioErrorCode, message: string): StudioFailure {
+  return { ok: false, status, body: studioErrorSchema.parse({ error: { code, message } }) };
+}
+
+/** A refusal this module decides itself, at its code's status. */
+export function refuse(code: StudioErrorCode, message: string): StudioFailure {
+  return failure(STUDIO_ERROR_STATUS[code], code, message);
+}
+
+/** A shared-pipeline refusal (flat `PublishError`), translated into the envelope. */
+export function fromPublishFailure(refusal: PublishFailure): StudioFailure {
+  return refuse(STUDIO_CODE_FOR[refusal.body.error], refusal.body.message);
+}
+
+/**
+ * THE typed-failure mapping. A `StudioRefusal` answers with its own code and
+ * sentence at the table's status, its `detail` logged and never sent. Anything
+ * else is a bug: logged with the operation, answered 500 with `unexpected` —
+ * by default the promise that nothing was left half-written, which every page
+ * verb can make because its stores unwind before it throws.
+ */
+export function studioFailure(
+  err: unknown,
+  operation: string,
+  unexpected = `kept could not ${operation} this page. Nothing was left half-written — retry the request.`,
+): StudioFailure {
+  if (err instanceof StudioRefusal) {
+    if (err.detail) console.error(`[owner-routes] ${operation} refused — ${err.detail}`);
+    return refuse(err.code, err.message);
+  }
+  console.error(
+    `[owner-routes] ${operation} failed unexpectedly — ${err instanceof Error ? err.message : String(err)}`,
+  );
+  return failure(500, "internal_error", unexpected);
+}
 
 /**
  * The `[id]` path segment. A value that is not a uuid cannot name a site, so it
@@ -114,7 +210,7 @@ export const siteIdSchema = z.string().uuid();
 /**
  * `POST /api/sites/swap`. Both ids are required and must differ: swapping a
  * page with itself would demote the very page it then keeps, which is a caller
- * bug rather than a cap branch, so it is the one 400 these routes emit.
+ * bug rather than a cap branch, so it is a 400.
  */
 export const swapRequestSchema = z
   .object({
@@ -130,78 +226,58 @@ export const swapRequestSchema = z
 export type SwapRequest = z.infer<typeof swapRequestSchema>;
 
 /**
- * The ONE response for "no such page" and "not your page". One function, so the
- * two can never drift into distinguishable bodies.
+ * The ONE response for "no such page" and "not your page" — the same sentence
+ * `SiteNotFoundError` carries, so a 404 reached by a malformed id here and one
+ * thrown from a query can never drift into distinguishable bodies.
  */
-export function ownerNotFound(): PublishFailure {
-  return fail(404, {
-    error: "invalid_request",
-    message:
-      "No page with that id is available on this account. It may have been deleted, or the id may be wrong.",
-  });
+export function ownerNotFound(): StudioFailure {
+  return refuse("not_found", SITE_NOT_FOUND_MESSAGE);
 }
 
 /**
  * Nobody is signed in. Exported for the route handlers, which own the session
  * lookup: `getSession()` reads `next/headers` and cannot be called from here.
+ *
+ * The one failure whose STATUS is the message: 401 means "sign in again", and
+ * no studio code exists for it because the client navigates rather than
+ * printing anything. The body is still the envelope.
  */
-export function signedOut(): PublishFailure {
-  return fail(401, {
-    error: "invalid_request",
-    message: "Sign in to manage this page.",
-  });
+export function signedOut(): StudioFailure {
+  return failure(401, "invalid_request", "Sign in to manage this page.");
 }
 
 /**
- * The one outcome→response mapping, so the three `route.ts` files above cannot
- * drift on status, headers or error shape. Never cacheable: all three mutate.
+ * The one outcome→response mapping, so the `route.ts` files cannot drift on
+ * status, headers or error shape. Never cacheable: every one of them mutates.
  */
 export function ownerResponse<T>(outcome: OwnerOutcome<T>): NextResponse {
-  if (!outcome.ok) return errorResponse(outcome.status, outcome.body);
   return NextResponse.json(outcome.body, {
     status: outcome.status,
     headers: { "cache-control": "no-store" },
   });
 }
 
-/** An unexpected throw. Logged with the operation, answered without detail. */
-function unexpected(operation: string, err: unknown): PublishFailure {
-  console.error(
-    `[owner-routes] ${operation} failed unexpectedly — ${err instanceof Error ? err.message : String(err)}`,
-  );
-  return fail(500, {
-    error: "internal_error",
-    message: `kept could not ${operation} this page. Nothing was left half-written — retry the request.`,
-  });
-}
-
 /**
  * `POST /api/sites` — publish a page that belongs to this account from its first
- * byte. E06 task 004, epic decision **D1**.
+ * byte. Decision **D9**.
  *
  * ⚠️ THIS IS NOT `POST /api/publish` WITH A SESSION. That endpoint is the
  * KEYLESS one: it mints an `anon_token_hash`, leaves `owner_id` null and starts
  * a clock, and composing it with a keep would be two non-atomic requests with an
  * orphan window between them — plus a bearer token handed to a browser for a
- * page the account already owns. Two authorities on one page is the bug; this
- * route is how it is avoided. `./publish.ts` owns the transaction and the store
- * ordering, and mints no token at all.
+ * page the account already owns. `./publish.ts` owns the transaction and the
+ * store ordering, and mints no token at all.
  *
- * ⚠️ THE CAP IS A BRANCH, NOT AN ERROR — the same rule keep obeys, and the
- * reason this returns `KeepResult`'s `kept | owned_draft` discriminant rather
- * than a third vocabulary. Publishing at the plan's kept limit lands an OWNED DRAFT
- * with its countdown running and returns **200**, so the drop-zone renders a
- * notice instead of an error. A 4xx here would mean losing the page somebody
- * just dropped because their account is full, and there must never be one.
+ * **201 `{ site }`** for a new page — kept under the plan's limit, an owned
+ * draft at it (the cap DEGRADES; there is no 4xx for being full).
+ * **200 `{ site, duplicate: true }`** when this account already has these exact
+ * bytes live (PRD §5.1, AC8): nothing new is written.
  *
- * 200 rather than 201: `OwnerOutcome` pins one success status across the whole
- * owner family, and the caller branches on `outcome` — which carries the fact
- * that matters — never on the status code.
- *
- * TURNSTILE IS NOT REQUIRED and must not be added "for symmetry": the caller is
- * authenticated by a `__Host-` session cookie and an origin check. The heuristic
- * content check DOES run, in the same position as every other path that stores
- * bytes — being signed in is not a content policy.
+ * TURNSTILE AND `checkRateLimit` ARE NOT RUN and must not be added "for
+ * symmetry": the caller is authenticated by a `__Host-` session cookie and an
+ * origin check (see `./publish.ts`). The heuristic content check DOES run, in
+ * the same position as every other path that stores bytes — being signed in is
+ * not a content policy.
  */
 export async function publishOwnedSite(
   raw: unknown,
@@ -209,40 +285,29 @@ export async function publishOwnedSite(
   publisher: PublisherContext,
 ): Promise<OwnerOutcome<OwnedPublishResult>> {
   const parsed = ownerPageBodySchema.safeParse(raw);
-  if (!parsed.success) return requestError(parsed.error);
+  if (!parsed.success) return fromPublishFailure(requestError(parsed.error));
 
   const heuristics = await checkHeuristics(parsed.data.html);
-  if (!heuristics.allowed) {
-    return fail(422, {
-      error: "content_rejected",
-      message: `This page was refused by the content check (${heuristics.reason}).`,
-    });
-  }
+  if (!heuristics.allowed) return fromPublishFailure(contentRejected(heuristics.reason));
 
   try {
     const result = await publishOwnedPage({ profileId, html: parsed.data.html, publisher });
-    // Parse our own output: the drop-zone repaints its card and its quota from
-    // this body without a second request, so a silent shape change here is a
-    // broken dashboard rather than a failed test.
-    return { ok: true, status: 200, body: ownedPublishResultSchema.parse(result) };
+    // Parse our own output: the studio repaints its card from this body without
+    // a second request, so a silent shape change here is a broken screen rather
+    // than a failed test.
+    return {
+      ok: true,
+      status: result.duplicate ? 200 : 201,
+      body: ownedPublishResultSchema.parse(result),
+    };
   } catch (err) {
     if (err instanceof SlugUnavailableError) {
-      // The same 503 and the same code the anonymous pipeline gives for the
-      // same exhausted mint — a broken index or a broken CSPRNG, and transient
-      // from the caller's side either way.
+      // The same 503 and the same sentence the anonymous pipeline gives for the
+      // same exhausted mint — translated, not re-spelled.
       console.error(`[kept] ${err.message}`);
-      return fail(503, {
-        error: "slug_unavailable",
-        message:
-          "Could not assign a link for this page right now. This is transient — retry the request.",
-      });
+      return fromPublishFailure(slugUnavailable());
     }
-    if (err instanceof OwnedPublishStoreError) {
-      console.error(`[owner-routes] publish refused — ${err.message}`);
-      // The row was rolled back, so "nothing was left half-written" is true.
-      return internalError();
-    }
-    return unexpected("publish", err);
+    return studioFailure(err, "publish");
   }
 }
 
@@ -273,8 +338,7 @@ export async function keepOwnedSite(
     // broken dashboard rather than a failed test.
     return { ok: true, status: 200, body: keepResultSchema.parse(result) };
   } catch (err) {
-    if (err instanceof SiteNotFoundError) return ownerNotFound();
-    return unexpected("keep", err);
+    return studioFailure(err, "keep");
   }
 }
 
@@ -301,8 +365,7 @@ export async function demoteOwnedSite(
     const result = await demoteSite(parsed.data, profileId);
     return { ok: true, status: 200, body: demoteResultSchema.parse(result) };
   } catch (err) {
-    if (err instanceof SiteNotFoundError) return ownerNotFound();
-    return unexpected("demote", err);
+    return studioFailure(err, "demote");
   }
 }
 
@@ -317,22 +380,27 @@ export async function swapOwnedSites(
 ): Promise<OwnerOutcome<SwapResult>> {
   const parsed = swapRequestSchema.safeParse(raw);
   if (!parsed.success) {
-    return fail(400, {
-      error: "invalid_request",
-      message:
-        parsed.error.issues[0]?.message ??
+    return refuse(
+      "invalid_request",
+      parsed.error.issues[0]?.message ??
         "Send `{ demote, keep }`, both site ids belonging to this account.",
-    });
+    );
   }
 
   try {
     const result = await swapKept(parsed.data.demote, parsed.data.keep, profileId);
     return { ok: true, status: 200, body: swapResultSchema.parse(result) };
   } catch (err) {
-    if (err instanceof SiteNotFoundError) return ownerNotFound();
-    return unexpected("swap", err);
+    return studioFailure(err, "swap");
   }
 }
+
+/** `checkChosenSlug`'s three refusals, in studio vocabulary. */
+const NAME_CODE_FOR: Record<SlugRefusalReason, StudioErrorCode> = {
+  shape: "name_invalid",
+  reserved: "name_reserved",
+  profanity: "name_inappropriate",
+};
 
 /**
  * `PATCH /api/sites/:id/slug` — move an owned page to a name its owner chose.
@@ -346,7 +414,7 @@ export async function swapOwnedSites(
  * `slug.ts` states the rule: "a pre-flight 'is this slug free?' query is a race,
  * and `sites_slug_key` is the only authority." The availability signal a rename
  * field shows while you type is therefore ADVISORY and comes from this endpoint's
- * own error path — a `409` whose message says the name is taken — not from a
+ * own error path — a `409 name_taken` — not from a
  * separate GET that the write then trusts. A check that gates the write is a
  * TOCTOU bug with a nice spinner: two people can pass it in the same second and
  * only one of them can have the name. The shape/reserved/profanity half of the
@@ -366,49 +434,23 @@ export async function renameOwnedSite(
 
   const parsed = renameRequestSchema.safeParse(raw);
   if (!parsed.success) {
-    return fail(400, {
-      error: "invalid_request",
-      message: "Send `{ slug }` — the new name for this page.",
-    });
+    return refuse("invalid_request", "Send `{ slug }` — the new name for this page.");
   }
 
   // Shape, reserved labels and profanity, in the one function the browser also
   // calls. `null` means the string is acceptable; whether it is AVAILABLE is a
   // different question and only the index below can answer it.
   const refusal = checkChosenSlug(parsed.data.slug);
-  if (refusal) {
-    return fail(400, { error: "invalid_request", message: refusal.message });
-  }
+  if (refusal) return refuse(NAME_CODE_FOR[refusal.reason], refusal.message);
 
   try {
     const result = await renameSite(parsedId.data, profileId, parsed.data.slug);
     return { ok: true, status: 200, body: renameResultSchema.parse(result) };
   } catch (err) {
-    if (err instanceof SiteNotFoundError) return ownerNotFound();
-    // 409, not 400: the request was well-formed and the answer is about the
-    // world's state, not the caller's syntax. The code stays `invalid_request`
-    // because the error enum is closed and shared with `apps/edge`'s consumers.
-    if (err instanceof SlugTakenError) {
-      return fail(409, {
-        error: "invalid_request",
-        message: `"${err.slug}" is already taken. Try another name.`,
-      });
-    }
-    if (err instanceof SiteNotRenamableError) {
-      return fail(409, { error: "invalid_request", message: err.message });
-    }
-    if (err instanceof RenameStoreError) {
-      // Nothing was applied — the transaction rolled back — so the honest
-      // answer is "retry", not "we half-moved your page". Logged with the step
-      // that failed, which is the only place that detail exists.
-      console.error(`[owner-routes] rename refused — ${err.message}`);
-      return fail(503, {
-        error: "internal_error",
-        message:
-          "kept could not move this page to the new address just now. Nothing changed — the page is still live at its current one. Try again in a moment.",
-      });
-    }
-    return unexpected("rename", err);
+    // `name_taken` and `not_allowed_in_status` are 409s, not 400s: the request
+    // was well-formed and the answer is about the world's state. Both are
+    // thrown by `./rename.ts`, and the store failure logs its failed step.
+    return studioFailure(err, "rename");
   }
 }
 
@@ -438,39 +480,22 @@ export async function replaceOwnedSite(
   if (!parsedId.success) return ownerNotFound();
 
   const parsed = ownerPageBodySchema.safeParse(raw);
-  if (!parsed.success) return requestError(parsed.error);
+  if (!parsed.success) return fromPublishFailure(requestError(parsed.error));
 
   // The same E07 seam the anonymous replace runs, in the same position: before
   // anything is stored. A replace is a re-publish, and a path that stores new
   // bytes without the content check is a hole big enough to publish anything
   // through — publish clean, then replace with the payload.
   const heuristics = await checkHeuristics(parsed.data.html);
-  if (!heuristics.allowed) {
-    return fail(422, {
-      error: "content_rejected",
-      message: `This page was refused by the content check (${heuristics.reason}).`,
-    });
-  }
+  if (!heuristics.allowed) return fromPublishFailure(contentRejected(heuristics.reason));
 
   try {
     const result = await replaceSite(parsedId.data, profileId, parsed.data.html);
     return { ok: true, status: 200, body: replaceResultSchema.parse(result) };
   } catch (err) {
-    if (err instanceof SiteNotFoundError) return ownerNotFound();
-    // 409, not 400: the request was well-formed and the answer is about the
-    // page's state, not the caller's syntax.
-    if (err instanceof SiteNotReplaceableError) {
-      return fail(409, { error: "invalid_request", message: err.message });
-    }
-    if (err instanceof ManageStoreError) {
-      console.error(`[owner-routes] replace refused — ${err.message}`);
-      return fail(503, {
-        error: "internal_error",
-        message:
-          "kept could not publish the new file just now. Nothing changed — the page is still serving what it was. Try again in a moment.",
-      });
-    }
-    return unexpected("replace", err);
+    // A page that is not `live` is `409 not_allowed_in_status`, with the
+    // sentence `./display.ts` gives the card — thrown by `./manage.ts`.
+    return studioFailure(err, "replace");
   }
 }
 
@@ -497,16 +522,7 @@ export async function deleteOwnedSite(
     const result = await deleteSite(parsed.data, profileId);
     return { ok: true, status: 200, body: deleteResultSchema.parse(result) };
   } catch (err) {
-    if (err instanceof SiteNotFoundError) return ownerNotFound();
-    if (err instanceof ManageStoreError) {
-      console.error(`[owner-routes] delete refused — ${err.message}`);
-      return fail(503, {
-        error: "internal_error",
-        message:
-          "kept could not take this page off the internet just now. Nothing changed — it is still serving. Try again in a moment.",
-      });
-    }
-    return unexpected("delete", err);
+    return studioFailure(err, "delete");
   }
 }
 
@@ -543,36 +559,25 @@ export async function deleteOwnAccount(
 ): Promise<OwnerOutcome<AccountDeletionResult>> {
   const parsed = accountDeletionRequestSchema.safeParse(raw);
   if (!parsed.success) {
-    return fail(400, {
-      error: "invalid_request",
-      message: `Send \`{ confirm: "${ACCOUNT_DELETION_CONFIRMATION}" }\` — deleting an account is permanent and has to be typed out.`,
-    });
+    return refuse(
+      "invalid_request",
+      `Send \`{ confirm: "${ACCOUNT_DELETION_CONFIRMATION}" }\` — deleting an account is permanent and has to be typed out.`,
+    );
   }
 
   try {
     const result = await deleteAccount(profileId);
     return { ok: true, status: 200, body: accountDeletionResultSchema.parse(result) };
   } catch (err) {
-    if (err instanceof AccountDeletionStoreError) {
-      // Nothing was deleted — the throw happens before the transaction opens —
-      // so "nothing changed" is literally true and a retry is safe.
-      console.error(`[owner-routes] account deletion refused — ${err.message}`);
-      return fail(503, {
-        error: "internal_error",
-        message:
-          "kept could not take your pages off the internet just now, so nothing was deleted. Your account and every page are exactly as they were. Try again in a moment.",
-      });
-    }
-    // NOT `unexpected()`: its body says "this page" and promises nothing was
-    // half-written. Neither is true here — the unwind may have taken pages off
-    // the edge before the throw — so this says what a retry actually does.
-    console.error(
-      `[owner-routes] account deletion failed unexpectedly — ${err instanceof Error ? err.message : String(err)}`,
+    // `AccountDeletionStoreError` is thrown before the transaction opens, so its
+    // "nothing was deleted" is literally true. An UNEXPECTED throw gets its own
+    // sentence, not the page verbs' "nothing was left half-written": the unwind
+    // may have taken pages off the edge before it, so this says what a retry
+    // actually does.
+    return studioFailure(
+      err,
+      "account deletion",
+      "kept could not finish deleting your account. Some of your pages may already have stopped being served; retrying the deletion is safe and will finish the job.",
     );
-    return fail(500, {
-      error: "internal_error",
-      message:
-        "kept could not finish deleting your account. Some of your pages may already have stopped being served; retrying the deletion is safe and will finish the job.",
-    });
   }
 }

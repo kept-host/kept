@@ -67,6 +67,7 @@ import { pageObjectKey } from "../storage/r2";
 
 import { managementRefusal } from "./display";
 import { keptQuotaFor, SiteNotFoundError } from "./keep";
+import { StudioRefusal } from "./studio-refusal";
 
 /**
  * The body of an owner write — a replace here, and the owned publish in
@@ -98,9 +99,9 @@ export const ownerPageBodySchema = publishRequestSchema.pick({ html: true });
  * plainer reason — they are not being served, so a replace would write bytes
  * nobody can reach and quietly repoint a row its owner cannot see.
  */
-export class SiteNotReplaceableError extends Error {
+export class SiteNotReplaceableError extends StudioRefusal {
   constructor(public readonly status: SiteStatus) {
-    super(explainNotReplaceable(status));
+    super("not_allowed_in_status", explainNotReplaceable(status));
     this.name = "SiteNotReplaceableError";
   }
 }
@@ -125,19 +126,25 @@ function explainNotReplaceable(status: SiteStatus): string {
 
 /**
  * A store step left the edge in a state the caller should retry rather than
- * accept. Both verbs raise it, so the message names which one failed.
+ * accept. Both verbs raise it, so the log detail names which one failed.
  *
  * On a replace the row has already been rolled back and the previous manifest
  * restored, so the page is still serving what it was; on a delete nothing has
  * been written at all. Either way the honest answer is "nothing changed, try
  * again", never "we half-deleted your page".
  */
-export class ManageStoreError extends Error {
+export class ManageStoreError extends StudioRefusal {
   constructor(
     public readonly verb: "replace" | "delete",
     detail: string,
   ) {
-    super(`The ${verb} could not be applied at the edge: ${detail}`);
+    super(
+      "internal_error",
+      verb === "replace"
+        ? "kept could not publish the new file just now. Nothing changed — the page is still serving what it was. Try again in a moment."
+        : "kept could not take this page off the internet just now. Nothing changed — it is still serving. Try again in a moment.",
+      `The ${verb} could not be applied at the edge: ${detail}`,
+    );
     this.name = "ManageStoreError";
   }
 }
@@ -170,8 +177,10 @@ export async function replaceSite(
   // RE-EXTRACTED, NOT CARRIED OVER — including to `null`, when the replacement
   // has no readable `<title>`. The name belongs to the bytes, so new bytes get
   // a new name; leaving the old value in place would make the wall confidently
-  // display the PREVIOUS page's name (E06 task 001).
-  const title = extractPageTitle(html);
+  // display the PREVIOUS page's name (E06 task 001). Unless the OWNER named the
+  // page (D11): `insertReplacementVersion` keeps an owner title, in SQL, and
+  // returns the title the row actually ended up with.
+  const extracted = extractPageTitle(html);
 
   // NEW versionId, SAME siteId — so the object is a new key rather than a
   // mutation of one the edge may have cached, and the slug never has to move.
@@ -188,7 +197,15 @@ export async function replaceSite(
   // Postgres first, exactly as publish does and for the same reason: it is the
   // only store with a transaction and the only one E07's audit can reconcile
   // against. `expires_at` and `purge_after` are not in this statement.
-  await insertReplacementVersion({ siteId: site.id, versionId, r2Key, title, contentHash, sizeBytes });
+  const { title } = await insertReplacementVersion({
+    siteId: site.id,
+    versionId,
+    r2Key,
+    title: extracted,
+    contentHash,
+    sizeBytes,
+    publishedVia: "studio",
+  });
 
   const stored = await writePageAndManifest({
     slug: site.slug,

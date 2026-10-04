@@ -11,10 +11,17 @@
  * worse than no title, because the wall then confidently displays the PREVIOUS
  * page's name. Every writer calls this function.
  *
+ * ⚠️ AN OWNER'S TITLE WINS (D11). This function only says what the HTML calls
+ * the page; whether that is stored is the write's decision. A row with
+ * `title_source = 'owner'` keeps its title through every replace — that guard
+ * lives in the SQL (`lib/db/queries/publish.ts`), so a concurrent title edit
+ * cannot be lost between a read and a write.
+ *
  * ⚠️ THE INPUT IS UNTRUSTED, STRANGER-AUTHORED HTML. The result is rendered
- * into a dashboard card and painted into an OG image, so it is trimmed,
- * collapsed, entity-decoded for the common set and capped here — once, at the
- * write — rather than defensively at each of the two consumers.
+ * into a dashboard card and painted into an OG image, so it is entity-decoded
+ * for the common set, tag-stripped, whitespace-collapsed and capped at
+ * `PAGE_TITLE_MAX_LENGTH` here — once, at the write — rather than defensively at
+ * each of the two consumers.
  *
  * ⚠️ IT NEVER THROWS. An unreadable title is a page with no title, not a failed
  * publish. Every branch below either returns a string or returns `null`; there
@@ -26,33 +33,14 @@
  * comes out of a real DOM, that page renders as its slug and everyone survives.
  */
 
-/**
- * The stored length cap, in code points.
- *
- * Chosen ABOVE what either consumer can display, so the cap never clips a title
- * a human would have seen — it exists to bound pathological input, while the
- * card and the OG image do their own visual truncation:
- *
- *   - OG card (task 010): 1200×630 with ~1040px of content width. A headline in
- *     the display face at ~56px averages ~28px per glyph, so ~37 characters per
- *     line and ~3 lines before the card stops being a card — ≈111 characters.
- *   - Dashboard card (task 003): ~360px wide at the body size, ~45 characters
- *     per line, clamped to two lines — ≈90 characters.
- *
- * 120 sits just past the larger of the two. Anything longer is invisible on
- * both surfaces by construction, so storing it would only widen the row and
- * hand the renderers a string they have to defend against anyway.
- *
- * ⚠️ This is a STORAGE cap, not a display rule. Consumers still clamp; they must
- * not assume a title is short enough to fit.
- */
-export const PAGE_TITLE_MAX_CHARS = 120;
+import { PAGE_TITLE_MAX_LENGTH } from "@kept/shared";
 
 /**
- * Only the head of the document is searched. A `<title>` 200 KB into a body is
- * not the document's title, and scanning megabytes of user bytes with a regex
- * on the publish path is a cost with no upside. Comfortably past any real
- * `<head>`, including inlined critical CSS.
+ * Only the head of the document is searched — the first 64 KB of its UTF-8
+ * bytes (D11, PRD §5.9). A `<title>` 200 KB into a body is not the document's
+ * title, and scanning megabytes of user bytes with a regex on the publish path
+ * is a cost with no upside. Comfortably past any real `<head>`, including
+ * inlined critical CSS.
  */
 const HEAD_SCAN_BYTES = 64 * 1024;
 
@@ -72,6 +60,14 @@ const COMMENT_RE = /<!--[\s\S]*?-->/g;
 
 /** `<script …>…</script>` and the same for `<style>`, contents included. */
 const RAW_TEXT_RE = /<(script|style)(?:\s[^>]*)?>[\s\S]*?<\/\1\s*>/gi;
+
+/**
+ * An opening or closing tag inside the title text — `<b>`, `</em>`, `<br/>`.
+ * A letter must follow the `<` (or `</`), so `a < b` and `I <3 kept` are text,
+ * not tags. Replaced with a space, never with nothing, so `Hello<br>World`
+ * cannot glue two words into one; the whitespace collapse folds the extra.
+ */
+const TAG_RE = /<\/?[A-Za-z][^>]*>/g;
 
 /**
  * The entities a hand-written or generated `<title>` actually contains. Not a
@@ -127,10 +123,7 @@ export function extractPageTitle(html: string): string | null {
   // Comments and raw-text elements are removed FIRST so `<!-- <title>x</title> -->`
   // and a `<title>` inside a `<script>` template both correctly find nothing,
   // rather than the regex happily matching text no browser would ever render.
-  const head = html
-    .slice(0, HEAD_SCAN_BYTES)
-    .replace(COMMENT_RE, " ")
-    .replace(RAW_TEXT_RE, " ");
+  const head = headOf(html).replace(COMMENT_RE, " ").replace(RAW_TEXT_RE, " ");
 
   const match = TITLE_RE.exec(head);
   // No match also covers an UNCLOSED `<title>`: with no `</title>` there is no
@@ -138,23 +131,43 @@ export function extractPageTitle(html: string): string | null {
   // would store the whole page as a name.
   if (!match) return null;
 
-  // The capture group always participates when the pattern matches; `?? ""`
-  // only satisfies `noUncheckedIndexedAccess` and folds to the `null` below.
-  const collapsed = decodeEntities(match[1] ?? "").replace(/\s+/g, " ").trim();
+  // Decode, THEN strip tags, then collapse — the PRD's order. Decoding first is
+  // what makes an entity-encoded tag (`&lt;b&gt;`) a tag that gets stripped,
+  // rather than markup that survives into a card and an image. The capture
+  // group always participates when the pattern matches; `?? ""` only satisfies
+  // `noUncheckedIndexedAccess` and folds to the `null` below.
+  const collapsed = decodeEntities(match[1] ?? "")
+    .replace(TAG_RE, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   if (collapsed.length === 0) return null;
 
   return truncate(collapsed);
 }
 
 /**
- * Cap at `PAGE_TITLE_MAX_CHARS`, counting CODE POINTS rather than UTF-16 units,
- * so a title of emoji or astral-plane characters is never cut through the
- * middle of a surrogate pair into a replacement character. `Array.from` splits
- * on code points, which is the closest cheap approximation of "a character
- * boundary" without pulling in a grapheme segmenter.
+ * The first `HEAD_SCAN_BYTES` bytes of the document, as text.
+ *
+ * Sliced by code units first — never more than three bytes each, so that slice
+ * always holds the whole byte window — and only that slice is encoded, so a
+ * 5 MB page costs one bounded copy, not two full ones. A multi-byte character
+ * cut at the window's edge decodes to U+FFFD at the very end, past anything a
+ * `<title>` inside the window could contain.
+ */
+function headOf(html: string): string {
+  const bytes = new TextEncoder().encode(html.slice(0, HEAD_SCAN_BYTES));
+  return new TextDecoder().decode(bytes.subarray(0, HEAD_SCAN_BYTES));
+}
+
+/**
+ * Cap at `PAGE_TITLE_MAX_LENGTH`, counting CODE POINTS rather than UTF-16
+ * units, so a title of emoji or astral-plane characters is never cut through
+ * the middle of a surrogate pair into a replacement character. `Array.from`
+ * splits on code points, which is the closest cheap approximation of "a
+ * character boundary" without pulling in a grapheme segmenter.
  */
 function truncate(value: string): string {
   const points = Array.from(value);
-  if (points.length <= PAGE_TITLE_MAX_CHARS) return value;
-  return points.slice(0, PAGE_TITLE_MAX_CHARS).join("").trimEnd();
+  if (points.length <= PAGE_TITLE_MAX_LENGTH) return value;
+  return points.slice(0, PAGE_TITLE_MAX_LENGTH).join("").trimEnd();
 }

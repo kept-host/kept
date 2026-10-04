@@ -22,7 +22,6 @@ import type { NextResponse } from "next/server";
 import { getSession } from "../../../lib/auth/session";
 import { getProfileForSession } from "../../../lib/db/queries/profile";
 import {
-  errorResponse,
   readJsonOnlyBody,
   UnreadableBodyError,
 } from "../../../lib/publish/http";
@@ -30,6 +29,7 @@ import { refuseUntrustedOrigin } from "../../../lib/publish/origin";
 import {
   deleteOwnAccount,
   ownerResponse,
+  refuse,
   signedOut,
 } from "../../../lib/sites/owner-routes";
 
@@ -59,7 +59,7 @@ export async function DELETE(request: Request): Promise<NextResponse> {
     body = await readJsonOnlyBody(request);
   } catch (err) {
     if (err instanceof UnreadableBodyError) {
-      return errorResponse(400, { error: "invalid_request", message: err.message });
+      return ownerResponse(refuse("invalid_request", err.message));
     }
     throw err;
   }

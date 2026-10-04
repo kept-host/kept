@@ -112,6 +112,21 @@ export function publisherFrom(request: Request): PublisherContext {
 }
 
 /**
+ * Which door an anonymous replace came through (`site_versions.published_via`,
+ * PRD §5.9): `web` when the browser itself says the request came from the app's
+ * own origin — the `/p/:token` manage screen — and `api` for everyone else.
+ *
+ * `Sec-Fetch-Site` is a forbidden header name: a page script cannot set it and
+ * the browser computes it from the true initiator, so `same-origin` cannot be
+ * claimed by a `curl`. It labels a row; it authorises nothing — the bearer
+ * token in the path is still the whole of the authority, and this route stays
+ * free of the cookie routes' origin gate.
+ */
+export function browserChannel(request: Request): "web" | "api" {
+  return request.headers.get("sec-fetch-site") === "same-origin" ? "web" : "api";
+}
+
+/**
  * The one error response. `retry_after_seconds` is mirrored into the standard
  * header because agents are the primary caller and an error they cannot act on
  * is an infinite retry loop.

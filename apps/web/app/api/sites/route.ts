@@ -1,6 +1,9 @@
 /**
  * `POST /api/sites` — a signed-in user publishes a page they own from its first
- * byte. E06 task 004, epic decision **D1**.
+ * byte. Decision **D9**: `201 { site }` for a new page (kept, or an owned draft
+ * at the plan's limit — never an error), `200 { site, duplicate: true }` when
+ * the account already has these exact bytes live. Refusals answer the studio
+ * envelope `{ error: { code, message } }`.
  *
  * THE COLLECTION ROUTE, and a static sibling of `[id]` — Next resolves the two
  * without ambiguity, and `[id]/keep`, `[id]/demote`, `[id]/replace`, `[id]/slug`
@@ -29,7 +32,6 @@ import type { NextResponse } from "next/server";
 import { getSession } from "../../../lib/auth/session";
 import { getProfileForSession } from "../../../lib/db/queries/profile";
 import {
-  errorResponse,
   publisherFrom,
   readPageBody,
   UnreadableBodyError,
@@ -38,6 +40,7 @@ import { refuseUntrustedOrigin } from "../../../lib/publish/origin";
 import {
   ownerResponse,
   publishOwnedSite,
+  refuse,
   signedOut,
 } from "../../../lib/sites/owner-routes";
 
@@ -63,7 +66,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     body = await readPageBody(request);
   } catch (err) {
     if (err instanceof UnreadableBodyError) {
-      return errorResponse(400, { error: "invalid_request", message: err.message });
+      return ownerResponse(refuse("invalid_request", err.message));
     }
     throw err;
   }

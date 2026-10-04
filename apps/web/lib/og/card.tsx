@@ -71,10 +71,10 @@ const OG_TOKENS = {
 /**
  * How much of a title the headline may carry, in code points.
  *
- * ⚠️ A DISPLAY RULE, NOT A STORAGE RULE. `PAGE_TITLE_MAX_CHARS` (120) bounds
- * what the database holds; this bounds what fits on a 1200×630 card without the
- * headline eating the chip and the URL line. The two are deliberately different
- * numbers and neither may be derived from the other.
+ * ⚠️ A DISPLAY RULE, NOT A STORAGE RULE. `PAGE_TITLE_MAX_LENGTH` (`@kept/shared`)
+ * bounds what the database holds; this bounds what fits on a 1200×630 card
+ * without the headline eating the chip and the URL line. The two are
+ * deliberately different numbers and neither may be derived from the other.
  *
  * Settled by rendering cards and looking at them, not by arithmetic — the
  * criterion is explicit about that, and the arithmetic would have got it wrong.

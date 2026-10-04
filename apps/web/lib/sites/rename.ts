@@ -65,6 +65,7 @@ import { sites } from "../db/schema";
 import { liveUrl } from "../publish/pipeline";
 import { removeManifest, writeManifest } from "../storage/manifest";
 import { SiteNotFoundError } from "./keep";
+import { StudioRefusal } from "./studio-refusal";
 
 /**
  * The chosen slug belongs to another page. Reported to the caller as "taken",
@@ -77,9 +78,9 @@ import { SiteNotFoundError } from "./keep";
  * "somebody already has that name", which is a normal answer to a normal
  * request.
  */
-export class SlugTakenError extends Error {
+export class SlugTakenError extends StudioRefusal {
   constructor(public readonly slug: string) {
-    super(`The slug "${slug}" is already in use.`);
+    super("name_taken", `"${slug}" is already taken. Try another name.`);
     this.name = "SlugTakenError";
   }
 }
@@ -93,9 +94,9 @@ export class SlugTakenError extends Error {
  * refused for a plainer reason — they are not being served, so there is no
  * manifest to move and a rename would silently rewrite a row nobody can see.
  */
-export class SiteNotRenamableError extends Error {
+export class SiteNotRenamableError extends StudioRefusal {
   constructor(public readonly status: SiteStatus) {
-    super(explainStatus(status));
+    super("not_allowed_in_status", explainStatus(status));
     this.name = "SiteNotRenamableError";
   }
 }
@@ -114,10 +115,18 @@ function explainStatus(status: SiteStatus): string {
   }
 }
 
-/** The store write left something behind, or nothing at all — either way, refuse. */
-export class RenameStoreError extends Error {
+/**
+ * The store write left something behind, or nothing at all — either way, refuse.
+ * Nothing was applied (the transaction rolled back), so the person reads
+ * "retry", never "we half-moved your page"; the failed step is the log's.
+ */
+export class RenameStoreError extends StudioRefusal {
   constructor(detail: string) {
-    super(`The rename could not be published to the edge: ${detail}`);
+    super(
+      "internal_error",
+      "kept could not move this page to the new address just now. Nothing changed — the page is still live at its current one. Try again in a moment.",
+      `The rename could not be published to the edge: ${detail}`,
+    );
     this.name = "RenameStoreError";
   }
 }

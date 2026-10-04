@@ -98,6 +98,7 @@ import { sites, user } from "../db/schema";
 import { removeManifest } from "../storage/manifest";
 
 import { lockOwner } from "./keep";
+import { StudioRefusal } from "./studio-refusal";
 
 /**
  * A page could not be taken off the edge, so **nothing** was deleted.
@@ -107,12 +108,16 @@ import { lockOwner } from "./keep";
  * again" — never "we half-deleted your account". Retrying is safe: an already
  * unwound slug unwinds again without complaint.
  */
-export class AccountDeletionStoreError extends Error {
+export class AccountDeletionStoreError extends StudioRefusal {
   constructor(
     public readonly slug: string,
     detail: string,
   ) {
-    super(`"${slug}" could not be taken off the edge: ${detail}`);
+    super(
+      "internal_error",
+      "kept could not take your pages off the internet just now, so nothing was deleted. Your account and every page are exactly as they were. Try again in a moment.",
+      `"${slug}" could not be taken off the edge: ${detail}`,
+    );
     this.name = "AccountDeletionStoreError";
   }
 }

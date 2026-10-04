@@ -4,6 +4,7 @@ import {
   keepResultSchema,
   limitsFor,
   publishErrorSchema,
+  studioErrorSchema,
 } from "@kept/shared";
 import { expect, test } from "@playwright/test";
 import { config } from "dotenv";
@@ -190,8 +191,8 @@ test.describe("owner site routes", () => {
     for (const [url, data] of targets) {
       const response = await request.post(url, data === undefined ? {} : { data });
       expect(response.status(), `${url} must gate before it reads anything`).toBe(401);
-      // The closed error shape, so a client can branch on it.
-      publishErrorSchema.parse(await response.json());
+      // The studio envelope, so a client can branch on it (E06 task 005).
+      studioErrorSchema.parse(await response.json());
       expect(response.headers()["cache-control"]).toContain("no-store");
     }
   });
@@ -217,7 +218,7 @@ test.describe("owner site routes", () => {
       data: { demote: site, keep: site },
     });
     expect(response.status()).toBe(400);
-    publishErrorSchema.parse(await response.json());
+    expect(studioErrorSchema.parse(await response.json()).error.code).toBe("invalid_request");
   });
 
   test("signed in, keep and demote round-trip and a stranger's page is 404", async ({
@@ -261,6 +262,8 @@ test.describe("owner site routes", () => {
     });
     expect(absent.status()).toBe(404);
     expect(await refused.text()).toBe(await absent.text());
+    // Not 403 — and the envelope's `not_found` (D17).
+    expect(studioErrorSchema.parse(await refused.json()).error.code).toBe("not_found");
   });
 
   /** The row as the app reads it, for a before/after comparison. */
@@ -292,8 +295,8 @@ test.describe("owner site routes", () => {
 
     expect(refused.status()).toBe(403);
     const body = publishErrorSchema.parse(await refused.json());
-    // The publish family's closed `{ error, message }` shape — not a bespoke
-    // code minted at this call site.
+    // E05a's own flat `{ error, message }` body — deliberately NOT the studio
+    // envelope: the gate runs before any route code (E06 task 005).
     expect(body.error).toBe("invalid_request");
     // The message names the origin that IS trusted, so a developer who hits
     // this can see immediately which host they were expected to call from.

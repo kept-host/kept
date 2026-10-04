@@ -183,6 +183,14 @@ export function atCapPublishNotice(name: string): string {
   return `${name} is published and live at its link right now. It landed as a draft rather than a kept page, so it expires in ${DRAFT_TTL_DAYS} days unless you keep it first. Nothing failed and nothing was lost.`;
 }
 
+/**
+ * What a signed-in publish of bytes this account ALREADY has live says — PRD
+ * §5.1, AC8. `POST /api/sites` answered `200 { site, duplicate: true }`: no new
+ * page was made, and the existing one is the answer. The PRD's sentence,
+ * verbatim.
+ */
+export const ALREADY_PUBLISHED_NOTICE = "You've already published this page.";
+
 const BYTES_PER_KB = 1024;
 const BYTES_PER_MB = BYTES_PER_KB * BYTES_PER_KB;
 

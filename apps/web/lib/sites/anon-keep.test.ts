@@ -519,8 +519,9 @@ test(
   async () => {
     const { auth } = await import("../auth/index");
     const { getProfileForSession } = await import("../db/queries/profile");
-    const { keepAnonymousPage } = await import("./anon-keep");
-    const { signedOut } = await import("./owner-routes");
+    // The anonymous door's OWN signed-out body — flat, like every `/api/anon/*`
+    // answer; the studio routes' 401 is the envelope (E06 task 005).
+    const { keepAnonymousPage, signedOut } = await import("./anon-keep");
 
     // The signed-out branch the route takes before it reads the token at all.
     // `getSession()` itself needs a Next request scope, so what is asserted here

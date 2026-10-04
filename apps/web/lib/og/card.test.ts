@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { PAGE_TITLE_MAX_CHARS } from "../publish/page-title";
+import { PAGE_TITLE_MAX_LENGTH } from "@kept/shared";
+
 import { OG_TITLE_MAX_CHARS, clampOgTitle } from "./card";
 import { ogCardPath, ogCardRevision } from "./card-url";
 
@@ -36,11 +37,11 @@ test("astral-plane characters are never cut through a surrogate pair", () => {
 });
 
 test("the display cap is stricter than the storage cap", () => {
-  // They are different questions and must stay different numbers: 120 bounds
-  // what the row holds, 72 bounds what fits on a card. A card that assumed the
-  // storage cap was short enough would overflow.
+  // They are different questions and must stay different numbers: the shared
+  // cap bounds what the row holds, this one bounds what fits on a card. A card
+  // that assumed the storage cap was short enough would overflow.
   assert.ok(
-    OG_TITLE_MAX_CHARS < PAGE_TITLE_MAX_CHARS,
+    OG_TITLE_MAX_CHARS < PAGE_TITLE_MAX_LENGTH,
     "a stored title must always be clampable further for the card",
   );
 });

@@ -125,20 +125,20 @@ interface Published {
 }
 
 async function publish(profileId: string, marker: string): Promise<Published> {
-  const result = await publishOwnedPage({ profileId, html: html(marker), publisher });
-  createdSlugs.add(result.slug);
-  createdSites.add(result.siteId);
+  const { site } = await publishOwnedPage({ profileId, html: html(marker), publisher });
+  createdSlugs.add(site.slug);
+  createdSites.add(site.id);
   const [row] = await db
     .select({ versionId: sites.currentVersionId })
     .from(sites)
-    .where(eq(sites.id, result.siteId));
+    .where(eq(sites.id, site.id));
   const versionId = row?.versionId;
-  assert.ok(versionId, `published site ${result.siteId} has no current version`);
+  assert.ok(versionId, `published site ${site.id} has no current version`);
   return {
-    siteId: result.siteId,
-    slug: result.slug,
+    siteId: site.id,
+    slug: site.slug,
     versionId,
-    objectKey: pageObjectKey(result.siteId, versionId),
+    objectKey: pageObjectKey(site.id, versionId),
   };
 }
 

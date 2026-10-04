@@ -320,12 +320,7 @@ export async function publishPage(
   }
 
   const heuristics = await checkHeuristics(html);
-  if (!heuristics.allowed) {
-    return fail(422, {
-      error: "content_rejected",
-      message: `This page was refused by the content check (${heuristics.reason}).`,
-    });
-  }
+  if (!heuristics.allowed) return contentRejected(heuristics.reason);
 
   // ── 3. content hash ────────────────────────────────────────────────────────
   // Over the exact bytes that will be stored: `hashContent` digests the UTF-8
@@ -337,6 +332,10 @@ export async function publishPage(
   // has no readable `<title>`; the helper cannot throw, so extraction can never
   // fail a publish (E06 task 001).
   const title = extractPageTitle(html);
+  // The door (§5.9), on E04's existing distinction: the landing's browser path
+  // is the one that carries a Turnstile token; a keyless caller never does.
+  // Recorded on the version row only — the wire response does not change.
+  const publishedVia = turnstileToken !== undefined ? "web" : "api";
 
   // One token, used either to rotate the deduped row or to create a new one.
   const anonToken = generateAnonToken();
@@ -381,15 +380,12 @@ export async function publishPage(
       expiresAt,
       purgeAfter,
       reminderEmail,
+      publishedVia,
     }));
   } catch (err) {
     if (err instanceof SlugUnavailableError) {
       console.error(`[kept] ${err.message}`);
-      return fail(503, {
-        error: "slug_unavailable",
-        message:
-          "Could not assign a link for this page right now. This is transient — retry the request.",
-      });
+      return slugUnavailable();
     }
     console.error(`[kept] publish: Postgres write failed — ${message(err)}`);
     return internalError();
@@ -424,6 +420,31 @@ export async function publishPage(
   void enqueueScan(siteId, versionId);
 
   return respond({ slug, anonToken, expiresAt, deduped: false });
+}
+
+/**
+ * The heuristic content check refused the bytes. One sentence for every path
+ * that stores bytes — the keyless publish and replace here, the studio's
+ * publish and replace through `lib/sites/owner-routes.ts`.
+ */
+export function contentRejected(reason: string): PublishFailure {
+  return fail(422, {
+    error: "content_rejected",
+    message: `This page was refused by the content check (${reason}).`,
+  });
+}
+
+/**
+ * Slug minting exhausted its attempts (`SlugUnavailableError`) — a broken index
+ * or CSPRNG, transient from the caller's side. Shared with the studio publish,
+ * which mints through the same bound.
+ */
+export function slugUnavailable(): PublishFailure {
+  return fail(503, {
+    error: "slug_unavailable",
+    message:
+      "Could not assign a link for this page right now. This is transient — retry the request.",
+  });
 }
 
 /** The generic 5xx. Shared with the anonymous manage routes (task 006). */

@@ -34,7 +34,12 @@
  * says `live` for a page that no longer serves — visible to an audit, invisible
  * to the internet — instead of the reverse.
  */
-import { DRAFT_TTL_DAYS, hashContent, publishRequestSchema } from "@kept/shared";
+import {
+  DRAFT_TTL_DAYS,
+  hashContent,
+  publishRequestSchema,
+  type PublishChannel,
+} from "@kept/shared";
 import { z } from "zod";
 
 import {
@@ -50,6 +55,7 @@ import { notFound, resolveAnonToken } from "./anon-token";
 import { checkHeuristics, enqueueScan, verifyTurnstile } from "./hooks";
 import { extractPageTitle } from "./page-title";
 import {
+  contentRejected,
   fail,
   internalError,
   liveUrl,
@@ -116,10 +122,15 @@ function draftWindow(site: AnonSite): Pick<ReplaceResponse, "expires_in" | "expi
  * file restarted the seven days, a weekly `curl` would hold a page forever for
  * free and "keep it" would stop meaning anything. `insertReplacementVersion`
  * touches neither column, and the response echoes the ORIGINAL deadline.
+ *
+ * `publishedVia` is the route's reading of the transport (`browserChannel` in
+ * `./http`): `web` for the app's own manage screen, `api` for everyone else. It
+ * lands on the version row only; the response body does not carry it.
  */
 export async function replacePage(
   token: string,
   raw: unknown,
+  publishedVia: Extract<PublishChannel, "web" | "api">,
 ): Promise<AnonOutcome<ReplaceResponse>> {
   const site = await resolveAnonToken(token);
   if (!site) return notFound();
@@ -143,19 +154,15 @@ export async function replacePage(
   }
 
   const heuristics = await checkHeuristics(html);
-  if (!heuristics.allowed) {
-    return fail(422, {
-      error: "content_rejected",
-      message: `This page was refused by the content check (${heuristics.reason}).`,
-    });
-  }
+  if (!heuristics.allowed) return contentRejected(heuristics.reason);
 
   const contentHash = await hashContent(html);
   const sizeBytes = Buffer.byteLength(html, "utf8");
   // RE-EXTRACTED, NOT CARRIED OVER. The name belongs to the bytes, so new bytes
   // get a new name — including `null`, when the replacement has no readable
   // `<title>`. Leaving the old value in place would make the dashboard
-  // confidently display the PREVIOUS page's name (E06 task 001).
+  // confidently display the PREVIOUS page's name (E06 task 001). An owner-set
+  // title survives anyway: `insertReplacementVersion` guards it in SQL (D11).
   const title = extractPageTitle(html);
 
   // NEW versionId, SAME siteId — so the key is a new object rather than a
@@ -178,6 +185,7 @@ export async function replacePage(
       title,
       contentHash,
       sizeBytes,
+      publishedVia,
     });
   } catch (err) {
     console.error(
