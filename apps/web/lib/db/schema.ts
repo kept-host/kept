@@ -6,19 +6,30 @@
  * drift from the app/zod types. Columns/types mirror the shared zod schemas
  * (`siteSchema`, `profileSchema`) and `PublishPayload`.
  *
- * Core tables only: `profiles`, `sites`, `site_versions`, plus Better Auth's four
- * tables (E05). Per-epic tables (E07 `scans`/`abuse_reports`/
- * `moderation_actions`) are intentionally NOT created here — they arrive via
- * per-epic migrations.
+ * Core tables: `profiles`, `sites`, `site_versions`, plus Better Auth's four
+ * tables (E05), plus the creator studio's `name_holds`, `name_events`,
+ * `page_views_daily` and `job_runs` (E06, migration 0005). Other per-epic tables
+ * (E07 `scans`/`abuse_reports`/`moderation_actions`) are intentionally NOT
+ * created here — they arrive via their own epic's migration.
  */
-import { PLANS, REGIONS, SITE_STATUSES } from "@kept/shared";
+import {
+  NAME_HOLD_REASONS,
+  NAME_KINDS,
+  PLANS,
+  PUBLISH_CHANNELS,
+  REGIONS,
+  SITE_STATUSES,
+} from "@kept/shared";
 import { relations, sql } from "drizzle-orm";
 import {
   boolean,
+  check,
+  date,
   index,
   integer,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -29,6 +40,9 @@ import {
 export const siteStatusEnum = pgEnum("site_status", SITE_STATUSES);
 export const planEnum = pgEnum("plan", PLANS);
 export const regionEnum = pgEnum("region", REGIONS);
+export const nameKindEnum = pgEnum("name_kind", NAME_KINDS);
+export const publishChannelEnum = pgEnum("publish_channel", PUBLISH_CHANNELS);
+export const nameHoldReasonEnum = pgEnum("name_hold_reason", NAME_HOLD_REASONS);
 
 // ── Better Auth (E05) ────────────────────────────────────────────────────────
 // Self-hosted Better Auth v1.6.x through the Drizzle adapter, in this same Neon
@@ -239,6 +253,19 @@ export const sites = pgTable(
     // it trims, collapses whitespace, decodes the common entities, caps the
     // length and never throws. Never write this column from anywhere else.
     title: text("title"),
+    // Who wrote `title` (D11, migration 0005). `html`: the page's own `<title>`,
+    // refreshed by every write path. `owner`: set by the owner, and no write
+    // path may overwrite it. A text CHECK, not a pgEnum, as the PRD specifies.
+    titleSource: text("title_source", { enum: ["html", "owner"] })
+      .notNull()
+      .default("html"),
+    // D3: `generated` (minted at publish) or `chosen` (an owner's rename). A
+    // chosen name counts against the plan's name quota while the page is not
+    // archived/removed, so it keeps counting after a demote. Rows renamed
+    // before 0005 backfill as `generated`; there is no history to recover.
+    nameKind: nameKindEnum("name_kind").notNull().default("generated"),
+    // D12: stored now for the public gallery (E10), and preserved through demote.
+    listedPublic: boolean("listed_public").notNull().default(false),
     // Denormalised from the current version so the dedup probe is a single
     // index scan on `sites` and never has to join `site_versions`.
     contentHash: text("content_hash"),
@@ -268,12 +295,27 @@ export const sites = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    // The OG card's `?v=` cache key (E06 task 010) is built on this, so every
+    // write must move it. `$onUpdate` covers every Drizzle `update(sites)` that
+    // does not set it; a raw-SQL `UPDATE sites` bypasses it and must set
+    // `updated_at` itself.
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
-      .defaultNow(),
+      .defaultNow()
+      .$onUpdate(() => new Date()),
   },
   (table) => [
-    uniqueIndex("sites_slug_key").on(table.slug),
+    // D5: one name per ACTIVE page. An archived or removed row releases its
+    // slug to the index; `name_holds` then guards the released name.
+    //
+    // ⚠️ THE NAME `sites_slug_key` IS LOAD-BEARING. `isSlugCollision`
+    // (`queries/publish.ts`) matches on it, so renaming this index turns every
+    // slug collision into a 500. An `ON CONFLICT (slug)` would also have to
+    // repeat this predicate.
+    uniqueIndex("sites_slug_key")
+      .on(table.slug)
+      .where(sql`${table.status} not in ('archived', 'removed')`),
+    check("sites_title_source_check", sql`${table.titleSource} in ('html', 'owner')`),
     // The bearer-token lookup for /p/[anonToken] and the anonymous
     // replace/delete routes; unique because a token identifies exactly one page.
     uniqueIndex("sites_anon_token_hash_key").on(table.anonTokenHash),
@@ -348,6 +390,86 @@ export const siteVersions = pgTable("site_versions", {
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
+  // When this version last became the live one (D7): set on replace and again
+  // on restore. 0005 backfills existing rows to `created_at`.
+  activatedAt: timestamp("activated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  // The channel that published this version.
+  publishedVia: publishChannelEnum("published_via").notNull().default("web"),
+});
+
+// ── name_holds ───────────────────────────────────────────────────────────────
+// A released name, held until `held_until` (D4: 365 days after a delete,
+// rename, purge or account deletion) so that only its last owner can take it
+// back. `user_id` is that owner; it goes NULL when the profile is deleted and
+// the hold stays. `site_id` has no FK: a hold outlives the page's purge.
+export const nameHolds = pgTable(
+  "name_holds",
+  {
+    name: text("name").primaryKey(),
+    userId: uuid("user_id").references(() => profiles.id, {
+      onDelete: "set null",
+    }),
+    siteId: uuid("site_id"),
+    reason: nameHoldReasonEnum("reason").notNull(),
+    heldUntil: timestamp("held_until", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [index("name_holds_user_id_idx").on(table.userId)],
+);
+
+// ── name_events ──────────────────────────────────────────────────────────────
+// One row per rename. The rename limit (D6, 10 per rolling 24 h) counts them by
+// `(user_id, created_at)`; the visits sync maps a past day's hostnames back to
+// sites through them by `created_at`. `site_id` has no FK: the history outlives
+// the page.
+export const nameEvents = pgTable(
+  "name_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id").references(() => profiles.id, {
+      onDelete: "set null",
+    }),
+    siteId: uuid("site_id").notNull(),
+    oldName: text("old_name").notNull(),
+    newName: text("new_name").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("name_events_user_created_idx").on(table.userId, table.createdAt),
+    index("name_events_created_idx").on(table.createdAt),
+  ],
+);
+
+// ── page_views_daily ─────────────────────────────────────────────────────────
+// Per-site daily visits, read in bulk from Cloudflare's aggregates (D8) and
+// upserted by the visits sync. Never counted per view: the serve path writes
+// nothing here. `day` is a UTC calendar date.
+export const pageViewsDaily = pgTable(
+  "page_views_daily",
+  {
+    siteId: uuid("site_id")
+      .notNull()
+      .references(() => sites.id, { onDelete: "cascade" }),
+    day: date("day").notNull(),
+    views: integer("views").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.siteId, table.day] })],
+);
+
+// ── job_runs ─────────────────────────────────────────────────────────────────
+// The last attempt and last success of each scheduled job, keyed by job name
+// (`visits-sync`), so the studio can say "as of" and a stale job is visible.
+export const jobRuns = pgTable("job_runs", {
+  job: text("job").primaryKey(),
+  lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+  lastSuccessAt: timestamp("last_success_at", { withTimezone: true }),
+  lastError: text("last_error"),
 });
 
 // ── relations ────────────────────────────────────────────────────────────────
@@ -380,6 +502,8 @@ export const profilesRelations = relations(profiles, ({ one, many }) => ({
     references: [user.id],
   }),
   sites: many(sites),
+  nameHolds: many(nameHolds),
+  nameEvents: many(nameEvents),
 }));
 
 export const sitesRelations = relations(sites, ({ one, many }) => ({
@@ -388,11 +512,33 @@ export const sitesRelations = relations(sites, ({ one, many }) => ({
     references: [profiles.id],
   }),
   versions: many(siteVersions),
+  pageViews: many(pageViewsDaily),
 }));
 
 export const siteVersionsRelations = relations(siteVersions, ({ one }) => ({
   site: one(sites, {
     fields: [siteVersions.siteId],
+    references: [sites.id],
+  }),
+}));
+
+export const nameHoldsRelations = relations(nameHolds, ({ one }) => ({
+  user: one(profiles, {
+    fields: [nameHolds.userId],
+    references: [profiles.id],
+  }),
+}));
+
+export const nameEventsRelations = relations(nameEvents, ({ one }) => ({
+  user: one(profiles, {
+    fields: [nameEvents.userId],
+    references: [profiles.id],
+  }),
+}));
+
+export const pageViewsDailyRelations = relations(pageViewsDaily, ({ one }) => ({
+  site: one(sites, {
+    fields: [pageViewsDaily.siteId],
     references: [sites.id],
   }),
 }));

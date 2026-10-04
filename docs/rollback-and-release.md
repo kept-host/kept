@@ -115,7 +115,7 @@ concluding anything. Prod does not run Serverless, so a 502 there is real.
 
 ### Where the two branches actually are
 
-`drizzle/` holds **five** migrations, and the two Neon branches are **not** at
+`drizzle/` holds **six** migrations, and the two Neon branches are **not** at
 the same point:
 
 | Migration | Adds | dev | prod |
@@ -125,16 +125,22 @@ the same point:
 | `0002_better_auth_tables_and_plan_enum` | Better Auth tables, `sites.claimed_at`, plan enum | ✅ | ❌ |
 | `0003_reminder_sent_at_and_keep_token` | `reminder_sent_at`, `reminder_keep_token_hash` | ✅ | ❌ |
 | `0004_page_title` | `sites.title` (nullable text, E06) | ✅ | ❌ |
+| `0005_creator_studio` | name/title/channel columns, partial `sites_slug_key`, `name_holds`, `name_events`, `page_views_daily`, `job_runs` (E06 creator studio) | ✅ | ❌ |
 
 **Prod has never been migrated and has never been deployed** — the `prod`
 GitHub Environment holds no secrets and `release.yml` has never run. So the
-first prod release applies all five in one go, and the pre-release backup
+first prod release applies all six in one go, and the pre-release backup
 branch below is the only unwind for that.
 
 **`0004` backfills nothing, deliberately.** Rows published before it read
 `title = NULL` permanently; every consumer renders `title ?? slug`, so there is
 nothing to repair and no data migration to schedule. It is additive and
 nullable, which makes it safe to apply ahead of the code that reads it.
+
+**`0005` is additive with defaults, plus one index swap that keeps its name.**
+`sites_slug_key` becomes partial (`WHERE status NOT IN ('archived','removed')`)
+under the same name, because `isSlugCollision` matches on it. Its only data
+change is a hand-added backfill, `site_versions.activated_at = created_at`.
 
 Re-tag dev (`dev-v*`) only after `0004` is applied to the dev branch — the
 dashboard's card rendering assumes the column exists.
