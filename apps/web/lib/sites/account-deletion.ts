@@ -1,103 +1,84 @@
 /**
- * Deleting a whole account — E06 task 011, epic decision **D3**.
+ * Deleting a whole account — epic decision **D16** (E06 task 008).
  *
- * ── THE BUG THIS FILE EXISTS TO DELETE ───────────────────────────────────────
+ * Immediate and complete: every page goes offline and is `archived` with no
+ * owner and `purge_after = now + DRAFT_GRACE_DAYS` (as D14); every CHOSEN name
+ * is held for `NAME_HOLD_DAYS` with no owner; `reminder_email` is cleared; the
+ * `user` row goes, and `session` / `account` / `profiles` cascade with it, so
+ * every other device is signed out on its next request (edge case 19). Owners
+ * reach `archived`; `removed` is E07's.
+ *
+ * ── THE BUG THIS FILE EXISTS TO PREVENT ──────────────────────────────────────
  *
  *   user  ──cascade──▶  profiles  ──SET NULL──▶  sites.owner_id
  *
  * `DELETE FROM "user"` on its own cascades the profile away and *nulls*
- * `sites.owner_id`, leaving every page the account kept as `owner_id NULL`,
- * `anon_token_hash NULL` (keeping killed it), `expires_at NULL` (kept pages have
- * no clock), `status = 'live'`. **That is a page with no owner, no token, no
- * clock and no expiry — permanent, serving, and unreachable by any authority in
- * the product.** Not even E07's sweeps touch it: both select on clocks that are
- * null.
- *
- * **Relying on the FK is the failure mode.** It is the shape that passes every
- * test that does not go looking, producing rows that are undiscoverable by
- * design. So the teardown below is explicit, and the `SET NULL` still fires
- * afterwards — harmlessly, because by then no row it touches is still `live`.
+ * `sites.owner_id`, leaving every kept page `owner_id NULL`, `anon_token_hash
+ * NULL`, `expires_at NULL`, `status = 'live'`: **a page with no owner, no token
+ * and no clock — permanent, serving, and unreachable by any authority in the
+ * product.** Relying on the FK is the failure mode, so the teardown below is
+ * explicit.
  *
  * ── THE ORDER, AND WHAT A CRASH AT EACH POINT COSTS ──────────────────────────
  *
- *   removeManifest(slug) × every page   ← pointer → KV → purge. Serving STOPS.
+ *   removeManifest(slug) × every active page  ← pointer → KV → purge. Serving STOPS.
  *   BEGIN
- *     lockOwner(profile)                ← the publish/keep serialisation point
- *     UPDATE sites SET status='removed', purge_after=now  WHERE owner_id = ?
+ *     lockOwner(profile)                ← the publish/keep/rename serialisation point
+ *     lockNames(chosen names)           ← then the names, sorted (../names/availability.ts)
+ *     UPDATE sites SET archived, purge_after  WHERE owner_id = ? AND claims its name
+ *     holdName(name, NULL, 'account_deleted') × every chosen name
+ *     UPDATE sites SET owner_id = NULL, reminder_email = NULL  WHERE owner_id = ?
  *     DELETE FROM "user" WHERE id = ?
  *   COMMIT
  *
- * The manifest calls are the deliberate exception to "one transaction": they are
- * remote store operations and cannot join a database transaction. They go
- * **first**, and the asymmetry is the whole reason:
+ * The manifest calls cannot join a database transaction, so they go **first**:
+ * a crash after the unwind and before the commit leaves pages offline that
+ * still say `live` — visible to an audit, and recoverable, because the user
+ * retries and every step is idempotent. The reverse order could leave a row
+ * that says archived for a page still answering the internet with nobody left
+ * to take it down. So a failed unwind refuses the whole deletion
+ * (`AccountDeletionStoreError`) before a single row moves.
  *
- *   · crash after an unwind, before the commit → a page that is not serving but
- *     still says `live` in Postgres. Visible to an audit, invisible to the
- *     internet, and **recoverable** — the user retries and the whole teardown
- *     completes, because every step is idempotent.
- *   · crash the other way round → a row that says `removed` for a page that is
- *     still answering the internet with nobody left to take it down. **Not**
- *     recoverable by anything short of E07's purge.
+ * ⚠️ ONLY PAGES THAT STILL CLAIM THEIR NAME ARE UNWOUND. An `archived` or
+ * `removed` row keeps its slug for history without holding it (D5), so the same
+ * name may by now be serving SOMEBODY ELSE's page — unwinding it would take that
+ * page down.
  *
- * One of those is a bad afternoon and the other is the failure this task is
- * about, so a failed unwind refuses the whole deletion (`AccountDeletionStoreError`)
- * before a single row moves.
- *
- * ── `removed`, NOT `archived`, AND THE TWO ARE NOT DRIFT ─────────────────────
- * Deleting ONE page archives it (`lib/sites/manage.ts` → `archiveSite`): the row
- * and the R2 object are retained so the OWNER can download them during E07's
- * window. Deleting an ACCOUNT lands `removed` with a `purge_after`, because the
- * owner is precisely who no longer exists — archiving would promise a recovery
- * path to nobody and park the bytes outside the purge predicate forever. E07's
- * daily job is specified as `status IN (expired, removed) AND purge_after <
- * now()` → hard-delete R2 + rows, so this hands off to machinery that is already
- * designed. **Two verbs, two terminal states, both deliberate. Do not harmonise
- * them.** No new status value and no new column is introduced for any of it.
- *
- * ── E06 DEFINES THE TERMINAL ROW STATE; E07 OWNS THE BROOM ───────────────────
  * ⚠️ **THERE IS NO R2 DELETE IN THIS FILE, AND ADDING ONE IS THE BUG.** The
- * bytes are E07's. An inline object-delete loop would block an HTTP request on
- * unbounded work for an account with hundreds of pages, and — the architectural
- * reason, which comes first — it would be a second purge path competing with the
- * one E07 is going to own. Two brooms disagreeing about which floor is clean is
- * how a product ends up unable to say whether anything was actually deleted. No
- * cron, no sweep, no background job is added here either; E05's cron substrate
- * exists and E07 inherits it.
- *
- * ⚠️ **UNTIL E07 SHIPS, R2 OBJECTS LEGITIMATELY PERSIST AFTER A DELETION.** The
- * copy must accommodate that: *"your pages stop being served immediately; the
- * files are erased shortly after"* is true, and *"erased immediately"* is not.
+ * bytes are E07's purge job's, selected on `purge_after`. An inline delete loop
+ * would block a request on unbounded work and be a second purge path competing
+ * with E07's. Until E07 ships, R2 objects legitimately persist after a deletion.
  *
  * ── BETTER AUTH'S `deleteUser` IS DELIBERATELY NOT ENABLED ───────────────────
  * better-auth@1.6.26 ships a `/delete-user` endpoint behind `user.deleteUser.
  * enabled`. It is left off and the `user` row is deleted here, in this
- * transaction, for two reasons that both point the same way:
+ * transaction (epic Risk 9), for two reasons that both point the same way:
  *
  *   1. Enabling it MOUNTS A SECOND ACCOUNT-DELETION DOOR at
  *      `/api/auth/delete-user` — one that deletes the `user` row and lets the
- *      FK's `SET NULL` fire, which is exactly the undiscoverable-row bug at the
- *      top of this file, reachable by anyone with a session.
- *   2. Its adapter calls cannot join a Drizzle transaction, so the row flip and
- *      the user delete could not be atomic — and D3 requires that they are.
+ *      FK's `SET NULL` fire, which is exactly the bug above, reachable by
+ *      anyone with a session.
+ *   2. Its adapter calls cannot join a Drizzle transaction, so the archive, the
+ *      holds and the user delete could not be atomic.
  *
  * The cascades this relies on (`session`, `account`, `profiles` → `user.id`
- * `ON DELETE CASCADE`) are declared in **kept's own** `lib/db/schema.ts`, not by
- * Better Auth, so deleting the row directly is the supported path *for this
- * schema*. If a future epic enables `deleteUser`, it must route through
- * `deleteAccount` below or it re-opens the hole.
+ * `ON DELETE CASCADE`) are declared in **kept's own** `lib/db/schema.ts`, so
+ * deleting the row directly is the supported path *for this schema*. If a
+ * future epic enables `deleteUser`, it must route through `deleteAccount` below
+ * or it re-opens the hole.
  */
-import {
-  ACCOUNT_DELETION_CONFIRMATION,
-  type AccountDeletionResult,
-} from "@kept/shared";
-import { eq } from "drizzle-orm";
+import type { AccountDeletionResult } from "@kept/shared";
+import { and, eq, inArray } from "drizzle-orm";
 
 import { db } from "../db";
 import { getDashboardSites } from "../db/queries/dashboard";
 import { sites, user } from "../db/schema";
+import { claimsItsName, lockNames } from "../names/availability";
+import { holdName } from "../names/holds";
 import { removeManifest } from "../storage/manifest";
 
 import { lockOwner } from "./keep";
+import { archivedForGrace } from "./manage";
 import { StudioRefusal } from "./studio-refusal";
 
 /**
@@ -142,10 +123,8 @@ export interface AccountDeletionSummary {
   kept: number;
   /** `expires_at != null`. The one draft split there is. */
   drafts: number;
-  /** Every page the account owns, in every status. All of them are destroyed. */
+  /** Every page the account owns, in every status. All of them end ownerless. */
   total: number;
-  /** What the user must type. From `@kept/shared`, so both halves agree. */
-  confirmationPhrase: typeof ACCOUNT_DELETION_CONFIRMATION;
 }
 
 /**
@@ -169,7 +148,6 @@ export async function getAccountDeletionSummary(
     kept: quota.used,
     drafts: drafts.length,
     total: kept.length + drafts.length,
-    confirmationPhrase: ACCOUNT_DELETION_CONFIRMATION,
   };
 }
 
@@ -186,8 +164,8 @@ async function unwind(slug: string): Promise<void> {
 }
 
 /**
- * Destroy an account: stop serving every page it has, mark every page for E07's
- * purge, and remove the user.
+ * Destroy an account (D16): take every active page offline, archive it with no
+ * owner, hold its chosen names with no owner, and remove the user.
  *
  * The caller can only ever pass **their own** profile id — `app/api/account/route.ts`
  * resolves it from the session and there is no id parameter naming a victim.
@@ -195,76 +173,92 @@ async function unwind(slug: string): Promise<void> {
  * @throws {AccountDeletionStoreError} a page could not be taken off the edge; nothing was deleted
  */
 export async function deleteAccount(profileId: string): Promise<AccountDeletionResult> {
-  // Every page, in every status — `archived` and `expired` rows included. Their
-  // manifests are already gone, and `removeManifest` on an absent slug succeeds,
-  // so unwinding unconditionally costs a purge and buys the guarantee that the
-  // loop has no status-shaped hole in it.
-  const owned = await db
+  const active = await db
     .select({ slug: sites.slug })
     .from(sites)
-    .where(eq(sites.ownerId, profileId));
+    .where(and(eq(sites.ownerId, profileId), claimsItsName()));
 
   // Sequential, never concurrent: `removeManifest` issues real purges, and
   // fanning a hundred of them at Cloudflare at once is how an account with a lot
   // of pages gets itself rate-limited half way through a teardown.
   const unwound = new Set<string>();
-  for (const site of owned) {
+  for (const site of active) {
     await unwind(site.slug);
     unwound.add(site.slug);
   }
 
-  const { affected, purgeAfter } = await db.transaction(async (tx) => {
-    // THE SAME SERIALISATION POINT every cap decision takes. A dashboard tab
-    // publishing while another confirms deletion would otherwise insert a row
-    // after the unwind loop read the slugs; blocking here means such a publish
-    // either committed before this lock (caught by the reconciliation below) or
-    // finds no profile afterwards and rolls itself back.
+  const archived = await db.transaction(async (tx) => {
+    // THE SAME SERIALISATION POINT every publish, keep and rename takes. A tab
+    // publishing or renaming while another confirms deletion either committed
+    // before this lock (caught by the reconciliation below) or finds no profile
+    // afterwards and rolls itself back.
     await lockOwner(tx, profileId);
 
-    const now = new Date();
-    // ONE owner-scoped statement for every page. The scope is the whole ball
-    // game: a `WHERE` that forgot `owner_id` here would silently destroy the
-    // internet's pages instead of this account's.
-    const rows = await tx
-      .update(sites)
-      .set({ status: "removed", purgeAfter: now, updatedAt: now })
-      .where(eq(sites.ownerId, profileId))
-      .returning({ slug: sites.slug });
+    // Re-read under the lock: this is the set the rows below move.
+    const pages = await tx
+      .select({ id: sites.id, slug: sites.slug, nameKind: sites.nameKind })
+      .from(sites)
+      .where(and(eq(sites.ownerId, profileId), claimsItsName()));
+    const chosen = pages.filter((page) => page.nameKind === "chosen");
+    // Every chosen name locked, sorted, BEFORE a row moves — a rename-to by
+    // another account waits here and then finds the hold.
+    await lockNames(
+      tx,
+      chosen.map((page) => page.slug),
+    );
 
-    // AND ONLY NOW THE USER. The FK cascade takes `session`, `account` and
-    // `profiles` with it, and its `SET NULL` on `sites.owner_id` fires against
-    // rows that are already `removed` — which is what makes it harmless.
+    if (pages.length > 0) {
+      await tx
+        .update(sites)
+        .set(archivedForGrace())
+        .where(
+          inArray(
+            sites.id,
+            pages.map((page) => page.id),
+          ),
+        );
+    }
+    for (const page of chosen) {
+      await holdName(page.slug, null, "account_deleted", page.id, tx);
+    }
+
+    // EVERY row the account had, archived before or just now: no owner left to
+    // name, and nobody left to remind. ONE owner-scoped statement — a `WHERE`
+    // that forgot `owner_id` here would orphan the internet's pages.
+    await tx
+      .update(sites)
+      .set({ ownerId: null, reminderEmail: null })
+      .where(eq(sites.ownerId, profileId));
+
+    // AND ONLY NOW THE USER. `session`, `account` and `profiles` cascade with
+    // it; the user's earlier holds keep their deadline and lose their owner
+    // (`name_holds.user_id` is `ON DELETE SET NULL`).
     await tx.delete(user).where(eq(user.id, profileId));
 
-    return { affected: rows, purgeAfter: now };
+    return pages;
   });
 
-  // A page that appeared between the unwind loop and the lock: its row is
-  // `removed` but its manifest was never taken down, so it would keep serving
-  // until E07 collected it. Post-commit, so it cannot fail the deletion the user
-  // already got — the account is gone either way.
-  for (const row of affected) {
-    if (unwound.has(row.slug)) continue;
+  // A page published or renamed between the unwind loop and the lock: archived
+  // in Postgres, but its manifest was never taken down. Post-commit, so it
+  // cannot fail the deletion the user already got — the account is gone either way.
+  for (const page of archived) {
+    if (unwound.has(page.slug)) continue;
     console.error(
-      `[kept] account deletion: "${row.slug}" was published while profile ${profileId} was being deleted; unwinding it after the fact.`,
+      `[kept] account deletion: "${page.slug}" appeared while profile ${profileId} was being deleted; unwinding it after the fact.`,
     );
     try {
-      const late = await removeManifest(row.slug);
+      const late = await removeManifest(page.slug);
       if (!late.ok) {
         console.error(
-          `[kept] account deletion: LATE UNWIND FAILED for "${row.slug}" at the "${late.step}" step — ${late.error}. The row is \`removed\` but the page is still serving. E07 DIVERGENCE AUDIT: reconcile against Postgres (contract §7.5).`,
+          `[kept] account deletion: LATE UNWIND FAILED for "${page.slug}" at the "${late.step}" step — ${late.error}. The row is \`archived\` but the page is still serving. E07 DIVERGENCE AUDIT: reconcile against Postgres (contract §7.5).`,
         );
       }
     } catch (err) {
       console.error(
-        `[kept] account deletion: LATE UNWIND THREW for "${row.slug}" — ${message(err)}. The row is \`removed\` but the page is still serving.`,
+        `[kept] account deletion: LATE UNWIND THREW for "${page.slug}" — ${message(err)}. The row is \`archived\` but the page is still serving.`,
       );
     }
   }
 
-  return {
-    pagesRemoved: affected.length,
-    status: "removed",
-    purgeAfter: purgeAfter.toISOString(),
-  };
+  return { pagesArchived: archived.length };
 }

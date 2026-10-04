@@ -1,32 +1,24 @@
 "use client";
 
 /**
- * The only irreversible act in the product — E06 task 012, epic decision **D3**.
+ * The only irreversible act in the product — epic decision **D16**.
  *
- * ── TWO CONFIRMATIONS, NOT ONE, AND THAT IS THE DECISION ─────────────────────
- * D3 requires both, and a bare "are you sure?" is explicitly not acceptable:
+ * ── TWO CONFIRMATIONS, NOT ONE ───────────────────────────────────────────────
  *
  *   1. **An explanatory dialog stating the REAL counts** — "this destroys 3 kept
  *      pages and 2 drafts" — read from `getAccountDeletionSummary()` in the
  *      server component at render time. Never a generic warning, never a number
  *      typed into copy.
- *   2. **A type-to-confirm input.** The destructive button stays disabled until
- *      what was typed matches the phrase **exactly** — no trim, no case-folding,
- *      no "close enough". The typing IS the deliberation.
+ *   2. **The account's email, typed.** The destructive button stays disabled
+ *      until it matches (`confirmsAccountEmail` from `@kept/shared` — the same
+ *      rule the route refuses with, so this button can never enable on a value
+ *      the server would refuse).
  *
  * Cancelling at either stage sends nothing. Stage two is reached by a press, not
  * by scrolling past stage one, so there is a real second decision.
  *
- * ── THE PHRASE IS NOT WRITTEN HERE ───────────────────────────────────────────
- * It arrives on the summary, which reads `ACCOUNT_DELETION_CONFIRMATION` from
- * `@kept/shared` — the same constant `accountDeletionRequestSchema` parses the
- * request body against. One value, so this button can never enable on a string
- * the server would refuse, and changing the words moves both halves at once.
- *
- * ⚠️ THE INPUT DISABLES AUTOCAPITALISE, AUTOCORRECT AND SPELLCHECK. The server
- * compares exactly, so a phone helpfully capitalising the first letter would
- * make a correctly-typed phrase fail with no visible reason. That is a
- * correctness requirement here, not a nicety.
+ * E06 task 008 switched the gate from a phrase to the email, minimally; task
+ * 013 restyles this screen to the design and owns its copy.
  *
  * ── THE COPY IS TRUE ABOUT THE BYTES ─────────────────────────────────────────
  * E07's purge job does not exist yet, so a deleted account's R2 objects
@@ -41,6 +33,7 @@
  * two hostnames, and a hard load is also what discards every RSC payload
  * rendered while the account still existed.
  */
+import { confirmsAccountEmail } from "@kept/shared";
 import { useEffect, useId, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Trash2 } from "lucide-react";
@@ -57,7 +50,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { signInHref } from "@/lib/auth/return-path";
-import { signOut } from "@/lib/auth/client";
 import { deleteAccount } from "@/lib/sites/owner-client";
 
 /**
@@ -81,8 +73,6 @@ export interface DeletionSummaryView {
    * recognises and then states `total` on its own rather than implying a sum.
    */
   total: number;
-  /** From `@kept/shared`. Compared exactly, never trimmed or case-folded. */
-  confirmationPhrase: string;
 }
 
 /** "1 draft" / "4 drafts" — plain plurals, no library. */
@@ -117,10 +107,13 @@ type Stage = "none" | "explain" | "confirm";
 
 export function DeleteAccount({
   summary,
+  /** The signed-in account's address — what must be typed. */
+  email,
   /** The apex, from configuration — never derived from the request. */
   farewellHref,
 }: {
   summary: DeletionSummaryView;
+  email: string;
   farewellHref: string;
 }) {
   const router = useRouter();
@@ -143,13 +136,7 @@ export function DeleteAccount({
     if (stage === "confirm") inputRef.current?.focus();
   }, [stage]);
 
-  /** Exact equality. Deliberately not `.trim()` — see the header. */
-  const armed = typed === summary.confirmationPhrase;
-  /** Typed the right words the wrong way. Worth saying; not worth guessing at. */
-  const nearMiss =
-    !armed &&
-    typed.length > 0 &&
-    typed.trim().toLowerCase() === summary.confirmationPhrase.toLowerCase();
+  const armed = confirmsAccountEmail(typed, email);
 
   function close() {
     if (pending || done) return;
@@ -166,7 +153,7 @@ export function DeleteAccount({
     abort.current?.abort();
     const controller = new AbortController();
     abort.current = controller;
-    const outcome = await deleteAccount(typed, controller.signal);
+    const outcome = await deleteAccount({ email: typed }, controller.signal);
 
     if (!outcome.ok) {
       setPending(false);
@@ -177,7 +164,7 @@ export function DeleteAccount({
         return;
       }
       // The route's own sentence, verbatim. It differs per failure and each one
-      // is honest about what did or did not change: a refused phrase (400), a
+      // is honest about what did or did not change: a mismatched email (400), a
       // foreign origin (403), an edge that would not let go (503, nothing
       // deleted), or a teardown that stopped half way (500, retry finishes it).
       setError(outcome.error.message);
@@ -188,9 +175,7 @@ export function DeleteAccount({
     // is about to be replaced. Re-enabling the button would invite a second call
     // that can only fail.
     setDone(true);
-    // The session row went with the user row, so this mostly just clears the
-    // cookie; a failure here must not strand somebody on a dead screen.
-    await signOut().catch(() => undefined);
+    // The route cleared the session cookie with its 200.
     window.location.replace(farewellHref);
   }
 
@@ -312,32 +297,27 @@ export function DeleteAccount({
                 <p className="mono-label text-[11px] text-danger">
                   Last step · no undo
                 </p>
-                <DialogTitle>Type the words to confirm</DialogTitle>
+                <DialogTitle>Type your email to confirm</DialogTitle>
                 <DialogDescription>
                   {summary.total > 0
-                    ? `${count(summary.total, "page")} and this account will be destroyed. Nothing is sent until the words below match.`
-                    : "This account will be destroyed. Nothing is sent until the words below match."}
+                    ? `${count(summary.total, "page")} and this account will be destroyed. Nothing is sent until the email below matches.`
+                    : "This account will be destroyed. Nothing is sent until the email below matches."}
                 </DialogDescription>
               </DialogHeader>
 
               <div>
                 <Label htmlFor={inputId} className="mb-2 block text-text-muted">
-                  Confirmation
+                  Email
                 </Label>
-                {/* ⚠️ THE PHRASE IS RENDERED OUTSIDE THE `Label`, ON PURPOSE.
-                    The kept label style is `uppercase`, and a phrase the server
-                    compares case-sensitively must never be shown in a case
-                    nobody can type. Here it is mono, lower case, exactly as it
-                    must be entered. */}
                 <p
                   id={`${inputId}-instruction`}
                   className="mb-2 text-sm leading-relaxed text-text-secondary"
                 >
                   Type{" "}
                   <code className="rounded-[var(--r-sm)] bg-sunken px-1.5 py-0.5 font-mono text-[0.8125rem] normal-case tracking-normal text-text">
-                    {summary.confirmationPhrase}
+                    {email}
                   </code>{" "}
-                  exactly as it appears.
+                  to confirm.
                 </p>
                 <Input
                   id={inputId}
@@ -346,29 +326,16 @@ export function DeleteAccount({
                   value={typed}
                   onChange={(event) => setTyped(event.target.value)}
                   disabled={pending}
-                  // Every one of these is load-bearing: the server compares the
-                  // string exactly, so a keyboard that capitalises, corrects or
-                  // underlines it is a keyboard fighting the user.
+                  type="email"
+                  // A keyboard that corrects or underlines an address is a
+                  // keyboard fighting the user.
                   autoCapitalize="none"
                   autoCorrect="off"
                   autoComplete="off"
                   spellCheck={false}
-                  aria-describedby={
-                    nearMiss
-                      ? `${inputId}-instruction ${inputId}-hint`
-                      : `${inputId}-instruction`
-                  }
+                  aria-describedby={`${inputId}-instruction`}
                   className="h-auto rounded-[var(--r-sm)] bg-sunken py-[0.8125rem] text-[0.9375rem] shadow-none"
                 />
-                {nearMiss ? (
-                  <p
-                    id={`${inputId}-hint`}
-                    className="mt-2 text-xs leading-relaxed text-text-muted"
-                  >
-                    Almost — it has to match exactly: all lower case, no extra
-                    spaces.
-                  </p>
-                ) : null}
               </div>
 
               {error ? (

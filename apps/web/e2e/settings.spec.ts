@@ -1,4 +1,4 @@
-import { ACCOUNT_DELETION_CONFIRMATION, limitsFor } from "@kept/shared";
+import { limitsFor } from "@kept/shared";
 import { expect, test } from "@playwright/test";
 import { and, eq, isNull } from "drizzle-orm";
 
@@ -29,23 +29,17 @@ import { waitForTokensApplied } from "./tokens-applied";
  *
  * ── WHAT THIS SPEC OWNS THAT `account-deletion.spec.ts` CANNOT ───────────────
  *
- * That spec drives `DELETE /api/account` directly and owns criterion 13's
- * row-state claims — `removed`, `purge_after` set, zero ownerless live pages,
- * R2 bytes deliberately retained for E07. It passes. What it cannot reach is the
- * gate in front of the endpoint, which is where D3 put the actual safety:
+ * That spec drives `DELETE /api/account` directly and owns the row-state
+ * claims — `archived` with no owner, `purge_after` set, names held, zero
+ * ownerless live pages, R2 bytes retained for E07. What it cannot reach is the
+ * gate in front of the endpoint:
  *
  *   · the dialog states the ACTUAL counts for that account, read at render time;
- *   · the destructive button is inert until the typed phrase matches exactly;
+ *   · the destructive button is inert until the account's email is typed (D16 —
+ *     `confirmsAccountEmail`: trimmed, case-insensitive, the server's own rule);
  *   · cancelling at EITHER stage leaves every row untouched.
  *
  * A gate that can only be tested by calling the endpoint it guards is not a gate.
- *
- * ── ⚠️ THE PHRASE IS COMPARED EXACTLY, AND SO IS THIS TEST ───────────────────
- *
- * No trim, no case-folding — server-side in `lib/sites/account-deletion.ts` and
- * client-side in the arming check. The near-misses below are typed deliberately:
- * a trailing space and a capitalised word must both leave the button disabled,
- * because the typing IS the deliberation.
  *
  * SKIPS without dev credentials: CI runs fork PRs with no secrets.
  */
@@ -128,11 +122,11 @@ test.describe("the settings screen", () => {
     expect(dark, "the settings panels repaint from tokens in dark").not.toBe(light);
   });
 
-  test("the deletion gate states real counts, arms only on an exact match, and cancelling changes nothing", async ({
+  test("the deletion gate states real counts, arms only on the account's email, and cancelling changes nothing", async ({
     page,
     baseURL,
   }) => {
-    const { userId } = await signInAs(page, baseURL!, scope);
+    const { userId, email } = await signInAs(page, baseURL!, scope);
 
     // A real mix: kept pages and a draft, so the counts on screen are a fact
     // about this account rather than a generic warning. The kept pages fill the
@@ -166,22 +160,16 @@ test.describe("the settings screen", () => {
     const input = page.getByTestId("delete-account-input");
     const confirm = page.getByTestId("delete-account-confirm");
     await expect(input).toBeVisible();
-    await expect(confirm, "inert until the words match").toBeDisabled();
+    await expect(confirm, "inert until the email matches").toBeDisabled();
 
-    // Every near miss leaves it inert. Exact means exact.
-    for (const nearMiss of [
-      "",
-      "delete",
-      "Delete my account",
-      `${ACCOUNT_DELETION_CONFIRMATION} `,
-      ` ${ACCOUNT_DELETION_CONFIRMATION}`,
-    ]) {
+    // Anything but this account's address leaves it inert.
+    for (const nearMiss of ["", "delete my account", email.slice(0, -1), `x${email}`]) {
       await input.fill(nearMiss);
       await expect(confirm, `"${nearMiss}" must not arm the button`).toBeDisabled();
     }
 
-    // The exact phrase arms it — and pressing nothing still writes nothing.
-    await input.fill(ACCOUNT_DELETION_CONFIRMATION);
+    // The address arms it, in any case — and pressing nothing still writes nothing.
+    await input.fill(email.toUpperCase());
     await expect(confirm).toBeEnabled();
 
     // Cancelling at stage two, with the button armed, changes nothing either.
@@ -201,35 +189,33 @@ test.describe("the settings screen", () => {
     page,
     baseURL,
   }) => {
-    const { userId } = await signInAs(page, baseURL!, scope);
+    const { userId, email } = await signInAs(page, baseURL!, scope);
     const kept = await publishOwned(page, baseURL!, scope, "E06 farewell kept");
     const second = await publishOwned(page, baseURL!, scope, "E06 farewell two");
 
     await page.goto("/settings");
     await page.getByTestId("delete-account-open").click();
     await page.getByTestId("delete-account-continue").click();
-    await page.getByTestId("delete-account-input").fill(ACCOUNT_DELETION_CONFIRMATION);
+    await page.getByTestId("delete-account-input").fill(email);
     await page.getByTestId("delete-account-confirm").click();
 
     // The browser ends on the apex, signed out, with nothing to go back to.
     //
     // ⚠️ THE "Your account is gone" PANEL IS DELIBERATELY NOT ASSERTED. It is
-    // shown between the 200 and `window.location.replace(farewellHref)`, and the
-    // only thing between them is `signOut()`'s round trip — measured here at
-    // under a poll interval, so whether a run ever *observes* that panel is a
-    // race with the network, not a property of the product. Asserting it would
-    // be asserting that sign-out is slow. What the flow actually promises is the
-    // landing below and the row state further down, and both are required.
+    // shown between the 200 and `window.location.replace(farewellHref)`, so
+    // whether a run ever *observes* that panel is a race with a re-render, not
+    // a property of the product. What the flow actually promises is the landing
+    // below and the row state further down, and both are required.
     await page.waitForURL((url) => url.pathname === "/", {
       timeout: LIVE_STACK_TIMEOUT,
     });
 
-    // ── The terminal row state D3 specifies, and E07's purge job selects on.
+    // ── The end state D16 specifies, and E07's purge orders on.
     for (const site of [kept, second]) {
       const row = await readSite(site.siteId);
-      expect(row.status, `${site.slug}`).toBe("removed");
+      expect(row.status, `${site.slug}`).toBe("archived");
       expect(row.purgeAfter, `${site.slug} must be sweepable by E07`).not.toBeNull();
-      expect(row.ownerId, "the FK's SET NULL fired, harmlessly").toBeNull();
+      expect(row.ownerId, "no owner left").toBeNull();
     }
 
     // ── CRITERION 13, unscoped: the failure mode is a row no ownership query can

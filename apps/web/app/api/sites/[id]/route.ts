@@ -1,22 +1,22 @@
 /**
- * `DELETE /api/sites/:id` — an owner takes one page off the internet.
- * E06 task 006.
+ * `DELETE /api/sites/:id` — an owner takes one page off the internet (D14).
+ * E06 tasks 006 and 008.
  *
  * A ROUTE FILE AT A SEGMENT THAT ALREADY HAS CHILDREN (`keep`, `demote`,
- * `slug`, `replace`). That is legal in the App Router and is the honest place
- * for the verb: the resource being deleted is the page itself, not a
- * sub-resource of it. **Only `DELETE` is exported.** No `GET` is added — the
- * dashboard and the detail screen read Postgres directly from server components
- * (the locked rule), so a JSON read of a site would be a second, unused way to
- * ask the same question, gated differently.
+ * `name`, `replace`, `download`). That is legal in the App Router and is the
+ * honest place for the verb: the resource being deleted is the page itself, not
+ * a sub-resource of it. **Only `DELETE` is exported.** No `GET` is added — the
+ * studio reads Postgres directly from server components (the locked rule), so a
+ * JSON read of a site would be a second, unused way to ask the same question,
+ * gated differently.
  *
- * ⚠️ THIS ARCHIVES; IT DOES NOT DESTROY. `status → 'archived'`, the row stays,
- * the R2 object stays, the version history stays, and the kept slot frees
- * because `isKeptCondition` excludes `archived`. The account-deletion path
- * (task 011) is the one that ends in `removed` with a `purge_after` — the two
- * terminal states are different on purpose and must not be harmonised.
+ * ⚠️ THIS ARCHIVES; IT DOES NOT DESTROY. `status → 'archived'` with
+ * `purge_after = now + DRAFT_GRACE_DAYS`, a chosen name held; the row, the R2
+ * object and the versions stay for the owner's download window, and the kept
+ * slot frees because `isKeptCondition` excludes `archived`. Owners reach
+ * `archived`; `removed` is E07's.
  *
- * The edge-first ordering (`removeManifest` → `archiveSite`) lives in
+ * The edge-first ordering (`removeManifest` → archive) lives in
  * `lib/sites/manage.ts`; nothing about it belongs here.
  */
 import type { NextResponse } from "next/server";

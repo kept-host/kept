@@ -1,24 +1,23 @@
 /**
- * `DELETE /api/account` — a signed-in user destroys their own account.
- * E06 task 011, epic decision **D3**.
+ * `DELETE /api/account` — a signed-in user deletes their own account (D16).
+ * E06 task 008.
  *
  * ⚠️ THE COLLECTION IS THE CALLER'S OWN ACCOUNT, SO THERE IS NO `[id]` SEGMENT
- * AND NEVER WILL BE. The profile is resolved from the session below and handed
- * down; nothing a caller can put in a path, a query or a body names whose
- * account is deleted. That is the difference between "delete my account" and a
- * deletion endpoint that takes a victim.
+ * AND NEVER WILL BE. The profile and the email the body must match are resolved
+ * from the session below and handed down; nothing a caller can put in a path, a
+ * query or a body names whose account is deleted.
  *
  * Only `DELETE` is exported. The counts the confirmation dialog states are a
  * server-component read (`getAccountDeletionSummary`, the locked rule), not a
- * `GET` here — a JSON read of an account would be a second way to ask the same
- * question, gated differently.
+ * `GET` here.
  *
- * THIS FILE IS THE HTTP BOUNDARY, THE ORIGIN GATE AND THE SESSION LOOKUP, AND
- * NOTHING ELSE. The double gate's second half, the store unwind, the transaction
- * and the terminal row state all live below `lib/sites/owner-routes.ts`.
+ * THIS FILE IS THE HTTP BOUNDARY, THE ORIGIN GATE, THE SESSION LOOKUP AND THE
+ * COOKIE, AND NOTHING ELSE. The typed-email check, the store unwind, the
+ * transaction and the end state all live below `lib/sites/owner-routes.ts`.
  */
 import type { NextResponse } from "next/server";
 
+import { auth } from "../../../lib/auth";
 import { getSession } from "../../../lib/auth/session";
 import { getProfileForSession } from "../../../lib/db/queries/profile";
 import {
@@ -48,14 +47,15 @@ export async function DELETE(request: Request): Promise<NextResponse> {
   const foreign = refuseUntrustedOrigin(request);
   if (foreign) return foreign;
 
-  const profile = await getProfileForSession(await getSession());
-  if (!profile) return ownerResponse(signedOut());
+  const session = await getSession();
+  const profile = await getProfileForSession(session);
+  if (!session || !profile) return ownerResponse(signedOut());
 
   let body: unknown;
   try {
     // JSON only. There is no file to accept and no multipart shape to support,
-    // and the confirmation phrase is one short field — `readJsonOnlyBody` is the
-    // same reader the reminder endpoint uses for the same reason.
+    // and the typed email is one short field — `readJsonOnlyBody` is the same
+    // reader the reminder endpoint uses for the same reason.
     body = await readJsonOnlyBody(request);
   } catch (err) {
     if (err instanceof UnreadableBodyError) {
@@ -64,6 +64,26 @@ export async function DELETE(request: Request): Promise<NextResponse> {
     throw err;
   }
 
-  // The profile id comes from the session and from nowhere else.
-  return ownerResponse(await deleteOwnAccount(body, profile.id));
+  // The profile id and the email to match come from the session and from
+  // nowhere else.
+  const outcome = await deleteOwnAccount(body, profile.id, session.user.email);
+  const response = ownerResponse(outcome);
+  if (outcome.ok) {
+    // The session rows went with the user, so every other device is signed out
+    // on its next request; this tells THIS browser now, so it lands on the apex
+    // signed out with nothing to clear.
+    const { authCookies } = await auth.$context;
+    for (const { name } of Object.values(authCookies)) {
+      response.cookies.set({
+        name,
+        value: "",
+        maxAge: 0,
+        path: "/",
+        secure: true,
+        httpOnly: true,
+        sameSite: "lax",
+      });
+    }
+  }
+  return response;
 }

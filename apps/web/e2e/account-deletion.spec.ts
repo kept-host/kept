@@ -1,6 +1,5 @@
 import {
-  ACCOUNT_DELETION_CONFIRMATION,
-  MANIFEST_KV_CACHE_TTL_SECONDS,
+  DRAFT_GRACE_DAYS,
   accountDeletionResultSchema,
   ownedPublishResultSchema,
   publishErrorSchema,
@@ -15,12 +14,20 @@ import { pointerKey } from "../lib/storage/manifest";
 import { pageObjectKey, r2Store } from "../lib/storage/r2";
 
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
-import { pageHtml, probeEdge, servingDomain, SKIP_LIVE_PUBLISH } from "./live-publish";
+import {
+  pageHtml,
+  probeEdge,
+  servingDomain,
+  SKIP_LIVE_PUBLISH,
+  STALE_EDGE_WINDOW_MS,
+  waitForBytes,
+} from "./live-publish";
 import { jarlessContext, sessionHeaders } from "./session-request";
 
 /**
- * `DELETE /api/account` over the wire, against the REAL dev stack —
- * E06 task 011, epic decision **D3**.
+ * `DELETE /api/account` over the wire, against the REAL dev stack — decision
+ * **D16** (E06 task 008; AC43's server half — task 014 adds the second browser
+ * context).
  *
  * NO MOCKS AND NO FIXTURE ROWS. Every page is published through the real owned
  * publish (`POST /api/sites`) by a real magic-link session, so the pointer, the
@@ -31,24 +38,21 @@ import { jarlessContext, sessionHeaders } from "./session-request";
  *
  *  1. **No ownerless live page.** After deletion, `status = 'live' AND owner_id
  *     IS NULL AND anon_token_hash IS NULL AND expires_at IS NULL` returns zero
- *     rows — verification criterion 13, and the query the FK's `SET NULL` would
- *     silently fail. Asserted UNSCOPED, because the failure mode is precisely a
- *     row no ownership query can reach.
- *  2. **Every affected row is `removed` with a non-null `purge_after`** — what
- *     E07's daily purge selects on (`status IN (expired, removed) AND
- *     purge_after < now()`). Never `archived`: that is the single-page delete's
- *     terminal state, and the two differ on purpose.
+ *     rows. Asserted UNSCOPED, because the failure mode is precisely a row no
+ *     ownership query can reach.
+ *  2. **Every page is `archived`, ownerless, with E07's deadline** —
+ *     `purge_after = now + DRAFT_GRACE_DAYS` for the pages taken offline now.
+ *     Owners reach `archived`; `removed` is E07's.
  *  3. **The pages stop serving**, inside the architectural window, with the
  *     pointer gone for every affected slug.
- *  4. **R2 objects are still present, and that is correct.** E07 has the broom;
- *     until it ships the bytes legitimately persist, which is why the deletion
- *     copy may say "erased shortly after" and may not say "erased immediately".
- *  5. **A second account's pages are untouched** — asserted explicitly, because
- *     a `WHERE` that forgot the owner scope here would be catastrophic and
- *     silent.
+ *  4. **R2 objects are still present** — E07's purge collects them.
+ *  5. **A chosen name is held with no owner.**
+ *  6. **The session is gone** — its row with the user, and this browser's
+ *     cookie cleared by the response.
+ *  7. **A second account's pages are untouched.**
  *
- * The double gate is drilled too: signed out is 401, a hosted page's origin is
- * 403, and a body without the typed phrase is 400 — each mutating nothing.
+ * The gates are drilled too: signed out is 401, a hosted page's origin is 403,
+ * and a body without the account's email is 400 — each mutating nothing.
  *
  * SKIPS without dev credentials: CI runs on fork PRs with no secrets.
  */
@@ -62,8 +66,9 @@ const SKIP: string | false =
     ? `auth credentials absent (${authMissing.join(", ")}) — run locally with apps/web/.env.local`
     : false);
 
-/** The delayed re-purge's deadline — the worst case for a page still answering. */
-const STALE_EDGE_WINDOW_MS = (2 * MANIFEST_KV_CACHE_TTL_SECONDS + 5) * 1000;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+/** Clock slack between this process and the control plane. */
+const SLACK_MS = 5 * 60_000;
 
 /** Both URL forms: `/index.html` is a separate cache entry from `/`. */
 const urlsFor = (slug: string): string[] => [
@@ -104,6 +109,7 @@ test.describe("account deletion", () => {
     // The deleted account's rows SURVIVE the teardown — that is the point — and
     // their `owner_id` is null by now, so cleanup goes by id, never by owner.
     if (createdSiteIds.length) {
+      await db.delete(schema.nameHolds).where(inArray(schema.nameHolds.siteId, createdSiteIds));
       await db.delete(schema.sites).where(inArray(schema.sites.id, createdSiteIds));
     }
     if (createdUserIds.length) {
@@ -112,8 +118,10 @@ test.describe("account deletion", () => {
     await closeDb();
   });
 
-  /** A real session cookie + its user id, from the real magic-link verify endpoint. */
-  async function signIn(baseURL: string): Promise<{ cookie: string; userId: string }> {
+  /** A real session cookie, its user id and email, from the real magic-link verify endpoint. */
+  async function signIn(
+    baseURL: string,
+  ): Promise<{ cookie: string; userId: string; email: string }> {
     const { auth } = await import("../lib/auth");
     const ctx = await auth.$context;
     const token = crypto.randomUUID().replace(/-/g, "");
@@ -139,7 +147,7 @@ test.describe("account deletion", () => {
         .filter((header) => header.name.toLowerCase() === "set-cookie")
         .map((header) => header.value.split(";", 1)[0])
         .join("; ");
-      return { cookie, userId: body.user.id };
+      return { cookie, userId: body.user.id, email };
     } finally {
       await requestCtx.dispose();
     }
@@ -195,11 +203,11 @@ test.describe("account deletion", () => {
     request: APIRequestContext,
     baseURL: string,
     cookie: string,
-    confirm: unknown = ACCOUNT_DELETION_CONFIRMATION,
+    email: unknown,
   ) =>
     request.delete(`${baseURL}/api/account`, {
       headers: { ...sessionHeaders(cookie, baseURL), "content-type": "application/json" },
-      data: JSON.stringify({ confirm }),
+      data: JSON.stringify({ email }),
     });
 
   /** Poll a URL until it stops serving, or until the architectural bound. */
@@ -217,13 +225,13 @@ test.describe("account deletion", () => {
     }
   }
 
-  test("every page goes dark and lands in `removed`, the bytes stay, and another account is untouched", async ({
+  test("every page goes dark and lands `archived` with no owner, its chosen name is held, the bytes stay, and another account is untouched", async ({
     request,
     baseURL,
   }) => {
     test.setTimeout(LIVE_STACK_TIMEOUT + STALE_EDGE_WINDOW_MS + 120_000);
 
-    const { cookie, userId } = await signIn(baseURL!);
+    const { cookie, userId, email } = await signIn(baseURL!);
     // The four shapes an account can be holding when its owner presses delete:
     // pages[0] archived, pages[1] quarantined, pages[2] kept, pages[3] an owned
     // DRAFT. All four are real publishes with bytes and a manifest to unwind;
@@ -247,10 +255,22 @@ test.describe("account deletion", () => {
       headers: sessionHeaders(cookie, baseURL!),
     });
     expect(archived.status(), await archived.text()).toBe(200);
+    const archivedBefore = await readSite(pages[0]!.siteId);
     await db
       .update(schema.sites)
       .set({ status: "quarantined" })
       .where(eq(schema.sites.id, pages[1]!.siteId));
+
+    // The kept page takes a CHOSEN name, which must end held with no owner.
+    const chosen = `e06-008a-${crypto.randomUUID().slice(0, 8)}`;
+    const renamed = await request.patch(`${baseURL}/api/sites/${pages[2]!.siteId}/name`, {
+      headers: sessionHeaders(cookie, baseURL!),
+      data: { name: chosen },
+    });
+    expect(renamed.status(), await renamed.text()).toBe(200);
+    createdSlugs.add(chosen);
+    pages[2] = { ...pages[2]!, slug: chosen };
+    await waitForBytes(urlsFor(chosen)[0]!, pages[2].html);
 
     // A second account, whose page must survive all of this.
     const other = await signIn(baseURL!);
@@ -262,18 +282,33 @@ test.describe("account deletion", () => {
       expect((await probeEdge(urlsFor(page.slug)[0]!)).status).toBe(200);
     }
 
-    const response = await destroy(request, baseURL!, cookie);
+    const response = await destroy(request, baseURL!, cookie, email);
     expect(response.status(), await response.text()).toBe(200);
     const body = accountDeletionResultSchema.parse(await response.json());
-    expect(body.pagesRemoved).toBe(pages.length);
-    // Never `archived`: that value belongs to the single-page delete.
-    expect(body.status).toBe("removed");
+    // The three still claiming their names went offline now; pages[0] already had.
+    expect(body.pagesArchived).toBe(pages.length - 1);
+    // ── CLAIM 6: this browser's session cookie is cleared by the response.
+    const cleared = response
+      .headersArray()
+      .filter((header) => header.name.toLowerCase() === "set-cookie")
+      .map((header) => header.value);
+    expect(
+      cleared.some((value) => /^__Host-kept\.session_token=;/.test(value) && /Max-Age=0/i.test(value)),
+      cleared.join(" | "),
+    ).toBe(true);
 
     for (const page of pages) {
       const row = await readSite(page.siteId);
-      expect(row.status, `${page.slug}`).toBe("removed");
+      expect(row.status, `${page.slug}: owners reach archived`).toBe("archived");
       expect(row.purgeAfter, `${page.slug} must be sweepable by E07`).not.toBeNull();
-      expect(row.ownerId, "the FK's SET NULL fired, harmlessly").toBeNull();
+      expect(row.ownerId, `${page.slug}: no owner left`).toBeNull();
+      expect(row.reminderEmail).toBeNull();
+      if (page !== pages[0]) {
+        expect(
+          Math.abs(row.purgeAfter!.getTime() - (Date.now() + DRAFT_GRACE_DAYS * MS_PER_DAY)),
+          `${page.slug}: one grace window from now`,
+        ).toBeLessThan(SLACK_MS);
+      }
       // The edge is off. The pointer is written and deleted from the same
       // `removeManifest` call as the KV key, so its absence is the manifest's.
       expect(await r2Store().get(pointerKey(page.slug)), page.slug).toBeNull();
@@ -281,9 +316,23 @@ test.describe("account deletion", () => {
       expect(await r2Store().get(page.objectKey), page.slug).toBe(page.html);
     }
 
+    expect(
+      (await readSite(pages[0]!.siteId)).purgeAfter,
+      "a page deleted earlier keeps its own deadline",
+    ).toEqual(archivedBefore.purgeAfter);
+
     for (const page of pages.slice(2)) {
       for (const url of urlsFor(page.slug)) await waitUntilGone(url);
     }
+
+    // ── CLAIM 5: the chosen name is held with no owner (D16).
+    const [hold] = await db
+      .select()
+      .from(schema.nameHolds)
+      .where(eq(schema.nameHolds.name, chosen));
+    expect(hold, "a chosen name is held after its account is deleted").toBeDefined();
+    expect(hold!.userId).toBeNull();
+    expect(hold!.reason).toBe("account_deleted");
 
     // CRITERION 13, deliberately unscoped — the failure mode is a row that no
     // ownership query can reach, so a query scoped by owner could not see it.
@@ -303,10 +352,16 @@ test.describe("account deletion", () => {
       "a live page with no owner, no token and no clock is unreachable by any authority in the product",
     ).toEqual([]);
 
-    // Better Auth's rows went with the user, so the same address builds a NEW
-    // account rather than landing back in this one.
+    // Better Auth's rows went with the user, so every other device is signed
+    // out on its next request and the same address builds a NEW account.
     expect(
       await db.select({ id: schema.user.id }).from(schema.user).where(eq(schema.user.id, userId)),
+    ).toEqual([]);
+    expect(
+      await db
+        .select({ id: schema.profiles.id })
+        .from(schema.profiles)
+        .where(eq(schema.profiles.id, userId)),
     ).toEqual([]);
     expect(
       await db
@@ -314,6 +369,11 @@ test.describe("account deletion", () => {
         .from(schema.session)
         .where(eq(schema.session.userId, userId)),
     ).toEqual([]);
+    // The old cookie, replayed, is signed out.
+    const replayed = await request.delete(`${baseURL}/api/sites/${pages[2]!.siteId}`, {
+      headers: sessionHeaders(cookie, baseURL!),
+    });
+    expect(replayed.status()).toBe(401);
 
     // The other account is exactly as it was.
     expect(await readSite(theirs.siteId)).toEqual(theirsBefore);
@@ -321,17 +381,18 @@ test.describe("account deletion", () => {
     expect((await probeEdge(urlsFor(theirs.slug)[0]!)).status).toBe(200);
   });
 
-  test("the double gate holds: signed out, foreign origin and an untyped phrase all change nothing", async ({
+  test("the gates hold: signed out, foreign origin and anything but the account's email all change nothing", async ({
     request,
     baseURL,
   }) => {
-    const { cookie } = await signIn(baseURL!);
+    const { cookie, email } = await signIn(baseURL!);
+    const other = await signIn(baseURL!);
     const page = await ownedPage(request, baseURL!, cookie);
     const before = await readSite(page.siteId);
 
     const signedOut = await request.delete(`${baseURL}/api/account`, {
       headers: { "content-type": "application/json" },
-      data: JSON.stringify({ confirm: ACCOUNT_DELETION_CONFIRMATION }),
+      data: JSON.stringify({ email }),
     });
     expect(signedOut.status(), "the gate must hold before any store work").toBe(401);
     studioErrorSchema.parse(await signedOut.json());
@@ -346,19 +407,19 @@ test.describe("account deletion", () => {
         origin: `https://${page.slug}.${servingDomain()}`,
         "content-type": "application/json",
       },
-      data: JSON.stringify({ confirm: ACCOUNT_DELETION_CONFIRMATION }),
+      data: JSON.stringify({ email }),
     });
     expect(foreign.status()).toBe(403);
     // E05a's flat body, untouched — the gate runs before any studio code.
     expect(publishErrorSchema.parse(await foreign.json()).error).toBe("invalid_request");
     expect(await readSite(page.siteId)).toEqual(before);
 
-    // The phrase is compared exactly — no trim, no case-folding. The typing IS
-    // the deliberation.
-    for (const confirm of ["", "yes", "Delete My Account", `${ACCOUNT_DELETION_CONFIRMATION} `]) {
-      const refused = await destroy(request, baseURL!, cookie, confirm);
-      expect(refused.status(), confirm).toBe(400);
-      expect(studioErrorSchema.parse(await refused.json()).error.code, confirm).toBe(
+    // Only this account's own address arms it — not another real one, not the
+    // old phrase, not nothing.
+    for (const typed of ["", "delete my account", other.email, `${email}.`, undefined]) {
+      const refused = await destroy(request, baseURL!, cookie, typed);
+      expect(refused.status(), String(typed)).toBe(400);
+      expect(studioErrorSchema.parse(await refused.json()).error.code, String(typed)).toBe(
         "invalid_request",
       );
       expect(await readSite(page.siteId)).toEqual(before);
@@ -366,10 +427,11 @@ test.describe("account deletion", () => {
     expect(await r2Store().get(pointerKey(page.slug))).not.toBeNull();
     expect((await probeEdge(urlsFor(page.slug)[0]!)).status).toBe(200);
 
-    // And the typed phrase, from the app's own origin, does the thing.
-    const done = await destroy(request, baseURL!, cookie);
+    // And the account's email — trimmed, any case — from the app's own origin,
+    // does the thing.
+    const done = await destroy(request, baseURL!, cookie, ` ${email.toUpperCase()} `);
     expect(done.status(), await done.text()).toBe(200);
-    expect(accountDeletionResultSchema.parse(await done.json()).pagesRemoved).toBe(1);
-    expect((await readSite(page.siteId)).status).toBe("removed");
+    expect(accountDeletionResultSchema.parse(await done.json()).pagesArchived).toBe(1);
+    expect((await readSite(page.siteId)).status).toBe("archived");
   });
 });

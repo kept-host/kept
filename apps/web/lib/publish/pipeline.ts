@@ -135,10 +135,15 @@ export function requestError(error: z.ZodError): PublishFailure {
 /** `expires_at` and `purge_after`, both from `@kept/shared`. No literals. */
 export function draftClocks(now: Date): { expiresAt: Date; purgeAfter: Date } {
   const expiresAt = new Date(now.getTime() + DRAFT_TTL_DAYS * MS_PER_DAY);
-  return {
-    expiresAt,
-    purgeAfter: new Date(expiresAt.getTime() + DRAFT_GRACE_DAYS * MS_PER_DAY),
-  };
+  return { expiresAt, purgeAfter: graceEnds(expiresAt) };
+}
+
+/**
+ * `from + DRAFT_GRACE_DAYS` — the ONE grace window: after a draft's clock, and
+ * after an owner archives a page (D14, D16). Not a second 30-day constant.
+ */
+export function graceEnds(from: Date): Date {
+  return new Date(from.getTime() + DRAFT_GRACE_DAYS * MS_PER_DAY);
 }
 
 /** The public URL of a published slug: `https://{slug}.{KEPT_BASE_DOMAIN}`. */

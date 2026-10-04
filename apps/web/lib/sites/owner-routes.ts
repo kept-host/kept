@@ -6,6 +6,7 @@
  * `POST /api/sites/swap` · `PATCH /api/sites/:id/name` · `GET /api/names/check`
  * `POST /api/sites/:id/replace` · `POST /api/sites/:id/versions/:versionId/restore`
  * `DELETE /api/sites/:id` · `DELETE /api/account`
+ * `GET /api/sites/:id/download` · `GET /api/export`
  *
  * ── WHAT THIS MODULE IS FOR ────────────────────────────────────────────────
  * Validation and result→response mapping, and nothing else. Every database
@@ -50,8 +51,9 @@
  * bytes, moving the served version and taking a page off the internet are all
  * unavoidably edge operations — but each ordering lives in exactly one place,
  * `./publish.ts`, `../names/rename.ts`, `./manage.ts` and `./restore.ts`, and
- * this module only maps their refusals. Nothing here calls
- * `writeManifest`/`removeManifest`/`r2Store` directly, and nothing new may.
+ * this module only maps their refusals. Downloads read R2 in `./export.ts`.
+ * Nothing here calls `writeManifest`/`removeManifest`/`r2Store` directly, and
+ * nothing new may.
  *
  * ⚠️ "YOU DON'T OWN THIS" IS AN EXISTENCE ORACLE. A site that does not exist, a
  * site owned by somebody else and an id that is not even a uuid all produce the
@@ -62,9 +64,9 @@
  * kept limit lands an owned draft (201), never a 4xx.
  */
 import {
-  ACCOUNT_DELETION_CONFIRMATION,
   accountDeletionRequestSchema,
   accountDeletionResultSchema,
+  confirmsAccountEmail,
   deleteResultSchema,
   demoteResultSchema,
   keepResultSchema,
@@ -104,6 +106,7 @@ import {
   type PublisherContext,
 } from "../publish/pipeline";
 import { deleteAccount } from "./account-deletion";
+import { openExport, openPageDownload, type Download } from "./export";
 import { demoteSite, keepSite, SITE_NOT_FOUND_MESSAGE, swapKept } from "./keep";
 import { deleteSite, ownerPageBodySchema, replaceSite } from "./manage";
 import { publishOwnedPage } from "./publish";
@@ -256,7 +259,8 @@ export function signedOut(): StudioFailure {
 
 /**
  * The one outcome→response mapping, so the `route.ts` files cannot drift on
- * status, headers or error shape. Never cacheable: every one of them mutates.
+ * status, headers or error shape. Never cacheable: every one of them mutates or
+ * answers for one owner.
  */
 export function ownerResponse<T>(outcome: OwnerOutcome<T>): NextResponse {
   return NextResponse.json(outcome.body, {
@@ -554,14 +558,13 @@ export async function restoreOwnedVersion(
 }
 
 /**
- * `DELETE /api/sites/:id` — stop serving one page.
+ * `DELETE /api/sites/:id` — stop serving one page (D14).
  *
- * ⚠️ ARCHIVE, NOT DESTROY, AND NOT THE ACCOUNT-DELETION VERB. This lands
- * `status = 'archived'` with the row, the versions and the R2 object all
- * retained; deleting an *account* is the path that lands `removed` with a
- * `purge_after` (task 011). Two verbs, two terminal states, both deliberate.
+ * `./manage.ts` archives it: `purge_after = now + DRAFT_GRACE_DAYS`, a chosen
+ * name held for the owner, the row and the bytes kept for the download window.
+ * Idempotent: a second delete is the same 200.
  *
- * The freed slot rides back on the response so the dashboard can repaint its
+ * The freed slot rides back on the response so the studio can repaint its
  * quota without a second request, and a `quarantined` page is deletable on
  * purpose — delete is one of the two affordances a flagged page keeps.
  */
@@ -581,41 +584,29 @@ export async function deleteOwnedSite(
 }
 
 /**
- * `DELETE /api/account` — the only irreversible action in the product.
- * E06 task 011, epic decision **D3**.
+ * `DELETE /api/account` — the only irreversible action in the product (D16).
  *
- * ⚠️ THERE IS NO ID PARAMETER, AND THERE MUST NEVER BE ONE. The profile id comes
- * from the session the route handler resolved, so the endpoint cannot be pointed
- * at another account by any request a caller can construct. An `id` here — even
- * one that was checked — would be a deletion verb that *takes a victim's name*,
- * one forgotten early return away from working.
+ * ⚠️ THERE IS NO ID PARAMETER, AND THERE MUST NEVER BE ONE. The profile id and
+ * `accountEmail` come from the session the route handler resolved, so the
+ * endpoint cannot be pointed at another account by any request a caller can
+ * construct.
  *
- * ⚠️ THE BODY IS THE SECOND HALF OF D3'S DOUBLE GATE. `accountDeletionRequestSchema`
- * requires the literal `ACCOUNT_DELETION_CONFIRMATION`, so the request itself
- * carries the intent and the gate is real even for a caller that never rendered a
- * dialog. The first half — a dialog stating the account's REAL kept/draft counts
- * from `getAccountDeletionSummary`, with the button disabled until the phrase
- * matches — is task 012's, and this refusal is what makes it more than decoration.
- * A bare "are you sure?" is not acceptable for an act that kills permanent links
- * other people may be pointing at.
- *
- * 400, not 422: a body without the phrase is a caller that did not ask for this,
- * and the message names the phrase because a developer wiring the dialog is the
- * only person who will ever read it.
- *
- * ⚠️ ARCHIVE IS THE OTHER VERB. This one ends every page in `removed` with a
- * `purge_after` — see `./account-deletion.ts` for why the two terminal states
- * differ on purpose, and why the R2 objects deliberately survive this call.
+ * ⚠️ THE BODY IS THE CONFIRMATION. `{ email }` must be the account's own
+ * address (`confirmsAccountEmail`: trimmed, case-insensitive), so the request
+ * itself carries the intent and the gate is real even for a caller that never
+ * rendered a dialog. 400 on a mismatch, and the message never echoes either
+ * address.
  */
 export async function deleteOwnAccount(
   raw: unknown,
   profileId: string,
+  accountEmail: string,
 ): Promise<OwnerOutcome<AccountDeletionResult>> {
   const parsed = accountDeletionRequestSchema.safeParse(raw);
-  if (!parsed.success) {
+  if (!parsed.success || !confirmsAccountEmail(parsed.data.email, accountEmail)) {
     return refuse(
       "invalid_request",
-      `Send \`{ confirm: "${ACCOUNT_DELETION_CONFIRMATION}" }\` — deleting an account is permanent and has to be typed out.`,
+      "That isn't the email address on this account. Type it exactly to delete the account.",
     );
   }
 
@@ -632,6 +623,66 @@ export async function deleteOwnAccount(
       err,
       "account deletion",
       "kept could not finish deleting your account. Some of your pages may already have stopped being served; retrying the deletion is safe and will finish the job.",
+    );
+  }
+}
+
+/**
+ * A file the browser saves rather than renders. The page is untrusted HTML on
+ * the AUTHENTICATED origin, so beyond `attachment` it is never sniffed into
+ * something else and, should anything ever render it, runs sandboxed in an
+ * opaque origin. Never cacheable: it is one owner's.
+ */
+function attachment(download: Download): Response {
+  return new Response(download.body, {
+    status: 200,
+    headers: {
+      "content-type": download.contentType,
+      "content-disposition": `attachment; filename="${download.filename}"`,
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+      "content-security-policy": "sandbox",
+    },
+  });
+}
+
+/**
+ * `GET /api/sites/:id/download` — one page's current version as
+ * `{name}.html` (§5.7, AC39). Owner only: anyone else, a `removed` page and a
+ * page past its `purge_after` are the same `404 not_found` (D17). An archived
+ * page downloads until `purge_after` (D14).
+ *
+ * A GET, so no origin check: it changes nothing, and the response is
+ * unreadable cross-origin.
+ */
+export async function downloadOwnedSite(rawSiteId: string, profileId: string): Promise<Response> {
+  const parsed = siteIdSchema.safeParse(rawSiteId);
+  if (!parsed.success) return ownerResponse(ownerNotFound());
+
+  try {
+    return attachment(await openPageDownload(parsed.data, profileId));
+  } catch (err) {
+    return ownerResponse(
+      studioFailure(err, "download", "kept could not read this page just now. Try again."),
+    );
+  }
+}
+
+/**
+ * `GET /api/export` — every page the owner has (archived ones excepted) as a
+ * streamed `kept-export-{date}.zip` with `kept-export.json` (§5.7, D13). A
+ * native browser download: the settings button is a link, not a fetch.
+ *
+ * Headers go out before the first page is read, so a store failure part way
+ * through ends the stream with an error the browser reports as a failed
+ * download — never a short zip that looks complete.
+ */
+export async function exportOwnPages(profileId: string): Promise<Response> {
+  try {
+    return attachment(await openExport(profileId));
+  } catch (err) {
+    return ownerResponse(
+      studioFailure(err, "export", "kept could not prepare your export just now. Try again."),
     );
   }
 }

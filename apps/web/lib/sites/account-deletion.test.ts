@@ -1,61 +1,70 @@
 /**
- * Account deletion against the REAL dev stack — E06 task 011, decision **D3**.
+ * Account deletion against the REAL dev stack — decision **D16** (E06 task 008;
+ * the server half of AC43).
  *
  * NO MOCKS. Every page the teardown unwinds is published through
  * `publishOwnedPage` — the same function `POST /api/sites` calls — so the R2
  * object, the slug pointer and the KV manifest all genuinely exist before the
- * teardown unwinds them. The rows are read back from Postgres afterwards,
- * because "it returned 200" and "the row is in the state E07 will find" are
- * different claims and only the second matters.
+ * teardown unwinds them. Chosen names are given through `renameSite`, and the
+ * rows and holds are read back from Postgres afterwards, because "it returned
+ * 200" and "the rows are in the state E07 will find" are different claims.
  *
  * The one exception is the summary drill's cap: filling `limitsFor("free")`
  * kept slots by publishing would be dozens of R2/KV round trips proving nothing
  * the counts need, so all but the last slot are real rows seeded by direct
  * insert (`seedKept`). The last slot and the draft past it are still published.
  *
- * ── THE FIVE CLAIMS ──────────────────────────────────────────────────────────
+ * ── THE CLAIMS ───────────────────────────────────────────────────────────────
  *
  *  1. **No ownerless live page.** `status = 'live' AND owner_id IS NULL AND
  *     anon_token_hash IS NULL AND expires_at IS NULL` returns zero rows —
- *     verification criterion 13, and the query the FK's `SET NULL` would
- *     silently fail. It is asserted globally, not scoped to this test's rows:
- *     the whole point is that such a row is undiscoverable by ownership.
- *  2. **Every page is sweepable.** `status = 'removed'` with a non-null
- *     `purge_after`, which is exactly what E07's daily purge selects on
- *     (`status IN (expired, removed) AND purge_after < now()`).
- *  3. **The edge is off.** The slug pointer is gone for every affected slug.
- *  4. **R2 objects are STILL PRESENT, and that is correct.** Asserted, so a
- *     future change that starts deleting them here is caught by this file
- *     rather than by E07 discovering it has nothing left to collect.
- *  5. **Another account is untouched** — row, pointer and object. A `WHERE`
- *     that forgot the owner scope here would be catastrophic and silent.
+ *     asserted globally, because such a row is undiscoverable by ownership.
+ *  2. **Every page is `archived`, ownerless, with a deadline.** Pages taken
+ *     offline now get `purge_after = now + DRAFT_GRACE_DAYS`; a page the owner
+ *     had already deleted keeps its own. `reminder_email` is NULL everywhere.
+ *  3. **The edge is off** for every page that was serving.
+ *  4. **R2 objects are STILL PRESENT** — E07's purge collects them, not this.
+ *  5. **Chosen names are held with no owner** — the ones taken offline now as
+ *     `account_deleted`, an earlier `deleted` hold losing its owner; generated
+ *     names are never held.
+ *  6. **The account is gone:** `user`, `session`, `account`, `profiles`.
+ *  7. **Another account is untouched** — row, pointer and object.
  *
  * SKIPS without dev credentials: CI runs `pnpm test` on fork PRs with no cloud
  * secrets. Run locally with `pnpm --filter @kept/web test:unit`.
  *
- * Every row, object and pointer created here is cleaned up in `after` — the
- * deleted account's site rows survive the teardown (that is the point), and
+ * Every row, object, pointer and hold created here is cleaned up in `after` —
+ * the deleted account's site rows survive the teardown (that is the point), and
  * their `owner_id` is null by then, so cleanup tracks ids rather than owners.
  */
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
 import {
-  ACCOUNT_DELETION_CONFIRMATION,
+  DRAFT_GRACE_DAYS,
   accountDeletionResultSchema,
   limitsFor,
 } from "@kept/shared";
 import { config } from "dotenv";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 
 import { closeDb, db } from "../db";
-import { archiveSite } from "../db/queries/publish";
-import { account, profiles, session, siteVersions, sites, user } from "../db/schema";
+import {
+  account,
+  nameHolds,
+  profiles,
+  session,
+  siteVersions,
+  sites,
+  user,
+} from "../db/schema";
+import { renameSite } from "../names/rename";
 import { pointerKey } from "../storage/manifest";
 import { pageObjectKey, r2Store } from "../storage/r2";
 
 import { deleteAccount, getAccountDeletionSummary } from "./account-deletion";
 import { demoteSite } from "./keep";
+import { deleteSite } from "./manage";
 import { deleteOwnAccount } from "./owner-routes";
 import { publishOwnedPage } from "./publish";
 
@@ -79,6 +88,10 @@ const skip: string | false =
   missing.length > 0
     ? `dev credentials absent (${missing.join(", ")}) — run locally with apps/web/.env.local`
     : false;
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+/** Clock slack between this process and Postgres. */
+const SLACK_MS = 5 * 60_000;
 
 const createdUsers = new Set<string>();
 const createdSites = new Set<string>();
@@ -171,6 +184,27 @@ async function readSite(siteId: string) {
   return row;
 }
 
+/** A chosen name `validateName` accepts on a free plan, unique to this run. */
+function chosenName(): string {
+  const name = `e06-008-ad-${crypto.randomUUID().slice(0, 8)}`;
+  createdSlugs.add(name);
+  return name;
+}
+
+async function holdOf(name: string) {
+  const [row] = await db.select().from(nameHolds).where(eq(nameHolds.name, name));
+  return row ?? null;
+}
+
+function assertGraceFromNow(purgeAfter: Date | null, label: string) {
+  assert.ok(purgeAfter, `${label}: purge_after must be set`);
+  const expected = Date.now() + DRAFT_GRACE_DAYS * MS_PER_DAY;
+  assert.ok(
+    Math.abs(purgeAfter.getTime() - expected) < SLACK_MS,
+    `${label}: purge_after ${purgeAfter.toISOString()} should be ~DRAFT_GRACE_DAYS from now`,
+  );
+}
+
 after(async () => {
   if (skip) return;
   const { removeManifest } = await import("../storage/manifest");
@@ -189,6 +223,9 @@ after(async () => {
     }
     await db.delete(sites).where(eq(sites.id, id));
   }
+  if (createdSlugs.size > 0) {
+    await db.delete(nameHolds).where(inArray(nameHolds.name, [...createdSlugs]));
+  }
   for (const id of createdUsers) {
     // `profiles`/`session`/`account` all cascade off `user.id`.
     await db.delete(user).where(eq(user.id, id));
@@ -204,12 +241,7 @@ test(
   async () => {
     const owner = await makeAccount();
     const empty = await getAccountDeletionSummary(owner.id);
-    assert.deepEqual(empty, {
-      kept: 0,
-      drafts: 0,
-      total: 0,
-      confirmationPhrase: ACCOUNT_DELETION_CONFIRMATION,
-    });
+    assert.deepEqual(empty, { kept: 0, drafts: 0, total: 0 });
 
     // Fill the cap exactly, then one more so the account holds a real draft.
     // Every slot but the last is seeded; the last is a real publish that must
@@ -225,87 +257,110 @@ test(
     );
 
     const full = await getAccountDeletionSummary(owner.id);
-    assert.deepEqual(full, {
-      kept: FREE_LIMIT,
-      drafts: 1,
-      total: FREE_LIMIT + 1,
-      confirmationPhrase: ACCOUNT_DELETION_CONFIRMATION,
-    });
+    assert.deepEqual(full, { kept: FREE_LIMIT, drafts: 1, total: FREE_LIMIT + 1 });
 
-    // Archive one and quarantine another. The archived page leaves the QUOTA;
-    // the quarantined one still holds its slot (a flag is not a deletion — E06
-    // task 004's kept predicate). Both stay in `total`, because both rows are
-    // still this account's and both will be destroyed. That is why
-    // `kept + drafts` does not have to equal `total`.
-    await archiveSite(kept[0]!);
+    // Quarantine one: a flag is not a deletion, so it still holds its slot (E06
+    // task 004's kept predicate).
     await db.update(sites).set({ status: "quarantined" }).where(eq(sites.id, kept[1]!));
-
-    const mixed = await getAccountDeletionSummary(owner.id);
-    assert.equal(mixed.kept, FREE_LIMIT - 1, "an archived page is not kept; a quarantined one still is");
-    assert.equal(mixed.drafts, 1);
-    assert.equal(mixed.total, FREE_LIMIT + 1, "every row is still destroyed");
+    const flagged = await getAccountDeletionSummary(owner.id);
+    assert.equal(flagged.kept, FREE_LIMIT, "a quarantined page still holds its slot");
+    assert.equal(flagged.drafts, 1);
   },
 );
 
 test(
-  "deleting an account removes every page from the edge, marks it for E07, and leaves the bytes",
+  "deleting an account archives every page with no owner, holds its chosen names with no owner, and leaves the bytes",
   { skip },
   async () => {
     const owner = await makeAccount();
     const bystander = await makeAccount();
 
-    // Kept pages, a draft, an archived page and a quarantined page — the four
-    // shapes an account can be holding when its owner presses delete. All four
-    // are real publishes, so every one has bytes and a pointer to unwind; the
-    // draft is a kept page DEMOTED through the real primitive, so the shape does
-    // not depend on filling the account to its cap first.
-    const keptPages: Published[] = [];
-    for (const shape of ["archived", "quarantined", "kept"]) {
-      keptPages.push(await publish(owner.id, `e06-011-mix-${shape}`));
-    }
-    const draft = await publish(owner.id, "e06-011-mix-draft");
+    // The shapes an account can be holding when its owner presses delete — all
+    // real publishes, so every one has bytes and a pointer to unwind:
+    //   · a kept page with a CHOSEN name, and one with a generated name;
+    //   · a quarantined page; an owned draft (demoted through the real
+    //     primitive) carrying a reminder address;
+    //   · a page the owner had already DELETED, with a chosen name (held for
+    //     them since) and its own purge_after.
+    const named = await publish(owner.id, "e06-008-ad-named");
+    const namedName = chosenName();
+    await renameSite(named.siteId, owner.id, namedName);
+    const generated = await publish(owner.id, "e06-008-ad-generated");
+    const flagged = await publish(owner.id, "e06-008-ad-flagged");
+    await db.update(sites).set({ status: "quarantined" }).where(eq(sites.id, flagged.siteId));
+    const draft = await publish(owner.id, "e06-008-ad-draft");
     await demoteSite(draft.siteId, owner.id);
-    await archiveSite(keptPages[0]!.siteId);
     await db
       .update(sites)
-      .set({ status: "quarantined" })
-      .where(eq(sites.id, keptPages[1]!.siteId));
+      .set({ reminderEmail: owner.email })
+      .where(eq(sites.id, draft.siteId));
+    const gone = await publish(owner.id, "e06-008-ad-gone");
+    const goneName = chosenName();
+    await renameSite(gone.siteId, owner.id, goneName);
+    await deleteSite(gone.siteId, owner.id);
+    const goneBefore = await readSite(gone.siteId);
+    const goneHoldBefore = await holdOf(goneName);
+    assert.equal(goneHoldBefore?.userId, owner.id, "precondition: held for its owner");
 
     const theirs = await publish(bystander.id, "e06-011-bystander");
     const theirsBefore = await readSite(theirs.siteId);
 
-    const doomed = [...keptPages, draft];
+    const offline = [
+      { page: named, slug: namedName },
+      { page: generated, slug: generated.slug },
+      { page: flagged, slug: flagged.slug },
+      { page: draft, slug: draft.slug },
+    ];
+    const updatedBefore = new Map<string, Date>();
+    for (const { page } of offline) {
+      updatedBefore.set(page.siteId, (await readSite(page.siteId)).updatedAt);
+    }
     const result = accountDeletionResultSchema.parse(await deleteAccount(owner.id));
-    assert.equal(result.pagesRemoved, doomed.length);
-    assert.equal(result.status, "removed");
+    assert.equal(result.pagesArchived, offline.length, "the pages this call took offline");
 
-    for (const page of doomed) {
+    for (const { page, slug } of offline) {
       const row = await readSite(page.siteId);
-      // ── CLAIM 2: sweepable, in exactly the state E07's purge selects on.
-      assert.equal(row.status, "removed", `${page.slug} must be removed, never archived`);
-      assert.notEqual(row.purgeAfter, null, `${page.slug} must carry a purge deadline`);
-      assert.ok(
-        row.purgeAfter!.getTime() <= Date.now(),
-        `${page.slug}'s deadline must already be in the past — nobody is left to offer a download to`,
-      );
-      // The FK's `SET NULL` fired, and it is harmless now.
-      assert.equal(row.ownerId, null);
-
+      // ── CLAIM 2
+      assert.equal(row.status, "archived", `${slug}: owners reach archived; removed is E07's`);
+      assertGraceFromNow(row.purgeAfter, slug);
+      assert.equal(row.ownerId, null, `${slug}: no owner left`);
+      assert.equal(row.reminderEmail, null, `${slug}: nobody left to remind`);
+      assert.ok(row.updatedAt > updatedBefore.get(page.siteId)!, `${slug}: the delete moves updated_at`);
       // ── CLAIM 3: the edge is off. The pointer is written and deleted from the
       // same `removeManifest` call as the KV key (`lib/storage/kv` may not be
       // imported outside `manifest.ts`), so its absence is the manifest's.
-      assert.equal(await r2Store().get(pointerKey(page.slug)), null, page.slug);
-
+      assert.equal(await r2Store().get(pointerKey(slug)), null, slug);
       // ── CLAIM 4: the bytes survive. E07 collects them; this path must not.
       assert.notEqual(
         await r2Store().get(page.objectKey),
         null,
-        `${page.slug}'s object is E07's to collect, not this path's`,
+        `${slug}'s object is E07's to collect, not this path's`,
       );
     }
 
-    // ── CLAIM 1, criterion 13. Deliberately UNSCOPED: the failure mode is a row
-    // nobody can reach by ownership, so a query scoped by owner could not see it.
+    // The page deleted earlier keeps its own deadline and loses its owner.
+    const goneAfter = await readSite(gone.siteId);
+    assert.equal(goneAfter.status, "archived");
+    assert.deepEqual(goneAfter.purgeAfter, goneBefore.purgeAfter, "no second purge_after bump");
+    assert.equal(goneAfter.ownerId, null);
+    assert.ok(goneAfter.updatedAt > goneBefore.updatedAt, "losing its owner moves updated_at");
+
+    // ── CLAIM 5: names held with no owner; generated names never held.
+    const namedHold = await holdOf(namedName);
+    assert.ok(namedHold, "a chosen name taken offline is held");
+    assert.equal(namedHold.userId, null, "held with no owner (D16)");
+    assert.equal(namedHold.reason, "account_deleted");
+    assert.equal(namedHold.siteId, named.siteId);
+    const goneHold = await holdOf(goneName);
+    assert.ok(goneHold);
+    assert.equal(goneHold.userId, null, "an earlier hold loses its owner with the account");
+    assert.deepEqual(goneHold.heldUntil, goneHoldBefore!.heldUntil, "and keeps its deadline");
+    for (const page of [generated, flagged, draft]) {
+      assert.equal(await holdOf(page.slug), null, `${page.slug}: a generated name is never held`);
+    }
+
+    // ── CLAIM 1, deliberately UNSCOPED: the failure mode is a row nobody can
+    // reach by ownership, so a query scoped by owner could not see it.
     const ownerless = await db
       .select({ id: sites.id, slug: sites.slug })
       .from(sites)
@@ -323,7 +378,8 @@ test(
       "a live page with no owner, no token and no clock is unreachable by any authority in the product",
     );
 
-    // Better Auth's rows go with the user, so the same email cannot land back in
+    // ── CLAIM 6: Better Auth's rows go with the user, so every other device is
+    // signed out on its next request, and the same email cannot land back in
     // the old account.
     for (const table of [user, profiles] as const) {
       const rows = await db.select({ id: table.id }).from(table).where(eq(table.id, owner.id));
@@ -343,7 +399,7 @@ test(
       "signing in with the same address must build a new account, not resurrect this one",
     );
 
-    // ── CLAIM 5: the other account is exactly as it was.
+    // ── CLAIM 7: the other account is exactly as it was.
     assert.deepEqual(await readSite(theirs.siteId), theirsBefore);
     assert.notEqual(await r2Store().get(pointerKey(theirs.slug)), null);
     assert.equal(
@@ -356,7 +412,7 @@ test(
 test("an account with no pages deletes cleanly", { skip }, async () => {
   const owner = await makeAccount();
   const result = await deleteAccount(owner.id);
-  assert.equal(result.pagesRemoved, 0);
+  assert.equal(result.pagesArchived, 0);
   assert.deepEqual(
     await db.select({ id: user.id }).from(user).where(eq(user.id, owner.id)),
     [],
@@ -364,31 +420,42 @@ test("an account with no pages deletes cleanly", { skip }, async () => {
 });
 
 test(
-  "the route half refuses a body without the typed phrase, and deletes nothing",
+  "the route half refuses any body but the account's own email, and deletes nothing",
   { skip },
   async () => {
     const owner = await makeAccount();
-    const page = await publish(owner.id, "e06-011-confirm");
+    const other = await makeAccount();
+    const page = await publish(owner.id, "e06-008-ad-confirm");
     const before = await readSite(page.siteId);
 
     for (const body of [
       undefined,
       {},
-      { confirm: "" },
-      { confirm: "Delete My Account" }, // exact match, deliberately case-sensitive
-      { confirm: `${ACCOUNT_DELETION_CONFIRMATION} ` }, // no trim, deliberately
-      { confirm: "yes" },
+      { email: "" },
+      { email: other.email }, // a real address — just not this account's
+      { email: `${owner.email}x` },
+      { confirm: "delete my account" }, // the old phrase is not a way in
     ]) {
-      const outcome = await deleteOwnAccount(body, owner.id);
+      const outcome = await deleteOwnAccount(body, owner.id, owner.email);
       assert.equal(outcome.ok, false, JSON.stringify(body));
       assert.equal(outcome.ok === false && outcome.status, 400);
+      assert.equal(
+        outcome.ok === false && outcome.body.error.message.includes(owner.email),
+        false,
+        "the refusal never echoes the address",
+      );
       // The claim that matters: the page and the account are still there.
       assert.deepEqual(await readSite(page.siteId), before);
     }
 
-    const done = await deleteOwnAccount({ confirm: ACCOUNT_DELETION_CONFIRMATION }, owner.id);
+    // Trimmed and case-insensitive — the rule `confirmsAccountEmail` states.
+    const done = await deleteOwnAccount(
+      { email: `  ${owner.email.toUpperCase()} ` },
+      owner.id,
+      owner.email,
+    );
     assert.equal(done.ok, true);
-    assert.equal(done.ok === true && done.body.status, "removed");
-    assert.equal((await readSite(page.siteId)).status, "removed");
+    assert.equal(done.ok === true && done.body.pagesArchived, 1);
+    assert.equal((await readSite(page.siteId)).status, "archived");
   },
 );

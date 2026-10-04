@@ -7,7 +7,7 @@
  *
  *   replace:  Postgres (new version) → R2 object → pointer → KV → purge
  *             → scan → prune (R2 delete THEN row, per pruned version)
- *   delete:   pointer → KV → purge   → Postgres (archive)
+ *   delete:   pointer → KV → purge   → Postgres (archive + purge_after + hold)
  *
  * **Publish ordering forwards, publish ordering backwards.** A replace's
  * dangerous half-state is "the manifest names bytes that do not exist", so the
@@ -37,11 +37,11 @@
  *    anything. `REPLACE_CLOCK_NOTE` in `components/kept/draft-chip.tsx` is the
  *    sentence that promises this; this module is what makes it true.
  *
- * 2. **Deleting one page archives it.** `status → 'archived'`, the row stays,
- *    the R2 object stays, the version history stays. The slot frees for free,
- *    because `isKeptCondition` excludes `archived`. Deleting an *account* is
- *    the one path that ends in `removed` with a `purge_after` — that is task
- *    011, and the two terminal states are different on purpose.
+ * 2. **Deleting a page archives it** (D14): `status → 'archived'`, `purge_after
+ *    → now + DRAFT_GRACE_DAYS`, a chosen name held; the row, the R2 object and
+ *    the versions stay for the owner's download window. The slot frees because
+ *    `isKeptCondition` excludes `archived`. Owners reach `archived`; `removed`
+ *    is E07's.
  *
  * ⚠️ R2 IS KEYED BY `siteId`, NEVER BY SLUG. A replace writes a NEW `versionId`
  * under the SAME `siteId`; a delete removes no object at all. The only objects
@@ -57,23 +57,26 @@ import {
   type ReplaceResult,
   type SiteStatus,
 } from "@kept/shared";
+import { and, eq } from "drizzle-orm";
 
 import { db } from "../db";
 import {
-  archiveSite,
   findSiteForOwner,
   insertReplacementVersion,
   revertReplacementVersion,
 } from "../db/queries/publish";
 import { deleteVersionRow, lockPrunableVersions } from "../db/queries/versions";
+import { sites } from "../db/schema";
+import { claimsItsName } from "../names/availability";
+import { holdName } from "../names/holds";
 import { enqueueScan } from "../publish/hooks";
 import { extractPageTitle } from "../publish/page-title";
-import { liveUrl, writePageAndManifest } from "../publish/pipeline";
+import { graceEnds, liveUrl, writePageAndManifest } from "../publish/pipeline";
 import { removeManifest } from "../storage/manifest";
 import { pageObjectKey, r2Store } from "../storage/r2";
 
 import { managementRefusal } from "./display";
-import { keptQuotaFor, SiteNotFoundError } from "./keep";
+import { keptQuotaFor, lockOwner, SiteNotFoundError } from "./keep";
 import { StudioRefusal } from "./studio-refusal";
 
 /**
@@ -326,25 +329,43 @@ async function pruneVersions(siteId: string): Promise<boolean> {
 }
 
 /**
- * Stop serving one owned page and archive it.
+ * The columns of the one end state an owner can reach (D14, D16): `archived`,
+ * downloadable by its owner until `purge_after = now + DRAFT_GRACE_DAYS`, then
+ * E07's purge. Owners reach `archived`; `removed` is E07's.
+ *
+ * `purge_after` is set even on a draft whose clock had a later deadline: the
+ * download window starts at the delete, and a NULL here is a page E07 never
+ * collects (latent bug 3).
+ */
+export function archivedForGrace(now = new Date()) {
+  return { status: "archived" as const, purgeAfter: graceEnds(now) };
+}
+
+/**
+ * Stop serving one owned page and archive it (D14).
  *
  * ⚠️ THE EDGE COMES OFF FIRST. `removeManifest` (pointer → KV → purge) runs
- * before `archiveSite`, so the worst case is a row that still says `live` for a
+ * before the row moves, so the worst case is a row that still says `live` for a
  * page that no longer serves — visible to an audit, invisible to the internet —
  * instead of a row that says gone while the page keeps answering.
  *
- * ⚠️ NOTHING IS DESTROYED. No `deleteSiteCascade`, no R2 delete, no version
- * removed. E07's grace-end job is what eventually collects the bytes, and it
- * selects on `purge_after` — which `archiveSite` deliberately leaves intact.
+ * ⚠️ NOTHING IS DESTROYED. No R2 delete, no version removed: the owner may
+ * download the page until `purge_after`, and E07's purge collects the bytes
+ * after it.
  *
- * Idempotent: an already-archived page short-circuits to success rather than a
- * 404 or a second purge, because a retrying client or a double-clicked button
- * must not see an error for reaching the state it asked for.
+ * The row moves under `lockOwner`, then a CHOSEN name is held for the owner
+ * (`holdName`, which takes the name's advisory lock — lockOwner first, then the
+ * name, the order `../names/availability.ts` fixes). A generated name is not
+ * held. Idempotent: an already-archived page short-circuits to success, and a
+ * concurrent second delete finds no row left to move — either way no second
+ * hold and no second `purge_after`, because a retrying client or a
+ * double-clicked button must not see an error for reaching the state it asked
+ * for.
  *
  * A `quarantined` page CAN be deleted, and that is deliberate — delete is one
  * of the two affordances a flagged page keeps.
  *
- * @throws {SiteNotFoundError} the page does not exist or is not this profile's
+ * @throws {SiteNotFoundError} the page does not exist, is not this profile's, or is `removed`
  * @throws {ManageStoreError} the page could not be taken off the edge
  */
 export async function deleteSite(
@@ -352,7 +373,9 @@ export async function deleteSite(
   profileId: string,
 ): Promise<DeleteResult> {
   const site = await findSiteForOwner(siteId, profileId);
-  if (!site) throw new SiteNotFoundError(siteId);
+  // `removed` is E07's takedown: to its owner the page no longer exists (§5.2),
+  // and a delete must never turn it into `archived`.
+  if (!site || site.status === "removed") throw new SiteNotFoundError(siteId);
 
   if (site.status !== "archived") {
     const removed = await removeManifest(site.slug);
@@ -367,7 +390,17 @@ export async function deleteSite(
     // retry lands. `removeManifest` has already logged it.
 
     try {
-      await archiveSite(site.id);
+      await db.transaction(async (tx) => {
+        await lockOwner(tx, profileId);
+        const [archived] = await tx
+          .update(sites)
+          .set(archivedForGrace())
+          .where(and(eq(sites.id, site.id), eq(sites.ownerId, profileId), claimsItsName()))
+          .returning({ slug: sites.slug, nameKind: sites.nameKind });
+        if (archived?.nameKind === "chosen") {
+          await holdName(archived.slug, profileId, "deleted", site.id, tx);
+        }
+      });
     } catch (err) {
       // The page has already stopped serving, which is what the caller asked
       // for, but the row still says `live`. Loud, because only an audit sees it.

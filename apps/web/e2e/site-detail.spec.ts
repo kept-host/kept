@@ -282,9 +282,8 @@ test.describe("the site detail screen", () => {
     await page.getByTestId("delete-dialog-confirm").click();
     await expect(page).toHaveURL(/\/dashboard$/, { timeout: LIVE_STACK_TIMEOUT });
 
-    // ARCHIVED, not removed: an owner deleting one page keeps the row and the
-    // bytes. `removed` is account deletion's terminal state and the two differ
-    // deliberately.
+    // ARCHIVED: an owner deleting a page keeps the row and the bytes. Owners
+    // reach `archived`; `removed` is E07's.
     expect((await readSite(site.siteId)).status).toBe("archived");
   });
 

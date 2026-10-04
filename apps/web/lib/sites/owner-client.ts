@@ -1,6 +1,8 @@
 /**
  * The browser's client for the owner-scoped (studio) routes — publish, keep,
  * demote, swap, rename, replace, restore, delete, and account deletion.
+ * Downloads and the export are plain links (`GET`, `Content-Disposition:
+ * attachment`), so they have no call here.
  *
  * Same posture as `lib/publish/client.ts`: this module knows the endpoint's URL
  * and nothing else. It serializes the request the route already accepts, parses
@@ -32,6 +34,7 @@ import {
   restoreResultSchema,
   studioErrorSchema,
   swapResultSchema,
+  type AccountDeletionRequest,
   type AccountDeletionResult,
   type DeleteResult,
   type DemoteResult,
@@ -445,7 +448,7 @@ export async function deletePage(
 }
 
 /**
- * An account teardown: what was destroyed, or why nothing was.
+ * An account deletion: how many pages went offline, or why nothing changed.
  *
  * `signedOut` is its own branch rather than a message, because the only useful
  * response to it is a navigation to sign-in — printing "Sign in to manage this
@@ -458,24 +461,21 @@ export type AccountDeletionOutcome =
   | { ok: false; signedOut?: false; error: StudioError };
 
 /**
- * `DELETE /api/account` — a signed-in user destroys their own account
- * (E06 task 011's route, epic decision **D3**).
+ * `DELETE /api/account` — a signed-in user deletes their own account (D16).
  *
- * ⚠️ THE PHRASE IS THE REQUEST, NOT MERELY THE UI'S GATE. `confirm` is checked
- * server-side against `accountDeletionRequestSchema`, so a stray
+ * ⚠️ THE TYPED EMAIL IS THE REQUEST, NOT MERELY THE UI'S GATE. The route checks
+ * `email` against the session's own address (`confirmsAccountEmail`), so a stray
  * `fetch("/api/account", { method: "DELETE" })` from this app's own origin
- * cannot destroy an account by arriving. That is also why this function takes
- * the phrase rather than hardcoding it: the caller passes what the user actually
- * typed, and a mismatch is refused by the server rather than smoothed over here.
+ * cannot delete an account by arriving. The caller passes what the person
+ * actually typed; a mismatch is refused by the server, not smoothed over here.
  *
- * ⚠️ NO PATH SEGMENT NAMING A VICTIM, EVER. The route resolves the profile from
- * the session; there is nothing for this function to send that says whose
- * account to delete, and adding one would turn "delete my account" into a
- * deletion endpoint that takes an argument.
+ * ⚠️ NO PATH SEGMENT NAMING A VICTIM, EVER. The route resolves the account from
+ * the session.
  *
- * The refusals the route can produce arrive as the studio envelope with the
- * server's own sentence, and the caller shows it verbatim:
- *   · 400 — the phrase did not match exactly
+ * On success the route has already cleared the session cookie; the caller
+ * navigates to the apex. The refusals arrive as the studio envelope with the
+ * server's own sentence, shown verbatim:
+ *   · 400 — the email did not match
  *   · 401 — the session is gone (its own branch above)
  *   · 503 — a page could not be taken off the edge, so **nothing** was deleted
  * A foreign-origin 403 is not the envelope, so it reads as `COULD_NOT_SAVE`.
@@ -483,12 +483,12 @@ export type AccountDeletionOutcome =
  * Never throws, including on abort.
  */
 export async function deleteAccount(
-  confirm: string,
+  { email }: AccountDeletionRequest,
   signal?: AbortSignal,
 ): Promise<AccountDeletionOutcome> {
   const sent = await send(
     "/api/account",
-    jsonInit("DELETE", { confirm }, signal),
+    jsonInit("DELETE", { email }, signal),
     accountDeletionResultSchema,
   );
   if (sent.ok) return { ok: true, result: sent.body };

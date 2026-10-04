@@ -114,7 +114,11 @@ export default async function SettingsPage({
 
         <PlanPanel plan={profile.plan} />
 
-        <DeleteAccount summary={deletion} farewellHref={farewellHref(process.env.NEXT_PUBLIC_APP_URL)} />
+        <DeleteAccount
+          summary={deletion}
+          email={session.user.email}
+          farewellHref={farewellHref(process.env.NEXT_PUBLIC_APP_URL)}
+        />
       </div>
     </main>
   );

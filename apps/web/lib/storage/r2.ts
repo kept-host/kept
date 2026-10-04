@@ -58,6 +58,16 @@ export interface R2Store {
    */
   putJson(key: string, json: string): Promise<void>;
   get(key: string): Promise<string | null>;
+  /**
+   * The object's bytes as they arrive — the response body itself, never
+   * buffered — or `null` when there is no such object. For downloads and the
+   * export (D13), which stream a page through to the browser.
+   *
+   * `signal` aborts the read: the caller that stops consuming the stream (an
+   * export the browser cancelled) aborts it, so the R2 socket is released
+   * rather than left to the garbage collector.
+   */
+  getStream(key: string, signal?: AbortSignal): Promise<ReadableStream<Uint8Array> | null>;
   delete(key: string): Promise<void>;
   // No `list`. The authority on what objects should exist is Postgres
   // (contract §7.5 / the E07 divergence audit): a previous version's objects are
@@ -104,13 +114,24 @@ export function r2Store(): R2Store {
   const send = async (
     key: string,
     init: { method: string; body?: string; headers?: Record<string, string> },
+    signal?: AbortSignal,
   ): Promise<Response> => {
     const signed = await aws.sign(url(key), init);
     return fetch(signed.url, {
       method: init.method,
       headers: signed.headers,
       body: init.body,
+      signal,
     });
+  };
+
+  const getStream = async (key: string, signal?: AbortSignal) => {
+    const res = await send(key, { method: "GET" }, signal);
+    if (res.ok && res.body) return res.body;
+    // Not a body anyone will read: release the connection now.
+    await res.body?.cancel();
+    if (res.status === 404) return null;
+    throw new Error(`R2 GET ${key} → HTTP ${res.status} on "${bucket}"`);
   };
 
   const put = async (key: string, body: string, contentType: string) => {
@@ -131,13 +152,10 @@ export function r2Store(): R2Store {
       await put(key, json, "application/json");
     },
     async get(key) {
-      const res = await send(key, { method: "GET" });
-      if (res.status === 404) return null;
-      if (!res.ok) {
-        throw new Error(`R2 GET ${key} → HTTP ${res.status} on "${bucket}"`);
-      }
-      return res.text();
+      const body = await getStream(key);
+      return body ? new Response(body).text() : null;
     },
+    getStream,
     async delete(key) {
       const res = await send(key, { method: "DELETE" });
       // R2 answers 204 for a delete of a key that was never there.
