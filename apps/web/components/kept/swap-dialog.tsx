@@ -7,7 +7,7 @@
  * `POST /api/sites/swap` already exists, is origin-gated, and runs `swapKept` in
  * ONE Postgres transaction that refuses `demote === keep`. This file builds no
  * endpoint, changes no server logic and adds no second atomicity mechanism. It
- * is the moment before that write: an account at `KEPT_PAGE_LIMIT` presses Keep
+ * is the moment before that write: an account at its kept limit presses Keep
  * on a draft and has to decide which of its permanent pages stops being
  * permanent.
  *
@@ -48,7 +48,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { type KeptQuota, type SiteStatus, type SwapResult } from "@kept/shared";
 
-import { AT_CAP_NOTE, KeptQuotaChip } from "@/components/kept/kept-quota";
+import { atCapNote, KeptQuotaChip } from "@/components/kept/kept-quota";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -181,7 +181,7 @@ export function SwapDialog({
           <DialogDescription>
             {targetRefusal ?? (
               <>
-                {AT_CAP_NOTE} Choose which page becomes a draft again;{" "}
+                {atCapNote(quota.limit)} Choose which page becomes a draft again;{" "}
                 <span className="font-medium text-text">{keepTarget.name}</span> takes
                 its place.
               </>

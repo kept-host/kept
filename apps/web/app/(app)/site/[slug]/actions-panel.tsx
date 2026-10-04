@@ -12,7 +12,7 @@
  * from `@kept/shared` constants, so there is no `7` and no `30` in this file.
  *
  * ── THE CAP IS A BRANCH, NOT AN ERROR ────────────────────────────────────────
- * At `KEPT_PAGE_LIMIT` the Keep button opens task 007's chooser and sends
+ * At the account's kept limit the Keep button opens task 007's chooser and sends
  * nothing; under it, one POST. The `owned_draft` branch below is the race where
  * a slot filled up in another tab between render and click — the route answers
  * HTTP 200 and the fresh `quota` on the response is the authority that settles

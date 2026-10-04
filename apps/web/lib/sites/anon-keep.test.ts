@@ -18,8 +18,10 @@
  *   2. Unknown token, malformed token, every moderated status, an archived page
  *      and an expired-past-grace page produce the BYTE-IDENTICAL 404. A
  *      distinguishable answer turns a token guess into an existence probe.
- *   3. At `KEPT_PAGE_LIMIT` the keep still succeeds — `owned_draft`, HTTP 200,
- *      clocks retained, quota in the body. The cap degrades; it never rejects.
+ *   3. At the account's kept limit (`limitsFor("free").keptPages` for these
+ *      free drill accounts — never a literal) the keep still succeeds —
+ *      `owned_draft`, HTTP 200, clocks retained, quota in the body. The cap
+ *      degrades; it never rejects.
  *   4. A late keep inside grace puts the page BACK ON THE INTERNET: the row
  *      returns to `live` and the manifest is rewritten through `writeManifest`,
  *      which the drill proves by fetching the page from the dev edge.
@@ -41,9 +43,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import {
   DRAFT_GRACE_DAYS,
   DRAFT_TTL_DAYS,
-  KEPT_PAGE_LIMIT,
   generateAnonToken,
   hashToken,
+  limitsFor,
   type SiteStatus,
 } from "@kept/shared";
 import { config } from "dotenv";
@@ -98,6 +100,8 @@ const skipStores =
     : false);
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+/** The cap every drill account (`free`) is held to. */
+const FREE_LIMIT = limitsFor("free").keptPages;
 /** Contract §6: the documented worst case for a KV read to reflect a write. */
 const PROPAGATION_WINDOW_MS = 60_000;
 const PROBE_INTERVAL_MS = 3_000;
@@ -193,18 +197,30 @@ async function makeSite({
 /**
  * `n` kept pages against one profile — `owner_id` set, `expires_at IS NULL`,
  * `status = 'live'`, which is the ONLY definition of kept-ness the cap counts.
+ * ONE multi-row insert: real rows, not one round trip per slot of the limit.
  */
 async function fillKept(profileId: string, n: number): Promise<void> {
   const db = await client();
   const { sites } = await schema();
-  const { eq } = await import("drizzle-orm");
-  for (let i = 0; i < n; i++) {
-    const site = await makeSite({ ownerId: profileId });
-    await db
-      .update(sites)
-      .set({ expiresAt: null, purgeAfter: null, anonTokenHash: null, claimedAt: new Date() })
-      .where(eq(sites.id, site.id));
-  }
+  const rows = Array.from({ length: n }, () => {
+    const id = crypto.randomUUID();
+    createdSites.add(id);
+    return {
+      id,
+      slug: `e05-008-${id.slice(0, 12)}`,
+      status: "live" as const,
+      region: "auto" as const,
+      ownerId: profileId,
+      anonTokenHash: null,
+      publisherHash: "e05-008-drill",
+      expiresAt: null,
+      purgeAfter: null,
+      claimedAt: new Date(),
+      contentHash: "e05-008",
+      sizeBytes: 128,
+    };
+  });
+  if (rows.length > 0) await db.insert(sites).values(rows);
 }
 
 async function readSite(siteId: string) {
@@ -272,10 +288,10 @@ test(
     assert.equal(outcome.body.slug, site.slug);
     assert.equal(outcome.body.restored, false);
     assert.match(outcome.body.liveUrl, new RegExp(`^https://${site.slug}\\.`));
-    // The limit comes from the shared constant, never a literal 3.
-    assert.equal(outcome.body.quota.limit, KEPT_PAGE_LIMIT);
+    // The limit is the account's plan's (`limitsFor`), never a literal.
+    assert.equal(outcome.body.quota.limit, FREE_LIMIT);
     assert.equal(outcome.body.quota.used, 1);
-    assert.equal(outcome.body.quota.remaining, KEPT_PAGE_LIMIT - 1);
+    assert.equal(outcome.body.quota.remaining, FREE_LIMIT - 1);
 
     const row = await readSite(site.id);
     assert.equal(row.expiresAt, null, "a kept page has no clock");
@@ -326,7 +342,7 @@ test(
     const { keepAnonymousPage } = await import("./anon-keep");
 
     const profileId = await makeProfile();
-    await fillKept(profileId, KEPT_PAGE_LIMIT);
+    await fillKept(profileId, FREE_LIMIT);
     const site = await makeSite();
     const before = await readSite(site.id);
 
@@ -337,8 +353,8 @@ test(
     }
 
     assert.equal(outcome.status, 200);
-    assert.equal(outcome.body.quota.limit, KEPT_PAGE_LIMIT);
-    assert.equal(outcome.body.quota.used, KEPT_PAGE_LIMIT);
+    assert.equal(outcome.body.quota.limit, FREE_LIMIT);
+    assert.equal(outcome.body.quota.used, FREE_LIMIT);
     assert.equal(outcome.body.quota.remaining, 0);
     assert.equal(
       outcome.body.expiresAt,
@@ -406,7 +422,7 @@ test(
     const { keepAnonymousPage } = await import("./anon-keep");
 
     const profileId = await makeProfile();
-    await fillKept(profileId, KEPT_PAGE_LIMIT);
+    await fillKept(profileId, FREE_LIMIT);
     // Expired yesterday, 29 days of grace left, and a version so a manifest can
     // be built from the row.
     const site = await makeSite({

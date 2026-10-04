@@ -1,7 +1,7 @@
 import {
-  KEPT_PAGE_LIMIT,
   MANIFEST_KV_CACHE_TTL_SECONDS,
   deleteResultSchema,
+  limitsFor,
   publishErrorSchema,
 } from "@kept/shared";
 import { expect, test } from "@playwright/test";
@@ -237,11 +237,9 @@ test.describe("owner delete", () => {
     expect(body.slug).toBe(doomed.slug);
     // `archived`, never `removed` — that value belongs to account deletion.
     expect(body.status).toBe("archived");
-    expect(body.quota).toEqual({
-      limit: KEPT_PAGE_LIMIT,
-      used: 1,
-      remaining: KEPT_PAGE_LIMIT - 1,
-    });
+    // The account's plan's limit (new accounts are free), never a typed one.
+    const { keptPages } = limitsFor("free");
+    expect(body.quota).toEqual({ limit: keptPages, used: 1, remaining: keptPages - 1 });
 
     // ARCHIVE, DON'T DELETE: the row, the version and the bytes all survive.
     const row = await readSite(doomed.siteId);

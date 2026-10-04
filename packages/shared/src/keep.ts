@@ -17,9 +17,9 @@ import { z } from "zod";
  * How a keep attempt resolved.
  *
  * - `kept`        — the page is permanent: `expires_at`/`purge_after` cleared.
- * - `owned_draft` — the account was already at `KEPT_PAGE_LIMIT`, so the page is
- *                   now *owned* but keeps its clock, its countdown and a swap
- *                   prompt.
+ * - `owned_draft` — the account was already at its plan's kept limit
+ *                   (`limitsFor(plan).keptPages`), so the page is now *owned*
+ *                   but keeps its clock, its countdown and a swap prompt.
  *
  * The cap is a **branch, not a guard clause**: keeping past it never errors,
  * never no-ops and never loses the page. Both outcomes are HTTP success.

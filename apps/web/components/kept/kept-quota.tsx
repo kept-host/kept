@@ -1,4 +1,4 @@
-import { KEPT_PAGE_LIMIT, type KeptQuota } from "@kept/shared";
+import type { KeptQuota } from "@kept/shared";
 
 import { cn } from "@/lib/utils";
 
@@ -12,10 +12,11 @@ import { cn } from "@/lib/utils";
  * component rendering it. A screen that formats `used`/`limit` itself is how the
  * four drift.
  *
- * EVERY NUMBER COMES OFF THE `KeptQuota` the server computed, or out of
- * `@kept/shared`. There is no `3` below — including inside the
- * prose, for the same reason `draft-chip.tsx` has no `7`: the day the cap moves,
- * a typed number turns the product into a liar.
+ * EVERY NUMBER COMES OFF THE `KeptQuota` the server computed — whose `limit` is
+ * the account's own plan's (`limitsFor(plan)`, D1). There is no typed limit
+ * below — including inside the prose, for the same reason `draft-chip.tsx` has
+ * no `7`: the day the cap moves, or the account changes plan, a typed number
+ * turns the product into a liar.
  *
  * THE CAP IS NOT AN ERROR AND MUST NOT READ LIKE ONE. Publishing at the limit
  * lands a draft, keeping at the limit returns `owned_draft` at HTTP 200 — the
@@ -28,9 +29,12 @@ import { cn } from "@/lib/utils";
  * swap (which costs nothing and destroys nothing) or Pro (E11).
  *
  * Exported so the drop-zone notice and the swap chooser say the same sentence
- * rather than two near-identical ones.
+ * rather than two near-identical ones. A function of `limit`, never a constant:
+ * the number is the account's plan's (`KeptQuota.limit`), not the free one.
  */
-export const AT_CAP_NOTE = `That is all ${KEPT_PAGE_LIMIT} kept pages in use. Swap one out — it becomes a draft again, nothing is deleted — or go Pro for more room.`;
+export function atCapNote(limit: number): string {
+  return `That is all ${limit} kept pages in use. Swap one out — it becomes a draft again, nothing is deleted — or go Pro for more room.`;
+}
 
 export function KeptQuotaChip({
   quota,
@@ -38,7 +42,7 @@ export function KeptQuotaChip({
   className,
 }: {
   quota: KeptQuota;
-  /** Show `AT_CAP_NOTE` underneath when the account is full. Off by default. */
+  /** Show `atCapNote` underneath when the account is full. Off by default. */
   note?: boolean;
   className?: string;
 }) {
@@ -59,12 +63,12 @@ export function KeptQuotaChip({
           className={cn("size-1.5 rounded-full", atCap ? "bg-accent" : "bg-live")}
         />
         {/* One string, not three spans: a screen reader should hear
-            "Kept · 2 of 3", not the digits stranded from their labels. */}
+            "Kept · N of {limit}", not the digits stranded from their labels. */}
         {`Kept · ${quota.used} of ${quota.limit}`}
       </span>
 
       {note && atCap ? (
-        <p className="max-w-prose font-body text-sm text-text-secondary">{AT_CAP_NOTE}</p>
+        <p className="max-w-prose font-body text-sm text-text-secondary">{atCapNote(quota.limit)}</p>
       ) : null}
     </div>
   );

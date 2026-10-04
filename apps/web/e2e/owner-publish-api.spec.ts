@@ -1,5 +1,5 @@
 import {
-  KEPT_PAGE_LIMIT,
+  limitsFor,
   MAX_PAGE_BYTES,
   ownedPublishResultSchema,
   publishErrorSchema,
@@ -13,16 +13,21 @@ import { pageObjectKey, r2Store } from "../lib/storage/r2";
 
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
 import { pageHtml, probeEdge, servingDomain, SKIP_LIVE_PUBLISH } from "./live-publish";
+import { seedKept } from "./owner-fixtures";
 import { jarlessContext, sessionHeaders } from "./session-request";
 
 /**
  * `POST /api/sites` over the wire, against the REAL dev stack — E06 task 004,
  * epic decision **D1**.
  *
- * NO MOCKS AND NO FIXTURE ROWS. Every page here is published through the real
+ * NO MOCKS. Every page an assertion is about is published through the real
  * endpoint by a real session minted through the real magic-link verify, so each
  * assertion is made against a genuine row, a genuine R2 object, a genuine KV
- * manifest and a genuinely served page.
+ * manifest and a genuinely served page. The slots that merely FILL an account
+ * to its kept limit are real rows seeded by direct insert (`seedKept`): the cap
+ * counts them exactly as it counts a publish, and publishing
+ * `limitsFor("free").keptPages` pages per test would cost minutes of R2/KV
+ * traffic for no extra proof.
  *
  * WHAT THIS FILE IS FOR, that no unit drill can reach:
  *
@@ -31,7 +36,7 @@ import { jarlessContext, sessionHeaders } from "./session-request";
  *      row**, read out of the database rather than inferred from the response.
  *      A signed-in publish that minted a bearer token would put two authorities
  *      on one page, which is the exact shape D1 rejects.
- *   2. **The cap degrades, it never errors.** At `KEPT_PAGE_LIMIT` the page
+ *   2. **The cap degrades, it never errors.** At the plan's kept limit the page
  *      still lands — owned, serving, with both clocks set — at HTTP **200**.
  *      There is no 4xx for being full and there must never be one.
  *   3. **Two tabs cannot exceed the cap.** Two publishes fired concurrently one
@@ -58,6 +63,9 @@ const SERVE_TIMEOUT_MS = 30_000;
 const SERVE_INTERVAL_MS = 1_000;
 
 const urlFor = (slug: string): string => `https://${slug}.${servingDomain()}/`;
+
+/** The cap every drill account (`free`, as every new account is) is held to. */
+const FREE_LIMIT = limitsFor("free").keptPages;
 
 test.describe("owned publish", () => {
   test.skip(!!SKIP, SKIP || undefined);
@@ -214,9 +222,9 @@ test.describe("owned publish", () => {
     expect(body.title).toBe(marker);
     // The quota reflects the state AFTER this publish, so the dashboard repaints
     // from the response without a refetch.
-    expect(body.quota.limit).toBe(KEPT_PAGE_LIMIT);
+    expect(body.quota.limit).toBe(FREE_LIMIT);
     expect(body.quota.used).toBe(1);
-    expect(body.quota.remaining).toBe(KEPT_PAGE_LIMIT - 1);
+    expect(body.quota.remaining).toBe(FREE_LIMIT - 1);
 
     const row = await readSite(body.siteId);
     expect(row.ownerId).toBe(profileId);
@@ -247,24 +255,17 @@ test.describe("owned publish", () => {
   }) => {
     const { cookie, profileId } = await signIn(baseURL!);
 
-    // Fill the account to `KEPT_PAGE_LIMIT` through the endpoint under test.
-    for (let index = 0; index < KEPT_PAGE_LIMIT; index++) {
-      const { body } = await publishOk(
-        request,
-        baseURL!,
-        cookie,
-        `e06-004-fill-${index}-${crypto.randomUUID().slice(0, 8)}`,
-      );
-      expect(body.outcome).toBe("kept");
-    }
-    expect(await countKept(profileId)).toBe(KEPT_PAGE_LIMIT);
+    // Fill the account to its limit: real kept rows, seeded rather than published.
+    await seedKept({ siteIds: createdSiteIds }, profileId, FREE_LIMIT);
+    expect(await countKept(profileId)).toBe(FREE_LIMIT);
 
     const marker = `e06-004-atcap-${crypto.randomUUID().slice(0, 8)}`;
     const { body, html } = await publishOk(request, baseURL!, cookie, marker);
 
     // THE CAP IS A BRANCH, NOT AN ERROR. `publishOk` already asserted 200.
     expect(body.outcome).toBe("owned_draft");
-    expect(body.quota.used).toBe(KEPT_PAGE_LIMIT);
+    expect(body.quota.limit).toBe(FREE_LIMIT);
+    expect(body.quota.used).toBe(FREE_LIMIT);
     expect(body.quota.remaining).toBe(0);
 
     const row = await readSite(body.siteId);
@@ -285,8 +286,8 @@ test.describe("owned publish", () => {
     expect(served.body).toBe(html);
 
     // The cap did not move, and the page was not lost.
-    expect(await countKept(profileId)).toBe(KEPT_PAGE_LIMIT);
-    expect(await countOwned(profileId)).toBe(KEPT_PAGE_LIMIT + 1);
+    expect(await countKept(profileId)).toBe(FREE_LIMIT);
+    expect(await countOwned(profileId)).toBe(FREE_LIMIT + 1);
   });
 
   test("two concurrent publishes one slot short produce exactly one kept page", async ({
@@ -295,17 +296,9 @@ test.describe("owned publish", () => {
   }) => {
     const { cookie, profileId } = await signIn(baseURL!);
 
-    // One slot short of the cap.
-    for (let index = 0; index < KEPT_PAGE_LIMIT - 1; index++) {
-      const { body } = await publishOk(
-        request,
-        baseURL!,
-        cookie,
-        `e06-004-race-fill-${index}-${crypto.randomUUID().slice(0, 8)}`,
-      );
-      expect(body.outcome).toBe("kept");
-    }
-    expect(await countKept(profileId)).toBe(KEPT_PAGE_LIMIT - 1);
+    // One slot short of the cap — seeded, so the race is the only thing published.
+    await seedKept({ siteIds: createdSiteIds }, profileId, FREE_LIMIT - 1);
+    expect(await countKept(profileId)).toBe(FREE_LIMIT - 1);
 
     // FIRED CONCURRENTLY, not sequentially. This is the whole test: a cap read
     // outside the insert's transaction lets both of these see the same count and
@@ -336,8 +329,8 @@ test.describe("owned publish", () => {
     expect(bodies[0]!.slug).not.toBe(bodies[1]!.slug);
 
     // And the database agrees with the responses.
-    expect(await countKept(profileId)).toBe(KEPT_PAGE_LIMIT);
-    expect(await countOwned(profileId)).toBe(KEPT_PAGE_LIMIT + 1);
+    expect(await countKept(profileId)).toBe(FREE_LIMIT);
+    expect(await countOwned(profileId)).toBe(FREE_LIMIT + 1);
   });
 
   test("signed out is 401 and publishes nothing", async ({ request, baseURL }) => {

@@ -38,7 +38,7 @@
  * the first two into one `SiteNotFoundError` with one message; this module must
  * not un-collapse them.
  *
- * ⚠️ THE CAP IS A BRANCH, NOT AN ERROR. Keeping at `KEPT_PAGE_LIMIT` returns
+ * ⚠️ THE CAP IS A BRANCH, NOT AN ERROR. Keeping at the plan's kept limit returns
  * HTTP 200 with `outcome: "owned_draft"` — the page is owned, its countdown is
  * intact, and the caller renders a swap prompt. There is no 4xx for being at
  * the cap and there must never be one.
@@ -189,7 +189,7 @@ function unexpected(operation: string, err: unknown): PublishFailure {
  *
  * ⚠️ THE CAP IS A BRANCH, NOT AN ERROR — the same rule keep obeys, and the
  * reason this returns `KeepResult`'s `kept | owned_draft` discriminant rather
- * than a third vocabulary. Publishing at `KEPT_PAGE_LIMIT` lands an OWNED DRAFT
+ * than a third vocabulary. Publishing at the plan's kept limit lands an OWNED DRAFT
  * with its countdown running and returns **200**, so the drop-zone renders a
  * notice instead of an error. A 4xx here would mean losing the page somebody
  * just dropped because their account is full, and there must never be one.

@@ -43,6 +43,19 @@ export const PLAN_LIMITS = {
 } as const satisfies Record<Plan, PlanLimits>;
 
 /**
+ * Pages a FREE account may keep forever — an alias, not a second source (D1).
+ *
+ * ⚠️ ONLY FOR SURFACES WHERE NO PLAN EXISTS YET: the landing, the
+ * `/keep/[anonToken]` screen a stranger sees before signing in, and the
+ * draft-reminder email to an anonymous publisher. Each is stating the free
+ * offer to somebody who has no account, so "free" is the true subject. Anything
+ * that DECIDES a cap, or speaks to a signed-in account, reads
+ * `limitsFor(plan).keptPages` instead — `apps/web/lib/plans/limits.test.ts`
+ * fails the build when any other app file imports this name.
+ */
+export const KEPT_PAGE_LIMIT = PLAN_LIMITS.free.keptPages;
+
+/**
  * The limits an account on `plan` gets — the ONE function every cap in
  * `apps/web` reads (D1).
  *

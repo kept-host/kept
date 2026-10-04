@@ -1,6 +1,5 @@
 import {
   ACCOUNT_DELETION_CONFIRMATION,
-  KEPT_PAGE_LIMIT,
   MANIFEST_KV_CACHE_TTL_SECONDS,
   accountDeletionResultSchema,
   ownedPublishResultSchema,
@@ -224,17 +223,23 @@ test.describe("account deletion", () => {
     test.setTimeout(LIVE_STACK_TIMEOUT + STALE_EDGE_WINDOW_MS + 120_000);
 
     const { cookie, userId } = await signIn(baseURL!);
-    // Fill the cap, then one more so the account holds a real owned DRAFT as
-    // well as kept pages, plus an archived page and a quarantined one — the four
-    // shapes an account can be holding when its owner presses delete.
+    // The four shapes an account can be holding when its owner presses delete:
+    // pages[0] archived, pages[1] quarantined, pages[2] kept, pages[3] an owned
+    // DRAFT. All four are real publishes with bytes and a manifest to unwind;
+    // the draft is a kept page demoted through the real route, so the shape
+    // does not depend on filling the account to its kept limit first.
     const pages: OwnedPage[] = [];
-    for (let i = 0; i < KEPT_PAGE_LIMIT + 1; i += 1) {
+    for (let i = 0; i < 4; i += 1) {
       pages.push(await ownedPage(request, baseURL!, cookie));
     }
-    const draft = pages[KEPT_PAGE_LIMIT]!;
+    const draft = pages[3]!;
+    const demoted = await request.post(`${baseURL}/api/sites/${draft.siteId}/demote`, {
+      headers: sessionHeaders(cookie, baseURL!),
+    });
+    expect(demoted.status(), await demoted.text()).toBe(200);
     expect(
       (await readSite(draft.siteId)).expiresAt,
-      "publishing at the cap must land an owned draft, never an error",
+      "the demoted page is an owned draft, on its clock",
     ).not.toBeNull();
 
     const archived = await request.delete(`${baseURL}/api/sites/${pages[0]!.siteId}`, {

@@ -263,7 +263,8 @@ export interface OwnedPageInput {
  *
  * ⚠️ IT TAKES THE CALLER'S TRANSACTION, AND THAT IS THE WHOLE POINT. The cap
  * decision (`lockOwner` → count → kept-or-draft) and this insert must commit
- * together, or two concurrent publishes at 2/3 both read 2 and both land kept.
+ * together, or two concurrent publishes one slot short of the limit both read
+ * the same count and both land kept.
  * `insertAnonymousDraft` above opens its own transaction because an anonymous
  * publish has no cap to decide; this one must not, and there is deliberately no
  * `db.transaction` in this function to make that impossible to forget.

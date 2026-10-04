@@ -114,8 +114,8 @@ const OWNED_SITE_COLUMNS = {
  * on purpose: it must be `keptQuotaFor`'s count and no other, for the reason in
  * `DashboardSites.quota`.
  *
- * An account with no pages returns two empty arrays and a `0 of KEPT_PAGE_LIMIT`
- * quota. Empty is a state, not an error — nothing here throws for it.
+ * An account with no pages returns two empty arrays and a `0 of {its plan's
+ * limit}` quota. Empty is a state, not an error — nothing here throws for it.
  */
 export async function getDashboardSites(profileId: string): Promise<DashboardSites> {
   const [rows, quota] = await Promise.all([

@@ -15,8 +15,12 @@
  *   1. A site that does not exist, a site owned by somebody else and an id that
  *      is not a uuid produce the IDENTICAL body. "You don't own this" is an
  *      existence oracle over other people's pages.
- *   2. Being at `KEPT_PAGE_LIMIT` is HTTP 200 with `outcome: "owned_draft"`,
+ *   2. Being at the plan's kept limit is HTTP 200 with `outcome: "owned_draft"`,
  *      never a 4xx. The cap degrades; it does not reject.
+ *
+ * Drill accounts are `free`, so the cap is `limitsFor("free").keptPages` (D1) —
+ * never a literal. Cap-filling rows are seeded in ONE multi-row insert: real
+ * rows, but not one round trip each.
  *
  * Nothing here touches R2, KV or the purge endpoint, because the module under
  * test must not either.
@@ -34,9 +38,9 @@ import { after, test } from "node:test";
 import {
   DRAFT_GRACE_DAYS,
   DRAFT_TTL_DAYS,
-  KEPT_PAGE_LIMIT,
   demoteResultSchema,
   keepResultSchema,
+  limitsFor,
   swapResultSchema,
 } from "@kept/shared";
 import { config } from "dotenv";
@@ -48,6 +52,9 @@ const skipLive = process.env.DATABASE_URL
   : "DATABASE_URL absent — run locally with apps/web/.env.local";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/** The cap every drill account (`free`) is held to. */
+const FREE_LIMIT = limitsFor("free").keptPages;
 
 const createdSites = new Set<string>();
 const createdProfiles = new Set<string>();
@@ -80,22 +87,17 @@ interface MakeSite {
   kept?: boolean;
 }
 
-async function makeSite({ ownerId = null, kept = false }: MakeSite = {}): Promise<{
-  id: string;
-  slug: string;
-}> {
-  const db = await client();
-  const { sites } = await schema();
+/** One drill row's column values, tracked for teardown. Inserting is the caller's. */
+function siteRow({ ownerId = null, kept = false }: MakeSite = {}) {
   const id = crypto.randomUUID();
-  const slug = `e05-010-${id.slice(0, 12)}`;
   const now = new Date();
   const expiresAt = new Date(now.getTime() + DRAFT_TTL_DAYS * MS_PER_DAY);
-
-  await db.insert(sites).values({
+  createdSites.add(id);
+  return {
     id,
-    slug,
-    status: "live",
-    region: "auto",
+    slug: `e05-010-${id.slice(0, 12)}`,
+    status: "live" as const,
+    region: "auto" as const,
     ownerId,
     anonTokenHash: ownerId === null ? `e05-010-${id}` : null,
     publisherHash: "e05-010-drill",
@@ -104,9 +106,15 @@ async function makeSite({ ownerId = null, kept = false }: MakeSite = {}): Promis
     claimedAt: ownerId === null ? null : now,
     contentHash: "e05-010",
     sizeBytes: 128,
-  });
-  createdSites.add(id);
-  return { id, slug };
+  };
+}
+
+async function makeSite(options: MakeSite = {}): Promise<{ id: string; slug: string }> {
+  const db = await client();
+  const { sites } = await schema();
+  const row = siteRow(options);
+  await db.insert(sites).values(row);
+  return { id: row.id, slug: row.slug };
 }
 
 async function readSite(siteId: string) {
@@ -132,11 +140,13 @@ async function keptCount(profileId: string): Promise<number> {
   return row?.count ?? 0;
 }
 
-/** `n` kept pages against one profile, the way the cap drills need them. */
+/** `n` kept pages against one profile, in ONE insert — the way the cap drills need them. */
 async function fillKept(profileId: string, n: number): Promise<{ id: string; slug: string }[]> {
-  const made: { id: string; slug: string }[] = [];
-  for (let i = 0; i < n; i++) made.push(await makeSite({ ownerId: profileId, kept: true }));
-  return made;
+  const db = await client();
+  const { sites } = await schema();
+  const rows = Array.from({ length: n }, () => siteRow({ ownerId: profileId, kept: true }));
+  if (rows.length > 0) await db.insert(sites).values(rows);
+  return rows.map(({ id, slug }) => ({ id, slug }));
 }
 
 /** A `timestamp` column the drill has just asserted must be set. */
@@ -182,9 +192,9 @@ test(
     assert.equal(body.siteId, site.id);
     assert.equal(body.slug, site.slug);
     assert.deepEqual(body.quota, {
-      limit: KEPT_PAGE_LIMIT,
+      limit: FREE_LIMIT,
       used: 1,
-      remaining: KEPT_PAGE_LIMIT - 1,
+      remaining: FREE_LIMIT - 1,
     });
 
     const row = await readSite(site.id);
@@ -201,7 +211,7 @@ test(
   async () => {
     const { keepOwnedSite } = await import("./owner-routes");
     const profileId = await makeProfile();
-    await fillKept(profileId, KEPT_PAGE_LIMIT);
+    await fillKept(profileId, FREE_LIMIT);
     const site = await makeSite({ ownerId: profileId });
     const before = await readSite(site.id);
 
@@ -211,7 +221,7 @@ test(
     assert.equal(outcome.status, 200);
     const body = keepResultSchema.parse(outcome.body);
     assert.equal(body.outcome, "owned_draft");
-    assert.deepEqual(body.quota, { limit: KEPT_PAGE_LIMIT, used: KEPT_PAGE_LIMIT, remaining: 0 });
+    assert.deepEqual(body.quota, { limit: FREE_LIMIT, used: FREE_LIMIT, remaining: 0 });
     assert.equal(
       body.outcome === "owned_draft" ? body.expiresAt : null,
       stamp(before.expiresAt).toISOString(),
@@ -222,7 +232,7 @@ test(
     assert.equal(row.status, "live", "an owned draft is live and already serving");
     assert.equal(
       await keptCount(profileId),
-      KEPT_PAGE_LIMIT,
+      FREE_LIMIT,
       "the account never exceeds the cap",
     );
   },
@@ -242,9 +252,9 @@ test(
     const body = keepResultSchema.parse(outcome.body);
     assert.equal(body.outcome, "kept");
     assert.deepEqual(body.quota, {
-      limit: KEPT_PAGE_LIMIT,
+      limit: FREE_LIMIT,
       used: 1,
-      remaining: KEPT_PAGE_LIMIT - 1,
+      remaining: FREE_LIMIT - 1,
     });
     assert.equal(await keptCount(profileId), 1, "no second slot was consumed");
   },
@@ -294,7 +304,7 @@ test(
     assert.equal(body.slug, target.slug);
     assert.deepEqual(
       body.quota,
-      { limit: KEPT_PAGE_LIMIT, used: 1, remaining: KEPT_PAGE_LIMIT - 1 },
+      { limit: FREE_LIMIT, used: 1, remaining: FREE_LIMIT - 1 },
       "the freed slot is visible without a second request",
     );
 
@@ -341,12 +351,12 @@ test(
 // ── POST /api/sites/swap ────────────────────────────────────────────────────
 
 test(
-  "swap: one transaction, and the account lands at exactly KEPT_PAGE_LIMIT",
+  "swap: one transaction, and the account lands at exactly its kept limit",
   { skip: skipLive },
   async () => {
     const { swapOwnedSites } = await import("./owner-routes");
     const profileId = await makeProfile();
-    const kept = await fillKept(profileId, KEPT_PAGE_LIMIT);
+    const kept = await fillKept(profileId, FREE_LIMIT);
     const incoming = await makeSite({ ownerId: profileId });
     const outgoing = kept[0]!;
 
@@ -367,16 +377,12 @@ test(
       "both halves report the same post-swap quota",
     );
     assert.deepEqual(body.kept.quota, {
-      limit: KEPT_PAGE_LIMIT,
-      used: KEPT_PAGE_LIMIT,
+      limit: FREE_LIMIT,
+      used: FREE_LIMIT,
       remaining: 0,
     });
 
-    assert.equal(
-      await keptCount(profileId),
-      KEPT_PAGE_LIMIT,
-      "never KEPT_PAGE_LIMIT − 1, never + 1",
-    );
+    assert.equal(await keptCount(profileId), FREE_LIMIT, "never one short, never one over");
     assert.ok(
       stamp((await readSite(outgoing.id)).expiresAt) instanceof Date,
       "the demoted half is back on a clock",
@@ -391,7 +397,7 @@ test(
   async () => {
     const { swapOwnedSites } = await import("./owner-routes");
     const profileId = await makeProfile();
-    const kept = await fillKept(profileId, KEPT_PAGE_LIMIT);
+    const kept = await fillKept(profileId, FREE_LIMIT);
     const site = kept[0]!;
 
     const outcome = await swapOwnedSites({ demote: site.id, keep: site.id }, profileId);
@@ -400,7 +406,7 @@ test(
     assert.equal(outcome.status, 400);
     assert.equal(
       await keptCount(profileId),
-      KEPT_PAGE_LIMIT,
+      FREE_LIMIT,
       "and nothing moved — the page is still kept",
     );
   },

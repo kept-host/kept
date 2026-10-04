@@ -1,11 +1,16 @@
 /**
- * D1 — `limitsFor(plan)` is the one place a limit lives (AC1), asserted two ways:
+ * D1 — `limitsFor(plan)` is the one place a limit lives (AC1), asserted three ways:
  *
  *   1. its values, exactly, for every plan;
  *   2. a SOURCE guard: no `50` or `1000` — the free and Pro numbers most likely
  *      to be retyped — may appear in `apps/web` app source outside an annotated
  *      allowlist of the hits that are not limits (CSS, Tailwind, milliseconds).
- *      A new hit anywhere fails here and forces a reviewed allowlist edit.
+ *      A new hit anywhere fails here and forces a reviewed allowlist edit;
+ *   3. a second SOURCE guard (E06 task 003): `KEPT_PAGE_LIMIT` — the free
+ *      number under its old name — may be used only by the surfaces that have
+ *      no plan in scope. Anything that decides a cap or speaks to a signed-in
+ *      account reads `limitsFor(plan)`, so a premium account is never told, or
+ *      held to, the free number.
  *
  * Plus latent bug 2: `keptQuotaSchema.limit` was `z.literal(KEPT_PAGE_LIMIT)`,
  * so any limit but the free literal made every `keepResultSchema.parse` throw —
@@ -22,6 +27,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  KEPT_PAGE_LIMIT,
   NAME_ABSOLUTE_MIN_LENGTH,
   NAME_MAX_LENGTH,
   PLANS,
@@ -56,6 +62,10 @@ test("every plan has limits, and none grants a name shorter than NAME_ABSOLUTE_M
       `${plan}: nameMinLength ${limitsFor(plan).nameMinLength} is below the absolute floor ${NAME_ABSOLUTE_MIN_LENGTH} — nobody gets a name of 3 characters or fewer`,
     );
   }
+});
+
+test("KEPT_PAGE_LIMIT is the free plan's number, not a second source", () => {
+  assert.equal(KEPT_PAGE_LIMIT, limitsFor("free").keptPages);
 });
 
 test("NAME_MAX_LENGTH is SLUG_MAX_LENGTH, not a second 63", () => {
@@ -192,4 +202,70 @@ test("the guard can see: it finds the allowlisted files at all", () => {
   // cwd or a pathspec typo would all look like a clean tree.
   const files = candidateFiles();
   assert.ok(files.includes("components/ui/dialog.tsx"), `scanned: ${files.join(", ")}`);
+});
+
+// ─── The KEPT_PAGE_LIMIT guard ─────────────────────────────────────────────
+
+/**
+ * The ONLY app files that may use `KEPT_PAGE_LIMIT`, each with the reason it has
+ * no plan to ask `limitsFor` about. Every one of them is stating the FREE offer
+ * to somebody who has no account — which is the one thing the alias means.
+ *
+ * Deliberately absent, so they fail here if they regress: `lib/sites/keep.ts`
+ * and `lib/sites/publish.ts` (they DECIDE the cap — under `lockOwner`, from the
+ * owner's plan), and every signed-in surface that prints it — `/auth/callback/done`,
+ * the swap chooser, `kept-quota`, `plan-panel` — which all read a `KeptQuota` or
+ * `limitsFor(plan)`.
+ */
+const KEPT_PAGE_LIMIT_ALLOWED: Record<string, string> = {
+  "app/keep/[anonToken]/page.tsx":
+    "the keep screen a stranger sees BEFORE signing in: no account, so no plan",
+  "components/kept/KeptLanding.tsx": "the landing states the free offer to visitors with no account",
+  "lib/email/draft-reminder.ts":
+    "the reminder goes to an anonymous publisher: the draft has no owner, so no plan",
+};
+
+/** App-source files that USE the name — comments stripped, so prose may still cite it. */
+function keptPageLimitUsers(): string[] {
+  let files: string[];
+  try {
+    files = execFileSync(
+      "git",
+      [
+        "grep",
+        "--untracked",
+        "-lw",
+        "KEPT_PAGE_LIMIT",
+        "--",
+        "*.ts",
+        "*.tsx",
+        ":!*.test.ts",
+        ":!e2e",
+      ],
+      { cwd: WEB_ROOT, encoding: "utf8" },
+    )
+      .split("\n")
+      .filter(Boolean);
+  } catch (error) {
+    if ((error as { status?: number }).status === 1) return [];
+    throw error;
+  }
+  return files
+    .filter((file) =>
+      /(?<![A-Za-z0-9_])KEPT_PAGE_LIMIT(?![A-Za-z0-9_])/.test(
+        stripComments(readFileSync(join(WEB_ROOT, file), "utf8")),
+      ),
+    )
+    .sort();
+}
+
+test("AC1 guard: only surfaces with no plan in scope use KEPT_PAGE_LIMIT", () => {
+  assert.deepEqual(
+    keptPageLimitUsers(),
+    Object.keys(KEPT_PAGE_LIMIT_ALLOWED).sort(),
+    "A file started or stopped using KEPT_PAGE_LIMIT. If it decides a cap or speaks to a " +
+      "signed-in account, read `limitsFor(plan).keptPages` (or the `KeptQuota` the server " +
+      "computed) instead. If it genuinely has no plan in scope, add it to " +
+      "KEPT_PAGE_LIMIT_ALLOWED with the reason.",
+  );
 });

@@ -11,9 +11,6 @@ export const MAX_PAGE_BYTES = 5 * 1024 * 1024;
  */
 export const SLUG_MAX_LENGTH = 63 as const;
 
-/** Pages an account may keep forever, free. */
-export const KEPT_PAGE_LIMIT = 3 as const;
-
 /** Days a draft stays online before it expires unless it is kept. */
 export const DRAFT_TTL_DAYS = 7 as const;
 

@@ -1,11 +1,17 @@
 /**
  * Account deletion against the REAL dev stack — E06 task 011, decision **D3**.
  *
- * NO MOCKS. Every page is published through `publishOwnedPage` — the same
- * function `POST /api/sites` calls — so the R2 object, the slug pointer and the
- * KV manifest all genuinely exist before the teardown unwinds them. The rows are
- * read back from Postgres afterwards, because "it returned 200" and "the row is
- * in the state E07 will find" are different claims and only the second matters.
+ * NO MOCKS. Every page the teardown unwinds is published through
+ * `publishOwnedPage` — the same function `POST /api/sites` calls — so the R2
+ * object, the slug pointer and the KV manifest all genuinely exist before the
+ * teardown unwinds them. The rows are read back from Postgres afterwards,
+ * because "it returned 200" and "the row is in the state E07 will find" are
+ * different claims and only the second matters.
+ *
+ * The one exception is the summary drill's cap: filling `limitsFor("free")`
+ * kept slots by publishing would be dozens of R2/KV round trips proving nothing
+ * the counts need, so all but the last slot are real rows seeded by direct
+ * insert (`seedKept`). The last slot and the draft past it are still published.
  *
  * ── THE FIVE CLAIMS ──────────────────────────────────────────────────────────
  *
@@ -36,8 +42,8 @@ import { after, test } from "node:test";
 
 import {
   ACCOUNT_DELETION_CONFIRMATION,
-  KEPT_PAGE_LIMIT,
   accountDeletionResultSchema,
+  limitsFor,
 } from "@kept/shared";
 import { config } from "dotenv";
 import { and, eq, isNull } from "drizzle-orm";
@@ -49,6 +55,7 @@ import { pointerKey } from "../storage/manifest";
 import { pageObjectKey, r2Store } from "../storage/r2";
 
 import { deleteAccount, getAccountDeletionSummary } from "./account-deletion";
+import { demoteSite } from "./keep";
 import { deleteOwnAccount } from "./owner-routes";
 import { publishOwnedPage } from "./publish";
 
@@ -78,6 +85,9 @@ const createdSites = new Set<string>();
 const createdSlugs = new Set<string>();
 
 const publisher = { ip: "127.0.0.1", userAgent: "kept-e06-011-drill/1.0" };
+
+/** The cap every drill account (`free`) is held to. */
+const FREE_LIMIT = limitsFor("free").keptPages;
 
 function html(marker: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${marker}</title></head><body><h1>${marker}</h1></body></html>\n`;
@@ -132,6 +142,29 @@ async function publish(profileId: string, marker: string): Promise<Published> {
   };
 }
 
+/**
+ * `n` kept rows in ONE insert — real rows, with no bytes behind them. For the
+ * summary's counts only: nothing here is unwound from the edge, because nothing
+ * here was ever on it.
+ */
+async function seedKept(profileId: string, n: number): Promise<string[]> {
+  const rows = Array.from({ length: n }, () => {
+    const id = crypto.randomUUID();
+    createdSites.add(id);
+    return {
+      id,
+      slug: `e06-011-${id.slice(0, 12)}`,
+      ownerId: profileId,
+      publisherHash: "e06-011-drill",
+      claimedAt: new Date(),
+      contentHash: "e06-011",
+      sizeBytes: 128,
+    };
+  });
+  await db.insert(sites).values(rows);
+  return rows.map((row) => row.id);
+}
+
 async function readSite(siteId: string) {
   const [row] = await db.select().from(sites).where(eq(sites.id, siteId));
   assert.ok(row, `site ${siteId} vanished`);
@@ -179,10 +212,11 @@ test(
     });
 
     // Fill the cap exactly, then one more so the account holds a real draft.
-    const kept: Published[] = [];
-    for (let i = 0; i < KEPT_PAGE_LIMIT; i += 1) {
-      kept.push(await publish(owner.id, `e06-011-kept-${i}`));
-    }
+    // Every slot but the last is seeded; the last is a real publish that must
+    // land kept, and the one past it a real publish that must not.
+    const kept = await seedKept(owner.id, FREE_LIMIT - 1);
+    const last = await publish(owner.id, "e06-011-kept-last");
+    assert.equal((await readSite(last.siteId)).expiresAt, null, "the last free slot is kept");
     const draft = await publish(owner.id, "e06-011-draft");
     assert.notEqual(
       (await readSite(draft.siteId)).expiresAt,
@@ -192,9 +226,9 @@ test(
 
     const full = await getAccountDeletionSummary(owner.id);
     assert.deepEqual(full, {
-      kept: KEPT_PAGE_LIMIT,
+      kept: FREE_LIMIT,
       drafts: 1,
-      total: KEPT_PAGE_LIMIT + 1,
+      total: FREE_LIMIT + 1,
       confirmationPhrase: ACCOUNT_DELETION_CONFIRMATION,
     });
 
@@ -202,16 +236,13 @@ test(
     // no longer `live`) while staying in `total`, because both rows are still
     // this account's and both will be destroyed. That is why `kept + drafts`
     // does not have to equal `total`.
-    await archiveSite(kept[0]!.siteId);
-    await db
-      .update(sites)
-      .set({ status: "quarantined" })
-      .where(eq(sites.id, kept[1]!.siteId));
+    await archiveSite(kept[0]!);
+    await db.update(sites).set({ status: "quarantined" }).where(eq(sites.id, kept[1]!));
 
     const mixed = await getAccountDeletionSummary(owner.id);
-    assert.equal(mixed.kept, KEPT_PAGE_LIMIT - 2, "archived and quarantined pages are not kept");
+    assert.equal(mixed.kept, FREE_LIMIT - 2, "archived and quarantined pages are not kept");
     assert.equal(mixed.drafts, 1);
-    assert.equal(mixed.total, KEPT_PAGE_LIMIT + 1, "every row is still destroyed");
+    assert.equal(mixed.total, FREE_LIMIT + 1, "every row is still destroyed");
   },
 );
 
@@ -223,12 +254,16 @@ test(
     const bystander = await makeAccount();
 
     // Kept pages, a draft, an archived page and a quarantined page — the four
-    // shapes an account can be holding when its owner presses delete.
+    // shapes an account can be holding when its owner presses delete. All four
+    // are real publishes, so every one has bytes and a pointer to unwind; the
+    // draft is a kept page DEMOTED through the real primitive, so the shape does
+    // not depend on filling the account to its cap first.
     const keptPages: Published[] = [];
-    for (let i = 0; i < KEPT_PAGE_LIMIT; i += 1) {
-      keptPages.push(await publish(owner.id, `e06-011-mix-${i}`));
+    for (const shape of ["archived", "quarantined", "kept"]) {
+      keptPages.push(await publish(owner.id, `e06-011-mix-${shape}`));
     }
     const draft = await publish(owner.id, "e06-011-mix-draft");
+    await demoteSite(draft.siteId, owner.id);
     await archiveSite(keptPages[0]!.siteId);
     await db
       .update(sites)

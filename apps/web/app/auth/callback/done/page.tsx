@@ -8,14 +8,16 @@
  *
  * IT READS NO COOKIE AND WRITES NO ROW. `../page.tsx` did both and redirected
  * here with the outcome in the address bar, which is what makes this screen
- * survive a refresh and a back button; see the reasoning in that file. All the
- * durations and the cap come from `@kept/shared`.
+ * survive a refresh and a back button; see the reasoning in that file. The
+ * durations come from `@kept/shared`; the cap is the account's own plan's
+ * (`quota.limit` off the keep, carried in the URL by `./outcomes.ts`) — this is a
+ * signed-in screen, so the free alias would be wrong for any other plan.
  */
 import type { Metadata } from "next";
 import Link from "next/link";
 import { CircleAlert, Check, Clock } from "lucide-react";
 
-import { DRAFT_GRACE_DAYS, KEPT_PAGE_LIMIT } from "@kept/shared";
+import { DRAFT_GRACE_DAYS } from "@kept/shared";
 
 import { DraftChip } from "@/components/kept/draft-chip";
 import { Button } from "@/components/ui/button";
@@ -47,6 +49,11 @@ function safeSlug(value: string | undefined): string | null {
   return value && /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/.test(value) ? value : null;
 }
 
+/** A positive whole number from the address bar, or `null`. Never `NaN`. */
+function safeLimit(value: string | undefined): number | null {
+  return value && /^[1-9][0-9]{0,6}$/.test(value) ? Number(value) : null;
+}
+
 /** An ISO instant from the address bar, or `null`. Never `Invalid Date`. */
 function safeInstant(value: string | undefined): Date | null {
   if (!value) return null;
@@ -75,6 +82,7 @@ function panelFor(
   outcome: KeepOutcomeCode,
   slug: string | null,
   expiresAt: Date | null,
+  limit: number | null,
 ): Panel {
   const url = slug ? liveUrl(slug) : null;
   const host = url ? new URL(url).host : "Your page";
@@ -102,19 +110,25 @@ function panelFor(
         primary: dashboard,
         secondary: open,
       };
-    case "draft":
+    case "draft": {
       // THE CAP IS A BRANCH, NOT AN ERROR. The page is owned and still serving;
       // it simply kept its clock. The swap chooser is E06 — this is the prompt
-      // and the entry point.
+      // and the entry point. A URL with no readable limit (hand-edited) still
+      // gets a true sentence, just not a number.
+      const keeping =
+        limit === null
+          ? "You're keeping all the pages your plan allows."
+          : `You're keeping ${limit} pages.`;
       return {
         tone: "warning",
         icon: <Clock aria-hidden="true" className="size-5" />,
         heading: "Saved to your account — as a draft",
-        body: `You're keeping ${KEPT_PAGE_LIMIT} pages. This one is saved to your account as a draft — swap it in, or upgrade for more. It is still live at ${host}, on the clock below.`,
+        body: `${keeping} This one is saved to your account as a draft — swap it in, or upgrade for more. It is still live at ${host}, on the clock below.`,
         chip: expiresAt ? <DraftChip expiresAt={expiresAt} /> : undefined,
         primary: { href: APP_HOME, label: "Swap it in" },
         secondary: open,
       };
+    }
     case "gone":
       // Task 008 answers unknown, already-kept and past-grace identically, and
       // this copy must not pretend to know which of them happened.
@@ -160,6 +174,7 @@ export default async function KeepDonePage({
     outcome,
     safeSlug(firstValue(params.slug)),
     safeInstant(firstValue(params.expires)),
+    safeLimit(firstValue(params.limit)),
   );
 
   return (

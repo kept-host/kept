@@ -1,4 +1,4 @@
-import { KEPT_PAGE_LIMIT } from "@kept/shared";
+import { limitsFor } from "@kept/shared";
 import { expect, test, type Page } from "@playwright/test";
 import { and, eq, isNull } from "drizzle-orm";
 
@@ -11,9 +11,11 @@ import {
   newScope,
   publishOwned,
   readSite,
+  seedKept,
   signInAs,
   SKIP_OWNER_UI,
   type OwnedPage,
+  type SeededPage,
 } from "./owner-fixtures";
 
 /**
@@ -36,9 +38,18 @@ import {
  * assertions below happen on the SAME page instance, with no navigation between
  * the confirm and the check.
  *
+ * The account's kept pages are real rows SEEDED by direct insert (`seedKept`):
+ * the chooser lists them and the swap transaction demotes them like any kept
+ * page, and publishing `limitsFor("free").keptPages` of them per test would
+ * multiply this spec's runtime for no extra proof. The draft being kept — the
+ * page the assertions are about — is published for real.
+ *
  * SKIPS without dev credentials: CI runs fork PRs with no secrets.
  */
 const scope = newScope();
+
+/** Every account here is new, and new accounts are free. Never a typed limit. */
+const FREE_LIMIT = limitsFor("free").keptPages;
 
 test.describe("the swap chooser", () => {
   test.skip(!!SKIP_OWNER_UI, SKIP_OWNER_UI || undefined);
@@ -56,25 +67,21 @@ test.describe("the swap chooser", () => {
   });
 
   /**
-   * An account holding exactly `KEPT_PAGE_LIMIT` kept pages plus one owned
-   * draft — the only state in which this dialog exists.
+   * A signed-in account holding exactly its limit of kept pages plus one owned
+   * draft — the only state in which this dialog exists — and the owner id every
+   * assertion re-counts against (`profiles.id` IS the user id).
    */
   async function accountAtCap(
     page: Page,
     baseURL: string,
-  ): Promise<{ kept: OwnedPage[]; draft: OwnedPage }> {
-    await signInAs(page, baseURL, scope);
-    const kept: OwnedPage[] = [];
-    for (let i = 0; i < KEPT_PAGE_LIMIT; i += 1) {
-      const owned = await publishOwned(page, baseURL, scope, `E06 swap kept ${i}`);
-      expect(owned.outcome).toBe("kept");
-      kept.push(owned);
-    }
+  ): Promise<{ kept: SeededPage[]; draft: OwnedPage; ownerId: string }> {
+    const { userId } = await signInAs(page, baseURL, scope);
+    const kept = await seedKept(scope, userId, FREE_LIMIT);
     const draft = await publishOwned(page, baseURL, scope, "E06 swap draft");
     expect(draft.outcome, "the cap degrades to a draft, it never errors").toBe(
       "owned_draft",
     );
-    return { kept, draft };
+    return { kept, draft, ownerId: userId };
   }
 
   /** How many kept pages the account really holds, by the enforcer's own rule. */
@@ -96,7 +103,7 @@ test.describe("the swap chooser", () => {
     page,
     baseURL,
   }) => {
-    const { kept, draft, ownerId } = await signInAsAndBuild(page, baseURL!);
+    const { kept, draft, ownerId } = await accountAtCap(page, baseURL!);
 
     await page.goto("/dashboard");
 
@@ -147,7 +154,7 @@ test.describe("the swap chooser", () => {
     // The header quota came off the same parsed `KeptQuota`, so it cannot
     // disagree — the account is still exactly full, never over.
     await expect(
-      page.locator("header").getByText(`Kept · ${KEPT_PAGE_LIMIT} of ${KEPT_PAGE_LIMIT}`),
+      page.locator("header").getByText(`Kept · ${FREE_LIMIT} of ${FREE_LIMIT}`),
     ).toBeVisible();
 
     // And the database agrees with all of it.
@@ -156,14 +163,14 @@ test.describe("the swap chooser", () => {
     expect(
       await countKept(ownerId),
       "a swap trades one for one — it can never take the account over the cap",
-    ).toBe(KEPT_PAGE_LIMIT);
+    ).toBe(FREE_LIMIT);
   });
 
   test("swapping the page you are looking at updates that screen", async ({
     page,
     baseURL,
   }) => {
-    const { kept, draft, ownerId } = await signInAsAndBuild(page, baseURL!);
+    const { kept, draft, ownerId } = await accountAtCap(page, baseURL!);
 
     // The detail screen of the DRAFT — the page about to be kept. Its own Keep
     // button is the one that opens the chooser here, and the screen it updates
@@ -191,18 +198,6 @@ test.describe("the swap chooser", () => {
 
     expect((await readSite(draft.siteId)).expiresAt).toBeNull();
     expect((await readSite(victim.siteId)).expiresAt).not.toBeNull();
-    expect(await countKept(ownerId)).toBe(KEPT_PAGE_LIMIT);
+    expect(await countKept(ownerId)).toBe(FREE_LIMIT);
   });
-
-  /**
-   * `accountAtCap`, plus the owner id every assertion above re-counts against.
-   *
-   * `profiles.id` IS the user id — it is a primary key referencing `user.id`, so
-   * there is no second identifier to look up and no join to get wrong.
-   */
-  async function signInAsAndBuild(page: Page, baseURL: string) {
-    const before = scope.userIds.length;
-    const { kept, draft } = await accountAtCap(page, baseURL);
-    return { kept, draft, ownerId: scope.userIds[before]! };
-  }
 });

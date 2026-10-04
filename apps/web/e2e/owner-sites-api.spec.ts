@@ -1,8 +1,8 @@
 import {
   DRAFT_GRACE_DAYS,
   DRAFT_TTL_DAYS,
-  KEPT_PAGE_LIMIT,
   keepResultSchema,
+  limitsFor,
   publishErrorSchema,
 } from "@kept/shared";
 import { expect, test } from "@playwright/test";
@@ -234,7 +234,8 @@ test.describe("owner site routes", () => {
     expect(kept.status()).toBe(200);
     const keepBody = keepResultSchema.parse(await kept.json());
     expect(keepBody.outcome).toBe("kept");
-    expect(keepBody.quota.limit).toBe(KEPT_PAGE_LIMIT);
+    // The account's plan's limit (new accounts are free), never the alias.
+    expect(keepBody.quota.limit).toBe(limitsFor("free").keptPages);
     expect(
       (await db.select().from(schema.sites).where(eq(schema.sites.id, draft)))[0]?.expiresAt,
     ).toBeNull();

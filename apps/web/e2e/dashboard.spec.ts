@@ -1,9 +1,9 @@
-import { KEPT_PAGE_LIMIT, demoteResultSchema } from "@kept/shared";
+import { demoteResultSchema, limitsFor } from "@kept/shared";
 import { expect, test, type Page } from "@playwright/test";
 import { eq } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
-import { AT_CAP_NOTE } from "../components/kept/kept-quota";
+import { atCapNote } from "../components/kept/kept-quota";
 
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
 import {
@@ -11,10 +11,12 @@ import {
   newScope,
   publishOwned,
   readSite,
+  seedKept,
   signInAs,
   titledHtml,
   SKIP_OWNER_UI,
   type OwnedPage,
+  type SeededPage,
 } from "./owner-fixtures";
 import { waitForTokensApplied } from "./tokens-applied";
 
@@ -22,9 +24,13 @@ import { waitForTokensApplied } from "./tokens-applied";
  * `/dashboard` in a real browser, against the REAL dev stack — E06 task 013,
  * verification criteria **1, 2, 3 and 11**.
  *
- * NO MOCKS AND NO FIXTURE ROWS. Every page here is published through
+ * NO MOCKS. Every page an assertion is about is published through
  * `POST /api/sites` by a real magic-link session, so Postgres, R2, KV and the
- * edge cache all genuinely hold it before a single assertion runs.
+ * edge cache all genuinely hold it before a single assertion runs. The slots
+ * that only FILL an account to its kept limit are real rows seeded by direct
+ * insert (`seedKept`) — the cap and the screens count them like any kept page,
+ * and publishing `limitsFor("free").keptPages` pages per test would multiply
+ * this spec's runtime for no extra proof.
  *
  * ── WHAT THIS SPEC OWNS THAT THE API SPECS CANNOT ────────────────────────────
  *
@@ -67,8 +73,15 @@ test.describe("the dashboard", () => {
     await closeDb();
   });
 
-  /** The one string the allowance is ever allowed to read. No typed `3`. */
-  const quotaText = (used: number) => `Kept · ${used} of ${KEPT_PAGE_LIMIT}`;
+  /**
+   * The free plan's limit — every account here is new, and new accounts are
+   * free. Read from `limitsFor`, never typed.
+   */
+  const FREE_LIMIT = limitsFor("free").keptPages;
+  const AT_CAP_NOTE = atCapNote(FREE_LIMIT);
+
+  /** The one string the allowance is ever allowed to read. No typed limit. */
+  const quotaText = (used: number) => `Kept · ${used} of ${FREE_LIMIT}`;
 
   /** Demote through the real route, so the fixture and the product agree. */
   async function demote(page: Page, baseURL: string, siteId: string) {
@@ -79,15 +92,13 @@ test.describe("the dashboard", () => {
     return demoteResultSchema.parse(await response.json());
   }
 
-  /** Fill the account to `KEPT_PAGE_LIMIT` kept pages. */
-  async function fillCap(page: Page, baseURL: string): Promise<OwnedPage[]> {
-    const pages: OwnedPage[] = [];
-    for (let i = 0; i < KEPT_PAGE_LIMIT; i += 1) {
-      const owned = await publishOwned(page, baseURL, scope, `E06 cap ${i}`);
-      expect(owned.outcome, "under the cap a publish must land kept").toBe("kept");
-      pages.push(owned);
-    }
-    return pages;
+  /**
+   * Fill the account to its kept limit — real kept rows, seeded rather than
+   * published (`seedKept`): what these tests assert is the screen at the cap,
+   * not the publishes that got it there.
+   */
+  function fillCap(ownerId: string): Promise<SeededPage[]> {
+    return seedKept(scope, ownerId, FREE_LIMIT);
   }
 
   test("the wall splits on the clock, names each page by its title, and hides nobody else's", async ({
@@ -187,8 +198,8 @@ test.describe("the dashboard", () => {
     page,
     baseURL,
   }) => {
-    await signInAs(page, baseURL!, scope);
-    const pages = await fillCap(page, baseURL!);
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const pages = await fillCap(userId);
 
     await page.goto("/dashboard");
 
@@ -196,8 +207,8 @@ test.describe("the dashboard", () => {
     // reading one `KeptQuota`, so a disagreement here means two counts exist.
     const header = page.locator("header");
     const dropzone = page.getByTestId("publish-dropzone");
-    await expect(header.getByText(quotaText(KEPT_PAGE_LIMIT))).toBeVisible();
-    await expect(dropzone.getByText(quotaText(KEPT_PAGE_LIMIT))).toBeVisible();
+    await expect(header.getByText(quotaText(FREE_LIMIT))).toBeVisible();
+    await expect(dropzone.getByText(quotaText(FREE_LIMIT))).toBeVisible();
 
     // 3 — the way out, printed once and only when the account is full. The cap
     // degrades rather than erroring, so this must be present and must not read
@@ -215,7 +226,7 @@ test.describe("the dashboard", () => {
     await page.getByTestId("keep-button").first().click();
     const dialog = page.getByTestId("swap-dialog");
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByText(quotaText(KEPT_PAGE_LIMIT))).toBeVisible();
+    await expect(dialog.getByText(quotaText(FREE_LIMIT))).toBeVisible();
     await page.getByTestId("swap-cancel").click();
     await expect(dialog).toBeHidden();
 
@@ -225,18 +236,18 @@ test.describe("the dashboard", () => {
     await demote(page, baseURL!, pages[0]!.siteId);
     await page.goto("/dashboard");
 
-    await expect(header.getByText(quotaText(KEPT_PAGE_LIMIT - 1))).toBeVisible();
-    await expect(dropzone.getByText(quotaText(KEPT_PAGE_LIMIT - 1))).toBeVisible();
+    await expect(header.getByText(quotaText(FREE_LIMIT - 1))).toBeVisible();
+    await expect(dropzone.getByText(quotaText(FREE_LIMIT - 1))).toBeVisible();
     await expect(page.getByText(AT_CAP_NOTE)).toHaveCount(0);
-    await expect(page.getByText(quotaText(KEPT_PAGE_LIMIT))).toHaveCount(0);
+    await expect(page.getByText(quotaText(FREE_LIMIT))).toHaveCount(0);
   });
 
   test("dropping a file at the cap publishes an owned draft with a supportive notice", async ({
     page,
     baseURL,
   }) => {
-    await signInAs(page, baseURL!, scope);
-    await fillCap(page, baseURL!);
+    const { userId } = await signInAs(page, baseURL!, scope);
+    await fillCap(userId);
 
     await page.goto("/dashboard");
 
@@ -298,8 +309,8 @@ test.describe("the dashboard", () => {
     baseURL,
   }) => {
     test.setTimeout(LIVE_STACK_TIMEOUT + CLOCK_TICK_BUDGET_MS);
-    await signInAs(page, baseURL!, scope);
-    await fillCap(page, baseURL!);
+    const { userId } = await signInAs(page, baseURL!, scope);
+    await fillCap(userId);
 
     const draft = await publishOwned(page, baseURL!, scope, "E06 expiring");
     expect(draft.outcome).toBe("owned_draft");

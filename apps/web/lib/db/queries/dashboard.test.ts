@@ -20,7 +20,8 @@ import { after, test } from "node:test";
 import {
   DRAFT_GRACE_DAYS,
   DRAFT_TTL_DAYS,
-  KEPT_PAGE_LIMIT,
+  limitsFor,
+  type Plan,
   type SiteStatus,
 } from "@kept/shared";
 import { config } from "dotenv";
@@ -45,7 +46,7 @@ async function client() {
   return db;
 }
 
-async function makeProfile(): Promise<string> {
+async function makeProfile(plan: Plan = "free"): Promise<string> {
   const db = await client();
   const { profiles, user } = await schema();
   const id = crypto.randomUUID();
@@ -55,7 +56,7 @@ async function makeProfile(): Promise<string> {
     email: `e06-002-${id}@kept.invalid`,
     emailVerified: true,
   });
-  await db.insert(profiles).values({ id, email: `e06-002-${id}@kept.invalid`, plan: "free" });
+  await db.insert(profiles).values({ id, email: `e06-002-${id}@kept.invalid`, plan });
   createdProfiles.add(id);
   return id;
 }
@@ -177,7 +178,8 @@ test(
 
     // The quota is NOT kept.length. Three clockless rows, one slot used.
     assert.equal(kept.length, 3);
-    assert.deepEqual(quota, { limit: KEPT_PAGE_LIMIT, used: 1, remaining: KEPT_PAGE_LIMIT - 1 });
+    const { keptPages } = limitsFor("free");
+    assert.deepEqual(quota, { limit: keptPages, used: 1, remaining: keptPages - 1 });
 
     const row = kept.find((s) => s.id === keptLive.id);
     assert.ok(row, "the kept page is present");
@@ -268,21 +270,24 @@ test(
 );
 
 test(
-  "an account with zero pages returns empty lists and a 0-of-limit quota, never a throw",
+  "an account with zero pages returns empty lists and a 0-of-limit quota — its OWN plan's limit — never a throw",
   { skip: skipLive },
   async () => {
     const { getDashboardSites, getOwnedSiteBySlug } = await import("./dashboard");
-    const profileId = await makeProfile();
 
-    const result = await getDashboardSites(profileId);
-    assert.deepEqual(result.kept, []);
-    assert.deepEqual(result.drafts, []);
-    assert.deepEqual(result.quota, {
-      limit: KEPT_PAGE_LIMIT,
-      used: 0,
-      remaining: KEPT_PAGE_LIMIT,
-    });
+    // Both plans, because the number on the dashboard is the plan's (D1): a
+    // quota that printed the free number to a premium account would be the
+    // header lying about the one figure it exists to state.
+    for (const plan of ["free", "premium"] as const) {
+      const profileId = await makeProfile(plan);
+      const { keptPages } = limitsFor(plan);
 
-    assert.equal(await getOwnedSiteBySlug(profileId, "e06-002-nothing-here"), null);
+      const result = await getDashboardSites(profileId);
+      assert.deepEqual(result.kept, []);
+      assert.deepEqual(result.drafts, []);
+      assert.deepEqual(result.quota, { limit: keptPages, used: 0, remaining: keptPages }, plan);
+
+      assert.equal(await getOwnedSiteBySlug(profileId, "e06-002-nothing-here"), null);
+    }
   },
 );

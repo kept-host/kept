@@ -14,7 +14,7 @@
  * the sort of routing property that is free to check and expensive to discover.
  *
  * The atomicity is the feature: one transaction, so the account can never be
- * observed a slot short or a page over `KEPT_PAGE_LIMIT`. No store call here
+ * observed a slot short or a page over its kept limit. No store call here
  * either — a swap is two Postgres writes and nothing else.
  */
 import type { NextResponse } from "next/server";

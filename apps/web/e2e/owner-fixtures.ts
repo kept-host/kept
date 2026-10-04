@@ -157,6 +157,52 @@ export async function publishOwned(
   };
 }
 
+/** A kept row `seedKept` wrote straight into Postgres. `name` is the slug: no title. */
+export interface SeededPage {
+  siteId: string;
+  slug: string;
+  name: string;
+}
+
+/**
+ * `n` kept pages in ONE insert, straight into Postgres — for specs that need an
+ * account AT or NEAR its kept limit, not for specs about publishing.
+ *
+ * ⚠️ REAL ROWS, NOT A MOCK — AND NOT A PUBLISH. The cap counts these exactly as
+ * it counts a published page (`owner_id` set, no clock, `live`), and the screens
+ * list them. What they do not have is bytes: no R2 object, no slug pointer, no
+ * KV manifest, so nothing serves at their slug. Use them to FILL the limit and
+ * publish the pages a spec actually asserts about through `publishOwned`.
+ * Publishing `limitsFor(plan).keptPages` real pages per test would multiply this
+ * suite's runtime by the limit and prove nothing these rows do not.
+ *
+ * Takes any `{ siteIds }` sink so a spec with its own teardown list can use it;
+ * every id is recorded there, so `cleanup` (or that spec's own `afterAll`)
+ * deletes them by id like any other row.
+ */
+export async function seedKept(
+  scope: Pick<OwnerScope, "siteIds">,
+  ownerId: string,
+  n: number,
+): Promise<SeededPage[]> {
+  const rows = Array.from({ length: n }, () => {
+    const id = crypto.randomUUID();
+    return {
+      id,
+      slug: `e06-seed-${id.slice(0, 8)}${id.slice(9, 13)}`,
+      ownerId,
+      publisherHash: "e06-e2e-seed",
+      claimedAt: new Date(),
+      contentHash: "e06-e2e-seed",
+      sizeBytes: 128,
+    };
+  });
+  if (rows.length === 0) return [];
+  await db.insert(schema.sites).values(rows);
+  scope.siteIds.push(...rows.map((row) => row.id));
+  return rows.map(({ id, slug }) => ({ siteId: id, slug, name: slug }));
+}
+
 /** The row as Postgres holds it right now. The authority every assertion re-reads. */
 export async function readSite(id: string) {
   const [row] = await db.select().from(schema.sites).where(eq(schema.sites.id, id));

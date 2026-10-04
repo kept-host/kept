@@ -498,8 +498,8 @@ export type DeleteOutcome =
  * what survives — the page stops serving now, the bytes are collected later.
  *
  * The response carries the post-delete `KeptQuota`, so a dashboard repaints
- * "Kept · N of 3" from this body rather than refetching to discover the slot it
- * already knows it freed.
+ * "Kept · N of {limit}" from this body rather than refetching to discover the
+ * slot it already knows it freed.
  *
  * Never throws, including on abort.
  */

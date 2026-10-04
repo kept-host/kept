@@ -165,7 +165,8 @@ function unexpected(site: AnonSite, err: unknown) {
  * AT THE CAP THIS IS STILL A SUCCESS. `keepSite` returns `owned_draft`, the
  * page is owned, its token is dead, its countdown is intact and the quota rides
  * along so the caller can render the swap prompt. There is no 4xx for being at
- * `KEPT_PAGE_LIMIT` and there must never be one — "publishing past the cap
+ * the account's kept limit — `keepSite` reads it from the account's plan under
+ * the owner lock — and there must never be one — "publishing past the cap
  * lands as a draft, never a hard error", applied to keeping.
  */
 export async function keepAnonymousPage(

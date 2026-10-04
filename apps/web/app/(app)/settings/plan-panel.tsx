@@ -19,25 +19,26 @@
  */
 import { Check } from "lucide-react";
 
-import { KEPT_PAGE_LIMIT, type Plan } from "@kept/shared";
+import { limitsFor, type Plan } from "@kept/shared";
 
 import { ProRows } from "@/components/kept/pro-rows";
 
 /**
- * What Free actually gives you, in the product's own vocabulary.
+ * What the account's plan actually gives it, in the product's own vocabulary.
  *
- * ⚠️ NO LITERAL `3`. `KEPT_PAGE_LIMIT` composes the sentence, exactly as
- * `kept-quota.tsx` and `draft-chip.tsx` do, so the day the cap moves the copy
- * moves with it instead of turning the product into a liar. The draft clock is
- * deliberately described without a number here — the drafts section on the
- * dashboard states `DRAFT_TTL_DAYS` from the constant and two copies of the same
- * promise drift.
+ * ⚠️ NO TYPED LIMIT. `limitsFor(plan)` composes the sentence (D1), so the day
+ * the cap moves — or this account changes plan — the copy moves with it instead
+ * of turning the product into a liar. The draft clock is deliberately described
+ * without a number here — the drafts section on the dashboard states
+ * `DRAFT_TTL_DAYS` from the constant and two copies of the same promise drift.
  */
-const FREE_INCLUDES: readonly string[] = [
-  `${KEPT_PAGE_LIMIT} pages kept forever, at links that never expire`,
-  "Unlimited drafts, live the moment you drop a file",
-  "Rename, replace and delete any page you own",
-];
+function planIncludes(plan: Plan): readonly string[] {
+  return [
+    `${limitsFor(plan).keptPages} pages kept forever, at links that never expire`,
+    "Unlimited drafts, live the moment you drop a file",
+    "Rename, replace and delete any page you own",
+  ];
+}
 
 /** Better Auth has no opinion about plans; the label mapping lives here. */
 const PLAN_LABEL: Record<Plan, string> = {
@@ -63,7 +64,7 @@ export function PlanPanel({ plan }: { plan: Plan }) {
           <p className="mono-label text-[10px] text-accent">Your plan</p>
         </div>
         <ul className="mt-3 flex flex-col gap-1.5">
-          {FREE_INCLUDES.map((line) => (
+          {planIncludes(plan).map((line) => (
             <li key={line} className="flex items-start gap-2.5">
               <Check
                 aria-hidden="true"

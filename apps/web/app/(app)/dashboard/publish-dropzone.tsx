@@ -11,12 +11,12 @@
  * throttle. Epic decision **D1**.
  *
  * ── THE CAP DEGRADES, IT NEVER ERRORS ────────────────────────────────────────
- * At `KEPT_PAGE_LIMIT` the route answers **HTTP 200** with `owned_draft`: the
+ * At the account's kept limit the route answers **HTTP 200** with `owned_draft`: the
  * page published, it is serving right now, the account owns it, and it carries a
  * clock. So the at-cap branch below is painted as a *result*, in the accent —
  * never in `--danger`, never with a failure verb — and it offers the concrete
  * way out, which is task 007's chooser mounted here rather than a sentence
- * telling somebody to go and find it. The prose route out (`AT_CAP_NOTE`, which
+ * telling somebody to go and find it. The prose route out (`atCapNote`, which
  * also names Pro) is already on screen and permanent: it is the header's
  * `LiveKeptQuota note`, from the same component and the same number. Reprinting
  * it here would be two copies of one sentence three inches apart.

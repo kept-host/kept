@@ -1,3 +1,4 @@
+import { KEPT_PAGE_LIMIT } from "@kept/shared";
 import { test, expect } from "@playwright/test";
 
 /**
@@ -22,10 +23,15 @@ import { test, expect } from "@playwright/test";
 const AGENT_PROMPT =
   "Publish this HTML with kept (https://kept.host/agents): call the MCP tool `publish_page`, then give me the live link and the claim link.";
 
-/** Free-tier checklist, in the order the Free card must render it. */
+/**
+ * Free-tier checklist, in the order the Free card must render it. The kept
+ * allowance is `KEPT_PAGE_LIMIT` — the landing speaks to visitors with no
+ * account, so the free alias is the right number, and a typed one would rot the
+ * day the limit moves.
+ */
 const FREE_CHECKLIST = [
   "Unlimited drafts — live instantly, 7 days",
-  "3 pages kept forever",
+  `${KEPT_PAGE_LIMIT} pages kept forever`,
   "Instant link, QR, live status",
   "Keep, rename slug, replace versions",
   "Dashboard for pages & drafts",
@@ -75,7 +81,7 @@ test.describe("landing content", () => {
       "7 days",
     );
     await expect(page.locator('#how [data-step="2"] p')).toContainText(
-      "3 pages",
+      `${KEPT_PAGE_LIMIT} pages`,
     );
   });
 
@@ -196,7 +202,8 @@ test.describe("landing content", () => {
 
     // Wherever a section quotes the draft window or the kept-page allowance, it
     // must quote the same figures the shared constants define (7 days,
-    // 3 pages). A second set of numbers anywhere is a contradiction.
+    // `KEPT_PAGE_LIMIT` pages). A second set of numbers anywhere is a
+    // contradiction.
     for (const id of ["#how", "#why", "#pricing"]) {
       const text = await page
         .locator(id)
@@ -214,7 +221,7 @@ test.describe("landing content", () => {
         (m) => m[1],
       );
       for (const figure of pageFigures) {
-        expect(figure, `${id} page-count figure`).toBe("3");
+        expect(figure, `${id} page-count figure`).toBe(String(KEPT_PAGE_LIMIT));
       }
     }
 
@@ -225,7 +232,7 @@ test.describe("landing content", () => {
         .locator(id)
         .evaluate((el) => (el as HTMLElement).innerText);
       expect(text, `${id} omits the kept-page allowance`).toMatch(
-        /3\s+pages/,
+        new RegExp(`\\b${KEPT_PAGE_LIMIT}\\s+pages`),
       );
     }
   });

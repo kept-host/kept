@@ -1,4 +1,4 @@
-import { ACCOUNT_DELETION_CONFIRMATION, KEPT_PAGE_LIMIT } from "@kept/shared";
+import { ACCOUNT_DELETION_CONFIRMATION, limitsFor } from "@kept/shared";
 import { expect, test } from "@playwright/test";
 import { and, eq, isNull } from "drizzle-orm";
 
@@ -10,6 +10,7 @@ import {
   newScope,
   publishOwned,
   readSite,
+  seedKept,
   signInAs,
   SKIP_OWNER_UI,
 } from "./owner-fixtures";
@@ -131,13 +132,14 @@ test.describe("the settings screen", () => {
     page,
     baseURL,
   }) => {
-    await signInAs(page, baseURL!, scope);
+    const { userId } = await signInAs(page, baseURL!, scope);
 
     // A real mix: kept pages and a draft, so the counts on screen are a fact
-    // about this account rather than a generic warning.
-    for (let i = 0; i < KEPT_PAGE_LIMIT; i += 1) {
-      await publishOwned(page, baseURL!, scope, `E06 settings kept ${i}`);
-    }
+    // about this account rather than a generic warning. The kept pages fill the
+    // free limit as real rows seeded by direct insert (`seedKept`); the draft
+    // past them is a real publish.
+    const limit = limitsFor("free").keptPages;
+    await seedKept(scope, userId, limit);
     const draft = await publishOwned(page, baseURL!, scope, "E06 settings draft");
     expect(draft.outcome).toBe("owned_draft");
     const witness = await readSite(draft.siteId);
@@ -150,7 +152,7 @@ test.describe("the settings screen", () => {
     await page.getByTestId("delete-account-open").click();
     const counts = page.getByTestId("delete-account-counts");
     await expect(counts).toBeVisible();
-    await expect(counts).toContainText(`${KEPT_PAGE_LIMIT} kept pages`);
+    await expect(counts).toContainText(`${limit} kept pages`);
     await expect(counts).toContainText("1 draft");
 
     // Cancelling at stage one changes nothing.

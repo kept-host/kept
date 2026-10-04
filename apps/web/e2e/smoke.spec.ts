@@ -1,3 +1,4 @@
+import { KEPT_PAGE_LIMIT } from "@kept/shared";
 import { test, expect } from "@playwright/test";
 
 import { gotoWithTokensApplied } from "./tokens-applied";
@@ -171,12 +172,13 @@ test.describe("landing smoke", () => {
     await expect(why.getByText("COSTS IN PUBLIC")).toHaveCount(1);
     await expect(why.getByText("OPEN BOOKS")).toHaveCount(0);
 
-    // Free tier: unlimited 7-day drafts + 3 kept forever, stated in pricing.
+    // Free tier: unlimited 7-day drafts + `KEPT_PAGE_LIMIT` kept forever, stated
+    // in pricing — from the constant, because the landing reads it too.
     const pricing = page.locator("#pricing");
     await expect(
       pricing.getByText("Unlimited drafts — live instantly, 7 days"),
     ).toHaveCount(1);
-    await expect(pricing.getByText("3 pages kept forever")).toHaveCount(1);
+    await expect(pricing.getByText(`${KEPT_PAGE_LIMIT} pages kept forever`)).toHaveCount(1);
     await expect(
       pricing.getByText("Keep, rename slug, replace versions"),
     ).toHaveCount(1);
@@ -186,7 +188,7 @@ test.describe("landing smoke", () => {
     ).toHaveCount(1);
     await expect(
       pricing.getByText(
-        "More pages kept forever — keep well beyond the free 3.",
+        `More pages kept forever — keep well beyond the free ${KEPT_PAGE_LIMIT}.`,
       ),
     ).toHaveCount(1);
   });
@@ -258,7 +260,7 @@ test.describe("landing smoke", () => {
     );
     await expect(page.locator('html[data-theme="dark"]')).toHaveCount(1);
     await expect(
-      page.locator("#pricing").getByText("3 pages kept forever"),
+      page.locator("#pricing").getByText(`${KEPT_PAGE_LIMIT} pages kept forever`),
     ).toHaveCount(1);
     await expect(
       page.locator("#why").getByText("COSTS IN PUBLIC"),

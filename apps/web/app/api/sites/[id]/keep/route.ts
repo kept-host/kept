@@ -11,7 +11,7 @@
  *
  * ⚠️ AT THE CAP THIS IS STILL A 200. The page becomes an *owned draft* with its
  * countdown intact and `outcome: "owned_draft"` in the body. There is no 4xx
- * for being at `KEPT_PAGE_LIMIT`.
+ * for being at the account's kept limit (`limitsFor(plan).keptPages`).
  *
  * No store call on this path: keeping is a Postgres write, the page is already
  * `live` and already serving, and nothing in the Worker reads `owner_id`.

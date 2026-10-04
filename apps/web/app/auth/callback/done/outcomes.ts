@@ -7,7 +7,8 @@
  * imports — so both a server component and a spec can read it.
  *
  * NOTHING SECRET TRAVELS. The slug is the public hostname the page already
- * serves at and the deadline is on the visitor's own screen anyway; the bearer
+ * serves at, the deadline is on the visitor's own screen anyway, and the limit
+ * is the account's own plan's kept allowance (`quota.limit`); the bearer
  * token is not here and must never be. A visitor who hand-edits these parameters
  * changes what one static screen says and nothing about their account — Postgres
  * is the authority, and the dashboard is one click away on every branch.
@@ -21,7 +22,7 @@ export const KEEP_OUTCOME_CODES = [
   "kept",
   /** Permanent, and brought back from inside its grace window. */
   "restored",
-  /** At `KEPT_PAGE_LIMIT`: owned, still on its clock, swap prompt shown. */
+  /** At the account's kept limit: owned, still on its clock, swap prompt shown. */
   "draft",
   /** Task 008's one indistinguishable 404 — already kept, or too late. */
   "gone",
@@ -42,15 +43,24 @@ export function isKeepOutcomeCode(value: unknown): value is KeepOutcomeCode {
   );
 }
 
-/** The result screen's URL. `slug` and `expiresAt` are only read where relevant. */
+/**
+ * The result screen's URL. `slug`, `expiresAt` and `limit` are only read where
+ * relevant.
+ *
+ * `limit` travels rather than being looked up because the result screen reads
+ * no cookie (see `./page.tsx`): it is `quota.limit` off the keep that just ran
+ * under the owner lock — the account's plan's number, never the free alias.
+ */
 export function doneHref(result: {
   outcome: KeepOutcomeCode;
   slug?: string;
   expiresAt?: string;
+  limit?: number;
 }): string {
   const params = new URLSearchParams({ outcome: result.outcome });
   if (result.slug) params.set("slug", result.slug);
   if (result.expiresAt) params.set("expires", result.expiresAt);
+  if (result.limit !== undefined) params.set("limit", String(result.limit));
   return `${DONE_PATH}?${params.toString()}`;
 }
 
@@ -76,11 +86,13 @@ export function doneHrefForKeep(
   const body = result.body;
   if (body.outcome === "owned_draft") {
     // THE CAP IS A BRANCH, NOT AN ERROR. The page is owned and still serving; it
-    // simply kept its clock, which travels so the screen can show the countdown.
+    // simply kept its clock, which travels so the screen can show the countdown,
+    // and so does the limit it hit, so the screen can name it.
     return doneHref({
       outcome: "draft",
       slug: body.slug,
       expiresAt: body.expiresAt,
+      limit: body.quota.limit,
     });
   }
 

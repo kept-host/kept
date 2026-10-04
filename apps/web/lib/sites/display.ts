@@ -88,7 +88,7 @@ export function isManagementRestricted(status: SiteStatus): boolean {
  * counts `expires_at IS NULL AND status = 'live'` (`isKeptCondition`), so a page
  * that is clockless but *not* `live` — archived, expired, removed, or held under
  * review — is already outside the count. Demoting it frees nothing, and the swap
- * would end with the account still at `KEPT_PAGE_LIMIT` and one more draft than
+ * would end with the account still at its kept limit and one more draft than
  * it started with. Offering it would be offering a no-op that costs the user a
  * permanent page.
  *
@@ -171,7 +171,7 @@ export function publishedKeptNotice(name: string): string {
  * reason this branch exists instead of a 4xx.
  *
  * It states the consequence and stops. The route out — swap, or Pro — is
- * `AT_CAP_NOTE` in `components/kept/kept-quota.tsx`, printed underneath by the
+ * `atCapNote` in `components/kept/kept-quota.tsx`, printed underneath by the
  * same component the header and the chooser use, so there is exactly one
  * sentence in the product describing what to do about a full account.
  *

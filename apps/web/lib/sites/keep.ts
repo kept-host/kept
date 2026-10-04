@@ -26,16 +26,23 @@
  * no store calls in this module at all**: no `writeManifest`, no
  * `removeManifest`, no R2, no purge. Keep it that way.
  *
- * THE CAP IS A BRANCH, NOT A GUARD CLAUSE. At `KEPT_PAGE_LIMIT` the page still
- * gets `owner_id`, still loses its `anon_token_hash` and still shows up in the
- * dashboard — it simply keeps its clocks. That is why `keepSite` returns a
+ * THE CAP IS A BRANCH, NOT A GUARD CLAUSE. At the account's kept limit the page
+ * still gets `owner_id`, still loses its `anon_token_hash` and still shows up in
+ * the dashboard — it simply keeps its clocks. That is why `keepSite` returns a
  * discriminated `KeepResult` instead of throwing.
+ *
+ * THE LIMIT IS THE PLAN'S (D1). Every cap below is `limitsFor(plan).keptPages`,
+ * with `plan` read from the owner's `profiles` row — under `lockOwner` wherever a
+ * cap is decided, so the plan and the count come from the same locked moment.
+ * `KEPT_PAGE_LIMIT` is the free number for surfaces with no account; it is never
+ * read here.
  */
 import {
-  KEPT_PAGE_LIMIT,
+  limitsFor,
   type DemoteResult,
   type KeepResult,
   type KeptQuota,
+  type Plan,
   type SwapResult,
 } from "@kept/shared";
 import { and, eq, isNull, sql, type SQL } from "drizzle-orm";
@@ -96,30 +103,56 @@ function inTransaction<T>(tx: Tx | undefined, fn: (tx: Tx) => Promise<T>): Promi
  * `SELECT … FROM sites WHERE owner_id = ? AND expires_at IS NULL FOR UPDATE`
  * locks the rows that qualify *now*; a concurrent transaction keeping a
  * different page makes that page qualify, and under READ COMMITTED a phantom
- * row is not in the second transaction's lock set. Two tabs at 2/3 would then
- * both count 2 and both keep, producing a fourth kept page. Serialising on the
- * owner has no phantom: the second transaction blocks here, and its count
- * statement afterwards takes a fresh snapshot that includes the first keep.
+ * row is not in the second transaction's lock set. Two tabs one slot short of
+ * the limit would then both count the same number and both keep, producing one
+ * kept page too many. Serialising on the owner has no phantom: the second
+ * transaction blocks here, and its count statement afterwards takes a fresh
+ * snapshot that includes the first keep.
+ *
+ * RETURNS THE OWNER'S PLAN, read off the row this lock holds. The cap is
+ * `limitsFor(plan)`, so the plan is part of the decision and must come from the
+ * same locked read as the count — never from a session object or a second
+ * query outside the lock, which a concurrent plan change could make stale.
  *
  * ⚠️ EXPORTED SO THE OWNED PUBLISH SERIALISES ON THE SAME POINT (E06 task 004).
  * A signed-in publish decides kept-or-draft against the same cap, so it must
- * queue behind the same lock: two dashboard tabs at 2/3 that each took a
- * *different* serialisation point would both count 2 and both land kept,
- * producing a fourth kept page — the exact failure the paragraph above
+ * queue behind the same lock: two dashboard tabs one slot short that each took
+ * a *different* serialisation point would both count the same and both land
+ * kept, producing one kept page too many — the exact failure the paragraph above
  * describes, reached through a second door. `./publish.ts` takes this lock and
  * does its count AND its insert inside the transaction that holds it.
  */
-export async function lockOwner(tx: Tx, profileId: string): Promise<void> {
+export async function lockOwner(tx: Tx, profileId: string): Promise<Plan> {
   const [row] = await tx
-    .select({ id: profiles.id })
+    .select({ plan: profiles.plan })
     .from(profiles)
     .where(eq(profiles.id, profileId))
     .for("update");
-  if (!row) {
-    throw new Error(
-      `No profile ${profileId}. A keep/demote/publish takes a profile id that a session already resolved.`,
-    );
-  }
+  if (!row) throw noProfile(profileId);
+  return row.plan;
+}
+
+function noProfile(profileId: string): Error {
+  return new Error(
+    `No profile ${profileId}. A keep/demote/publish takes a profile id that a session already resolved.`,
+  );
+}
+
+/**
+ * The owner's plan, read WITHOUT a lock — for `keptQuotaFor`, which is a read.
+ *
+ * Inside a transaction that already holds `lockOwner` (the owned publish) this
+ * reads the very row that lock holds, so it cannot disagree with it; it never
+ * takes a second lock. Outside one (a dashboard render) it is the plain read the
+ * render wants.
+ */
+async function planOf(tx: Tx, profileId: string): Promise<Plan> {
+  const [row] = await tx
+    .select({ plan: profiles.plan })
+    .from(profiles)
+    .where(eq(profiles.id, profileId));
+  if (!row) throw noProfile(profileId);
+  return row.plan;
 }
 
 /**
@@ -130,8 +163,8 @@ export async function lockOwner(tx: Tx, profileId: string): Promise<void> {
  * question — see the column comment in `../db/schema.ts`.
  *
  * ⚠️ EXPORTED SO IT IS NEVER RETYPED (E06 task 002). E06's dashboard splits the
- * kept wall from the drafts section and prints "N of `KEPT_PAGE_LIMIT`" with the
- * same predicate this module counts the cap with. A second copy of the WHERE
+ * kept wall from the drafts section and prints "N of {the plan's limit}" with
+ * the same predicate this module counts the cap with. A second copy of the WHERE
  * clause in a query module is not cosmetic duplication: the two drift the first
  * time `archived` or `quarantined` changes what counts, and then the dashboard
  * disagrees with the endpoint that enforces the cap. Compose this — do not
@@ -165,20 +198,17 @@ async function countKept(tx: Tx, profileId: string): Promise<number> {
   return row?.count ?? 0;
 }
 
-function quotaOf(used: number): KeptQuota {
-  return {
-    limit: KEPT_PAGE_LIMIT,
-    used,
-    remaining: Math.max(0, KEPT_PAGE_LIMIT - used),
-  };
+function quotaOf(used: number, plan: Plan): KeptQuota {
+  const limit = limitsFor(plan).keptPages;
+  return { limit, used, remaining: Math.max(0, limit - used) };
 }
 
 /**
  * The account's kept-page allowance right now — the one number every E06 surface
  * prints (dashboard header, drop-zone notice, keep button, swap chooser).
  *
- * It wraps `countKept` + `quotaOf` so `quotaOf`'s arithmetic — and the
- * `KEPT_PAGE_LIMIT` it reads — stays in exactly one place. A caller that
+ * It wraps `countKept` + `planOf` + `quotaOf` so `quotaOf`'s arithmetic — and
+ * the `limitsFor(plan)` it reads — stays in exactly one place. A caller that
  * subtracts `used` from a limit of its own is the same drift `isKeptCondition`
  * exists to prevent, one level up.
  *
@@ -192,7 +222,9 @@ function quotaOf(used: number): KeptQuota {
  * wants.
  */
 export function keptQuotaFor(profileId: string, tx?: Tx): Promise<KeptQuota> {
-  return inTransaction(tx, async (trx) => quotaOf(await countKept(trx, profileId)));
+  return inTransaction(tx, async (trx) =>
+    quotaOf(await countKept(trx, profileId), await planOf(trx, profileId)),
+  );
 }
 
 /** The columns every primitive below reads, locked for the read-modify-write. */
@@ -230,7 +262,7 @@ export async function keepSite(
   const { expectAnonymous = false, tx } = options;
 
   return inTransaction(tx, async (trx) => {
-    await lockOwner(trx, profileId);
+    const plan = await lockOwner(trx, profileId);
 
     const site = await lockSite(trx, siteId);
     if (!site) throw new SiteNotFoundError(siteId);
@@ -247,7 +279,7 @@ export async function keepSite(
         outcome: "kept",
         siteId: site.id,
         slug: site.slug,
-        quota: quotaOf(await countKept(trx, profileId)),
+        quota: quotaOf(await countKept(trx, profileId), plan),
       };
     }
 
@@ -257,7 +289,7 @@ export async function keepSite(
     const claimedAt = site.claimedAt ?? now;
     const used = await countKept(trx, profileId);
 
-    if (used < KEPT_PAGE_LIMIT) {
+    if (used < limitsFor(plan).keptPages) {
       await trx
         .update(sites)
         .set({
@@ -276,7 +308,7 @@ export async function keepSite(
         outcome: "kept",
         siteId: site.id,
         slug: site.slug,
-        quota: quotaOf(used + 1),
+        quota: quotaOf(used + 1, plan),
       };
     }
 
@@ -308,7 +340,7 @@ export async function keepSite(
       outcome: "owned_draft",
       siteId: site.id,
       slug: site.slug,
-      quota: quotaOf(used),
+      quota: quotaOf(used, plan),
       expiresAt: clocks.expiresAt.toISOString(),
       purgeAfter: clocks.purgeAfter.toISOString(),
     };
@@ -390,7 +422,7 @@ export async function demoteSite(
   options: DemoteOptions = {},
 ): Promise<DemoteResult> {
   return inTransaction(options.tx, async (trx) => {
-    await lockOwner(trx, profileId);
+    const plan = await lockOwner(trx, profileId);
 
     const site = await lockSite(trx, siteId);
     if (!site || site.ownerId !== profileId) throw new SiteNotFoundError(siteId);
@@ -408,7 +440,7 @@ export async function demoteSite(
       slug: site.slug,
       expiresAt: expiresAt.toISOString(),
       purgeAfter: purgeAfter.toISOString(),
-      quota: quotaOf(await countKept(trx, profileId)),
+      quota: quotaOf(await countKept(trx, profileId), plan),
     };
   });
 }

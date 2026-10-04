@@ -26,8 +26,10 @@
  * ── WHAT DIFFERS, AND IT IS ONLY THIS ────────────────────────────────────────
  *   1. `owner_id` is set by the INSERT, and `anon_token_hash` never is.
  *   2. The cap is decided INSIDE the insert's transaction, on `lockOwner` — the
- *      same serialisation point `keepSite` uses. Under the cap the page is kept
- *      (no clocks); at the cap it lands as an owned draft (both clocks set).
+ *      same serialisation point `keepSite` uses — and it is the OWNER'S PLAN's
+ *      cap (`limitsFor(plan)` via `keptQuotaFor`, which reads `profiles.plan`
+ *      off the row `lockOwner` holds). Under the cap the page is kept (no
+ *      clocks); at the cap it lands as an owned draft (both clocks set).
  *      **Never a 4xx for being full**, and there must never be one.
  *   3. There is no dedup probe. Dedup exists so an agent's retry loop converges
  *      on ONE anonymous page, and it works by rotating that page's bearer token
@@ -131,6 +133,8 @@ async function insertWithMintedSlug(input: {
         // THE SERIALISATION POINT. Everything below reads and writes behind it.
         await lockOwner(tx, input.ownerId);
 
+        // Plan-aware: `keptQuotaFor` reads the plan from the row locked above,
+        // so a premium account is measured against its own limit, not the free one.
         const before = await keptQuotaFor(input.ownerId, tx);
         // The cap DEGRADES, it never errors: out of slots means this page lands
         // as an owned draft with a countdown, not a refused publish.

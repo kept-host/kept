@@ -9,8 +9,8 @@
  * calling. E06's dashboard renders that; this endpoint does not, and never
  * calls itself on a page load.
  *
- * The response carries the updated quota so the caller can show "2 of 3 kept"
- * without a second request.
+ * The response carries the updated quota so the caller can show "N of {limit}
+ * kept" without a second request.
  *
  * No store call on this path either — demote is a Postgres write. The manifest
  * is not rewritten and the cache is not purged, because nothing the Worker

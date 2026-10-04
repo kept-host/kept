@@ -4,7 +4,15 @@
  * NO MOCKS (project rule). Every assertion below runs against the real dev Neon
  * branch: real `user`, `profiles` and `sites` rows, real transactions, real row
  * locks. The concurrency drill in particular is only meaningful against a real
- * Postgres — it is the one that proves two tabs at 2/3 cannot both keep.
+ * Postgres — it is the one that proves two tabs one slot short of the limit
+ * cannot both keep.
+ *
+ * THE LIMIT IS THE PLAN'S (D1, E06 task 003). Drill accounts are `free` unless a
+ * drill says otherwise, so the cap below is `limitsFor("free").keptPages` — never
+ * a literal and never `KEPT_PAGE_LIMIT`, which is for surfaces with no plan.
+ * Cap-filling rows are seeded in ONE multi-row insert: real rows, not a mock,
+ * and the limit is large enough that one round trip per row would dominate the
+ * suite.
  *
  * Nothing here touches R2, KV or the purge endpoint, because the module under
  * test must not either.
@@ -22,7 +30,8 @@ import { after, test } from "node:test";
 import {
   DRAFT_GRACE_DAYS,
   DRAFT_TTL_DAYS,
-  KEPT_PAGE_LIMIT,
+  limitsFor,
+  type Plan,
   type SiteStatus,
 } from "@kept/shared";
 import { config } from "dotenv";
@@ -34,6 +43,9 @@ const skipLive = process.env.DATABASE_URL
   : "DATABASE_URL absent — run locally with apps/web/.env.local";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/** The cap every `free` drill account is held to. */
+const FREE_LIMIT = limitsFor("free").keptPages;
 
 /** Everything created by these drills, torn down in `after`. */
 const createdSites = new Set<string>();
@@ -49,7 +61,7 @@ async function client() {
 }
 
 /** A brand-new account with zero kept pages. */
-async function makeProfile(): Promise<string> {
+async function makeProfile(plan: Plan = "free"): Promise<string> {
   const db = await client();
   const { profiles, user } = await schema();
   const id = crypto.randomUUID();
@@ -59,7 +71,7 @@ async function makeProfile(): Promise<string> {
     email: `e05-007-${id}@kept.invalid`,
     emailVerified: true,
   });
-  await db.insert(profiles).values({ id, email: `e05-007-${id}@kept.invalid`, plan: "free" });
+  await db.insert(profiles).values({ id, email: `e05-007-${id}@kept.invalid`, plan });
   createdProfiles.add(id);
   return id;
 }
@@ -77,26 +89,17 @@ interface MakeSite {
   status?: SiteStatus;
 }
 
-async function makeSite({
-  ownerId = null,
-  kept = false,
-  status = "live",
-}: MakeSite = {}): Promise<{
-  id: string;
-  slug: string;
-}> {
-  const db = await client();
-  const { sites } = await schema();
+/** One drill row's column values, tracked for teardown. Inserting is the caller's. */
+function siteRow({ ownerId = null, kept = false, status = "live" }: MakeSite = {}) {
   const id = crypto.randomUUID();
-  const slug = `e05-007-${id.slice(0, 12)}`;
   const now = new Date();
   const expiresAt = new Date(now.getTime() + DRAFT_TTL_DAYS * MS_PER_DAY);
-
-  await db.insert(sites).values({
+  createdSites.add(id);
+  return {
     id,
-    slug,
+    slug: `e05-007-${id.slice(0, 12)}`,
     status,
-    region: "auto",
+    region: "auto" as const,
     ownerId,
     anonTokenHash: ownerId === null ? `e05-007-${id}` : null,
     publisherHash: "e05-007-drill",
@@ -105,9 +108,15 @@ async function makeSite({
     claimedAt: ownerId === null ? null : now,
     contentHash: "e05-007",
     sizeBytes: 128,
-  });
-  createdSites.add(id);
-  return { id, slug };
+  };
+}
+
+async function makeSite(options: MakeSite = {}): Promise<{ id: string; slug: string }> {
+  const db = await client();
+  const { sites } = await schema();
+  const row = siteRow(options);
+  await db.insert(sites).values(row);
+  return { id: row.id, slug: row.slug };
 }
 
 async function readSite(siteId: string) {
@@ -146,11 +155,14 @@ async function keptCount(profileId: string): Promise<number> {
   return row?.count ?? 0;
 }
 
-/** `n` kept pages against one profile, the way the cap drills need them. */
+/** `n` kept pages against one profile, in ONE insert — the way the cap drills need them. */
 async function fillKept(profileId: string, n: number): Promise<void> {
-  for (let i = 0; i < n; i++) {
-    await makeSite({ ownerId: profileId, kept: true });
-  }
+  if (n === 0) return;
+  const db = await client();
+  const { sites } = await schema();
+  await db
+    .insert(sites)
+    .values(Array.from({ length: n }, () => siteRow({ ownerId: profileId, kept: true })));
 }
 
 after(async () => {
@@ -184,7 +196,7 @@ test(
     assert.equal(result.outcome, "kept");
     assert.equal(result.siteId, site.id);
     assert.equal(result.slug, site.slug);
-    assert.deepEqual(result.quota, { limit: KEPT_PAGE_LIMIT, used: 1, remaining: 2 });
+    assert.deepEqual(result.quota, { limit: FREE_LIMIT, used: 1, remaining: FREE_LIMIT - 1 });
 
     const after_ = await readSite(site.id);
     assert.equal(after_.ownerId, profileId);
@@ -224,7 +236,7 @@ test(
     // The reminder-email link and a double-submit both land here.
     const again = await keepSite(site.id, profileId, { expectAnonymous: true });
     assert.equal(again.outcome, "kept");
-    assert.deepEqual(again.quota, { limit: KEPT_PAGE_LIMIT, used: 1, remaining: 2 });
+    assert.deepEqual(again.quota, { limit: FREE_LIMIT, used: 1, remaining: FREE_LIMIT - 1 });
 
     const row = await readSite(site.id);
     assert.equal(
@@ -242,7 +254,7 @@ test(
   async () => {
     const { keepSite } = await import("./keep");
     const profileId = await makeProfile();
-    await fillKept(profileId, KEPT_PAGE_LIMIT);
+    await fillKept(profileId, FREE_LIMIT);
     const site = await makeSite();
     const before = await readSite(site.id);
 
@@ -250,8 +262,8 @@ test(
 
     assert.equal(result.outcome, "owned_draft");
     assert.deepEqual(result.quota, {
-      limit: KEPT_PAGE_LIMIT,
-      used: KEPT_PAGE_LIMIT,
+      limit: FREE_LIMIT,
+      used: FREE_LIMIT,
       remaining: 0,
     });
     assert.equal(
@@ -272,23 +284,24 @@ test(
       stamp(row.purgeAfter).getTime(),
       stamp(before.purgeAfter).getTime(),
     );
-    assert.equal(await keptCount(profileId), KEPT_PAGE_LIMIT, "still exactly the cap");
+    assert.equal(await keptCount(profileId), FREE_LIMIT, "still exactly the cap");
   },
 );
 
 test(
-  "two concurrent keeps at 2/3 produce exactly one kept page, never a fourth",
+  "two concurrent keeps one slot short of the limit produce exactly one kept page, never one too many",
   { skip: skipLive },
   async () => {
     const { keepSite } = await import("./keep");
 
     // REPEATED, because a race that is merely usually lost proves nothing. With
     // the owner lock removed from `keepSite`, this drill fails within a handful
-    // of rounds — both transactions count 2 and both keep, and the account ends
-    // with four kept pages. That is exactly the bug the lock exists to stop.
+    // of rounds — both transactions count `limit − 1` and both keep, and the
+    // account ends one over its limit. That is exactly the bug the lock exists
+    // to stop.
     for (let round = 0; round < 3; round++) {
       const profileId = await makeProfile();
-      await fillKept(profileId, KEPT_PAGE_LIMIT - 1);
+      await fillKept(profileId, FREE_LIMIT - 1);
       const a = await makeSite();
       const b = await makeSite();
 
@@ -302,7 +315,7 @@ test(
         ["kept", "owned_draft"],
         "the loser degrades to an owned draft — it does not fail and it is not lost",
       );
-      assert.equal(await keptCount(profileId), KEPT_PAGE_LIMIT, `round ${round}`);
+      assert.equal(await keptCount(profileId), FREE_LIMIT, `round ${round}`);
 
       // Both pages are owned either way; only the clock distinguishes them.
       for (const site of [a, b]) {
@@ -336,7 +349,7 @@ test(
       purgeAfter.getTime() - expiresAt.getTime(),
       DRAFT_GRACE_DAYS * MS_PER_DAY,
     );
-    assert.deepEqual(result.quota, { limit: KEPT_PAGE_LIMIT, used: 0, remaining: 3 });
+    assert.deepEqual(result.quota, { limit: FREE_LIMIT, used: 0, remaining: FREE_LIMIT });
 
     const row = await readSite(siteId);
     assert.equal(row.status, "live", "demote never stops the page serving");
@@ -376,7 +389,7 @@ test(
     const { SiteNotFoundError, swapKept } = await import("./keep");
     const profileId = await makeProfile();
     const { id: demoteTarget } = await makeSite({ ownerId: profileId, kept: true });
-    await fillKept(profileId, KEPT_PAGE_LIMIT - 1);
+    await fillKept(profileId, FREE_LIMIT - 1);
     const before = await readSite(demoteTarget);
 
     // The injected failure is real, not simulated: the second half names a site
@@ -396,8 +409,8 @@ test(
     );
     assert.equal(
       await keptCount(profileId),
-      KEPT_PAGE_LIMIT,
-      "never 2, never 4 — exactly the cap",
+      FREE_LIMIT,
+      "never one short, never one over — exactly the cap",
     );
   },
 );
@@ -409,7 +422,7 @@ test(
     const { keepSite, swapKept } = await import("./keep");
     const profileId = await makeProfile();
     const { id: demoteTarget } = await makeSite({ ownerId: profileId, kept: true });
-    await fillKept(profileId, KEPT_PAGE_LIMIT - 1);
+    await fillKept(profileId, FREE_LIMIT - 1);
 
     // B arrives the way it really does: kept at cap, so it landed owned_draft.
     const b = await makeSite();
@@ -423,8 +436,8 @@ test(
     assert.equal(result.demoted.siteId, demoteTarget);
     assert.deepEqual(result.demoted.quota, result.kept.quota, "both halves agree");
     assert.deepEqual(result.kept.quota, {
-      limit: KEPT_PAGE_LIMIT,
-      used: KEPT_PAGE_LIMIT,
+      limit: FREE_LIMIT,
+      used: FREE_LIMIT,
       remaining: 0,
     });
 
@@ -434,7 +447,7 @@ test(
     const promoted = await readSite(b.id);
     assert.equal(promoted.expiresAt, null);
     assert.equal(promoted.purgeAfter, null);
-    assert.equal(await keptCount(profileId), KEPT_PAGE_LIMIT);
+    assert.equal(await keptCount(profileId), FREE_LIMIT);
   },
 );
 
@@ -449,7 +462,7 @@ test(
     // the last two are OWNED and CLOCKLESS — indistinguishable from a kept page
     // to anything that drops the `status = 'live'` clause, which is exactly how
     // a second copy of the predicate goes wrong.
-    await fillKept(profileId, KEPT_PAGE_LIMIT - 1);
+    await fillKept(profileId, FREE_LIMIT - 1);
     await makeSite({ ownerId: profileId, kept: false });
     await makeSite({ ownerId: profileId, kept: false });
     await makeSite({ ownerId: profileId, kept: true, status: "archived" });
@@ -457,10 +470,10 @@ test(
 
     const quota = await keptQuotaFor(profileId);
     assert.deepEqual(quota, {
-      limit: KEPT_PAGE_LIMIT,
-      used: KEPT_PAGE_LIMIT - 1,
+      limit: FREE_LIMIT,
+      used: FREE_LIMIT - 1,
       remaining: 1,
-      });
+    });
     assert.equal(
       quota.used,
       await keptCount(profileId),
@@ -478,8 +491,8 @@ test(
       "keepSite's quota and keptQuotaFor's are the same number, from the same predicate",
     );
     assert.deepEqual(result.quota, {
-      limit: KEPT_PAGE_LIMIT,
-      used: KEPT_PAGE_LIMIT,
+      limit: FREE_LIMIT,
+      used: FREE_LIMIT,
       remaining: 0,
     });
   },
@@ -506,10 +519,37 @@ test(
 
       const inside = await keptQuotaFor(profileId, tx);
       assert.equal(inside.used, 1, "the uncommitted keep is visible to the same transaction");
-      assert.equal(inside.remaining, KEPT_PAGE_LIMIT - 1);
+      assert.equal(inside.remaining, FREE_LIMIT - 1);
     });
 
     assert.equal((await keptQuotaFor(profileId)).used, 1, "and it survives the commit");
+  },
+);
+
+test(
+  "the cap is the account's PLAN's: a premium account past the free limit still keeps, and every quota says so",
+  { skip: skipLive },
+  async () => {
+    const { demoteSite, keepSite, keptQuotaFor } = await import("./keep");
+    const premium = limitsFor("premium").keptPages;
+    assert.ok(premium > FREE_LIMIT, "precondition: the premium limit is the larger one");
+
+    // Exactly the free limit already kept — where a free account is full.
+    const profileId = await makeProfile("premium");
+    await fillKept(profileId, FREE_LIMIT);
+    const site = await makeSite();
+
+    const result = await keepSite(site.id, profileId, { expectAnonymous: true });
+    assert.equal(result.outcome, "kept", "the plan is read, not the free alias");
+    assert.deepEqual(result.quota, {
+      limit: premium,
+      used: FREE_LIMIT + 1,
+      remaining: premium - FREE_LIMIT - 1,
+    });
+    assert.deepEqual(await keptQuotaFor(profileId), result.quota, "the read agrees with the decision");
+
+    const demoted = await demoteSite(site.id, profileId);
+    assert.equal(demoted.quota.limit, premium, "demote reports the plan's limit too");
   },
 );
 
