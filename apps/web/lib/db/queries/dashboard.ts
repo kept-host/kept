@@ -24,7 +24,7 @@
  * by `status`, because an expired-but-unswept row still says `live` until E07's
  * sweep runs.
  */
-import { type KeptQuota, type SiteStatus } from "@kept/shared";
+import { type KeptQuota, type NameKind, type SiteStatus } from "@kept/shared";
 import { and, desc, eq, gt, inArray, isNotNull, or, sql } from "drizzle-orm";
 
 import { chosenNameCount } from "../../names/check";
@@ -173,35 +173,47 @@ export async function getDashboardSites(profileId: string): Promise<DashboardSit
     drafts,
     quota,
     names,
-    visitsAsOf: visitsRead.ok ? visitsRead.asOf : null,
+    visitsAsOf: visitsRead.ok ? visitsRead.asOf.lastSuccessAt : null,
     visitsFailed: !visitsRead.ok,
   };
 }
 
 /**
- * One of the owner's pages by slug, for `/site/[slug]`.
+ * One of the owner's pages for its detail screen (`/site/[id]`, D2): the row,
+ * plus the two fields only that screen edits — its Explore flag (D12) and
+ * whether its name was chosen (D3).
+ */
+export interface OwnedSiteDetail extends OwnedSite {
+  listedPublic: boolean;
+  nameKind: NameKind;
+}
+
+/**
+ * One of the owner's pages by id, for `/site/[id]` (D2) — by id, never by slug,
+ * because names change and a bookmark must survive a rename.
  *
  * ⚠️ THE OWNER SCOPE IS IN THE SQL, NOT APPLIED AFTERWARDS IN JS. This read
  * feeds a screen that renders a *preview* of the page's bytes, so fetching by
- * slug and then checking `row.ownerId === profileId` in the caller is a
+ * id and then checking `row.ownerId === profileId` in the caller is a
  * cross-account read that happens to be discarded — one forgotten early return
  * away from being served. `owner_id` is in the WHERE clause.
  *
- * A slug that exists but belongs to someone else returns `null`, byte-identical
- * to a slug that never existed. That is the same rule `ownerNotFound()` encodes
- * for the routes: "you don't own this" is an existence oracle, and the caller
- * has no way to tell the two apart because there is nothing here to tell it
- * with.
+ * An id that exists but belongs to someone else returns `null`, byte-identical
+ * to an id that never existed — `ownerNotFound()`'s rule for the routes: "you
+ * don't own this" is an existence oracle. Every status is returned, `archived`
+ * and `removed` included; which of them the screen may still show is the
+ * caller's call. `siteId` must already be a uuid — Postgres rejects anything
+ * else as a query error, not as a miss.
  */
-export async function getOwnedSiteBySlug(
+export async function getOwnedSiteById(
   profileId: string,
-  slug: string,
-): Promise<OwnedSite | null> {
+  siteId: string,
+): Promise<OwnedSiteDetail | null> {
   const [row] = await db
-    .select(OWNED_SITE_COLUMNS)
+    .select({ ...OWNED_SITE_COLUMNS, listedPublic: sites.listedPublic, nameKind: sites.nameKind })
     .from(sites)
     .leftJoin(siteVersions, eq(siteVersions.id, sites.currentVersionId))
-    .where(and(eq(sites.ownerId, profileId), eq(sites.slug, slug)))
+    .where(and(eq(sites.ownerId, profileId), eq(sites.id, siteId)))
     .limit(1);
 
   return row ?? null;

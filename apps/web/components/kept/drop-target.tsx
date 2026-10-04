@@ -15,11 +15,10 @@
  *   · `zone` — the dashed box in the publish sheet and the empty state: a real
  *     `<button>` that is a drop target and opens the file picker when pressed.
  *
- * Supersedes `app/(app)/dashboard/publish-dropzone.tsx`, `card-replace.tsx` and
- * `components/kept/owner-replace-drop.tsx`: the window-level precedence rule
- * (`DROP_TARGET_ATTR`, the one coordinate a card and the window agree on) and
- * the drag listeners are theirs, carried over. Those files are deleted by the
- * tasks that stop mounting them (011, 012).
+ * It replaced the dashboard's `publish-dropzone` and `card-replace` and the
+ * `[slug]` screen's `owner-replace-drop` (deleted by tasks 011 and 012): the
+ * window-level precedence rule (`DROP_TARGET_ATTR`, the one coordinate a card
+ * and the window agree on) and the drag listeners are theirs, carried over.
  *
  * ── A KEYBOARD PATH FOR EVERY DROP ───────────────────────────────────────────
  * Every scope owns a real `<input type="file">`. `zone` IS its own browse

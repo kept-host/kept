@@ -1,5 +1,5 @@
 /**
- * The studio's visits reads — E06 task 011.
+ * The studio's visits reads — E06 tasks 011 and 012.
  *
  * NO MOCKS (project rule): real `page_views_daily` and `job_runs` rows on the
  * dev Neon branch, deleted in `after`. Skips when `DATABASE_URL` is absent.
@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
-import { VISITS_RECENT_DAYS } from "@kept/shared";
+import { VISITS_HISTORY_DAYS, VISITS_RECENT_DAYS } from "@kept/shared";
 import { config } from "dotenv";
 
 config({ path: ".env.local", quiet: true });
@@ -109,17 +109,52 @@ test(
 );
 
 test(
-  "lastVisitsSync is the job's last success, and null when the job never ran",
+  "dailyVisits is one page's complete UTC days in the window, oldest first, and empty — not zero — with no rows",
+  { skip: skipLive },
+  async () => {
+    const { dailyVisits } = await import("./visits");
+    const db = await client();
+    const { pageViewsDaily } = await schema();
+
+    const owner = await makeProfile();
+    const visited = await makeSite(owner);
+    const unvisited = await makeSite(owner);
+    const neighbour = await makeSite(owner);
+
+    await db.insert(pageViewsDaily).values([
+      { siteId: visited, day: utcDayAgo(1), views: 12 },
+      { siteId: visited, day: utcDayAgo(VISITS_HISTORY_DAYS), views: 4 },
+      // One day past the window: not returned.
+      { siteId: visited, day: utcDayAgo(VISITS_HISTORY_DAYS + 1), views: 100 },
+      { siteId: neighbour, day: utcDayAgo(1), views: 9 },
+    ]);
+
+    assert.deepEqual(await dailyVisits(visited, VISITS_HISTORY_DAYS), [
+      { day: utcDayAgo(VISITS_HISTORY_DAYS), visits: 4 },
+      { day: utcDayAgo(1), visits: 12 },
+    ]);
+    assert.deepEqual(await dailyVisits(unvisited, VISITS_HISTORY_DAYS), [], "no rows is no data");
+  },
+);
+
+test(
+  "lastVisitsSync is the job's last success and last error, both null when the job never ran",
   { skip: skipLive },
   async () => {
     const { lastVisitsSync } = await import("./visits");
     const db = await client();
     const { jobRuns } = await schema();
+    const { eq } = await import("drizzle-orm");
 
-    assert.equal(await lastVisitsSync(JOB), null, "never ran → null");
+    assert.deepEqual(await lastVisitsSync(JOB), { lastSuccessAt: null, lastError: null }, "never ran");
 
     const at = new Date("2026-10-03T03:17:00.000Z");
     await db.insert(jobRuns).values({ job: JOB, lastAttemptAt: at, lastSuccessAt: at });
-    assert.equal((await lastVisitsSync(JOB))?.toISOString(), at.toISOString());
+    const ran = await lastVisitsSync(JOB);
+    assert.equal(ran.lastSuccessAt?.toISOString(), at.toISOString());
+    assert.equal(ran.lastError, null);
+
+    await db.update(jobRuns).set({ lastError: "authz" }).where(eq(jobRuns.job, JOB));
+    assert.equal((await lastVisitsSync(JOB)).lastError, "authz");
   },
 );

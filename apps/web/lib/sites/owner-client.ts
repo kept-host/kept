@@ -1,6 +1,6 @@
 /**
  * The browser's client for the owner-scoped (studio) routes — publish, keep,
- * demote, swap, rename, replace, restore, delete, and account deletion.
+ * demote, swap, rename, details, replace, restore, delete, and account deletion.
  * Downloads and the export are plain links (`GET`, `Content-Disposition:
  * attachment`), so they have no call here.
  *
@@ -32,6 +32,7 @@ import {
   ownedPublishResultSchema,
   replaceResultSchema,
   restoreResultSchema,
+  siteUpdateResultSchema,
   studioErrorSchema,
   swapResultSchema,
   type AccountDeletionRequest,
@@ -45,6 +46,7 @@ import {
   type PublishRequest,
   type ReplaceResult,
   type RestoreResult,
+  type SiteUpdateRequest,
   type StudioError,
   type StudioSite,
   type SwapResult,
@@ -195,6 +197,34 @@ export async function renamePage(
     `/api/sites/${encodeURIComponent(siteId)}/name`,
     jsonInit("PATCH", body, signal),
     nameChangeResultSchema,
+  );
+  return sent.ok ? { ok: true, site: sent.body.site } : { ok: false, error: sent.error };
+}
+
+/** A Details save: the page as it now is, or why nothing changed. */
+export type UpdateOutcome =
+  | { ok: true; site: StudioSite }
+  | { ok: false; error: StudioError };
+
+/**
+ * `PATCH /api/sites/:id` — save a page's title and/or Explore flag (PRD §5.2).
+ *
+ * Send only what changed. `title: ""` hands the title back to the page's own
+ * `<title>`, so the caller repaints from `site.title` rather than from what it
+ * sent. A refusal is the envelope's own sentence; anything else is
+ * `COULD_NOT_SAVE`.
+ *
+ * Never throws, including on abort.
+ */
+export async function updatePage(
+  siteId: string,
+  update: SiteUpdateRequest,
+  signal?: AbortSignal,
+): Promise<UpdateOutcome> {
+  const sent = await send(
+    `/api/sites/${encodeURIComponent(siteId)}`,
+    jsonInit("PATCH", update, signal),
+    siteUpdateResultSchema,
   );
   return sent.ok ? { ok: true, site: sent.body.site } : { ok: false, error: sent.error };
 }

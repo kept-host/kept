@@ -13,19 +13,33 @@ import {
   DRAFT_GRACE_DAYS,
   DRAFT_TTL_DAYS,
   limitsFor,
+  NAME_HOLD_DAYS,
+  PUBLISH_CHANNELS,
   SITE_STATUSES,
   type SiteStatus,
 } from "@kept/shared";
+
+import { DRAFT_NAME_NOTE, NAME_HOLD_PERIOD, namesUsed, renameWarning } from "../names/messages";
 
 import {
   DRAFT_URGENT_HOURS,
   atLimitBanner,
   atLimitPublishToast,
-  demoteConsequence,
+  archivedNotice,
+  CHANNEL_LABEL,
+  DELETE_PAGE_NOTE,
+  deletePageWarning,
+  DEMOTE_NOTE,
+  DEMOTED_TOAST,
+  demoteDeadline,
   effectiveStatus,
   expiredDraftNotice,
   formatBytes,
+  formatTimestamp,
   formatUpdatedAt,
+  FIRST_VERSION_NOTE,
+  PRO_VERSIONS_LINE,
+  restoreWarning,
   isDraftUrgent,
   isManagementRestricted,
   managementRefusal,
@@ -109,8 +123,28 @@ test("the updated stamp is pinned, so it cannot drift with the host's locale", (
   );
 });
 
-test("cards point at the detail route task 008 lands", () => {
-  assert.equal(siteHref("k3n8vq2p"), "/site/k3n8vq2p");
+test("cards point at the detail route by the page's id, never its name (D2)", () => {
+  const id = "0b8e6f5e-1c2d-4e3f-8a9b-0c1d2e3f4a5b";
+  assert.equal(siteHref(id), `/site/${id}`);
+});
+
+test("a timestamp is pinned to UTC with the time, so two versions on one day read apart", () => {
+  assert.equal(formatTimestamp(new Date("2026-10-03T14:20:00.000Z")), "3 Oct 2026, 14:20 UTC");
+  assert.equal(formatTimestamp(new Date("2026-01-01T00:05:00.000Z")), "1 Jan 2026, 00:05 UTC");
+});
+
+test("every publish channel has a label, and the version copy is the PRD's", () => {
+  for (const channel of PUBLISH_CHANNELS) assert.ok(CHANNEL_LABEL[channel], channel);
+  assert.deepEqual(
+    [CHANNEL_LABEL.web, CHANNEL_LABEL.studio, CHANNEL_LABEL.api],
+    ["Web", "Studio", "API"],
+  );
+  assert.equal(
+    FIRST_VERSION_NOTE,
+    "This is the first version. Replace it and the old one stays here for undo.",
+  );
+  assert.equal(PRO_VERSIONS_LINE, `Keep ${limitsFor("premium").previousVersions} versions with Pro`);
+  assert.match(restoreWarning("3 Oct 2026, 14:20 UTC"), /^The version from 3 Oct 2026, 14:20 UTC goes live/);
 });
 
 test("a page is named by its title, and by its slug only when it has none", () => {
@@ -145,19 +179,44 @@ test("the swap warning names both pages and never types the draft clock", () => 
   assert.match(sentence, /Nothing is deleted/);
 });
 
-test("the demote warning names the page, states the fresh clock and destroys nothing", () => {
-  const sentence = demoteConsequence("Recipe notes");
+test("the demote copy states the FRESH clock from the constant, before and after", () => {
+  assert.equal(DEMOTE_NOTE, `This page gets a ${DRAFT_TTL_DAYS}-day countdown again.`);
+  assert.equal(
+    demoteDeadline(new Date("2026-10-10T09:00:00.000Z")),
+    "It expires on 10 Oct 2026 unless you keep it again.",
+  );
+  assert.equal(DEMOTED_TOAST, `Made draft · ${DRAFT_TTL_DAYS} days left`);
+});
 
-  assert.match(sentence, /Recipe notes/);
-  // Demote sets a FRESH clock, so the constant is substituted for the same
-  // reason `swapConsequence` substitutes it.
-  assert.match(sentence, new RegExp(`expires in ${DRAFT_TTL_DAYS} days`));
-  assert.match(sentence, /Nothing is deleted/);
-  // The page keeps serving — demote removes nothing, and a warning that implied
-  // otherwise would stop people using a control that is meant to be cheap.
-  assert.match(sentence, /same link/);
-  // One page, not two: the swap sentence's second name has no meaning here.
-  assert.doesNotMatch(sentence, /is kept for good/);
+test("the delete warning is PRD §11's, and promises a hold only for a chosen name", () => {
+  assert.equal(NAME_HOLD_PERIOD, "12 months", `${NAME_HOLD_DAYS} days, in the PRD's unit`);
+  assert.equal(
+    deletePageWarning(null),
+    `The link stops working within about 2 minutes. You can download the files for ${DRAFT_GRACE_DAYS} days.`,
+  );
+  assert.equal(
+    deletePageWarning("recipe-notes"),
+    `The link stops working within about 2 minutes. You can download the files for ${DRAFT_GRACE_DAYS} days. The name recipe-notes stays reserved for you for 12 months.`,
+  );
+  assert.match(DELETE_PAGE_NOTE, new RegExp(`for ${DRAFT_GRACE_DAYS} days\\.$`));
+  assert.equal(
+    archivedNotice(new Date("2026-10-04T12:00:00.000Z"), new Date("2026-11-03T12:00:00.000Z")),
+    "Deleted on 4 Oct 2026. You can download it until 3 Nov 2026.",
+  );
+  assert.equal(archivedNotice(new Date("2026-10-04T12:00:00.000Z"), null), "Deleted on 4 Oct 2026.");
+});
+
+test("the name section's words are PRD §5.4's, holds said only for a chosen name", () => {
+  assert.equal(
+    renameWarning("old-name.kept.host", true),
+    "The old link old-name.kept.host stops working within about 2 minutes. Nobody else can take that name for 12 months.",
+  );
+  assert.equal(
+    renameWarning("k3n8vq2p.kept.host", false),
+    "The old link k3n8vq2p.kept.host stops working within about 2 minutes.",
+  );
+  assert.equal(DRAFT_NAME_NOTE, "Keep this page to give it a name. Drafts get a generated one.");
+  assert.equal(namesUsed(2, limitsFor("free").chosenNames), `Names · 2 of ${limitsFor("free").chosenNames} used`);
 });
 
 test("the studio's toasts and banner are the PRD's sentences, with the limit interpolated", () => {

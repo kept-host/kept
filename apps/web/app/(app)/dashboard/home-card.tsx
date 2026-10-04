@@ -63,7 +63,7 @@ export function HomeCard({
   const [replacing, setReplacing] = useState(false);
   const itemRef = useRef<HTMLLIElement | null>(null);
   const host = new URL(site.liveUrl).host;
-  const href = siteHref(site.slug);
+  const href = siteHref(site.id);
   const replaceable = site.status === "live";
 
   useEffect(() => {

@@ -18,7 +18,7 @@
  *
  * This module is the ONE call site for the dependency: the component below it
  * deals in a matrix and a path, so swapping encoders is a change to two
- * functions.
+ * functions. `qrSvg` (task 012's downloads) is built from the same two.
  */
 import { encode } from "uqr";
 
@@ -63,4 +63,20 @@ export function qrPath(matrix: QrMatrix): string {
     }
   }
   return d;
+}
+
+/**
+ * The QR as a standalone SVG document — what "Download SVG" saves and what
+ * "Download PNG" rasterises (page detail's Share section, E06 task 012).
+ *
+ * NOT `components/kept/qr.tsx`'s markup: that one paints with
+ * `var(--surface)` and `currentColor`, which mean nothing outside the studio's
+ * stylesheet, so a file saved from it would open as a black square or nothing
+ * at all. A file must carry its own colours, and a QR code is read as dark
+ * modules on a light field — so `black` on `white`, by name. The geometry is
+ * the same `qrPath` the screen draws, from the same `qrMatrix`.
+ */
+export function qrSvg(value: string): string {
+  const matrix = qrMatrix(value);
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${matrix.size} ${matrix.size}" width="${matrix.size * 8}" height="${matrix.size * 8}" shape-rendering="crispEdges"><rect width="${matrix.size}" height="${matrix.size}" fill="white"/><path d="${qrPath(matrix)}" fill="black"/></svg>`;
 }

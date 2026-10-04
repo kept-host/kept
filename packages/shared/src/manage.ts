@@ -12,7 +12,8 @@
 
 import { z } from "zod";
 
-import { nameKindEnum, siteStatusEnum } from "./enums";
+import { PAGE_TITLE_MAX_LENGTH } from "./constants";
+import { nameKindEnum, siteStatusEnum, titleSourceEnum } from "./enums";
 import { keptQuotaSchema, type KeptQuota } from "./keep";
 
 /**
@@ -91,9 +92,13 @@ export const studioSiteSchema = z.object({
   /** `https://{slug}.{base}` — built by the control plane, never by the client. */
   liveUrl: z.string().url(),
   title: z.string().nullable(),
+  /** Who wrote `title`: the page's own `<title>`, or its owner (D11). */
+  titleSource: titleSourceEnum,
   status: siteStatusEnum,
   /** `generated` (minted) or `chosen` (renamed by the owner, counted against the name quota — D3). */
   nameKind: nameKindEnum,
+  /** "List on Explore when it opens" (D12) — stored now, used by E15. */
+  listedPublic: z.boolean(),
   /** The draft clock. Set ⇒ draft; `null` ⇒ kept. */
   expiresAt: z.string().datetime().nullable(),
   /** End of the post-expiry grace window; `null` on a kept page. */
@@ -123,6 +128,45 @@ export const ownedPublishResultSchema = z.object({
 });
 
 export type OwnedPublishResult = z.infer<typeof ownedPublishResultSchema>;
+
+/**
+ * `PATCH /api/sites/:id` — the page's Details (PRD §5.2): its title and its
+ * Explore flag. Either or both; an empty body is a caller bug.
+ *
+ * `title` is whitespace-collapsed and trimmed, then held to
+ * `PAGE_TITLE_MAX_LENGTH` — the cap the extracted title has (D11). `""` (after
+ * trimming) is not an empty title: it hands the title back to the page's own
+ * `<title>` (`title_source = 'html'`). Any other value is the owner's
+ * (`title_source = 'owner'`), and no replace overwrites it.
+ *
+ * `listedPublic` is a kept `live` page's choice only (D12); the route refuses it
+ * on any other page with `not_allowed_in_status`.
+ */
+export const siteUpdateRequestSchema = z
+  .object({
+    title: z
+      .string()
+      .transform((title) => title.replace(/\s+/g, " ").trim())
+      .pipe(
+        z
+          .string()
+          .max(PAGE_TITLE_MAX_LENGTH, `Titles can be up to ${PAGE_TITLE_MAX_LENGTH} characters.`),
+      )
+      .optional(),
+    listedPublic: z.boolean().optional(),
+  })
+  .refine((body) => body.title !== undefined || body.listedPublic !== undefined, {
+    message: "Send `{ title }`, `{ listedPublic }`, or both.",
+  });
+
+export type SiteUpdateRequest = z.input<typeof siteUpdateRequestSchema>;
+
+/** What a Details save returns: the page as it now is, `updatedAt` moved. */
+export const siteUpdateResultSchema = z.object({
+  site: studioSiteSchema,
+});
+
+export type SiteUpdateResult = z.infer<typeof siteUpdateResultSchema>;
 
 /**
  * `PATCH /api/sites/:id/name` — the name the owner chose (PRD §5.4).

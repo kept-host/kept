@@ -9,7 +9,15 @@
  * ⚠️ THE ONE THAT MATTERS IS `effectiveStatus`. Everything else here is
  * formatting.
  */
-import { DRAFT_TTL_DAYS, type SiteStatus } from "@kept/shared";
+import {
+  DRAFT_GRACE_DAYS,
+  DRAFT_TTL_DAYS,
+  limitsFor,
+  type PublishChannel,
+  type SiteStatus,
+} from "@kept/shared";
+
+import { NAME_HOLD_PERIOD } from "../names/messages";
 
 /**
  * What to call a page. `title ?? slug`, in one place — E06 task 007.
@@ -46,8 +54,9 @@ export function effectiveStatus(
   return expiredByClock && status === "live" ? "expired" : status;
 }
 
-const MS_PER_HOUR = 60 * 60 * 1000;
-const MS_PER_DAY = 24 * MS_PER_HOUR;
+/** Clock arithmetic for the studio's dates — shared, so no screen re-spells it. */
+export const MS_PER_HOUR = 60 * 60 * 1000;
+export const MS_PER_DAY = 24 * MS_PER_HOUR;
 
 /** `1 day`, `3 days`. Shared with `components/kept/draft-chip.tsx`. */
 export function plural(count: number, unit: string): string {
@@ -179,23 +188,55 @@ export function swapConsequence(demoteName: string, keepName: string): string {
 }
 
 /**
- * The sentence a plain demote must say BEFORE it writes — E06 task 008.
+ * What demoting a kept page does, said BEFORE it writes — the page-detail
+ * Danger zone's line and its confirm dialog (`kept Page Screen.dc.html`; E06
+ * task 012). Demote is the one verb there that takes something away, and the
+ * endpoint confirms nothing itself (`app/api/sites/[id]/demote/route.ts`: "the
+ * confirmation is the caller's") — a warning printed after the write is a
+ * receipt, not a warning.
  *
- * ⚠️ SHOWN BEFORE THE CALL, NEVER AFTER IT. Demote is the one verb on the detail
- * screen that takes something away — a permanent page stops being permanent —
- * and the endpoint deliberately does no confirming of its own
- * (`app/api/sites/[id]/demote/route.ts`: "the confirmation is the caller's").
- * A warning printed after the write is not a warning, it is a receipt.
- *
- * It is a sibling of `swapConsequence` rather than a call into it: a swap trades
- * one page for another and names both, a demote gives a slot back and names one.
- * Reusing the swap sentence would mean inventing a second page to put in it.
- *
- * `DRAFT_TTL_DAYS` is substituted for the same reason it is there — demote sets
- * a FRESH clock, and a typed number turns this into a lie the day the cap moves.
+ * `DRAFT_TTL_DAYS` is substituted because demote sets a FRESH clock, and a
+ * typed number turns this into a lie the day the constant moves.
  */
-export function demoteConsequence(name: string): string {
-  return `${name} becomes a draft again and expires in ${DRAFT_TTL_DAYS} days. Nothing is deleted, the page stays at the same link, and you can keep it again while a slot is free.`;
+export const DEMOTE_NOTE = `This page gets a ${DRAFT_TTL_DAYS}-day countdown again.`;
+
+/** The dialog's second line: the deadline the fresh clock would set. */
+export function demoteDeadline(expiresOn: Date): string {
+  return `It expires on ${formatUpdatedAt(expiresOn)} unless you keep it again.`;
+}
+
+/** After the demote landed (the design's toast, the clock interpolated). */
+export const DEMOTED_TOAST = `Made draft · ${DRAFT_TTL_DAYS} days left`;
+
+/**
+ * The Delete confirmation's body — PRD §11 verbatim, after the dialog's title
+ * "Delete {page}?". The download window is `DRAFT_GRACE_DAYS` (D14: archive,
+ * downloadable until `purge_after`); the hold sentence appears only when the
+ * page carries a CHOSEN name, which is the only kind D4 holds.
+ *
+ * There is no Undo (design call 5): there is no un-archive path, so the
+ * sentence says what survives rather than offering a way back.
+ */
+export function deletePageWarning(chosenName: string | null): string {
+  const hold =
+    chosenName === null
+      ? ""
+      : ` The name ${chosenName} stays reserved for you for ${NAME_HOLD_PERIOD}.`;
+  return `The link stops working within about 2 minutes. You can download the files for ${DRAFT_GRACE_DAYS} days.${hold}`;
+}
+
+/** The Danger zone's Delete row, before anything is pressed (the design's line). */
+export const DELETE_PAGE_NOTE = `The link stops working. You can still download the files for ${DRAFT_GRACE_DAYS} days.`;
+
+/**
+ * An archived page's reduced view (PRD §5.2): the page was deleted by its owner
+ * and stays downloadable until `purge_after`, when E07's purge collects it.
+ */
+export function archivedNotice(deletedOn: Date, purgeAfter: Date | null): string {
+  const deleted = `Deleted on ${formatUpdatedAt(deletedOn)}.`;
+  return purgeAfter === null
+    ? deleted
+    : `${deleted} You can download it until ${formatUpdatedAt(purgeAfter)}.`;
 }
 
 /**
@@ -291,9 +332,55 @@ export function formatUpdatedAt(date: Date): string {
 }
 
 /**
- * Where a card points: the page-detail screen. Task 012 re-keys it by id
- * (`/site/[id]`, D2) and updates the home's call site with it.
+ * A date and a time, pinned like `formatUpdatedAt` — `3 Oct 2026, 14:20 UTC`.
+ * For the version list and the visits "as of", where two events on one day
+ * must still read apart and a client in another timezone must render the same
+ * string the server did.
  */
-export function siteHref(slug: string): string {
-  return `/site/${slug}`;
+const STAMP_FORMAT = new Intl.DateTimeFormat("en-GB", {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+  timeZone: "UTC",
+});
+
+export function formatTimestamp(date: Date): string {
+  return `${STAMP_FORMAT.format(date)} UTC`;
+}
+
+/** How a version was published, in the Versions list (PRD §5.5; E09 brings agents). */
+export const CHANNEL_LABEL: Record<PublishChannel, string> = {
+  web: "Web",
+  studio: "Studio",
+  api: "API",
+  mcp: "Agent",
+};
+
+/** A page with one version — PRD §9.2, verbatim. */
+export const FIRST_VERSION_NOTE =
+  "This is the first version. Replace it and the old one stays here for undo.";
+
+/** After restoring an older version from the list. */
+export function restoredToast(stamp: string): string {
+  return `Restored the version from ${stamp}.`;
+}
+
+/** The restore confirmation, before the pointer moves (PRD §9.2: restore confirm). */
+export function restoreWarning(stamp: string): string {
+  return `The version from ${stamp} goes live at the same link within about 2 minutes. The current one stays in the list.`;
+}
+
+/** The Versions tab's locked row on Free (D15) — the Pro count from `limitsFor`. */
+export const PRO_VERSIONS_LINE = `Keep ${limitsFor("premium").previousVersions} versions with Pro`;
+
+/**
+ * Where a card points: the page-detail screen, `/site/[id]` — by the page's
+ * id, never its name, because names change (rename, and drafts carry
+ * generated ones) and a link keyed by name breaks on every rename (D2).
+ */
+export function siteHref(id: string): string {
+  return `/site/${id}`;
 }

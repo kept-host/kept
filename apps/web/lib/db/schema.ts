@@ -19,6 +19,7 @@ import {
   PUBLISH_CHANNELS,
   REGIONS,
   SITE_STATUSES,
+  TITLE_SOURCES,
 } from "@kept/shared";
 import { relations, sql } from "drizzle-orm";
 import {
@@ -256,7 +257,7 @@ export const sites = pgTable(
     // Who wrote `title` (D11, migration 0005). `html`: the page's own `<title>`,
     // refreshed by every write path. `owner`: set by the owner, and no write
     // path may overwrite it. A text CHECK, not a pgEnum, as the PRD specifies.
-    titleSource: text("title_source", { enum: ["html", "owner"] })
+    titleSource: text("title_source", { enum: TITLE_SOURCES })
       .notNull()
       .default("html"),
     // D3: `generated` (minted at publish) or `chosen` (an owner's rename). A

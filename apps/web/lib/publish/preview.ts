@@ -1,10 +1,11 @@
 /**
- * The published page's own bytes, for the two screens that show a preview of it
- * — `/p/[anonToken]` (task 008) and `/keep/[anonToken]` (task 009).
+ * The published page's own bytes, for the screens that show a preview of it —
+ * `/p/[anonToken]` (task 008), `/keep/[anonToken]` (task 009) and the studio's
+ * page detail (E06 task 012).
  *
- * ONE READER FOR BOTH. The size cap, the failure policy and the "which store is
- * the authority" answer are the same on both screens, so they live once. A
- * second copy would drift the moment one of the three changed.
+ * ONE READER FOR ALL OF THEM. The size cap, the failure policy and the "which
+ * store is the authority" answer are the same on every screen, so they live
+ * once. A second copy would drift the moment one of them changed.
  *
  * THE BYTES COME FROM R2, not from the edge. R2 is the authority on them, and
  * the edge could not serve this purpose anyway: hosted pages go out with
@@ -28,9 +29,9 @@ export const PREVIEW_MAX_BYTES = 256 * 1024;
  * The four columns a preview read actually consults.
  *
  * ⚠️ THE PARAMETER IS THIS SHAPE, NOT `AnonSite`, and that is deliberate. E06's
- * `/site/[slug]` (task 008) previews an **owner-scoped** row — `OwnedSite` from
- * `lib/db/queries/dashboard.ts`, which carries no `region`, `ownerId` or
- * `contentHash` because no owner screen needs them. Both row types satisfy this
+ * page-detail screen, `/site/[id]` (task 012), previews an **owner-scoped** row
+ * — `OwnedSiteDetail` from `lib/db/queries/dashboard.ts`, which carries no
+ * `region`, `ownerId` or `contentHash` because no owner screen needs them. Both row types satisfy this
  * interface structurally, so one reader serves the anonymous and the signed-in
  * path without either query growing columns to please a function that never
  * looks at them.

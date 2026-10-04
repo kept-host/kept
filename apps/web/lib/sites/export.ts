@@ -57,8 +57,10 @@ export interface ExportEntry {
 /**
  * Whether an owner may still download this page: anything but `removed`, until
  * `purge_after` — after which the page is E07's to collect, not the owner's.
+ * Exported for the page-detail screen (task 012), which shows exactly the pages
+ * its Download link can still serve.
  */
-function isDownloadable(
+export function isDownloadable(
   site: { status: SiteStatus; purgeAfter: Date | null },
   now: Date,
 ): boolean {

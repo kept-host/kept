@@ -3,7 +3,8 @@ import { cn } from "@/lib/utils";
 /**
  * A look at the published page itself — shared by `/p/[anonToken]` (task 008)
  * and `/keep/[anonToken]` (task 009), where a human who was handed a link by an
- * agent has to work out what they are being asked to keep.
+ * agent has to work out what they are being asked to keep, and by the studio's
+ * page detail (E06 task 012).
  *
  * WHY `srcDoc` AND NOT `src`. The obvious implementation — an iframe pointing at
  * the live URL — cannot work and must not be attempted: the Worker serves every
@@ -26,11 +27,17 @@ export function PagePreview({
   liveUrl,
   html,
   className,
+  frameClassName = "aspect-[16/10] w-full",
 }: {
   liveUrl: string;
   /** The page's HTML, already read server-side, or `null` when unavailable. */
   html: string | null;
   className?: string;
+  /**
+   * The rendering area's box. A 16:10 card by default; page detail (E06 task
+   * 012) sizes it to its desktop / phone-width toggle instead.
+   */
+  frameClassName?: string;
 }) {
   const host = new URL(liveUrl).host;
 
@@ -52,7 +59,7 @@ export function PagePreview({
         </span>
       </div>
 
-      <div className="aspect-[16/10] w-full bg-bg">
+      <div className={cn("bg-bg", frameClassName)}>
         {html === null ? (
           <div className="flex h-full items-center justify-center px-6 text-center text-sm text-text-muted">
             Preview unavailable — open the page to see it.

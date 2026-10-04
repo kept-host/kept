@@ -281,10 +281,10 @@ test(
 );
 
 test(
-  "another account's page is invisible by id and by slug, indistinguishably from missing",
+  "another account's page is invisible on the home and by id, indistinguishably from missing",
   { skip: skipLive },
   async () => {
-    const { getDashboardSites, getOwnedSiteBySlug } = await import("./dashboard");
+    const { getDashboardSites, getOwnedSiteById } = await import("./dashboard");
     const owner = await makeProfile();
     const stranger = await makeProfile();
 
@@ -298,18 +298,34 @@ test(
       "and cannot see the owner's page by id",
     );
 
-    // A real slug owned by someone else, an anonymous page's slug, and a slug
-    // that never existed all answer identically: null. There is nothing in the
+    // A real id owned by someone else, an anonymous page's id, and an id that
+    // never existed all answer identically: null. There is nothing in the
     // return value to tell the three apart, because the scope is in the SQL.
-    assert.equal(await getOwnedSiteBySlug(stranger, theirs.slug), null);
-    assert.equal(await getOwnedSiteBySlug(stranger, anonymous.slug), null);
-    assert.equal(await getOwnedSiteBySlug(stranger, "e06-002-no-such-slug"), null);
+    assert.equal(await getOwnedSiteById(stranger, theirs.id), null);
+    assert.equal(await getOwnedSiteById(stranger, anonymous.id), null);
+    assert.equal(await getOwnedSiteById(stranger, crypto.randomUUID()), null);
 
-    // The owner still reaches their own page by the same call.
-    const mine = await getOwnedSiteBySlug(owner, theirs.slug);
+    // The owner still reaches their own page by the same call, with the two
+    // fields only the detail screen edits.
+    const mine = await getOwnedSiteById(owner, theirs.id);
     assert.ok(mine);
     assert.equal(mine.id, theirs.id);
     assert.equal(mine.expiresAt, null);
+    assert.equal(mine.listedPublic, false);
+    assert.equal(mine.nameKind, "generated");
+  },
+);
+
+test(
+  "getOwnedSiteById returns the owner's archived row too — the detail screen decides what it may still show",
+  { skip: skipLive },
+  async () => {
+    const { getOwnedSiteById } = await import("./dashboard");
+    const owner = await makeProfile();
+    const archived = await makeSite({ ownerId: owner, kept: true, status: "archived" });
+
+    const row = await getOwnedSiteById(owner, archived.id);
+    assert.equal(row?.status, "archived");
   },
 );
 
@@ -317,7 +333,7 @@ test(
   "an account with zero pages returns empty lists and a 0-of-limit quota — its OWN plan's limit — never a throw",
   { skip: skipLive },
   async () => {
-    const { getDashboardSites, getOwnedSiteBySlug } = await import("./dashboard");
+    const { getDashboardSites, getOwnedSiteById } = await import("./dashboard");
 
     // Both plans, because the number on the dashboard is the plan's (D1): a
     // quota that printed the free number to a premium account would be the
@@ -332,7 +348,7 @@ test(
       assert.equal(result.names, 0);
       assert.deepEqual(result.quota, { limit: keptPages, used: 0, remaining: keptPages }, plan);
 
-      assert.equal(await getOwnedSiteBySlug(profileId, "e06-002-nothing-here"), null);
+      assert.equal(await getOwnedSiteById(profileId, crypto.randomUUID()), null);
     }
   },
 );

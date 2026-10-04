@@ -76,6 +76,8 @@ import {
   ownedPublishResultSchema,
   replaceResultSchema,
   restoreResultSchema,
+  siteUpdateRequestSchema,
+  siteUpdateResultSchema,
   studioErrorSchema,
   swapResultSchema,
   type AccountDeletionResult,
@@ -88,6 +90,7 @@ import {
   type PublishErrorCode,
   type ReplaceResult,
   type RestoreResult,
+  type SiteUpdateResult,
   type StudioErrorCode,
   type SwapResult,
 } from "@kept/shared";
@@ -106,6 +109,7 @@ import {
   type PublisherContext,
 } from "../publish/pipeline";
 import { deleteAccount } from "./account-deletion";
+import { updateSiteDetails } from "./details";
 import { openExport, openPageDownload, type Download } from "./export";
 import { demoteSite, keepSite, SITE_NOT_FOUND_MESSAGE, swapKept } from "./keep";
 import { deleteSite, ownerPageBodySchema, replaceSite } from "./manage";
@@ -444,6 +448,42 @@ export async function changeOwnedSiteName(
     return { ok: true, status: 200, body: nameChangeResultSchema.parse({ site }) };
   } catch (err) {
     return studioFailure(err, "rename");
+  }
+}
+
+/**
+ * `PATCH /api/sites/:id` — the page's Details: `{ title?, listedPublic? }`
+ * (PRD §5.2, D11, D12).
+ *
+ * The shape is `siteUpdateRequestSchema`'s — the title collapsed, trimmed and
+ * held to `PAGE_TITLE_MAX_LENGTH`, at least one field present — and its own
+ * sentence comes back as `invalid_request`. Every rule about WHICH page may
+ * change WHICH field is `./details.ts`'s, thrown as `not_allowed_in_status`.
+ *
+ * Success is the page as it now is, with `updated_at` moved (the OG card's
+ * cache key — Bug 4).
+ */
+export async function updateOwnedSite(
+  rawSiteId: string,
+  raw: unknown,
+  profileId: string,
+): Promise<OwnerOutcome<SiteUpdateResult>> {
+  const parsedId = siteIdSchema.safeParse(rawSiteId);
+  if (!parsedId.success) return ownerNotFound();
+
+  const parsed = siteUpdateRequestSchema.safeParse(raw);
+  if (!parsed.success) {
+    return refuse(
+      "invalid_request",
+      parsed.error.issues[0]?.message ?? "Send `{ title }`, `{ listedPublic }`, or both.",
+    );
+  }
+
+  try {
+    const site = await updateSiteDetails(parsedId.data, profileId, parsed.data);
+    return { ok: true, status: 200, body: siteUpdateResultSchema.parse({ site }) };
+  } catch (err) {
+    return studioFailure(err, "save the details of");
   }
 }
 

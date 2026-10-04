@@ -162,8 +162,8 @@ test.describe("the swap chooser", () => {
   }) => {
     const { kept, draft, ownerId } = await accountAtCap(page, baseURL!);
 
-    // The detail screen of the DRAFT. Its route is re-keyed by id in task 012.
-    await page.goto(`/site/${draft.slug}`);
+    // The detail screen of the DRAFT, routed by its id (D2).
+    await page.goto(`/site/${draft.siteId}`);
     await expect(page.getByText(/^Draft · /)).toBeVisible();
 
     await page.getByTestId("keep-button").click();

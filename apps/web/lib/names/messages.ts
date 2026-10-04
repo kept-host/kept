@@ -10,7 +10,31 @@
  * `limitsFor(plan)` and the database (PRD §11) — a limit typed into a sentence
  * here would be a second source E11 could not change.
  */
-import type { NameCheckResult } from "@kept/shared";
+import { NAME_HOLD_DAYS, type NameCheckResult } from "@kept/shared";
+
+/**
+ * How long a released chosen name is held for its last owner, in words —
+ * `NAME_HOLD_DAYS` as months ("12 months"), the unit PRD §5.4 and §11 speak in.
+ */
+export const NAME_HOLD_PERIOD = `${Math.round((NAME_HOLD_DAYS * 12) / 365)} months`;
+
+/**
+ * The rename dialog's warning, said before the name moves (PRD §5.4). The hold
+ * sentence only when the old name was CHOSEN — a generated name is not held
+ * (D4), so promising a hold on it would be false.
+ */
+export function renameWarning(oldHost: string, oldNameChosen: boolean): string {
+  const hold = oldNameChosen ? ` Nobody else can take that name for ${NAME_HOLD_PERIOD}.` : "";
+  return `The old link ${oldHost} stops working within about 2 minutes.${hold}`;
+}
+
+/** A draft's Name section, where the button would be (PRD §5.2, AC17). */
+export const DRAFT_NAME_NOTE = "Keep this page to give it a name. Drafts get a generated one.";
+
+/** The name quota, as the Name section states it (PRD §5.2). */
+export function namesUsed(count: number, quota: number): string {
+  return `Names · ${count} of ${quota} used`;
+}
 
 /**
  * The sentence for one check result about `name`. `hostSuffix` is the dot and

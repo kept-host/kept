@@ -2,7 +2,8 @@
 
 /**
  * One clock for the whole studio screen — E06 task 003; task 011 keeps it as
- * the Pages home's ticker (`components/kept/site-card.tsx` reads `useNow`).
+ * the Pages home's ticker (`components/kept/site-card.tsx` reads `useNow`) and
+ * task 012's page detail mounts it for its status chip and Keep action.
  *
  * ── WHY THIS IS A PROVIDER AND NOT A HOOK EACH CARD CALLS ────────────────────
  * A hook per card is a timer per card. On a wall of twenty pages that is twenty
@@ -31,13 +32,6 @@ import {
   useState,
   type ReactNode,
 } from "react";
-
-import type { SiteStatus } from "@kept/shared";
-
-import { DraftChip, draftCountdown } from "@/components/kept/draft-chip";
-import { SiteStatusDot } from "@/components/kept/live-url";
-import { effectiveStatus } from "@/lib/sites/display";
-import { cn } from "@/lib/utils";
 
 /**
  * Half a minute. The labels have minute granularity, which the PRD accepts, so
@@ -86,41 +80,4 @@ export function useNow(): number {
     throw new Error("This component must be rendered inside <ClockProvider>.");
   }
   return now;
-}
-
-/**
- * A page's serving state and, for a draft, how long it has — the page-detail
- * screen's status line (`/site/…`; task 012 owns where it lives next).
- *
- * THE PHASE COMES FROM THE CLOCK, NEVER FROM `status`. A draft that crosses
- * `expires_at` while the screen is open flips here, client-side, on the next
- * tick — the *row* does not flip until E07's sweep runs.
- *
- * A draft shows its countdown and no serving dot, because the chip already says
- * everything the dot would. That test is against the row's OWN `status`, not
- * against `shown` — an expired draft's chip reads "Draft · expired", and adding
- * the dot too printed "Expired · Draft · expired". A draft gets a dot only for a
- * status E07 actually wrote, which the clock cannot say.
- */
-export function SiteState({
-  status,
-  expiresAt,
-  className,
-}: {
-  status: SiteStatus;
-  /** The draft clock. `null` → kept, and no other split. */
-  expiresAt: Date | null;
-  className?: string;
-}) {
-  const now = new Date(useNow());
-  const { phase } = draftCountdown(expiresAt, now);
-  const shown = effectiveStatus(status, phase === "expired");
-  const isDraft = expiresAt !== null;
-
-  return (
-    <div className={cn("flex flex-wrap items-center gap-x-3 gap-y-2", className)}>
-      {isDraft && status === "live" ? null : <SiteStatusDot status={shown} />}
-      {isDraft ? <DraftChip expiresAt={expiresAt} now={now} /> : null}
-    </div>
-  );
 }

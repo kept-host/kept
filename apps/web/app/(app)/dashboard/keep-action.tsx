@@ -1,8 +1,9 @@
 "use client";
 
 /**
- * A draft card's one action: **Keep**, or **Swap…** at the kept limit — PRD
- * §5.3, AC11 / AC12 (E06 tasks 007, 011).
+ * A draft's one action: **Keep**, or **Swap…** at the kept limit — PRD §5.3,
+ * AC11 / AC12 (E06 tasks 007, 011). The draft card's, and the page-detail
+ * header's (task 012), which sizes it up through `className`.
  *
  * ── BELOW THE LIMIT ──────────────────────────────────────────────────────────
  * One `POST /api/sites/:id/keep`; toast "Kept. It's permanent now."; then
@@ -38,6 +39,7 @@ export function KeepAction({
   atLimit,
   candidates,
   quota,
+  className,
 }: {
   /** The draft, as the chooser names it. */
   page: SwapPage;
@@ -46,6 +48,7 @@ export function KeepAction({
   /** The account's kept pages — the chooser's list. */
   candidates: SwapPage[];
   quota: KeptQuota;
+  className?: string;
 }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -97,6 +100,7 @@ export function KeepAction({
         onClick={keep}
         className={cn(
           "h-9 px-3.5 font-body font-medium",
+          className,
           kept && "border-transparent bg-accent-soft text-accent-hover disabled:opacity-100",
         )}
       >

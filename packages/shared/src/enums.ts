@@ -73,6 +73,18 @@ export const nameKindEnum = /*#__PURE__*/ z.enum(NAME_KINDS);
 export type NameKind = (typeof NAME_KINDS)[number];
 
 /**
+ * Who wrote a page's title (D11, `sites.title_source`).
+ * - `html`  — the page's own `<title>`, refreshed by every write that carries
+ *             new bytes.
+ * - `owner` — set by its owner on the page-detail screen; no replace or restore
+ *             overwrites it. Clearing it hands the title back to `html`.
+ */
+export const TITLE_SOURCES = ["html", "owner"] as const;
+
+export const titleSourceEnum = /*#__PURE__*/ z.enum(TITLE_SOURCES);
+export type TitleSource = (typeof TITLE_SOURCES)[number];
+
+/**
  * Which door a version was published through (`site_versions.published_via`,
  * PRD §5.9) — shown in the version list.
  * - `web`    — the anonymous browser path: the landing's drop, and an
