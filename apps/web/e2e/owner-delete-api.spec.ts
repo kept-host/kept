@@ -45,7 +45,7 @@ import { jarlessContext, sessionHeaders } from "./session-request";
  *      rows and the R2 object are ALL still present afterwards. E07's grace-end
  *      job is what eventually collects the bytes, and `purge_after` is left
  *      intact for it.
- *   3. **The slot frees**, because `countKept` requires `status = 'live'`, and
+ *   3. **The slot frees**, because `isKeptCondition` excludes `archived`, and
  *      the response carries the new `KeptQuota` so the dashboard needs no
  *      refetch.
  *   4. **Publishing works again afterwards.** ⚠️ Note what this can and cannot

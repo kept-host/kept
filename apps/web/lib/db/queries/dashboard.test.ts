@@ -176,10 +176,12 @@ test(
       "an expired-but-unswept row is still a draft: it has a clock",
     );
 
-    // The quota is NOT kept.length. Three clockless rows, one slot used.
+    // The quota is NOT kept.length. Three clockless rows, two slots used: the
+    // quarantined page still holds its slot (a flag is not a deletion); the
+    // archived one does not (E06 task 004's kept predicate).
     assert.equal(kept.length, 3);
     const { keptPages } = limitsFor("free");
-    assert.deepEqual(quota, { limit: keptPages, used: 1, remaining: keptPages - 1 });
+    assert.deepEqual(quota, { limit: keptPages, used: 2, remaining: keptPages - 2 });
 
     const row = kept.find((s) => s.id === keptLive.id);
     assert.ok(row, "the kept page is present");

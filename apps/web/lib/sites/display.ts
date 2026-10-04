@@ -84,12 +84,12 @@ export function isManagementRestricted(status: SiteStatus): boolean {
  * Why a page cannot be the one swapped out, or `null` when it can — E06 task 007.
  *
  * TWO REASONS, AND THE SECOND IS THE ONE THE CHOOSER WOULD OTHERWISE GET WRONG.
- * The first is the standing restriction above. The second is arithmetic: the cap
- * counts `expires_at IS NULL AND status = 'live'` (`isKeptCondition`), so a page
- * that is clockless but *not* `live` — archived, expired, removed, or held under
- * review — is already outside the count. Demoting it frees nothing, and the swap
- * would end with the account still at its kept limit and one more draft than
- * it started with. Offering it would be offering a no-op that costs the user a
+ * The first is the standing restriction above. The second is arithmetic: a page
+ * that is clockless but *not* `live` either holds no slot (archived, removed —
+ * `isKeptCondition` excludes them) or is not one the server will demote
+ * (`demoteSite` takes only a kept `live` page). Demoting it frees nothing, and the
+ * swap would end with the account still at its kept limit and one more draft
+ * than it started with. Offering it would be offering a no-op that costs the user a
  * permanent page.
  *
  * The wall groups by the clock alone, so those rows sit under "Kept" and are the

@@ -1,15 +1,16 @@
 /**
- * Keep, demote and swap — the three site-lifecycle primitives E05 is about.
+ * Keep, demote and swap — the three site-lifecycle primitives E05 is about,
+ * made honest about status by E06 task 004.
  *
- * ⚠️ KEEPING IS A POSTGRES WRITE, NOT A PUBLISH. The manifest the Worker reads
- * is `{ siteId, versionId, status, region, ownerId, updatedAt }`. Keeping
- * changes exactly one of those — `ownerId`, from null to a uuid. `status` stays
- * `live`, the slug stays, `versionId` stays, and R2 is untouched because the
- * object is keyed by `siteId`. So the ordinary keep does **not** call
- * `writeManifest`, does **not** purge, and does **not** pay the 125-second
- * re-purge cost. Writing the manifest anyway "for consistency" is a real
- * regression: it burns cache-purge quota and adds a failure mode to a flow that
- * currently has none.
+ * ⚠️ KEEPING A LIVE PAGE IS A POSTGRES WRITE, NOT A PUBLISH. The manifest the
+ * Worker reads is `{ siteId, versionId, status, region, ownerId, updatedAt }`.
+ * Keeping a `live` page changes exactly one of those — `ownerId`, from null to a
+ * uuid. `status` stays `live`, the slug stays, `versionId` stays, and R2 is
+ * untouched because the object is keyed by `siteId`. So the ordinary keep does
+ * **not** call `writeManifest`, does **not** purge, and does **not** pay the
+ * 125-second re-purge cost. Writing the manifest anyway "for consistency" is a
+ * real regression: it burns cache-purge quota and adds a failure mode to a flow
+ * that currently has none.
  *
  * The manifest is therefore knowingly STALE on `ownerId` for every kept page,
  * and that is accepted rather than fixed. Nothing in `apps/edge` reads
@@ -17,19 +18,35 @@
  * routing, not as serving input. If a future epic starts reading it, THAT epic
  * re-syncs. E05 does not pre-pay for it.
  *
- * Exactly one branch breaks the Postgres-only rule — the late keep of an
- * `expired` row inside the 30-day grace, where the manifest was removed and
- * bringing the page back means going through `lib/storage/manifest.ts` again.
- * That branch belongs to task 008, which composes the STORE half in
- * `./anon-keep.ts`; its Postgres half is `restoreAndKeepSite` below, because
- * SQL lives in this module and not in a composition module. **There are still
- * no store calls in this module at all**: no `writeManifest`, no
- * `removeManifest`, no R2, no purge. Keep it that way.
+ * ── THE ONE STORE CALL: THE LATE KEEP ──────────────────────────────────────
+ * An `expired` row inside its grace window (`purge_after > now()`, PRD §5.3)
+ * had its manifest REMOVED when it expired, so the edge says "gone" and only a
+ * KV write brings it back. Keeping it flips the row to `live` and clears its
+ * clocks inside the transaction, and then — only after COMMIT —
+ * `restoreManifest` writes the manifest through `writeManifest`. Postgres first:
+ * the reverse order would put a page back on the internet that the database
+ * still calls expired, and E07's grace sweep would take it down again underneath
+ * its new owner. Both keep doors (`./anon-keep.ts`, the owner route) and the
+ * swap reach that sequence through this module and nowhere else; there is no
+ * other store call here, and a direct `lib/storage/kv` import is a lint error.
  *
- * THE CAP IS A BRANCH, NOT A GUARD CLAUSE. At the account's kept limit the page
- * still gets `owner_id`, still loses its `anon_token_hash` and still shows up in
- * the dashboard — it simply keeps its clocks. That is why `keepSite` returns a
- * discriminated `KeepResult` instead of throwing.
+ * ── STATUS IS DECIDED UNDER THE LOCK ───────────────────────────────────────
+ * Every primitive reads the row's `status`/`purge_after` AFTER `lockOwner` and
+ * the row lock, never from a pre-flight read, because E07's expiry sweep can
+ * move them in between (epic Risk 7; the sweep must take the same lock).
+ *
+ *   archived · removed · expired past grace   → not found (edge case 13)
+ *   under_review · quarantined                 → 409 not_allowed_in_status
+ *   live draft · expired in grace              → keepable
+ *   kept live                                  → keep is a no-op; demotable
+ *
+ * ── THE CAP DEPENDS ON THE DOOR ────────────────────────────────────────────
+ * Through the ANONYMOUS door the cap is a branch, not a guard clause: at the
+ * account's kept limit the page still gets `owner_id`, still loses its
+ * `anon_token_hash` and lands an `owned_draft` that keeps a clock — attaching
+ * the page IS the point of that door (E05). Through the OWNER door the page is
+ * already an owned draft, so there is nothing to attach and the cap is a
+ * `409 at_kept_limit` (PRD §10.2, epic Risk 6, decision #6).
  *
  * THE LIMIT IS THE PLAN'S (D1). Every cap below is `limitsFor(plan).keptPages`,
  * with `plan` read from the owner's `profiles` row — under `lockOwner` wherever a
@@ -42,20 +59,22 @@ import {
   type DemoteResult,
   type KeepResult,
   type KeptQuota,
+  type KvManifest,
   type Plan,
+  type SiteStatus,
   type SwapResult,
 } from "@kept/shared";
-import { and, eq, isNull, sql, type SQL } from "drizzle-orm";
+import { and, eq, isNull, notInArray, sql, type SQL } from "drizzle-orm";
 
 import { db, type Tx } from "../db";
 import { profiles, sites } from "../db/schema";
 // The single definition of the draft clock arithmetic, reused rather than
 // retyped: `now + DRAFT_TTL_DAYS`, then `+ DRAFT_GRACE_DAYS`, both from
-// `@kept/shared`. This is an import of a pure function — the publish pipeline's
-// store helpers resolve their environment lazily inside their own calls, so
-// nothing here reaches R2, KV or the purge endpoint.
+// `@kept/shared`.
 import { draftClocks } from "../publish/pipeline";
+import { writeManifest } from "../storage/manifest";
 
+import { managementRefusal } from "./display";
 import { StudioRefusal } from "./studio-refusal";
 
 /**
@@ -77,24 +96,39 @@ export class SiteNotFoundError extends StudioRefusal {
   }
 }
 
+/**
+ * The two statuses an owner can never act on again: deleted by its owner (D14)
+ * or taken down (E07). They hold no slot and answer every primitive here as
+ * not found. One spelling, for the SQL predicate and the row check alike.
+ */
+const ENDED_STATUSES = ["archived", "removed"] as const satisfies readonly SiteStatus[];
+
 export interface KeepOptions {
   /**
    * Declare the ownership state the caller expects, explicitly — never by
    * convention.
    *
-   * `false` (default): the row must already be owned by `profileId`. This is
-   * the signed-in owner path (task 010).
+   * `false` (default): the OWNER door. The row must already be owned by
+   * `profileId`, and at the kept limit the keep is refused `at_kept_limit`.
    *
-   * `true`: the row may be anonymous (`owner_id IS NULL`) — the
-   * anonymous→owned door, and the bearer-token keep route (task 008) is the
-   * only caller allowed through it. A row already owned by *this same* profile
-   * is still accepted, so a double-submit of the keep link is a no-op success
-   * rather than a 404.
+   * `true`: the ANONYMOUS door. The row may be anonymous (`owner_id IS NULL`),
+   * and the bearer-token keep route (`./anon-keep.ts`) is the only caller
+   * allowed through it. A row already owned by *this same* profile is still
+   * accepted, so a double-submit of the keep link is a no-op success rather
+   * than a 404. At the kept limit the page lands `owned_draft`.
    */
   expectAnonymous?: boolean;
-  /** Compose inside an existing transaction (`swapKept`). Public callers pass none. */
-  tx?: Tx;
 }
+
+/**
+ * `KeepResult`, plus the one thing the store half can tell the caller.
+ *
+ * `restored` is true only on the late keep: the page had expired and its
+ * manifest has been written again, so it serves at the same address once more.
+ * The anonymous screen says "back online" from it; the owner route's response
+ * schema strips it, leaving E05's success body unchanged.
+ */
+export type KeepSiteResult = KeepResult & { restored: boolean };
 
 /** Run `fn` in `tx` if one was supplied, otherwise in a fresh transaction. */
 function inTransaction<T>(tx: Tx | undefined, fn: (tx: Tx) => Promise<T>): Promise<T> {
@@ -164,20 +198,24 @@ async function planOf(tx: Tx, profileId: string): Promise<Plan> {
 /**
  * THE DEFINITION OF KEPT-NESS, AND THE ONLY ONE.
  *
- * `owner_id = ? AND expires_at IS NULL AND status = 'live'`. `claimed_at` is a
- * historical stamp that survives a demote and must never be read to answer this
- * question — see the column comment in `../db/schema.ts`.
+ * `owner_id = ? AND expires_at IS NULL AND status NOT IN ('archived','removed')`
+ * (epic Architecture Notes). `claimed_at` is a historical stamp that survives a
+ * demote and must never be read to answer this question — see the column
+ * comment in `../db/schema.ts`.
  *
- * ⚠️ EXPORTED SO IT IS NEVER RETYPED (E06 task 002). E06's dashboard splits the
+ * A kept page that E07 holds `under_review` or `quarantined` STILL OCCUPIES ITS
+ * SLOT: a flag is not a deletion, and a quota that freed the slot would leave
+ * the account over its limit the moment the review cleared it. Only the two
+ * ended statuses give the slot back.
+ *
+ * ⚠️ EXPORTED SO IT IS NEVER RETYPED (E06 task 002). The dashboard splits the
  * kept wall from the drafts section and prints "N of {the plan's limit}" with
  * the same predicate this module counts the cap with. A second copy of the WHERE
  * clause in a query module is not cosmetic duplication: the two drift the first
- * time `archived` or `quarantined` changes what counts, and then the dashboard
- * disagrees with the endpoint that enforces the cap. Compose this — do not
- * re-spell it.
+ * time a status changes what counts, and then the dashboard disagrees with the
+ * endpoint that enforces the cap. Compose this — do not re-spell it.
  *
- * `archived` and `quarantined` rows are excluded here BY THE STATUS CLAUSE, and
- * that exclusion belongs to the *quota*, not to what a dashboard may read: a
+ * The exclusion belongs to the *quota*, not to what a dashboard may read: a
  * page that vanishes from the wall when it is flagged is indistinguishable from
  * data loss. `lib/db/queries/dashboard.ts` reads every status and asks this
  * predicate only for the number.
@@ -186,7 +224,7 @@ export function isKeptCondition(profileId: string): SQL {
   return and(
     eq(sites.ownerId, profileId),
     isNull(sites.expiresAt),
-    eq(sites.status, "live"),
+    notInArray(sites.status, [...ENDED_STATUSES]),
   ) as SQL;
 }
 
@@ -218,14 +256,12 @@ function quotaOf(used: number, plan: Plan): KeptQuota {
  * subtracts `used` from a limit of its own is the same drift `isKeptCondition`
  * exists to prevent, one level up.
  *
- * ⚠️ PASS `tx` WHEN YOU ARE ALREADY INSIDE A CAP DECISION. `keepSite`/`demoteSite`/
- * `swapKept` serialise on `lockOwner`, and a quota read that opens its own
- * connection would take a *different* snapshot — outside the lock, after a
- * concurrent keep, before this transaction's own write. Composing with the
- * caller's `tx` (E06 tasks 004/006/011) reads inside the serialisation point and
- * therefore agrees with what the cap branch decided. Without a `tx` this opens
- * its own read transaction, which is what a server-component dashboard read
- * wants.
+ * ⚠️ PASS `tx` WHEN YOU ARE ALREADY INSIDE A CAP DECISION. A quota read that
+ * opens its own connection takes a *different* snapshot — outside the lock,
+ * after a concurrent keep, before this transaction's own write. Composing with
+ * the caller's `tx` reads inside the serialisation point and therefore agrees
+ * with what the cap branch decided. Without a `tx` this opens its own read
+ * transaction, which is what a server-component dashboard read wants.
  */
 export function keptQuotaFor(profileId: string, tx?: Tx): Promise<KeptQuota> {
   return inTransaction(tx, async (trx) =>
@@ -240,6 +276,8 @@ async function lockSite(tx: Tx, siteId: string) {
       id: sites.id,
       slug: sites.slug,
       status: sites.status,
+      region: sites.region,
+      currentVersionId: sites.currentVersionId,
       ownerId: sites.ownerId,
       expiresAt: sites.expiresAt,
       purgeAfter: sites.purgeAfter,
@@ -251,158 +289,224 @@ async function lockSite(tx: Tx, siteId: string) {
   return site ?? null;
 }
 
+type LockedSite = NonNullable<Awaited<ReturnType<typeof lockSite>>>;
+
 /**
- * Attach a page to an account and, if the account is under its cap, take the
- * clock off it.
+ * Nothing left for an owner to act on: deleted, taken down, or expired past its
+ * grace window and awaiting E07's hard delete (edge case 13). An `expired` row
+ * with no `purge_after` cannot be shown to be inside a window, so it is gone
+ * rather than guessed at.
  *
- * `status` IS DELIBERATELY UNTOUCHED. An `expired` row keeps its status here;
- * flipping it back to `live` is half of the store restore, and the store
- * restore is task 008's — doing it here would put half a store operation in a
- * module that must contain none.
+ * Answered as the SAME not-found as a page that never existed: telling an owner
+ * "that page exists but is gone" through a different body is the oracle
+ * `SiteNotFoundError` exists to avoid, and there is no action to offer either way.
+ */
+function isGone(site: LockedSite, now: Date): boolean {
+  if ((ENDED_STATUSES as readonly SiteStatus[]).includes(site.status)) return true;
+  return site.status === "expired" && !(site.purgeAfter && site.purgeAfter > now);
+}
+
+/** What a late keep still owes the edge once its transaction has committed. */
+interface PendingRestore {
+  slug: string;
+  manifest: KvManifest;
+}
+
+/**
+ * Which door a keep came through. It decides who may own the row going in and
+ * what the cap does — see the module header.
+ *
+ * `swap` is the owner door with one more rule: its page must be a DRAFT. An
+ * already-kept page on the keep side would make the swap demote the other page
+ * for nothing, which costs the owner a permanent page.
+ */
+type KeepDoor = "anonymous" | "owner" | "swap";
+
+const ALREADY_KEPT_MESSAGE =
+  "That page is already kept. Choose a draft to keep in its place.";
+
+const CONTENTS_MISSING_MESSAGE =
+  "kept could not bring this page back — its contents are missing. Nothing was changed.";
+
+const RESTORE_INCOMPLETE_MESSAGE =
+  "This page is now on your account, but kept could not bring it back online. Nothing was lost — the page is recorded as live and will be restored.";
+
+function atKeptLimit(plan: Plan): StudioRefusal {
+  return new StudioRefusal(
+    "at_kept_limit",
+    `All ${limitsFor(plan).keptPages} of your kept pages are in use. Swap one out to keep this page.`,
+  );
+}
+
+/**
+ * The Postgres half of every keep, inside the caller's transaction.
+ *
+ * Returns the result and — on the late keep only — the manifest the caller must
+ * write AFTER this transaction commits (`restoreManifest`). The store write is
+ * never made from in here: an uncommitted row behind a live manifest is the
+ * ordering bug the late keep exists to avoid.
+ */
+async function keepLocked(
+  trx: Tx,
+  siteId: string,
+  profileId: string,
+  door: KeepDoor,
+): Promise<{ result: KeepResult; restore: PendingRestore | null }> {
+  const plan = await lockOwner(trx, profileId);
+  const site = await lockSite(trx, siteId);
+  const now = new Date();
+
+  const ownershipOk =
+    site !== null &&
+    (site.ownerId === profileId || (door === "anonymous" && site.ownerId === null));
+  if (!site || !ownershipOk || isGone(site, now)) throw new SiteNotFoundError(siteId);
+
+  // `under_review` / `quarantined`: E07's flags, which E06 renders and never
+  // writes. Making a flagged page permanent is the evasion the flag exists to
+  // stop. The sentence is the one the card already shows for the same state.
+  const flagged = managementRefusal(site.status);
+  if (flagged) throw new StudioRefusal("not_allowed_in_status", flagged);
+
+  // Already kept: the reminder-email link and a double-submit both land here.
+  // A no-op success, not an error and not a second write.
+  if (site.ownerId === profileId && site.expiresAt === null && site.status === "live") {
+    if (door === "swap") throw new StudioRefusal("not_allowed_in_status", ALREADY_KEPT_MESSAGE);
+    return {
+      result: {
+        outcome: "kept",
+        siteId: site.id,
+        slug: site.slug,
+        quota: quotaOf(await countKept(trx, profileId), plan),
+      },
+      restore: null,
+    };
+  }
+
+  // The late keep. Decided here, under both locks, from the row as it is NOW.
+  // Refused before any write: with no version there is no R2 object to point a
+  // manifest at, and the row must not be marked `live` with nothing to serve.
+  let restore: PendingRestore | null = null;
+  if (site.status === "expired") {
+    if (!site.currentVersionId) {
+      throw new StudioRefusal(
+        "internal_error",
+        CONTENTS_MISSING_MESSAGE,
+        `site ${site.id} (slug "${site.slug}") is expired with no current version — cannot restore.`,
+      );
+    }
+    restore = {
+      slug: site.slug,
+      manifest: {
+        siteId: site.id,
+        versionId: site.currentVersionId,
+        // Drafts and kept pages are both `live`; the clock lives in Postgres
+        // and never in the manifest.
+        status: "live",
+        // From the row, never a hardcoded "auto" — an EU page must not come back
+        // pointing at the wrong bucket.
+        region: site.region,
+        // The page is owned as of this transaction.
+        ownerId: profileId,
+        updatedAt: Date.now(),
+      },
+    };
+  }
+
+  const underCap = (await countKept(trx, profileId)) < limitsFor(plan).keptPages;
+  if (!underCap && door !== "anonymous") throw atKeptLimit(plan);
+
+  // At the cap (the anonymous door only) the page is owned and keeps a clock:
+  // the one it had while that is still running, but a FRESH one for a row that
+  // expired (resuming would hand back an `owned_draft` that expired before it was
+  // created) or that has no clock at all (a data anomaly — every anonymous
+  // publish sets both).
+  const held = underCap
+    ? null
+    : !restore && site.expiresAt && site.purgeAfter
+      ? { expiresAt: site.expiresAt, purgeAfter: site.purgeAfter }
+      : draftClocks(now);
+
+  await trx
+    .update(sites)
+    .set({
+      ownerId: profileId,
+      // A no-op on a `live` row; the late keep's flip back on an `expired` one.
+      status: "live",
+      expiresAt: held?.expiresAt ?? null,
+      purgeAfter: held?.purgeAfter ?? null,
+      // Two authorities on one page is a bug: the bearer token dies the moment
+      // an account owns the row.
+      anonTokenHash: null,
+      // Set on the FIRST keep and never restamped: `claimed_at` records when the
+      // page stopped being anonymous, not whether it is kept right now.
+      claimedAt: site.claimedAt ?? now,
+    })
+    .where(eq(sites.id, siteId));
+
+  // Counted again rather than `used + 1`: the quota reports the predicate's own
+  // answer after the write, never arithmetic about a row it assumed counted.
+  const quota = quotaOf(await countKept(trx, profileId), plan);
+  const result: KeepResult = held
+    ? {
+        outcome: "owned_draft",
+        siteId: site.id,
+        slug: site.slug,
+        quota,
+        expiresAt: held.expiresAt.toISOString(),
+        purgeAfter: held.purgeAfter.toISOString(),
+      }
+    : { outcome: "kept", siteId: site.id, slug: site.slug, quota };
+
+  return { result, restore };
+}
+
+/**
+ * The store half of a late keep, run only after the keep's transaction has
+ * committed. A PURGE IS TWO PURGES — `writeManifest` already schedules the second
+ * one 125 seconds later (`2 × cacheTtl + 5 s`); do not add a third, do not await
+ * the delayed one, and do not reimplement the pointer → KV → purge ordering.
+ *
+ * A failed write is NOT SWALLOWED. Postgres has committed: the page is owned,
+ * marked `live`, and either permanent or on a fresh clock, but the edge still
+ * says gone. Answering "kept!" would be a lie the owner only discovers by
+ * clicking their own link. The row is internally consistent and Postgres is the
+ * authority, so the restore is replayable — by E07's divergence audit, or by any
+ * later write on the page going through `writeManifest` again.
+ *
+ * `written.purge.ok === false` is NOT a failure (edge-purge contract §3): both
+ * stores agree and `writeManifest` has already logged it.
+ */
+async function restoreManifest(restore: PendingRestore | null): Promise<void> {
+  if (!restore) return;
+  const written = await writeManifest(restore.slug, restore.manifest);
+  if (written.ok) return;
+  throw new StudioRefusal(
+    "internal_error",
+    RESTORE_INCOMPLETE_MESSAGE,
+    `RESTORE INCOMPLETE — site ${restore.manifest.siteId} (slug "${restore.slug}") is kept and marked live in Postgres, but the manifest write failed at the "${written.step}" step: ${written.error}. The page is NOT serving; the row disagrees. E07 DIVERGENCE AUDIT: Postgres is the authority, never an R2 list (contract §7.5).`,
+  );
+}
+
+/**
+ * Keep a page: attach it to an account and, under the plan's cap, take the clock
+ * off it. An `expired` page inside its grace window is the late keep — back to
+ * `live`, and back on the internet once the transaction commits.
+ *
+ * Throws `SiteNotFoundError` (not yours / ended / past grace), a
+ * `not_allowed_in_status` refusal (flagged), or — owner door only — an
+ * `at_kept_limit` refusal. Every one of them is thrown before anything is written.
  */
 export async function keepSite(
   siteId: string,
   profileId: string,
   options: KeepOptions = {},
-): Promise<KeepResult> {
-  const { expectAnonymous = false, tx } = options;
-
-  return inTransaction(tx, async (trx) => {
-    const plan = await lockOwner(trx, profileId);
-
-    const site = await lockSite(trx, siteId);
-    if (!site) throw new SiteNotFoundError(siteId);
-
-    const ownershipOk = expectAnonymous
-      ? site.ownerId === null || site.ownerId === profileId
-      : site.ownerId === profileId;
-    if (!ownershipOk) throw new SiteNotFoundError(siteId);
-
-    // Already kept: the reminder-email link and a double-submit both land here.
-    // A no-op success, not an error and not a second write.
-    if (site.ownerId === profileId && site.expiresAt === null && site.status === "live") {
-      return {
-        outcome: "kept",
-        siteId: site.id,
-        slug: site.slug,
-        quota: quotaOf(await countKept(trx, profileId), plan),
-      };
-    }
-
-    const now = new Date();
-    // Set on the FIRST keep and never restamped: `claimed_at` records when the
-    // page stopped being anonymous, not whether it is kept right now.
-    const claimedAt = site.claimedAt ?? now;
-    const used = await countKept(trx, profileId);
-
-    if (used < limitsFor(plan).keptPages) {
-      await trx
-        .update(sites)
-        .set({
-          ownerId: profileId,
-          expiresAt: null,
-          purgeAfter: null,
-          // Two authorities on one page is a bug: the bearer token dies the
-          // moment an account owns the row.
-          anonTokenHash: null,
-          claimedAt,
-          updatedAt: now,
-        })
-        .where(eq(sites.id, siteId));
-
-      return {
-        outcome: "kept",
-        siteId: site.id,
-        slug: site.slug,
-        quota: quotaOf(used + 1, plan),
-      };
-    }
-
-    // At cap. The page is owned, the token is dead, the clocks are RETAINED.
-    // Never a throw, never a 4xx, never a silent no-op — the caller renders a
-    // countdown and a swap prompt.
-    //
-    // A row with no clock reaching this branch is a data anomaly (every
-    // anonymous publish sets both), and an `owned_draft` is not expressible
-    // without one, so it gets a fresh draft clock rather than a null result.
-    const clocks =
-      site.expiresAt && site.purgeAfter
-        ? { expiresAt: site.expiresAt, purgeAfter: site.purgeAfter }
-        : draftClocks(now);
-
-    await trx
-      .update(sites)
-      .set({
-        ownerId: profileId,
-        expiresAt: clocks.expiresAt,
-        purgeAfter: clocks.purgeAfter,
-        anonTokenHash: null,
-        claimedAt,
-        updatedAt: now,
-      })
-      .where(eq(sites.id, siteId));
-
-    return {
-      outcome: "owned_draft",
-      siteId: site.id,
-      slug: site.slug,
-      quota: quotaOf(used, plan),
-      expiresAt: clocks.expiresAt.toISOString(),
-      purgeAfter: clocks.purgeAfter.toISOString(),
-    };
-  });
-}
-
-/**
- * The Postgres half of task 008's LATE KEEP: bring an `expired` row inside its
- * grace window back to `live` and attach it to an account, atomically.
- *
- * The caller (`./anon-keep.ts`) has already decided this row is eligible —
- * `status === 'expired'` and `purge_after > now()` — and owns the other half,
- * the `writeManifest` that puts the slug back in KV. This function must not
- * reach the store, and does not.
- *
- * ⚠️ THE STATUS FLIP RUNS AFTER `keepSite`, NOT BEFORE, AND THE ORDER IS A LOCK
- * ORDER. Every other write in this module takes the owner's `profiles` row
- * first and the `sites` row second (`lockOwner` → `lockSite`). Updating the site
- * before calling `keepSite` would take those two locks in the opposite order, so
- * a late keep racing an ordinary keep of the SAME page would deadlock. Both
- * statements commit together, so the transaction's committed state is identical
- * either way.
- *
- * ⚠️ AT THE CAP THE CLOCK IS FRESH, NOT RESUMED (epic open question 1, PRD
- * recommendation adopted). `keepSite`'s at-cap branch retains the clocks it
- * finds, and on an expired row those are in the PAST — an `owned_draft` that
- * expired before it was created. So the fresh `DRAFT_TTL_DAYS` window is
- * written here and reflected in the returned result, which is why this returns
- * `KeepResult` rather than leaving the caller to reconcile the two.
- */
-export async function restoreAndKeepSite(
-  siteId: string,
-  profileId: string,
-): Promise<KeepResult> {
-  return db.transaction(async (tx) => {
-    const result = await keepSite(siteId, profileId, { expectAnonymous: true, tx });
-    const now = new Date();
-
-    if (result.outcome === "kept") {
-      // `keepSite` already nulled both clocks; only the status is left to fix.
-      await tx.update(sites).set({ status: "live", updatedAt: now }).where(eq(sites.id, siteId));
-      return result;
-    }
-
-    const { expiresAt, purgeAfter } = draftClocks(now);
-    await tx
-      .update(sites)
-      .set({ status: "live", expiresAt, purgeAfter, updatedAt: now })
-      .where(eq(sites.id, siteId));
-
-    return {
-      ...result,
-      expiresAt: expiresAt.toISOString(),
-      purgeAfter: purgeAfter.toISOString(),
-    };
-  });
+): Promise<KeepSiteResult> {
+  const door: KeepDoor = options.expectAnonymous ? "anonymous" : "owner";
+  const { result, restore } = await db.transaction((tx) =>
+    keepLocked(tx, siteId, profileId, door),
+  );
+  await restoreManifest(restore);
+  return { ...result, restored: restore !== null };
 }
 
 export interface DemoteOptions {
@@ -410,13 +514,28 @@ export interface DemoteOptions {
   tx?: Tx;
 }
 
+/** Why a page that is not a kept `live` one cannot be demoted. */
+function notDemotable(site: LockedSite): StudioRefusal {
+  return new StudioRefusal(
+    "not_allowed_in_status",
+    site.expiresAt === null
+      ? "This page is being reviewed, so it can't become a draft until the review finishes."
+      : "This page is already a draft. Only a kept page can become one.",
+  );
+}
+
 /**
  * Put a kept page back on a clock, freeing a slot.
  *
+ * ONLY A KEPT `live` PAGE. A draft already has a clock — a second one would
+ * silently move its deadline — and a flagged page is E07's to change. Ended,
+ * foreign and past-grace rows are not found.
+ *
  * ARCHIVE, DON'T DELETE: demote removes nothing. `status` stays `live`, the
  * slug stays, the manifest stays, R2 stays — the page keeps serving at the same
- * URL, it just has a deadline again. `owner_id` and `claimed_at` are both
- * retained: a demoted page is an *owned* draft.
+ * URL, it just has a deadline again. `owner_id`, `claimed_at`, `name_kind` and
+ * `listed_public` are all untouched (AC14, D12): a demoted page is an *owned*
+ * draft that keeps its name and its Explore choice for when it is kept again.
  *
  * The clock is FRESH, not resumed. There is nothing to resume — keeping nulled
  * the old one — and no cooldown: demote → immediate regret → `keepSite` again
@@ -429,17 +548,16 @@ export async function demoteSite(
 ): Promise<DemoteResult> {
   return inTransaction(options.tx, async (trx) => {
     const plan = await lockOwner(trx, profileId);
-
     const site = await lockSite(trx, siteId);
-    if (!site || site.ownerId !== profileId) throw new SiteNotFoundError(siteId);
-
     const now = new Date();
-    const { expiresAt, purgeAfter } = draftClocks(now);
 
-    await trx
-      .update(sites)
-      .set({ expiresAt, purgeAfter, updatedAt: now })
-      .where(eq(sites.id, siteId));
+    if (!site || site.ownerId !== profileId || isGone(site, now)) {
+      throw new SiteNotFoundError(siteId);
+    }
+    if (site.expiresAt !== null || site.status !== "live") throw notDemotable(site);
+
+    const { expiresAt, purgeAfter } = draftClocks(now);
+    await trx.update(sites).set({ expiresAt, purgeAfter }).where(eq(sites.id, siteId));
 
     return {
       siteId: site.id,
@@ -456,28 +574,36 @@ export async function demoteSite(
  *
  * The atomicity is the feature: a partial swap would leave the account either
  * a slot short or a page over the cap, and the second is the one that matters.
- * Because the demote has committed *within this transaction* by the time
- * `keepSite` counts, the cap check sees the freed slot and B lands `kept` by
- * construction — an `owned_draft` here would mean the demote did not free
- * anything, so it is asserted rather than returned.
+ * A must be a kept `live` page and B an owned draft — `live`, or `expired` in
+ * its grace window, in which case B is restored exactly as a late keep is and
+ * its manifest written once the swap has committed.
+ *
+ * Because the demote has written *within this transaction* by the time
+ * `keepLocked` counts, the cap check sees the freed slot. An account already
+ * over its limit (a plan change, edge case 8) is still over it after one demote,
+ * and B is refused `at_kept_limit` with A rolled back.
  */
 export async function swapKept(
   demoteSiteId: string,
   keepSiteId: string,
   profileId: string,
 ): Promise<SwapResult> {
-  return db.transaction(async (tx) => {
+  const { demoted, kept, restore } = await db.transaction(async (tx) => {
     const demoted = await demoteSite(demoteSiteId, profileId, { tx });
-    const kept = await keepSite(keepSiteId, profileId, { tx });
-
-    if (kept.outcome !== "kept") {
+    const { result, restore } = await keepLocked(tx, keepSiteId, profileId, "swap");
+    // The swap door throws at the cap rather than landing `owned_draft`, so this
+    // only narrows the type; reaching it would mean that rule was removed.
+    if (result.outcome !== "kept") {
       throw new Error(
-        `swapKept: demoting ${demoteSiteId} did not free a slot — keeping ${keepSiteId} landed "${kept.outcome}". Rolling back.`,
+        `swapKept: keeping ${keepSiteId} landed "${result.outcome}" — the swap door must refuse at the cap. Rolling back.`,
       );
     }
-
-    // Both halves report the SAME post-swap quota. `demoted.quota` was measured
-    // between the two writes, when the account was one page short.
-    return { demoted: { ...demoted, quota: kept.quota }, kept };
+    return { demoted, kept: result, restore };
   });
+
+  await restoreManifest(restore);
+
+  // Both halves report the SAME post-swap quota. `demoted.quota` was measured
+  // between the two writes, when the account was one page short.
+  return { demoted: { ...demoted, quota: kept.quota }, kept };
 }

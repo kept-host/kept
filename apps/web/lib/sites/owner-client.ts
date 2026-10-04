@@ -244,16 +244,15 @@ export type KeepOutcome =
 /**
  * `POST /api/sites/:id/keep` — E06 task 007.
  *
- * ⚠️ BEING AT THE CAP IS NOT AN ERROR AND MUST NOT BE READ AS ONE. The route
- * answers HTTP 200 with `outcome: "owned_draft"` when the account is full; the
- * page keeps its clock and its countdown and the caller's job is to offer the
- * swap chooser, not to show a failure. `ok: false` here means the request
- * genuinely did not land.
+ * ⚠️ BEING AT THE CAP IS NOT A FAILURE TO SHOW. The route answers
+ * `409 at_kept_limit` when the account is full (E06 task 004): nothing was
+ * written, the page keeps its clock, and the caller's job is to offer the swap
+ * chooser on that code, not to print it as an error.
  *
  * The caller normally knows it is at the cap before clicking and opens the
- * chooser without asking — this branch is the race where a slot filled up in
- * another tab between the render and the click, and the fresh `quota` on the
- * response is the authority that settles it.
+ * chooser without asking — that code is the race where a slot filled up in
+ * another tab between the render and the click, and the server's refusal is the
+ * authority that settles it.
  *
  * Never throws, including on abort.
  */

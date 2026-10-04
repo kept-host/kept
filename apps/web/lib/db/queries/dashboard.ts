@@ -10,11 +10,11 @@
  * ── THREE THINGS THIS MODULE DELIBERATELY DOES NOT DO ─────────────────────────
  *
  * 1. **It does not define kept-ness.** `owner_id = ? AND expires_at IS NULL AND
- *    status = 'live'` lives once, in `lib/sites/keep.ts`'s `isKeptCondition`,
- *    and the number the dashboard prints comes from `keptQuotaFor` — the same
- *    function the cap branch counts with. A dashboard that computes its own
- *    quota is a dashboard that will eventually disagree with the endpoint that
- *    enforces it.
+ *    status NOT IN ('archived','removed')` lives once, in `lib/sites/keep.ts`'s
+ *    `isKeptCondition`, and the number the dashboard prints comes from
+ *    `keptQuotaFor` — the same function the cap branch counts with. A dashboard
+ *    that computes its own quota is a dashboard that will eventually disagree
+ *    with the endpoint that enforces it.
  *
  * 2. **It does not hide rows.** `archived`, `quarantined`, `under_review` and
  *    `expired` all come back. The dashboard *renders* those states; a page that

@@ -133,7 +133,7 @@ function message(err: unknown): string {
  *
  * `kept + drafts` does NOT necessarily equal `total`, and that is correct rather
  * than a rounding error: `kept` is the *quota* predicate, so an `archived` or
- * `quarantined` page with no clock is in `total` and in neither category. The
+ * `removed` page with no clock is in `total` and in neither category. The
  * dialog names the two things a person recognises; `total` is every row the
  * teardown touches.
  */
@@ -153,7 +153,7 @@ export interface AccountDeletionSummary {
  *
  * ⚠️ KEPT-NESS IS NOT RE-SPELLED HERE. It comes from `keptQuotaFor` (through
  * `getDashboardSites`), which is the same predicate the cap branch enforces
- * with. A second `WHERE expires_at IS NULL AND status = 'live'` in this module
+ * with. A second spelling of that WHERE clause in this module
  * would be the drift `isKeptCondition` exists to prevent, and it would show a
  * user a number that disagrees with their own dashboard on the one screen where
  * being believed matters most.

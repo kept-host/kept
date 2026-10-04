@@ -17,12 +17,15 @@ import { z } from "zod";
  * How a keep attempt resolved.
  *
  * - `kept`        — the page is permanent: `expires_at`/`purge_after` cleared.
- * - `owned_draft` — the account was already at its plan's kept limit
- *                   (`limitsFor(plan).keptPages`), so the page is now *owned*
- *                   but keeps its clock, its countdown and a swap prompt.
+ * - `owned_draft` — ANONYMOUS DOOR ONLY: the account was already at its plan's
+ *                   kept limit (`limitsFor(plan).keptPages`), so the page is now
+ *                   *owned* but keeps its clock, its countdown and a swap prompt.
  *
- * The cap is a **branch, not a guard clause**: keeping past it never errors,
- * never no-ops and never loses the page. Both outcomes are HTTP success.
+ * On the anonymous door the cap is a **branch, not a guard clause**: keeping
+ * past it never errors, never no-ops and never loses the page, and both outcomes
+ * are HTTP success. The owner door (`POST /api/sites/:id/keep`) keeps a page the
+ * account already owns, so it has nothing to attach and answers the cap with
+ * `409 at_kept_limit` instead (E06, PRD §10.2).
  */
 export const KEEP_OUTCOMES = ["kept", "owned_draft"] as const;
 

@@ -15,8 +15,9 @@
  *   1. A site that does not exist, a site owned by somebody else and an id that
  *      is not a uuid produce the IDENTICAL body. "You don't own this" is an
  *      existence oracle over other people's pages.
- *   2. Being at the plan's kept limit is HTTP 200 with `outcome: "owned_draft"`,
- *      never a 4xx. The cap degrades; it does not reject.
+ *   2. Being at the plan's kept limit is `409 at_kept_limit` on the OWNER keep
+ *      (E06 task 004, PRD §10.2): the page is already an owned draft, so there
+ *      is nothing for the cap to degrade into. Nothing is written.
  *   3. Every refusal is the studio envelope `{ error: { code, message } }`
  *      (E06 task 005) — one typed-failure table, never a flat `PublishError`.
  *
@@ -131,17 +132,20 @@ async function readSite(siteId: string) {
   return row;
 }
 
-/** The kept-ness predicate, asked of the database rather than of a result object. */
+/**
+ * The kept-ness predicate, asked of the database rather than of a result object
+ * — through the module's own `isKeptCondition`, never a re-spelled WHERE clause
+ * that could drift from the one the cap enforces.
+ */
 async function keptCount(profileId: string): Promise<number> {
   const db = await client();
   const { sites } = await schema();
-  const { and, eq, isNull, sql } = await import("drizzle-orm");
+  const { sql } = await import("drizzle-orm");
+  const { isKeptCondition } = await import("./keep");
   const [row] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(sites)
-    .where(
-      and(eq(sites.ownerId, profileId), isNull(sites.expiresAt), eq(sites.status, "live")),
-    );
+    .where(isKeptCondition(profileId));
   return row?.count ?? 0;
 }
 
@@ -211,7 +215,7 @@ test(
 );
 
 test(
-  "keep, at cap: HTTP 200 with owned_draft and the clock retained — never a 4xx",
+  "keep, at cap: 409 at_kept_limit in the studio envelope, and the owned draft is untouched",
   { skip: skipLive },
   async () => {
     const { keepOwnedSite } = await import("./owner-routes");
@@ -222,19 +226,16 @@ test(
 
     const outcome = await keepOwnedSite(site.id, profileId);
 
-    assert.equal(outcome.ok, true, "the cap is a branch, not an error");
-    assert.equal(outcome.status, 200);
-    const body = keepResultSchema.parse(outcome.body);
-    assert.equal(body.outcome, "owned_draft");
-    assert.deepEqual(body.quota, { limit: FREE_LIMIT, used: FREE_LIMIT, remaining: 0 });
-    assert.equal(
-      body.outcome === "owned_draft" ? body.expiresAt : null,
-      stamp(before.expiresAt).toISOString(),
-      "the existing countdown is retained, not restarted",
+    assert.equal(outcome.ok, false, "the owner keep at the cap is a refusal (PRD §10.2)");
+    assert.equal(outcome.status, 409);
+    const { error } = studioErrorSchema.parse(outcome.body);
+    assert.equal(error.code, "at_kept_limit");
+    assert.ok(
+      error.message.includes(String(FREE_LIMIT)),
+      `the sentence names the plan's limit, from limitsFor: ${error.message}`,
     );
 
-    const row = await readSite(site.id);
-    assert.equal(row.status, "live", "an owned draft is live and already serving");
+    assert.deepEqual(await readSite(site.id), before, "the countdown and every column are retained");
     assert.equal(
       await keptCount(profileId),
       FREE_LIMIT,
@@ -333,19 +334,26 @@ test(
 );
 
 test(
-  "demoting an already-draft page is a no-op success, and keeping it again has no cooldown",
+  "demoting a draft is 409 not_allowed_in_status with its clock untouched, and keeping it then has no cooldown",
   { skip: skipLive },
   async () => {
     const { demoteOwnedSite, keepOwnedSite } = await import("./owner-routes");
     const profileId = await makeProfile();
     const site = await makeSite({ ownerId: profileId });
+    const before = await readSite(site.id);
 
+    // Only a kept `live` page can be demoted: a second clock on a draft would
+    // silently move its deadline.
     const first = await demoteOwnedSite(site.id, profileId);
-    assert.equal(first.ok, true, "demoting a draft is not an error");
-    assert.equal(first.status, 200);
-    assert.ok(stamp((await readSite(site.id)).expiresAt) instanceof Date);
+    assert.equal(first.ok, false);
+    assert.equal(first.status, 409);
+    assert.equal(studioErrorSchema.parse(first.body).error.code, "not_allowed_in_status");
+    assert.deepEqual(await readSite(site.id), before, "the draft's clock did not move");
 
-    // Demote → immediate regret → keep. No cooldown, by design.
+    // Keep → immediate regret → demote → keep. No cooldown, by design.
+    assert.equal((await keepOwnedSite(site.id, profileId)).ok, true);
+    assert.equal((await demoteOwnedSite(site.id, profileId)).ok, true);
+    assert.ok(stamp((await readSite(site.id)).expiresAt) instanceof Date);
     const kept = await keepOwnedSite(site.id, profileId);
     assert.equal(kept.ok, true);
     assert.equal(keepResultSchema.parse(kept.body).outcome, "kept");

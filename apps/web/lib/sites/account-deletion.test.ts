@@ -232,15 +232,16 @@ test(
       confirmationPhrase: ACCOUNT_DELETION_CONFIRMATION,
     });
 
-    // Archive one and quarantine another. Both leave the QUOTA (their status is
-    // no longer `live`) while staying in `total`, because both rows are still
-    // this account's and both will be destroyed. That is why `kept + drafts`
-    // does not have to equal `total`.
+    // Archive one and quarantine another. The archived page leaves the QUOTA;
+    // the quarantined one still holds its slot (a flag is not a deletion — E06
+    // task 004's kept predicate). Both stay in `total`, because both rows are
+    // still this account's and both will be destroyed. That is why
+    // `kept + drafts` does not have to equal `total`.
     await archiveSite(kept[0]!);
     await db.update(sites).set({ status: "quarantined" }).where(eq(sites.id, kept[1]!));
 
     const mixed = await getAccountDeletionSummary(owner.id);
-    assert.equal(mixed.kept, FREE_LIMIT - 2, "archived and quarantined pages are not kept");
+    assert.equal(mixed.kept, FREE_LIMIT - 1, "an archived page is not kept; a quarantined one still is");
     assert.equal(mixed.drafts, 1);
     assert.equal(mixed.total, FREE_LIMIT + 1, "every row is still destroyed");
   },

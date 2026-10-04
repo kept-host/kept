@@ -14,8 +14,10 @@
  * the sort of routing property that is free to check and expensive to discover.
  *
  * The atomicity is the feature: one transaction, so the account can never be
- * observed a slot short or a page over its kept limit. No store call here
- * either — a swap is two Postgres writes and nothing else.
+ * observed a slot short or a page over its kept limit. `demote` must be a kept
+ * `live` page and `keep` a draft, else `409 not_allowed_in_status`. A swap is two
+ * Postgres writes — plus, when `keep` is an `expired` draft inside its grace
+ * window, the late keep's manifest write after the commit (`lib/sites/keep.ts`).
  */
 import type { NextResponse } from "next/server";
 

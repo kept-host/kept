@@ -12,7 +12,7 @@
  *
  * ⚠️ THIS ARCHIVES; IT DOES NOT DESTROY. `status → 'archived'`, the row stays,
  * the R2 object stays, the version history stays, and the kept slot frees
- * because `countKept` requires `status = 'live'`. The account-deletion path
+ * because `isKeptCondition` excludes `archived`. The account-deletion path
  * (task 011) is the one that ends in `removed` with a `purge_after` — the two
  * terminal states are different on purpose and must not be harmonised.
  *

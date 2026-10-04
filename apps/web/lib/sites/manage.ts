@@ -36,7 +36,7 @@
  *
  * 2. **Deleting one page archives it.** `status → 'archived'`, the row stays,
  *    the R2 object stays, the version history stays. The slot frees for free,
- *    because `countKept` requires `status = 'live'`. Deleting an *account* is
+ *    because `isKeptCondition` excludes `archived`. Deleting an *account* is
  *    the one path that ends in `removed` with a `purge_after` — that is task
  *    011, and the two terminal states are different on purpose.
  *

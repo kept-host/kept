@@ -35,13 +35,14 @@
  * (`refuseUntrustedOrigin`, which runs before anything here) and the 401 below,
  * whose STATUS is the whole message.
  *
- * ⚠️ NO STORE CALLS ON THE KEEP / DEMOTE / SWAP PATHS. Keeping and demoting are
- * Postgres writes, not publishes: the manifest the Worker reads carries
- * `ownerId`, nothing in `apps/edge` reads it, and `status` stays `live`
- * throughout, so there is nothing for the edge to learn. No `writeManifest`, no
- * `removeManifest`, no R2, no purge — see the header of `./keep.ts` for why
- * writing the manifest "for consistency" is a real regression rather than a
- * harmless extra.
+ * ⚠️ NO STORE CALLS HERE ON THE KEEP / DEMOTE / SWAP PATHS. Keeping a `live`
+ * page and demoting are Postgres writes, not publishes: the manifest the Worker
+ * reads carries `ownerId`, nothing in `apps/edge` reads it, and `status` stays
+ * `live` throughout, so there is nothing for the edge to learn — see the header
+ * of `./keep.ts` for why writing the manifest "for consistency" is a real
+ * regression. The one exception, the LATE KEEP of an `expired` page in its grace
+ * window, writes its manifest inside `./keep.ts` after the commit; this module
+ * only maps its refusals.
  *
  * ⚠️ PUBLISH, RENAME, REPLACE AND DELETE ARE THE EXCEPTIONS, AND THEY ARE ON
  * PURPOSE. Storing a page's first bytes, moving a slug, storing new bytes and
@@ -312,16 +313,20 @@ export async function publishOwnedSite(
 }
 
 /**
- * Keep an owned page forever, or — at the cap — own it and leave the clock on.
+ * Keep an owned page forever — or, for an `expired` page inside its grace
+ * window, bring it back online and keep it (the late keep).
  *
  * `expectAnonymous` is left at its default `false`, which is the whole
  * difference between this route and the anonymous keep: the row must ALREADY
- * belong to this profile. A signed-in user pointing this endpoint at somebody's
- * unclaimed draft must not walk through the anonymous→owned door, which is
- * bearer-token authority and lives behind `/api/anon/`.
+ * belong to this profile, and at the plan's kept limit the answer is
+ * `409 at_kept_limit` rather than an `owned_draft` (E06 task 004, PRD §10.2). A
+ * signed-in user pointing this endpoint at somebody's unclaimed draft must not
+ * walk through the anonymous→owned door, which is bearer-token authority and
+ * lives behind `/api/anon/`.
  *
  * Keeping an already-kept page is a no-op success, and demote → immediate keep
- * is allowed with no cooldown; both fall out of `keepSite` and neither needs a
+ * is allowed with no cooldown; both fall out of `keepSite`, as do its refusals
+ * (`not_found`, `not_allowed_in_status`, `at_kept_limit`), and none needs a
  * branch here.
  */
 export async function keepOwnedSite(
@@ -351,8 +356,8 @@ export async function keepOwnedSite(
  * days") is the CALLER's — E06 renders it. This endpoint does not confirm, and
  * must not be called without one.
  *
- * Demoting a page that is already a draft is a no-op success with a fresh
- * clock, not an error.
+ * Only a kept `live` page can be demoted; a draft or a flagged page is
+ * `409 not_allowed_in_status`, thrown by `demoteSite`.
  */
 export async function demoteOwnedSite(
   rawSiteId: string,
@@ -372,7 +377,9 @@ export async function demoteOwnedSite(
 /**
  * Demote one page and keep another in a single transaction, so the account can
  * never be observed a slot short or a page over the cap. Both ids must be owned
- * by the caller; either failing is the same 404.
+ * by the caller; either failing is the same 404. `demote` must be kept `live`
+ * and `keep` a draft (`live`, or `expired` in grace), else
+ * `409 not_allowed_in_status`.
  */
 export async function swapOwnedSites(
   raw: unknown,
