@@ -610,3 +610,122 @@ test(
     assert.deepEqual(rows.map((row) => row.id), [site.id]);
   },
 );
+
+// ── Versions: replace and restore refusals (E06 task 007) ───────────────────
+//
+// Every refusal below is decided before a store is touched — the status gate,
+// the owner scope and the version scope are all Postgres reads — so these run
+// on seeded rows. The store-touching half (no-op, prune, restore) is
+// `versions.test.ts`.
+
+/** A `site_versions` row for a seeded site, optionally made current. No bytes. */
+async function addVersion(siteId: string, current = false): Promise<string> {
+  const db = await client();
+  const { siteVersions, sites } = await schema();
+  const { eq } = await import("drizzle-orm");
+  const id = crypto.randomUUID();
+  await db.insert(siteVersions).values({
+    id,
+    siteId,
+    r2Key: `sites/${siteId}/${id}/index.html`,
+    contentHash: `e06-007-${id}`,
+    sizeBytes: 1,
+  });
+  if (current) await db.update(sites).set({ currentVersionId: id }).where(eq(sites.id, siteId));
+  return id;
+}
+
+async function versionCount(siteId: string): Promise<number> {
+  const db = await client();
+  const { siteVersions } = await schema();
+  const { eq, sql } = await import("drizzle-orm");
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(siteVersions)
+    .where(eq(siteVersions.siteId, siteId));
+  return row?.count ?? 0;
+}
+
+test(
+  "replace and restore share the status gate: under_review, quarantined, expired and archived are 409 not_allowed_in_status, removed is 404, and nothing is written (AC29)",
+  { skip: skipLive },
+  async () => {
+    const { replaceOwnedSite, restoreOwnedVersion } = await import("./owner-routes");
+    const db = await client();
+    const { sites } = await schema();
+    const { eq } = await import("drizzle-orm");
+    const profileId = await makeProfile();
+
+    for (const [status, expected] of [
+      ["under_review", 409],
+      ["quarantined", 409],
+      ["expired", 409],
+      ["archived", 409],
+      ["removed", 404],
+    ] as const) {
+      const site = await makeSite({ ownerId: profileId, kept: true });
+      await addVersion(site.id, true);
+      const older = await addVersion(site.id);
+      await db.update(sites).set({ status }).where(eq(sites.id, site.id));
+      const before = await readSite(site.id);
+
+      const replaced = await replaceOwnedSite(site.id, { html: `<!doctype html><title>${status}</title>` }, profileId);
+      const restored = await restoreOwnedVersion(site.id, older, profileId);
+
+      for (const [verb, outcome] of [["replace", replaced], ["restore", restored]] as const) {
+        assert.equal(outcome.ok, false, `${verb} on ${status}`);
+        assert.equal(outcome.status, expected, `${verb} on ${status}`);
+        const { error } = studioErrorSchema.parse(outcome.body);
+        assert.equal(error.code, expected === 409 ? "not_allowed_in_status" : "not_found", `${verb} on ${status}`);
+      }
+      assert.deepEqual(await readSite(site.id), before, `${status}: no column moved`);
+      assert.equal(await versionCount(site.id), 2, `${status}: no version written`);
+    }
+  },
+);
+
+test(
+  "restore: another account's page is the not-found body; another page's version, an unknown one and a malformed one are version_not_found; the current version is { unchanged: true } (AC44)",
+  { skip: skipLive },
+  async () => {
+    const { restoreOwnedVersion } = await import("./owner-routes");
+    const mine = await makeProfile();
+    const theirs = await makeProfile();
+    const page = await makeSite({ ownerId: mine, kept: true });
+    const current = await addVersion(page.id, true);
+    const previous = await addVersion(page.id);
+    const otherPage = await makeSite({ ownerId: mine, kept: true });
+    const otherVersion = await addVersion(otherPage.id, true);
+    const before = await readSite(page.id);
+
+    // Not yours, does not exist, not a uuid: one body (D17).
+    const notFound = [
+      await restoreOwnedVersion(page.id, previous, theirs),
+      await restoreOwnedVersion(crypto.randomUUID(), previous, mine),
+      await restoreOwnedVersion("not-a-uuid", previous, mine),
+    ];
+    for (const outcome of notFound) assert.equal(outcome.status, 404);
+    assert.equal(new Set(notFound.map((outcome) => JSON.stringify(outcome.body))).size, 1);
+    assert.equal(studioErrorSchema.parse(notFound[0]!.body).error.code, "not_found");
+
+    // A version that is not THIS page's — even the same owner's other page.
+    const versionNotFound = [
+      await restoreOwnedVersion(page.id, otherVersion, mine),
+      await restoreOwnedVersion(page.id, crypto.randomUUID(), mine),
+      await restoreOwnedVersion(page.id, "not-a-uuid", mine),
+    ];
+    for (const outcome of versionNotFound) {
+      assert.equal(outcome.status, 404);
+      assert.equal(studioErrorSchema.parse(outcome.body).error.code, "version_not_found");
+    }
+    assert.equal(new Set(versionNotFound.map((outcome) => JSON.stringify(outcome.body))).size, 1);
+
+    // The version already served: a no-op success that writes nothing.
+    const unchanged = await restoreOwnedVersion(page.id, current, mine);
+    assert.equal(unchanged.status, 200);
+    assert.deepEqual(unchanged.body, { unchanged: true });
+
+    assert.deepEqual(await readSite(page.id), before, "none of it moved the page");
+    assert.equal((await readSite(otherPage.id)).currentVersionId, otherVersion);
+  },
+);

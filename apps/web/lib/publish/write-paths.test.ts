@@ -219,6 +219,7 @@ test(
     // ── Studio replace: an html title refreshes ──────────────────────────────
     const second = runId();
     const replaced = await replaceSite(site.id, profileId, pageHtml(second));
+    if (replaced.unchanged) assert.fail("new bytes are a new version, never a no-op");
     assert.equal(replaced.title, second);
     assert.equal((await row(site.id)).title, second);
     assert.deepEqual(await channels(site.id), ["studio", "studio"]);
@@ -226,10 +227,13 @@ test(
     // ── …and an owner title does not, and the response says what the row holds
     await setOwnerTitle(site.id, "Owner's own name");
     const kept = await replaceSite(site.id, profileId, pageHtml(runId()));
+    if (kept.unchanged) assert.fail("new bytes are a new version, never a no-op");
     assert.equal(kept.title, "Owner's own name", "the response reports the stored title");
     const afterOwner = await row(site.id);
     assert.equal(afterOwner.title, "Owner's own name");
     assert.equal(afterOwner.titleSource, "owner");
-    assert.deepEqual(await channels(site.id), ["studio", "studio", "studio"]);
+    // Free keeps the current version plus one previous (D7): the third studio
+    // version pruned the first, and every survivor still records its door.
+    assert.deepEqual(await channels(site.id), ["studio", "studio"]);
   },
 );

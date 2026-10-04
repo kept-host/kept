@@ -4,7 +4,8 @@
  *
  * `POST /api/sites` · `POST /api/sites/:id/keep` · `POST /api/sites/:id/demote`
  * `POST /api/sites/swap` · `PATCH /api/sites/:id/name` · `GET /api/names/check`
- * `POST /api/sites/:id/replace` · `DELETE /api/sites/:id` · `DELETE /api/account`
+ * `POST /api/sites/:id/replace` · `POST /api/sites/:id/versions/:versionId/restore`
+ * `DELETE /api/sites/:id` · `DELETE /api/account`
  *
  * ── WHAT THIS MODULE IS FOR ────────────────────────────────────────────────
  * Validation and result→response mapping, and nothing else. Every database
@@ -44,11 +45,12 @@
  * window, writes its manifest inside `./keep.ts` after the commit; this module
  * only maps its refusals.
  *
- * ⚠️ PUBLISH, RENAME, REPLACE AND DELETE ARE THE EXCEPTIONS, AND THEY ARE ON
- * PURPOSE. Storing a page's first bytes, moving a slug, storing new bytes and
- * taking a page off the internet are all unavoidably edge operations — but each
- * ordering lives in exactly one place, `./publish.ts`, `../names/rename.ts` and
- * `./manage.ts`, and this module only maps their refusals. Nothing here calls
+ * ⚠️ PUBLISH, RENAME, REPLACE, RESTORE AND DELETE ARE THE EXCEPTIONS, AND THEY
+ * ARE ON PURPOSE. Storing a page's first bytes, moving a slug, storing new
+ * bytes, moving the served version and taking a page off the internet are all
+ * unavoidably edge operations — but each ordering lives in exactly one place,
+ * `./publish.ts`, `../names/rename.ts`, `./manage.ts` and `./restore.ts`, and
+ * this module only maps their refusals. Nothing here calls
  * `writeManifest`/`removeManifest`/`r2Store` directly, and nothing new may.
  *
  * ⚠️ "YOU DON'T OWN THIS" IS AN EXISTENCE ORACLE. A site that does not exist, a
@@ -71,6 +73,7 @@ import {
   nameCheckResultSchema,
   ownedPublishResultSchema,
   replaceResultSchema,
+  restoreResultSchema,
   studioErrorSchema,
   swapResultSchema,
   type AccountDeletionResult,
@@ -82,6 +85,7 @@ import {
   type OwnedPublishResult,
   type PublishErrorCode,
   type ReplaceResult,
+  type RestoreResult,
   type StudioErrorCode,
   type SwapResult,
 } from "@kept/shared";
@@ -103,6 +107,7 @@ import { deleteAccount } from "./account-deletion";
 import { demoteSite, keepSite, SITE_NOT_FOUND_MESSAGE, swapKept } from "./keep";
 import { deleteSite, ownerPageBodySchema, replaceSite } from "./manage";
 import { publishOwnedPage } from "./publish";
+import { restoreVersion, VERSION_NOT_FOUND_MESSAGE } from "./restore";
 import { StudioRefusal } from "./studio-refusal";
 
 /** A studio refusal, ready to answer: the status and the validated envelope. */
@@ -485,6 +490,9 @@ export async function checkOwnedName(
  *
  * ⚠️ A FLAGGED PAGE IS REFUSED WITH AN EXPLANATION, NOT HIDDEN — 409 and the
  * sentence `./display.ts` gives the card, so the screen and the error body agree.
+ *
+ * 200 either way (D7): `{ unchanged: true }` for the bytes already served, or
+ * the new version with `previousVersionId` (the Undo target) and `pruned`.
  */
 export async function replaceOwnedSite(
   rawSiteId: string,
@@ -511,6 +519,37 @@ export async function replaceOwnedSite(
     // A page that is not `live` is `409 not_allowed_in_status`, with the
     // sentence `./display.ts` gives the card — thrown by `./manage.ts`.
     return studioFailure(err, "replace");
+  }
+}
+
+/**
+ * `POST /api/sites/:id/versions/:versionId/restore` — serve an older version
+ * again, and the Undo after a replace (AC25). No body.
+ *
+ * Every rule is `./restore.ts`'s: owner only (`404 not_found`), `live` only
+ * (`409 not_allowed_in_status`, the replace gate), the version must be THIS
+ * page's (`404 version_not_found`), and the current version is
+ * `200 { unchanged: true }`.
+ *
+ * A `versionId` that is not a uuid cannot name a version, so it is the same
+ * `version_not_found` as one that does not exist. It is checked after the site
+ * id and says nothing about the site: its answer is the same whoever owns it.
+ */
+export async function restoreOwnedVersion(
+  rawSiteId: string,
+  rawVersionId: string,
+  profileId: string,
+): Promise<OwnerOutcome<RestoreResult>> {
+  const siteId = siteIdSchema.safeParse(rawSiteId);
+  if (!siteId.success) return ownerNotFound();
+  const versionId = siteIdSchema.safeParse(rawVersionId);
+  if (!versionId.success) return refuse("version_not_found", VERSION_NOT_FOUND_MESSAGE);
+
+  try {
+    const result = await restoreVersion(siteId.data, versionId.data, profileId);
+    return { ok: true, status: 200, body: restoreResultSchema.parse(result) };
+  } catch (err) {
+    return studioFailure(err, "restore a version of");
   }
 }
 

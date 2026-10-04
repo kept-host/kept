@@ -1,6 +1,6 @@
 /**
  * The browser's client for the owner-scoped (studio) routes — publish, keep,
- * demote, swap, rename, replace, delete, and account deletion.
+ * demote, swap, rename, replace, restore, delete, and account deletion.
  *
  * Same posture as `lib/publish/client.ts`: this module knows the endpoint's URL
  * and nothing else. It serializes the request the route already accepts, parses
@@ -29,6 +29,7 @@ import {
   nameCheckResultSchema,
   ownedPublishResultSchema,
   replaceResultSchema,
+  restoreResultSchema,
   studioErrorSchema,
   swapResultSchema,
   type AccountDeletionResult,
@@ -40,6 +41,7 @@ import {
   type OwnedPublishResult,
   type PublishRequest,
   type ReplaceResult,
+  type RestoreResult,
   type StudioError,
   type StudioSite,
   type SwapResult,
@@ -316,7 +318,10 @@ export async function swapPages(
   return sent.ok ? { ok: true, result: sent.body } : { ok: false, error: sent.error };
 }
 
-/** A replace attempt: the page with its new version, or why it did not land. */
+/**
+ * A replace attempt: the page with its new version — or `page.unchanged` when the
+ * file was the one already served — or why it did not land.
+ */
 export type ReplaceOutcome =
   | { ok: true; page: ReplaceResult }
   | { ok: false; error: StudioError };
@@ -339,6 +344,8 @@ export type ReplaceOutcome =
  * practice it is seconds — do not "tighten" this to an instant swap.
  */
 export function replaceNotice(page: ReplaceResult): string {
+  // PRD §5.5's sentence for re-dropping the file already served (AC27).
+  if (page.unchanged) return "No changes — that's already the live version.";
   return `The new file is live at ${page.liveUrl} — same address, nothing to re-share. A browser that already had the old version open may keep showing it for a minute or two; a reload past that always gets the new one.`;
 }
 
@@ -350,6 +357,11 @@ export function replaceNotice(page: ReplaceResult): string {
  * file has already been read to a string by the caller — a drop target reads it
  * once, and handing a `File` down here would make this module know about the DOM
  * it is deliberately kept away from.
+ *
+ * `page.unchanged` means the bytes were identical to the served version and
+ * nothing was written. Otherwise `page.previousVersionId` is what an Undo hands
+ * to `restoreVersion`, and `page.pruned` says the plan's version limit dropped
+ * the oldest one.
  *
  * ⚠️ THE PRE-FLIGHT IS THE CALLER'S. `checkPageFile` / `checkPageHtml` in
  * `lib/publish/client.ts` are the courtesy checks that catch an obviously-wrong
@@ -370,6 +382,34 @@ export async function replacePage(
     replaceResultSchema,
   );
   return sent.ok ? { ok: true, page: sent.body } : { ok: false, error: sent.error };
+}
+
+/** A restore attempt: the version now served (or `unchanged`), or why not. */
+export type RestoreOutcome =
+  | { ok: true; result: RestoreResult }
+  | { ok: false; error: StudioError };
+
+/**
+ * `POST /api/sites/:id/versions/:versionId/restore` — serve an older version
+ * again. Also the Undo after a replace: pass the replace's `previousVersionId`.
+ *
+ * No bytes travel: the version is already stored, and the server only moves the
+ * pointer. `result.unchanged` means that version was already the served one; a
+ * version that is not this page's (or was pruned) is `version_not_found`.
+ *
+ * Never throws, including on abort.
+ */
+export async function restoreVersion(
+  siteId: string,
+  versionId: string,
+  signal?: AbortSignal,
+): Promise<RestoreOutcome> {
+  const sent = await send(
+    `/api/sites/${encodeURIComponent(siteId)}/versions/${encodeURIComponent(versionId)}/restore`,
+    { method: "POST", signal },
+    restoreResultSchema,
+  );
+  return sent.ok ? { ok: true, result: sent.body } : { ok: false, error: sent.error };
 }
 
 /** A delete attempt: the archived page and the freed slot, or the failure. */

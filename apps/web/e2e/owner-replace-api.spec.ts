@@ -1,6 +1,6 @@
 import {
-  MANIFEST_KV_CACHE_TTL_SECONDS,
   MAX_PAGE_BYTES,
+  limitsFor,
   publishErrorSchema,
   replaceResultSchema,
   studioErrorSchema,
@@ -20,12 +20,14 @@ import {
   publishViaApi,
   servingDomain,
   SKIP_LIVE_PUBLISH,
+  STALE_EDGE_WINDOW_MS,
+  waitForBytes,
 } from "./live-publish";
 import { jarlessContext, sessionHeaders } from "./session-request";
 
 /**
  * `POST /api/sites/:id/replace` over the wire, against the REAL dev stack —
- * E06 task 006.
+ * E06 task 006, reworked for versions (D7) in task 007.
  *
  * NO MOCKS AND NO FIXTURE ROWS. Every page here is published through
  * `POST /api/publish` for real and adopted through the real
@@ -37,29 +39,30 @@ import { jarlessContext, sessionHeaders } from "./session-request";
  * WHAT THIS FILE IS FOR, that no unit drill can reach:
  *
  *   1. **In place.** Same slug, same URL, same `siteId` — new bytes served after
- *      the purge, a NEW `site_versions` row, and the PREVIOUS version's object
- *      still sitting in R2. Version history is never deleted; the rollback UI
- *      that will read it is E11's.
- *   2. **The clock is untouched.** Asserted on a kept page (`expires_at` stays
+ *      the purge, a NEW `site_versions` row, the PREVIOUS version's object still
+ *      in R2, and its id in the response for the Undo toast (AC25).
+ *   2. **Identical bytes are a no-op** (AC27): `{ unchanged: true }`, no row, no
+ *      manifest write.
+ *   3. **Pruning** (AC26): on free, the plan's `previousVersions` survive and a
+ *      pruned version's object is gone — asserted with `get → null`, because
+ *      `R2Store` has no `list` by design (contract §7.5; epic Risk 10).
+ *   4. **The clock is untouched.** Asserted on a kept page (`expires_at` stays
  *      null) *and* on an owned draft (`expires_at`/`purge_after` byte-identical
  *      before and after). A replace that extended the draft window would let a
  *      weekly upload hold a page forever for free — it breaks the business
  *      model, not a test.
- *   3. **The title follows the bytes.** A replacement carrying a different
+ *   5. **The title follows the bytes.** A replacement carrying a different
  *      `<title>` renames the card. A title populated on publish but not on
  *      replace is worse than none at all: the wall would confidently show the
  *      previous page's name.
- *   4. **Every refusal applies nothing** — a flagged page, an empty body, an
+ *   6. **Every refusal applies nothing** — a page under review, an empty body, an
  *      oversized body, another account's page, a signed-out call and a
  *      cross-origin one all leave the row and the served bytes exactly as they
  *      were.
  *
  * ⚠️ THE OLD BYTES DO NOT VANISH FROM THE EDGE INSTANTLY, AND THIS SPEC DOES NOT
- * ASSERT THAT THEY DO. `writeManifest` purges immediately, but the Worker can
- * answer a cache MISS from a KV read up to `MANIFEST_KV_CACHE_TTL_SECONDS` old
- * and rebuild a response from the previous manifest; the delayed second purge is
- * what ends that tail. The poll below is bounded by that architecture rather than
- * by a lucky measurement.
+ * ASSERT THAT THEY DO. `waitForBytes` polls up to `STALE_EDGE_WINDOW_MS` — the
+ * delayed re-purge's deadline — rather than trusting a lucky measurement.
  *
  * SKIPS without dev credentials: CI runs on fork PRs with no secrets.
  */
@@ -72,13 +75,6 @@ const SKIP: string | false =
   (authMissing.length > 0
     ? `auth credentials absent (${authMissing.join(", ")}) — run locally with apps/web/.env.local`
     : false);
-
-/**
- * How long the edge may still answer with the bytes a replace just superseded:
- * the delayed re-purge's own deadline, derived from the shared constant exactly
- * as `lib/storage/manifest.ts` derives `KV_REPURGE_DELAY_MS`. Never a literal.
- */
-const STALE_EDGE_WINDOW_MS = (2 * MANIFEST_KV_CACHE_TTL_SECONDS + 5) * 1000;
 
 const urlFor = (slug: string): string => `https://${slug}.${servingDomain()}/`;
 
@@ -207,22 +203,20 @@ test.describe("owner replace", () => {
       data: { html },
     });
 
-  /** Poll a URL until it serves the expected bytes, or until the architectural bound. */
-  async function waitForBytes(url: string, expected: string): Promise<number> {
-    const started = Date.now();
-    for (;;) {
-      const probe = await probeEdge(url);
-      if (probe.status === 200 && probe.body === expected) return Date.now() - started;
-      if (Date.now() - started > STALE_EDGE_WINDOW_MS) {
-        throw new Error(
-          `${url} still did not serve the replacement after ${Math.round(STALE_EDGE_WINDOW_MS / 1000)}s — past the delayed re-purge, which means a purge did not land.`,
-        );
-      }
-      await new Promise((resolve) => setTimeout(resolve, 2_000));
-    }
-  }
+  /** A 200 replace body that must be a NEW version — narrowed, or the test fails. */
+  const newVersion = (json: unknown) => {
+    const body = replaceResultSchema.parse(json);
+    if (body.unchanged) throw new Error("expected a new version, got { unchanged: true }");
+    return body;
+  };
 
-  test("same URL, new bytes, a new version, the old one retained — and no clock appears", async ({
+  const versionRows = (siteId: string) =>
+    db
+      .select({ id: schema.siteVersions.id, r2Key: schema.siteVersions.r2Key })
+      .from(schema.siteVersions)
+      .where(eq(schema.siteVersions.siteId, siteId));
+
+  test("same URL, new bytes, a new version, the old one retained and named for Undo — and no clock appears", async ({
     request,
     baseURL,
   }) => {
@@ -237,17 +231,22 @@ test.describe("owner replace", () => {
     // product's most visible bug: "I re-dropped my file and nothing changed".
     expect((await probeEdge(urlFor(page.slug))).status).toBe(200);
     const pointerBefore = await r2Store().get(pointerKey(page.slug));
+    const rowBefore = await readSite(page.siteId);
 
     const nextMarker = `${page.marker}-v2`;
     const nextHtml = pageHtml(nextMarker);
     const response = await replace(request, baseURL!, cookie, page.siteId, nextHtml);
 
     expect(response.status(), await response.text()).toBe(200);
-    const body = replaceResultSchema.parse(await response.json());
+    const body = newVersion(await response.json());
     expect(body.siteId).toBe(page.siteId);
     expect(body.slug, "a replace keeps the URL — that is the whole point").toBe(page.slug);
     expect(body.liveUrl).toBe(`https://${page.slug}.${servingDomain()}`);
     expect(body.versionId).not.toBe(page.versionId);
+    // What the Undo toast restores (AC25), and nothing was pruned: one previous
+    // version is exactly what free keeps.
+    expect(body.previousVersionId).toBe(page.versionId);
+    expect(body.pruned).toBe(false);
     // The title follows the bytes. `pageHtml` puts the marker in `<title>`.
     expect(body.title).toBe(nextMarker);
     expect(body.expiresAt, "a kept page has no clock, before or after").toBeNull();
@@ -259,12 +258,11 @@ test.describe("owner replace", () => {
     expect(row.status).toBe("live");
     expect(row.expiresAt).toBeNull();
     expect(row.purgeAfter).toBeNull();
+    // The OG card's cache key (bug 4).
+    expect(row.updatedAt.getTime()).toBeGreaterThan(rowBefore.updatedAt.getTime());
 
-    // A NEW version row, and the previous one STILL THERE. History is retained.
-    const versions = await db
-      .select({ id: schema.siteVersions.id })
-      .from(schema.siteVersions)
-      .where(eq(schema.siteVersions.siteId, page.siteId));
+    // A NEW version row, and the previous one STILL THERE.
+    const versions = await versionRows(page.siteId);
     expect(versions).toHaveLength(2);
     expect(versions.map((version) => version.id)).toContain(page.versionId);
 
@@ -274,7 +272,7 @@ test.describe("owner replace", () => {
     expect(await r2Store().get(pageObjectKey(page.siteId, body.versionId))).toBe(nextHtml);
     expect(
       await r2Store().get(firstKey),
-      "the previous version's bytes are not deleted by a replace",
+      "the previous version's bytes are retained for Undo",
     ).toBe(page.html);
 
     // THE MANIFEST WAS REWRITTEN FOR THE SAME SLUG, not moved to a new one. The
@@ -288,6 +286,62 @@ test.describe("owner replace", () => {
     // And the edge catches up within the architectural bound.
     const elapsed = await waitForBytes(urlFor(page.slug), nextHtml);
     expect(elapsed).toBeLessThanOrEqual(STALE_EDGE_WINDOW_MS);
+  });
+
+  test("the bytes already served are { unchanged: true }: no version, no manifest write (AC27)", async ({
+    request,
+    baseURL,
+  }) => {
+    const cookie = await signIn(baseURL!);
+    const page = await ownedPage(request, baseURL!, cookie);
+    const before = await readSite(page.siteId);
+    // The pointer carries `updatedAt: Date.now()`, so ANY manifest write would
+    // change its bytes, even for the same version.
+    const pointerBefore = await r2Store().get(pointerKey(page.slug));
+
+    const response = await replace(request, baseURL!, cookie, page.siteId, page.html);
+
+    expect(response.status(), await response.text()).toBe(200);
+    expect(replaceResultSchema.parse(await response.json())).toEqual({ unchanged: true });
+    expect(await readSite(page.siteId), "no column moved — not even updated_at").toEqual(before);
+    expect(await versionRows(page.siteId), "no version row").toHaveLength(1);
+    expect(await r2Store().get(pointerKey(page.slug)), "no manifest write").toBe(pointerBefore);
+  });
+
+  test("on free, a third replace leaves exactly current + 1 and the pruned objects are gone (AC26)", async ({
+    request,
+    baseURL,
+  }) => {
+    const cookie = await signIn(baseURL!);
+    const page = await ownedPage(request, baseURL!, cookie);
+    const keep = 1 + limitsFor("free").previousVersions;
+
+    const prunedKeys: string[] = [];
+    let last: ReturnType<typeof newVersion> | undefined;
+    for (const round of [1, 2, 3]) {
+      const before = await versionRows(page.siteId);
+      const response = await replace(
+        request,
+        baseURL!,
+        cookie,
+        page.siteId,
+        pageHtml(`${page.marker}-r${round}`),
+      );
+      expect(response.status(), await response.text()).toBe(200);
+      last = newVersion(await response.json());
+      const after = await versionRows(page.siteId);
+      const dropped = before.filter((version) => !after.some((kept) => kept.id === version.id));
+      expect(last.pruned, `round ${round}`).toBe(dropped.length > 0);
+      prunedKeys.push(...dropped.map((version) => version.r2Key));
+    }
+
+    const rows = await versionRows(page.siteId);
+    expect(rows, "the current version plus the plan's previous versions").toHaveLength(keep);
+    expect(rows.map((version) => version.id)).toContain(last!.versionId);
+    expect(prunedKeys).toHaveLength(2);
+    // R2 has no list by design (contract §7.5): gone means `get` is null.
+    for (const key of prunedKeys) expect(await r2Store().get(key), key).toBeNull();
+    for (const version of rows) expect(await r2Store().get(version.r2Key)).not.toBeNull();
   });
 
   test("replacing a draft does not extend its clock by a millisecond", async ({
@@ -314,7 +368,7 @@ test.describe("owner replace", () => {
       pageHtml(`${page.marker}-draft-v2`),
     );
     expect(response.status(), await response.text()).toBe(200);
-    const body = replaceResultSchema.parse(await response.json());
+    const body = newVersion(await response.json());
 
     const after = await readSite(page.siteId);
     // THE ASSERTION THIS FILE EXISTS FOR. Not "roughly the same" — identical.
@@ -332,10 +386,11 @@ test.describe("owner replace", () => {
     const page = await ownedPage(request, baseURL!, cookie);
 
     // E06 RENDERS these states and writes none of them, so the fixture sets it
-    // directly — there is no product path that could.
+    // directly — there is no product path that could. AC29 names `under_review`;
+    // the rest of the gate is drilled in `lib/sites/owner-routes.test.ts`.
     await db
       .update(schema.sites)
-      .set({ status: "quarantined" })
+      .set({ status: "under_review" })
       .where(eq(schema.sites.id, page.siteId));
 
     const before = await readSite(page.siteId);
@@ -356,11 +411,7 @@ test.describe("owner replace", () => {
     expect(error.message.toLowerCase()).toContain("review");
 
     expect(await readSite(page.siteId)).toEqual(before);
-    const versions = await db
-      .select({ id: schema.siteVersions.id })
-      .from(schema.siteVersions)
-      .where(eq(schema.siteVersions.siteId, page.siteId));
-    expect(versions, "a refused replace writes no version").toHaveLength(1);
+    expect(await versionRows(page.siteId), "a refused replace writes no version").toHaveLength(1);
   });
 
   test("an empty and an oversized body are both refused, and the page is untouched", async ({

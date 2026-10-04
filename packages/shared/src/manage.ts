@@ -1,8 +1,8 @@
 // @kept/shared — the owner management contract (E06).
 //
-// Rename (task 005), replace and delete (task 006), and the owned publish
-// (task 004) — four verbs, one file rather than four, for the reason ./keep
-// gives: one closed set with two consumers — the route handlers in apps/web and
+// Rename (task 005), replace and delete (task 006), restore (task 007), and the
+// owned publish (task 004) — one file rather than one per verb, for the reason
+// ./keep gives: one closed set with two consumers — the route handlers in apps/web and
 // the browser client that parses their responses (`lib/sites/owner-client.ts`) —
 // so the wire shape can never drift between them.
 //
@@ -183,51 +183,75 @@ export const nameCheckResultSchema = z.union([
 export type NameCheckResult = z.infer<typeof nameCheckResultSchema>;
 
 /**
- * What a replace returns — `POST /api/sites/:id/replace`.
- *
- * ⚠️ `expiresAt` IS ECHOED BECAUSE IT DID NOT MOVE. A replace swaps the bytes
- * and touches neither clock: if re-dropping a file restarted the
- * `DRAFT_TTL_DAYS` window, a weekly upload would hold a page forever for free
- * and "keep it" would stop meaning anything. The field is here so a card can
- * repaint its countdown from the response and visibly show the *same* deadline,
- * rather than the client assuming a value the server never confirmed. `null`
- * means the page is kept and has no clock at all.
- *
- * `versionId` is the NEW `site_versions` row. Version history is retained —
- * the previous version is never deleted — and the rollback UI that consumes it
- * is E11's, not this epic's.
- *
- * `title` is the title the row holds AFTER the replace: re-extracted from the
- * new bytes — and legitimately `null` when they carry no readable `<title>` —
- * unless the owner named the page (`title_source = 'owner'`, D11), which no
- * replace overwrites. Carrying an HTML title forward would make the dashboard
- * confidently display the previous page's name, which is worse than the slug.
- *
- * There is no `slug` change and no `previousSlug`: a replace keeps the URL. That
- * is the whole point of it, and it is why the manifest is rewritten for the same
- * key instead of moved.
+ * A replace or restore that changed nothing (D7): the bytes were identical to
+ * the current version's, or the version asked for is already current. Nothing
+ * was written — no version row, no R2 object, no manifest.
  */
-export interface ReplaceResult {
-  siteId: string;
-  slug: string;
-  /** `https://{slug}.{base}` — unchanged by the replace, built server-side. */
-  liveUrl: string;
-  /** The new version. The previous one is retained, never deleted. */
-  versionId: string;
-  /** The stored title: the new bytes' `<title>` (or `null`), or the owner's. */
-  title: string | null;
-  /** The UNTOUCHED draft clock. `null` ⇒ kept. */
-  expiresAt: string | null;
-}
+const versionUnchangedSchema = z.object({ unchanged: z.literal(true) });
 
-export const replaceResultSchema = z.object({
+/**
+ * A replace or restore that moved the page to a different version (D7).
+ *
+ * ⚠️ `expiresAt` IS ECHOED BECAUSE IT DID NOT MOVE. Neither verb touches either
+ * clock: if re-dropping a file restarted the `DRAFT_TTL_DAYS` window, a weekly
+ * upload would hold a page forever for free and "keep it" would stop meaning
+ * anything. The field is here so a card can repaint its countdown from the
+ * response and visibly show the *same* deadline. `null` ⇒ kept.
+ *
+ * `versionId` is the version now served; `previousVersionId` the one that was
+ * current a moment ago — what the Undo toast restores (AC25), and what "back"
+ * restores after a restore.
+ *
+ * `title` is the title the row holds AFTER the change: the served bytes'
+ * `<title>` — legitimately `null` when they carry none — unless the owner named
+ * the page (`title_source = 'owner'`, D11), which neither verb overwrites.
+ *
+ * There is no `slug` change: both verbs keep the URL, which is why the manifest
+ * is rewritten for the same key instead of moved.
+ */
+const versionChangedSchema = z.object({
+  unchanged: z.literal(false),
   siteId: z.string(),
   slug: z.string(),
+  /** `https://{slug}.{base}` — unchanged, built server-side. */
   liveUrl: z.string().url(),
+  /** The version now served. */
   versionId: z.string(),
+  /** The version that was current before; `null` only for a row that had none. */
+  previousVersionId: z.string().nullable(),
+  /** The stored title: the served bytes' `<title>` (or `null`), or the owner's. */
   title: z.string().nullable(),
+  /** The UNTOUCHED draft clock. `null` ⇒ kept. */
   expiresAt: z.string().datetime().nullable(),
 });
+
+/**
+ * What a replace returns — `POST /api/sites/:id/replace` (PRD §5.5).
+ *
+ * `{ unchanged: true }` for bytes identical to the current version (AC27).
+ * Otherwise a new version, and `pruned` says whether keeping the plan's
+ * `previousVersions` dropped the oldest one — the studio's cue for "Free
+ * accounts keep one previous version." (task 012).
+ */
+export const replaceResultSchema = z.discriminatedUnion("unchanged", [
+  versionUnchangedSchema,
+  versionChangedSchema.extend({ pruned: z.boolean() }),
+]);
+
+export type ReplaceResult = z.infer<typeof replaceResultSchema>;
+
+/**
+ * What a restore returns — `POST /api/sites/:id/versions/:versionId/restore`.
+ *
+ * `{ unchanged: true }` when that version is already current. A restore moves
+ * the pointer and writes no bytes, so it never prunes: the count is unchanged.
+ */
+export const restoreResultSchema = z.discriminatedUnion("unchanged", [
+  versionUnchangedSchema,
+  versionChangedSchema,
+]);
+
+export type RestoreResult = z.infer<typeof restoreResultSchema>;
 
 /**
  * What deleting ONE page returns — `DELETE /api/sites/:id`.

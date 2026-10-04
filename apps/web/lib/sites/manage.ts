@@ -1,9 +1,12 @@
 /**
- * Replace and delete, for a signed-in owner — E06 task 006.
+ * Replace and delete, for a signed-in owner — E06 task 006; versions (no-op,
+ * pruning) E06 task 007. Restore is `./restore.ts`, kept apart so it can be
+ * shown, at source level, to write no page bytes (AC28).
  *
  * ── TWO VERBS, TWO DELIBERATELY INVERSE ORDERINGS ────────────────────────────
  *
  *   replace:  Postgres (new version) → R2 object → pointer → KV → purge
+ *             → scan → prune (R2 delete THEN row, per pruned version)
  *   delete:   pointer → KV → purge   → Postgres (archive)
  *
  * **Publish ordering forwards, publish ordering backwards.** A replace's
@@ -41,9 +44,11 @@
  *    011, and the two terminal states are different on purpose.
  *
  * ⚠️ R2 IS KEYED BY `siteId`, NEVER BY SLUG. A replace writes a NEW `versionId`
- * under the SAME `siteId` and leaves every prior object where it is; a delete
- * removes no object at all. Version history is never deleted here — the
- * rollback UI that consumes it is E11's.
+ * under the SAME `siteId`; a delete removes no object at all. The only objects
+ * this module deletes are versions pruned past `limitsFor(plan).previousVersions`
+ * (D7) — the object first, then its row. A failed object delete keeps the row
+ * (edge case 14), so the next replace's prune finds it and tries again; the
+ * reverse order would orphan bytes no row names.
  */
 import {
   hashContent,
@@ -53,17 +58,19 @@ import {
   type SiteStatus,
 } from "@kept/shared";
 
+import { db } from "../db";
 import {
   archiveSite,
   findSiteForOwner,
   insertReplacementVersion,
   revertReplacementVersion,
 } from "../db/queries/publish";
+import { deleteVersionRow, lockPrunableVersions } from "../db/queries/versions";
 import { enqueueScan } from "../publish/hooks";
 import { extractPageTitle } from "../publish/page-title";
 import { liveUrl, writePageAndManifest } from "../publish/pipeline";
 import { removeManifest } from "../storage/manifest";
-import { pageObjectKey } from "../storage/r2";
+import { pageObjectKey, r2Store } from "../storage/r2";
 
 import { managementRefusal } from "./display";
 import { keptQuotaFor, SiteNotFoundError } from "./keep";
@@ -91,13 +98,15 @@ import { StudioRefusal } from "./studio-refusal";
 export const ownerPageBodySchema = publishRequestSchema.pick({ html: true });
 
 /**
- * The page is not in a state whose bytes may be replaced.
+ * The page is not in a state whose served version may change — by replace or by
+ * restore (PRD §5.2: both only on `live`; AC29).
  *
  * `quarantined` and `under_review` are E07's flags and E06 writes neither:
  * swapping the contents of a flagged page for something else is precisely the
  * evasion the flag exists to stop. `archived` and `expired` are refused for a
- * plainer reason — they are not being served, so a replace would write bytes
- * nobody can reach and quietly repoint a row its owner cannot see.
+ * plainer reason — they are not being served, so either verb would repoint a
+ * row at bytes nobody can reach. `removed` never gets here: to its owner it is
+ * not found.
  */
 export class SiteNotReplaceableError extends StudioRefusal {
   constructor(public readonly status: SiteStatus) {
@@ -116,33 +125,41 @@ function explainNotReplaceable(status: SiteStatus): string {
 
   switch (status) {
     case "archived":
-      return "This page has been deleted, so there is nothing to replace.";
+      return "This page has been deleted, so its file can't be changed.";
     case "expired":
-      return "This page has expired and is not being served. Keep it again first, then replace it.";
+      return "This page has expired and is not being served. Keep it again first, then change its file.";
     default:
-      return "This page cannot be replaced right now.";
+      return "This page's file can't be changed right now.";
   }
 }
 
 /**
  * A store step left the edge in a state the caller should retry rather than
- * accept. Both verbs raise it, so the log detail names which one failed.
+ * accept. Replace, restore (`./restore.ts`) and delete raise it, so the log
+ * detail names which one failed.
  *
- * On a replace the row has already been rolled back and the previous manifest
- * restored, so the page is still serving what it was; on a delete nothing has
- * been written at all. Either way the honest answer is "nothing changed, try
- * again", never "we half-deleted your page".
+ * On a replace or a restore the row has already been rolled back and the
+ * previous manifest restored, so the page is still serving what it was; on a
+ * delete nothing has been written at all. Either way the honest answer is
+ * "nothing changed, try again", never "we half-deleted your page".
  */
+const STORE_FAILURE_MESSAGE = {
+  replace:
+    "kept could not publish the new file just now. Nothing changed — the page is still serving what it was. Try again in a moment.",
+  restore:
+    "kept could not switch to that version just now. Nothing changed — the page is still serving what it was. Try again in a moment.",
+  delete:
+    "kept could not take this page off the internet just now. Nothing changed — it is still serving. Try again in a moment.",
+} as const;
+
 export class ManageStoreError extends StudioRefusal {
   constructor(
-    public readonly verb: "replace" | "delete",
+    public readonly verb: keyof typeof STORE_FAILURE_MESSAGE,
     detail: string,
   ) {
     super(
       "internal_error",
-      verb === "replace"
-        ? "kept could not publish the new file just now. Nothing changed — the page is still serving what it was. Try again in a moment."
-        : "kept could not take this page off the internet just now. Nothing changed — it is still serving. Try again in a moment.",
+      STORE_FAILURE_MESSAGE[verb],
       `The ${verb} could not be applied at the edge: ${detail}`,
     );
     this.name = "ManageStoreError";
@@ -159,7 +176,11 @@ function message(err: unknown): string {
  * The caller (`./owner-routes.ts`) has already validated the body's shape and
  * run the content heuristics; this function owns ownership, state and ordering.
  *
- * @throws {SiteNotFoundError} the page does not exist or is not this profile's
+ * Bytes identical to the current version are `{ unchanged: true }` with nothing
+ * written (D7, AC27). Otherwise the answer names the version it replaced — what
+ * the Undo toast restores — and whether pruning dropped one.
+ *
+ * @throws {SiteNotFoundError} the page does not exist, is not this profile's, or is `removed`
  * @throws {SiteNotReplaceableError} the page is not `live`
  * @throws {ManageStoreError} the new bytes could not be published to the edge
  */
@@ -169,10 +190,16 @@ export async function replaceSite(
   html: string,
 ): Promise<ReplaceResult> {
   const site = await findSiteForOwner(siteId, profileId);
-  if (!site) throw new SiteNotFoundError(siteId);
+  // `removed` is E07's takedown: to its owner the page no longer exists (§5.2).
+  if (!site || site.status === "removed") throw new SiteNotFoundError(siteId);
   if (site.status !== "live") throw new SiteNotReplaceableError(site.status);
 
   const contentHash = await hashContent(html);
+  // `sites.content_hash` is the CURRENT version's (`pointSiteAt` keeps it so).
+  // Re-dropping the file already served is not a new version, and writing one
+  // would push a real previous version out through pruning for nothing.
+  if (contentHash === site.contentHash) return { unchanged: true };
+
   const sizeBytes = Buffer.byteLength(html, "utf8");
   // RE-EXTRACTED, NOT CARRIED OVER — including to `null`, when the replacement
   // has no readable `<title>`. The name belongs to the bytes, so new bytes get
@@ -241,15 +268,61 @@ export async function replaceSite(
   void enqueueScan(site.id, versionId);
 
   return {
+    unchanged: false,
     siteId: site.id,
     slug: site.slug,
     liveUrl: liveUrl(site.slug),
     versionId,
+    previousVersionId: previous.versionId,
     title,
     // The clock as it was found. Echoed, never recomputed — see the note on
-    // `ReplaceResult.expiresAt`.
+    // `expiresAt` in `@kept/shared`'s replace/restore result.
     expiresAt: site.expiresAt ? site.expiresAt.toISOString() : null,
+    // LAST, after the new version is live: a prune decides against the
+    // current pointer, and must never be the reason a replace failed.
+    pruned: await pruneVersions(site.id),
   };
+}
+
+/**
+ * Keep the current version plus `limitsFor(plan).previousVersions` (D7), newest
+ * by `activated_at`; drop the rest — each R2 object FIRST, then its row.
+ *
+ * Runs under the site-row lock `lockPrunableVersions` takes, which is the lock a
+ * restore takes too, so a restore can never point the page at bytes being
+ * deleted here.
+ *
+ * A failed object delete keeps its row and logs, and the next replace retries it
+ * (edge case 14). NEVER THROWS: the new version is already serving, and a
+ * prune that failed must not turn a successful replace into an error. The
+ * answer is whether a version was dropped — the studio's cue for "Free accounts
+ * keep one previous version." (task 012).
+ */
+async function pruneVersions(siteId: string): Promise<boolean> {
+  try {
+    return await db.transaction(async (tx) => {
+      const r2 = r2Store();
+      let pruned = false;
+      for (const version of await lockPrunableVersions(tx, siteId)) {
+        try {
+          await r2.delete(version.r2Key);
+        } catch (err) {
+          console.error(
+            `[kept] prune: R2 delete failed for "${version.r2Key}" (site ${siteId}) — ${message(err)}. The row is kept; the next replace retries it.`,
+          );
+          continue;
+        }
+        await deleteVersionRow(tx, siteId, version.id);
+        pruned = true;
+      }
+      return pruned;
+    });
+  } catch (err) {
+    console.error(
+      `[kept] prune failed for site ${siteId} — ${message(err)}. Older versions are kept; the next replace retries.`,
+    );
+    return false;
+  }
 }
 
 /**

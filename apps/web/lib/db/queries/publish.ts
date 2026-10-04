@@ -518,6 +518,26 @@ export async function findSiteForOwner(
   return site ?? null;
 }
 
+/**
+ * `findSiteForOwner`, with the row locked `FOR UPDATE` until `tx` ends — for a
+ * restore (E06 task 007), which decides on `current_version_id` and must not
+ * race a prune deleting the version it is about to point at. Same columns, same
+ * owner scope in the SQL, same `null` for "not yours" and "does not exist".
+ */
+export async function lockSiteForOwner(
+  tx: Tx,
+  siteId: string,
+  ownerId: string,
+): Promise<AnonSite | null> {
+  const [site] = await tx
+    .select(MANAGED_SITE_COLUMNS)
+    .from(sites)
+    .where(and(eq(sites.id, siteId), eq(sites.ownerId, ownerId)))
+    .for("update");
+
+  return site ?? null;
+}
+
 export interface ReplaceVersionInput {
   siteId: string;
   versionId: string;
@@ -548,6 +568,44 @@ function htmlTitle(title: string | null): SQL {
 }
 
 /**
+ * What a site row says about the bytes it serves: the version, and the three
+ * columns denormalised from it. They move together or the row describes bytes
+ * it no longer points at — the dedup probe and the replace no-op read
+ * `content_hash` off the row, never off `site_versions`.
+ */
+export interface SitePointer {
+  versionId: string | null;
+  /** The served bytes' `<title>`; an owner title is kept regardless (`htmlTitle`). */
+  title: string | null;
+  contentHash: string | null;
+  sizeBytes: number | null;
+}
+
+/**
+ * Point a site at a version — THE one statement every version move runs:
+ * replace, its unwind, restore and restore's unwind. Returns the title the row
+ * ENDED UP with (the owner's, when they set one).
+ */
+export async function pointSiteAt(
+  tx: Tx,
+  siteId: string,
+  target: SitePointer,
+): Promise<{ title: string | null }> {
+  const [row] = await tx
+    .update(sites)
+    .set({
+      currentVersionId: target.versionId,
+      title: htmlTitle(target.title),
+      contentHash: target.contentHash,
+      sizeBytes: target.sizeBytes,
+      updatedAt: new Date(),
+    })
+    .where(eq(sites.id, siteId))
+    .returning({ title: sites.title });
+  return { title: row?.title ?? null };
+}
+
+/**
  * Insert the new `site_versions` row for a replace and repoint the site at it —
  * ONE transaction, because a `current_version_id` that names a row which does
  * not exist is unservable.
@@ -572,19 +630,7 @@ export async function insertReplacementVersion(
       sizeBytes: input.sizeBytes,
       publishedVia: input.publishedVia,
     });
-    const [row] = await tx
-      .update(sites)
-      .set({
-        currentVersionId: input.versionId,
-        title: htmlTitle(input.title),
-        contentHash: input.contentHash,
-        sizeBytes: input.sizeBytes,
-        updatedAt: new Date(),
-      })
-      .where(eq(sites.id, input.siteId))
-      // The title the row ENDED UP with — the owner's, when they set one.
-      .returning({ title: sites.title });
-    return { title: row?.title ?? null };
+    return pointSiteAt(tx, input.siteId, input);
   });
 }
 
@@ -595,27 +641,11 @@ export async function insertReplacementVersion(
 export async function revertReplacementVersion(input: {
   siteId: string;
   versionId: string;
-  previous: {
-    versionId: string | null;
-    /** Restored alongside the version id, or the row describes bytes it no
-     * longer points at — the same reason `contentHash` and `sizeBytes` are here. */
-    title: string | null;
-    contentHash: string | null;
-    sizeBytes: number | null;
-  };
+  previous: SitePointer;
 }): Promise<void> {
   await db.transaction(async (tx) => {
-    await tx
-      .update(sites)
-      .set({
-        currentVersionId: input.previous.versionId,
-        // Guarded like the forward write: an owner title set in between stays.
-        title: htmlTitle(input.previous.title),
-        contentHash: input.previous.contentHash,
-        sizeBytes: input.previous.sizeBytes,
-        updatedAt: new Date(),
-      })
-      .where(eq(sites.id, input.siteId));
+    // Guarded like the forward write: an owner title set in between stays.
+    await pointSiteAt(tx, input.siteId, input.previous);
     await tx.delete(siteVersions).where(eq(siteVersions.id, input.versionId));
   });
 }

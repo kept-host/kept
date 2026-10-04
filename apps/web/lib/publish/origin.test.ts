@@ -207,6 +207,10 @@ test("every cookie-authenticated mutating route imports the gate", async () => {
     // the session cookie the browser attaches for it.
     "app/api/sites/[id]/replace/route.ts",
     "app/api/sites/[id]/route.ts",
+    // E06 task 007 — restore (and the Undo toast). It writes no bytes, but it
+    // changes which bytes a page serves: ungated, a hosted page could roll its
+    // publisher's other pages back to any version they still keep.
+    "app/api/sites/[id]/versions/[versionId]/restore/route.ts",
     // E06 task 004 — the OWNED publish. Its keyless twin `POST /api/publish` is
     // in the negative list below and must stay there; this one spends the
     // session cookie, so ungated a hosted page could publish into its visitor's

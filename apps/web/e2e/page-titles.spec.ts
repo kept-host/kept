@@ -188,16 +188,19 @@ test.describe("page titles", () => {
       const next = runId();
       const refreshed = await replace(doc(next));
       expect(refreshed.status(), await refreshed.text()).toBe(200);
-      expect(replaceResultSchema.parse(await refreshed.json()).title).toBe(next);
+      expect(replaceResultSchema.parse(await refreshed.json())).toMatchObject({
+        unchanged: false,
+        title: next,
+      });
       expect((await titleOf(site.id)).title).toBe(next);
 
       await nameByOwner(site.id, "My own name");
       const kept = await replace(doc(runId()));
       expect(kept.status(), await kept.text()).toBe(200);
       expect(
-        replaceResultSchema.parse(await kept.json()).title,
+        replaceResultSchema.parse(await kept.json()),
         "the response reports the title the row kept",
-      ).toBe("My own name");
+      ).toMatchObject({ unchanged: false, title: "My own name" });
       expect(await titleOf(site.id)).toEqual({ title: "My own name", titleSource: "owner" });
     } finally {
       await cleanup(scope);
