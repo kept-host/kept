@@ -20,8 +20,8 @@
  * written down. The clocks are `draftClocks`, the URL is `liveUrl`, the name is
  * `extractPageTitle`, the content check and the scan are the same `./hooks`
  * seams, the size cap is `MAX_PAGE_BYTES` through the same schema, and the slug
- * is `mintSlugCandidate` with the same generate-and-retry against
- * `sites_slug_key`. Nothing about the ordering is re-derived here. The version
+ * comes out of the same generate-and-retry loop (`withMintedSlug`: the namespace
+ * check, then `sites_slug_key`). Nothing about the ordering is re-derived here. The version
  * row records `published_via = 'studio'` (§5.9).
  *
  * ── WHAT DIFFERS, AND IT IS ONLY THIS ────────────────────────────────────────
@@ -67,9 +67,7 @@ import {
   deleteSiteCascade,
   findOwnedDuplicate,
   insertOwnedPage,
-  isSlugCollision,
-  MAX_SLUG_ATTEMPTS,
-  SlugUnavailableError,
+  withMintedSlug,
 } from "../db/queries/publish";
 import { enqueueScan } from "../publish/hooks";
 import { extractPageTitle } from "../publish/page-title";
@@ -78,7 +76,6 @@ import {
   writePageAndManifest,
   type PublisherContext,
 } from "../publish/pipeline";
-import { mintSlugCandidate } from "../publish/slug";
 import { publisherHashSalt } from "../storage/env";
 import { pageObjectKey } from "../storage/r2";
 
@@ -133,52 +130,46 @@ async function insertWithMintedSlug(input: {
   contentHash: string;
   sizeBytes: number;
 }): Promise<Landed> {
-  for (let attempt = 0; attempt < MAX_SLUG_ATTEMPTS; attempt++) {
-    const slug = mintSlugCandidate();
-    try {
-      return await db.transaction(async (tx): Promise<Landed> => {
-        // THE SERIALISATION POINT. Everything below reads and writes behind it.
-        await lockOwner(tx, input.ownerId);
+  return withMintedSlug((slug) =>
+    db.transaction(async (tx): Promise<Landed> => {
+      // THE SERIALISATION POINT. Everything below reads and writes behind it.
+      await lockOwner(tx, input.ownerId);
 
-        // Behind the lock, so an identical publish from another tab has either
-        // committed (and is found here) or is queued behind this one.
-        const duplicateId = await findOwnedDuplicate(tx, input.ownerId, input.contentHash);
-        if (duplicateId !== null) {
-          return { site: await readStudioSite(tx, duplicateId), duplicate: true };
-        }
+      // Behind the lock, so an identical publish from another tab has either
+      // committed (and is found here) or is queued behind this one.
+      const duplicateId = await findOwnedDuplicate(tx, input.ownerId, input.contentHash);
+      if (duplicateId !== null) {
+        return { site: await readStudioSite(tx, duplicateId), duplicate: true };
+      }
 
-        // Plan-aware: `keptQuotaFor` reads the plan from the row locked above,
-        // so a premium account is measured against its own limit, not the free one.
-        const quota = await keptQuotaFor(input.ownerId, tx);
-        // The cap DEGRADES, it never errors: out of slots means this page lands
-        // as an owned draft with a countdown, not a refused publish.
-        const clocks = quota.remaining > 0 ? null : draftClocks(new Date());
+      // Plan-aware: `keptQuotaFor` reads the plan from the row locked above,
+      // so a premium account is measured against its own limit, not the free one.
+      const quota = await keptQuotaFor(input.ownerId, tx);
+      // The cap DEGRADES, it never errors: out of slots means this page lands
+      // as an owned draft with a countdown, not a refused publish.
+      const clocks = quota.remaining > 0 ? null : draftClocks(new Date());
 
-        await insertOwnedPage(tx, {
-          siteId: input.siteId,
-          versionId: input.versionId,
-          slug,
-          r2Key: pageObjectKey(input.siteId, input.versionId),
-          ownerId: input.ownerId,
-          publisherHash: input.publisherHash,
-          title: input.title,
-          contentHash: input.contentHash,
-          sizeBytes: input.sizeBytes,
-          expiresAt: clocks?.expiresAt ?? null,
-          purgeAfter: clocks?.purgeAfter ?? null,
-          // The page is this account's from its first byte, so the stamp that
-          // records when it stopped being anonymous is its creation.
-          claimedAt: new Date(),
-          publishedVia: "studio",
-        });
-
-        return { site: await readStudioSite(tx, input.siteId), duplicate: false };
+      await insertOwnedPage(tx, {
+        siteId: input.siteId,
+        versionId: input.versionId,
+        slug,
+        r2Key: pageObjectKey(input.siteId, input.versionId),
+        ownerId: input.ownerId,
+        publisherHash: input.publisherHash,
+        title: input.title,
+        contentHash: input.contentHash,
+        sizeBytes: input.sizeBytes,
+        expiresAt: clocks?.expiresAt ?? null,
+        purgeAfter: clocks?.purgeAfter ?? null,
+        // The page is this account's from its first byte, so the stamp that
+        // records when it stopped being anonymous is its creation.
+        claimedAt: new Date(),
+        publishedVia: "studio",
       });
-    } catch (err) {
-      if (!isSlugCollision(err)) throw err;
-    }
-  }
-  throw new SlugUnavailableError();
+
+      return { site: await readStudioSite(tx, input.siteId), duplicate: false };
+    }),
+  );
 }
 
 /**

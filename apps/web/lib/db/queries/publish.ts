@@ -15,6 +15,7 @@
 import type { PublishChannel, Region, SiteStatus } from "@kept/shared";
 import { and, desc, eq, gt, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 
+import { isNameAvailable } from "../../names/availability";
 import { mintSlugCandidate } from "../../publish/slug";
 import { db, type Tx } from "../index";
 import { sites, siteVersions } from "../schema";
@@ -25,16 +26,10 @@ import { sites, siteVersions } from "../schema";
  * independent attempts with ~1e-48: exhausting this bound means the unique index
  * or the CSPRNG is broken, not that the namespace is full. Bounded and loudly
  * fatal rather than an unbounded loop, because an unbounded retry against a
- * broken index is an outage that looks like a hang.
- *
- * ⚠️ EXPORTED FOR THE OWNED PUBLISH (E06 task 004), which cannot reuse
- * `insertAnonymousDraft`'s loop because its transaction also holds the owner
- * lock and the cap decision — so the retry has to live one level up, in
- * `lib/sites/publish.ts`, where re-opening the transaction re-takes the lock.
- * The BOUND is shared so both paths give up in the same place for the same
- * reason.
+ * broken index is an outage that looks like a hang. `withMintedSlug` is the one
+ * loop that reads it, for both mint paths.
  */
-export const MAX_SLUG_ATTEMPTS = 8;
+const MAX_SLUG_ATTEMPTS = 8;
 
 /** Thrown when slug minting exhausts `MAX_SLUG_ATTEMPTS`; maps to a 503. */
 export class SlugUnavailableError extends Error {
@@ -55,12 +50,12 @@ export class SlugUnavailableError extends Error {
  * index is the only authority, so a collision is detected by inserting and
  * reading the constraint name off the error.
  *
- * ⚠️ EXPORTED FOR E06's RENAME (task 005), which applies the identical posture
- * to a CALLER-supplied candidate: it updates the slug and reads the constraint
- * name off the failure, instead of asking whether the name is free and then
- * racing itself. A second copy of this predicate is a second answer to "was
- * that a collision or a real error", and the wrong answer is a 500 shown to
- * somebody whose only mistake was picking a taken name.
+ * ⚠️ EXPORTED FOR E06's RENAME (`lib/names/rename.ts`). It asks the namespace
+ * under a per-name lock, which closes the race between renames, but a minted
+ * page takes no name lock — so the rename's UPDATE still reads the constraint
+ * name off a failure and answers `name_taken`. A second copy of this predicate
+ * is a second answer to "was that a collision or a real error", and the wrong
+ * answer is a 500 shown to somebody whose only mistake was picking a taken name.
  */
 export function isSlugCollision(err: unknown): boolean {
   for (let cursor: unknown = err, depth = 0; cursor && depth < 5; depth++) {
@@ -234,6 +229,39 @@ export interface AnonymousDraftInput {
 }
 
 /**
+ * THE generate-and-retry loop — both mint paths run it: the anonymous draft
+ * below and the owned publish (`lib/sites/publish.ts`), whose `attempt` re-opens
+ * its transaction and so re-takes the owner lock on every retry.
+ *
+ * Each candidate is first asked of the ONE namespace check (D5, AC23): a name
+ * an active page has, or one held for somebody, is skipped before any insert, so
+ * the mint can never hand out a held name. That read is advisory for active
+ * names — `sites_slug_key` stays the final arbiter, and a unique violation on it
+ * (`isSlugCollision`) is retried with a fresh candidate. Any other error is not
+ * a collision and is rethrown.
+ *
+ * `candidates` is the generator, `mintSlugCandidate` in production; the AC23
+ * drill passes a source that emits a held and an active name first.
+ *
+ * @throws {SlugUnavailableError} `MAX_SLUG_ATTEMPTS` candidates were all refused
+ */
+export async function withMintedSlug<T>(
+  attempt: (slug: string) => Promise<T>,
+  candidates: () => string = mintSlugCandidate,
+): Promise<T> {
+  for (let tries = 0; tries < MAX_SLUG_ATTEMPTS; tries++) {
+    const slug = candidates();
+    if ((await isNameAvailable(slug, null)) !== "available") continue;
+    try {
+      return await attempt(slug);
+    } catch (err) {
+      if (!isSlugCollision(err)) throw err;
+    }
+  }
+  throw new SlugUnavailableError();
+}
+
+/**
  * Insert the `sites` + `site_versions` pair for a new anonymous draft and
  * return the slug that was actually taken.
  *
@@ -251,52 +279,46 @@ export interface AnonymousDraftInput {
 export async function insertAnonymousDraft(
   input: AnonymousDraftInput,
 ): Promise<{ slug: string }> {
-  for (let attempt = 0; attempt < MAX_SLUG_ATTEMPTS; attempt++) {
-    const slug = mintSlugCandidate();
-    try {
-      await db.transaction(async (tx) => {
-        // `sites` first: `site_versions.site_id` has an FK onto it.
-        // `current_version_id` has no DB-level FK (it would be circular), so it
-        // can point at the version row before that row is written.
-        await tx.insert(sites).values({
-          id: input.siteId,
-          slug,
-          status: "live",
-          region: "auto",
-          currentVersionId: input.versionId,
-          ownerId: null,
-          anonTokenHash: input.anonTokenHash,
-          publisherHash: input.publisherHash,
-          expiresAt: input.expiresAt,
-          purgeAfter: input.purgeAfter,
-          title: input.title,
-          contentHash: input.contentHash,
-          sizeBytes: input.sizeBytes,
-          reminderEmail: input.reminderEmail ?? null,
-        });
-        await tx.insert(siteVersions).values({
-          id: input.versionId,
-          siteId: input.siteId,
-          region: "auto",
-          r2Key: input.r2Key,
-          contentHash: input.contentHash,
-          sizeBytes: input.sizeBytes,
-          publishedVia: input.publishedVia,
-        });
+  return withMintedSlug(async (slug) => {
+    await db.transaction(async (tx) => {
+      // `sites` first: `site_versions.site_id` has an FK onto it.
+      // `current_version_id` has no DB-level FK (it would be circular), so it
+      // can point at the version row before that row is written.
+      await tx.insert(sites).values({
+        id: input.siteId,
+        slug,
+        status: "live",
+        region: "auto",
+        currentVersionId: input.versionId,
+        ownerId: null,
+        anonTokenHash: input.anonTokenHash,
+        publisherHash: input.publisherHash,
+        expiresAt: input.expiresAt,
+        purgeAfter: input.purgeAfter,
+        title: input.title,
+        contentHash: input.contentHash,
+        sizeBytes: input.sizeBytes,
+        reminderEmail: input.reminderEmail ?? null,
       });
-      return { slug };
-    } catch (err) {
-      if (!isSlugCollision(err)) throw err;
-    }
-  }
-  throw new SlugUnavailableError();
+      await tx.insert(siteVersions).values({
+        id: input.versionId,
+        siteId: input.siteId,
+        region: "auto",
+        r2Key: input.r2Key,
+        contentHash: input.contentHash,
+        sizeBytes: input.sizeBytes,
+        publishedVia: input.publishedVia,
+      });
+    });
+    return { slug };
+  });
 }
 
 export interface OwnedPageInput {
   /** Pre-generated so the R2 key is known before the row exists. */
   siteId: string;
   versionId: string;
-  /** Minted by the caller's retry loop, which owns the collision handling. */
+  /** Minted by `withMintedSlug`, which owns the collision handling. */
   slug: string;
   r2Key: string;
   ownerId: string;

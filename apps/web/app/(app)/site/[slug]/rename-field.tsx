@@ -1,31 +1,30 @@
 "use client";
 
 /**
- * The inline rename — E06 task 008. Four states, and the fourth one is specific.
+ * The inline rename — E06 task 008, rewired by task 006 to the names module.
+ * Four states, and the fourth one is specific.
  *
  * ── idle → editing → checking → resolved ─────────────────────────────────────
  * **idle** shows the address as text with one button. **editing** is the field
  * with something typed in it that has not settled. **checking** is the debounce
- * window — a real state, not a flicker, because a verdict that changes on every
- * keystroke reads as noise. **resolved** is either *accepted* or one of four
- * named refusals: bad shape, reserved, not allowed, or taken. Never a single
- * generic "invalid": a person who typed `My Page` and a person who typed `admin`
- * have different problems and only one of them is fixable by trying harder.
+ * window plus the `GET /api/names/check` round trip — a real state, not a
+ * flicker, because a verdict that changes on every keystroke reads as noise.
+ * **resolved** is one of PRD §5.4's statuses with its own sentence
+ * (`nameStatusMessage`). Never a single generic "invalid": a person who typed
+ * `My Page` and a person who typed `admin` have different problems and only one
+ * of them is fixable by trying harder.
  *
  * ── THE INDICATOR IS ADVISORY. IT DOES NOT GATE SUBMIT. ──────────────────────
- * `checkChosenSlug` is pure — shape, reserved labels, profanity — and the PATCH
- * handler runs the identical function, so the local verdict is a courtesy that
- * saves a round trip, not a permission. **Availability is not in it at all**:
- * `owner-routes.ts` states the rule — "there is no pre-flight availability query,
- * and adding one would be a bug" — because `sites_slug_key` is the only authority
- * and a check that gates the write is a TOCTOU bug with a nice spinner. So Save
- * stays live, the request is always allowed to happen, and a name that was free
- * when this field last looked comes back from the server as **taken**.
+ * The check is the server's own decision — the name rule, availability, quota
+ * and the daily limit — but it is a READ, and the rename re-asks under its
+ * locks. A name free when this field last looked can be gone by the save, and
+ * then the PATCH answers `name_taken` with the same sentence. So Save stays
+ * live and the request is always allowed to happen.
  *
  * ── THE URL MOVES UNDER THE USER, SO THE CLIENT MUST NAVIGATE ────────────────
- * `/site/[slug]` is keyed by slug. `RenameResult` carries the new one precisely
- * so this component can `router.replace` onto it; without that the next
- * navigation 404s on the user's own page. `replace`, not `push` — the old
+ * This screen's route is keyed by slug (task 012 moves it to the page id). The
+ * PATCH returns the renamed `site`, so this component can `router.replace` onto
+ * its new slug; without that the next navigation 404s on the user's own page. `replace`, not `push` — the old
  * address is not a place to go Back to.
  *
  * ── ⚠️ …AND THE NAVIGATION TAKES THIS COMPONENT'S STATE WITH IT ──────────────
@@ -33,15 +32,14 @@
  * dynamic segment VALUE, so the App Router replaces that subtree and every
  * client component under it remounts. A `setNotice(...)` immediately before
  * `router.replace(...)` is therefore discarded ~instantly, and the success copy
- * D2 requires — the measured, honest sentence about the old address still
- * answering for a little while — was never once seen by a user.
+ * was never once seen by a user.
  *
  * So the notice travels **in the URL** and is rebuilt on the other side, which
  * is exactly how `/settings` already carries `?linked=` and `?error=` across
  * Better Auth's OAuth round trip: the server component reads the parameter and
  * hands it down as a prop, and no client component parses `location` itself.
- * `renamedFrom` is the previous slug, which is all `renameNotice` needs beyond
- * what this component already has.
+ * `renamedFrom` only says "this navigation is the rename's"; `renameNotice`
+ * needs nothing beyond the `liveUrl` this component already has.
  *
  * The no-op rename (a page renamed to the name it already has) does NOT
  * navigate, so its notice is set directly — there is no remount to survive.
@@ -58,13 +56,11 @@ import { Check, Loader2, Pencil } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import type { NameCheckStatus } from "@kept/shared";
+
+import { nameStatusMessage } from "@/lib/names/messages";
 import { siteHref } from "@/lib/sites/display";
-import {
-  checkChosenSlug,
-  renameNotice,
-  renamePage,
-  type SlugRefusalReason,
-} from "@/lib/sites/owner-client";
+import { checkName, renameNotice, renamePage } from "@/lib/sites/owner-client";
 import { cn } from "@/lib/utils";
 
 /**
@@ -81,20 +77,17 @@ const SETTLE_MS = 350;
 type Phase = "idle" | "editing" | "checking" | "resolved" | "saving";
 
 /**
- * Why a resolved name was refused.
- *
- * `shape`, `reserved` and `profanity` are `checkChosenSlug`'s three, computed in
- * the browser. `taken` and `refused` can only come back from the PATCH — the
- * first because `sites_slug_key` is the only authority on availability, the
- * second for every other answer the handler gives (a page under review, a store
- * that could not be written). Carried separately from the message so the state
- * is machine-readable in `data-reason` without anything parsing prose.
+ * Why a resolved name was refused: the check status that refused it, or
+ * `refused` for an answer that is not a name status (a page under review, a
+ * store that could not be written, a check that could not run). Carried apart
+ * from the message so the state is machine-readable in `data-reason` without
+ * anything parsing prose.
  */
-type RefusalKind = SlugRefusalReason | "taken" | "refused";
+type RefusalKind = Exclude<NameCheckStatus, "available" | "held_for_you"> | "refused";
 
-/** A resolved verdict: allowed, or refused for one specific, named reason. */
+/** A resolved verdict: allowed (free, or yours to take back), or refused for one named reason. */
 type Verdict =
-  | { kind: "accepted" }
+  | { kind: "accepted"; message: string }
   | { kind: "refused"; reason: RefusalKind; message: string };
 
 export function RenameField({
@@ -130,21 +123,21 @@ export function RenameField({
   // own navigation causes. `renameNotice` is the single owner of the sentence
   // either way; nothing here composes a second version of it.
   const [notice, setNotice] = useState<string | null>(() =>
-    renamedFrom && renamedFrom !== slug
-      ? renameNotice({ siteId, slug, previousSlug: renamedFrom, liveUrl })
-      : null,
+    renamedFrom && renamedFrom !== slug ? renameNotice({ liveUrl }) : null,
   );
   const inputRef = useRef<HTMLInputElement | null>(null);
   const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abort = useRef<AbortController | null>(null);
+  const checking = useRef<AbortController | null>(null);
   const fieldId = useId();
   const statusId = useId();
 
-  // A pending debounce or an in-flight PATCH outliving this component would
-  // resolve into a `setState` on something that is gone.
+  // A pending debounce, check or PATCH outliving this component would resolve
+  // into a `setState` on something that is gone.
   useEffect(() => {
     return () => {
       if (settleTimer.current) clearTimeout(settleTimer.current);
+      checking.current?.abort();
       abort.current?.abort();
     };
   }, []);
@@ -165,6 +158,7 @@ export function RenameField({
 
   function cancel() {
     if (settleTimer.current) clearTimeout(settleTimer.current);
+    checking.current?.abort();
     abort.current?.abort();
     setPhase("idle");
     setValue(slug);
@@ -176,6 +170,7 @@ export function RenameField({
     setVerdict(null);
     setNotice(null);
     if (settleTimer.current) clearTimeout(settleTimer.current);
+    checking.current?.abort();
 
     const candidate = next.trim();
     if (candidate === "" || candidate === slug) {
@@ -184,15 +179,25 @@ export function RenameField({
     }
 
     setPhase("checking");
-    settleTimer.current = setTimeout(() => {
-      // ADVISORY. The same pure function the PATCH handler runs, computed here
-      // only to answer sooner — never to decide whether the PATCH may be sent.
-      const refused = checkChosenSlug(candidate);
-      setVerdict(
-        refused
-          ? { kind: "refused", reason: refused.reason, message: refused.message }
-          : { kind: "accepted" },
-      );
+    settleTimer.current = setTimeout(async () => {
+      // ADVISORY. The server's own answer, shown sooner — never a decision on
+      // whether the PATCH may be sent.
+      const controller = new AbortController();
+      checking.current = controller;
+      const outcome = await checkName(siteId, candidate, controller.signal);
+      if (controller.signal.aborted) return;
+
+      if (!outcome.ok) {
+        setVerdict({ kind: "refused", reason: "refused", message: outcome.error.message });
+      } else {
+        const { result } = outcome;
+        const message = nameStatusMessage(result, candidate, hostSuffix);
+        setVerdict(
+          result.status === "available" || result.status === "held_for_you"
+            ? { kind: "accepted", message }
+            : { kind: "refused", reason: result.status, message },
+        );
+      }
       setPhase("resolved");
     }, SETTLE_MS);
   }
@@ -204,10 +209,10 @@ export function RenameField({
     const candidate = value.trim();
     if (candidate === "") return;
 
-    // Whatever the advisory verdict says, the request goes. See the header:
-    // the server runs the identical shape check and is the only authority on
-    // availability, so gating here would only ever hide the real answer.
+    // Whatever the advisory verdict says, the request goes. See the header: the
+    // rename re-asks under its locks, so gating here could only hide its answer.
     if (settleTimer.current) clearTimeout(settleTimer.current);
+    checking.current?.abort();
     setPhase("saving");
     setNotice(null);
 
@@ -236,14 +241,10 @@ export function RenameField({
     setPhase("idle");
     setVerdict(null);
 
-    // Measured and truthful: the old address keeps working for a couple of
-    // minutes in the worst case and nobody following an old link is dropped.
-    // `renameNotice` owns that sentence and derives its bound from the KV cache
-    // TTL — it must never be tightened into an instant cutover.
-    if (outcome.page.slug === outcome.page.previousSlug) {
+    if (outcome.site.slug === slug) {
       // A no-op rename does not move the route, so nothing remounts and the
       // notice can simply be set.
-      setNotice(renameNotice(outcome.page));
+      setNotice(renameNotice(outcome.site));
       return;
     }
 
@@ -252,7 +253,7 @@ export function RenameField({
     // is about to be replaced, so the notice goes in the URL rather than in
     // state that is a millisecond from being discarded. See the header.
     router.replace(
-      `${siteHref(outcome.page.slug)}?renamedFrom=${encodeURIComponent(outcome.page.previousSlug)}`,
+      `${siteHref(outcome.site.slug)}?renamedFrom=${encodeURIComponent(slug)}`,
     );
   }
 
@@ -365,7 +366,7 @@ export function RenameField({
             ) : verdict?.kind === "accepted" ? (
               <span className="inline-flex items-center gap-1.5 text-live">
                 <Check aria-hidden="true" className="size-3.5" />
-                That name is allowed. kept confirms it is free when you save.
+                {verdict.message}
               </span>
             ) : verdict?.kind === "refused" ? (
               verdict.message

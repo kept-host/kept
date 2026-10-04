@@ -1,23 +1,16 @@
 /**
- * `PATCH /api/sites/:id/slug` — an owner moves one of their pages to a name
- * they chose. E06 task 005.
+ * `PATCH /api/sites/:id/name` — an owner moves one of their KEPT pages to a name
+ * they chose (PRD §5.4, D3). E06 task 006; replaces E06's first `/slug` route.
  *
- * Body: `{ slug }`. The first user-chosen slug in the product's history: every
- * other slug came out of `mintSlugCandidate`, and both of the lists that guard
- * it (`RESERVED_SLUGS`, `PROFANITY_SUBSTRINGS`) were written for eight random
- * characters rather than for a person picking a name. What that does and does
- * NOT cover is written down beside the rule, in `lib/publish/slug.ts`'s
- * `checkChosenSlug` — impersonation and typosquatting are E07's.
+ * Body: `{ name }`. Success is `{ site }` — the page as it now is. Every rule
+ * (kept-and-`live` only, the name rule, the namespace under a per-name lock, the
+ * quota, `RENAMES_PER_DAY`) and the store ordering — `writeManifest(new)` →
+ * commit → `removeManifest(old)` — live in `lib/names/rename.ts`; nothing about
+ * either belongs here. R2 is untouched: objects are keyed by `siteId`.
  *
- * PATCH, not POST or PUT: this modifies one field of an existing resource and
- * is not idempotent in the store sense (each call issues purges), so PATCH is
- * the honest method. Renaming a page to the name it already has is a no-op
+ * PATCH: it changes one field of an existing resource, and each call that moves
+ * the name issues purges. Renaming a page to the name it already has is a no-op
  * success that writes nothing and purges nothing.
- *
- * ⚠️ THE ONLY OWNER ROUTE THAT TOUCHES THE EDGE. `lib/sites/rename.ts` owns the
- * `writeManifest(new) → commit → removeManifest(old)` ordering (epic decision
- * D2) and the reasons it is that way round; nothing about it belongs here.
- * R2 is untouched — objects are keyed by `siteId`, not by slug.
  */
 import type { NextResponse } from "next/server";
 
@@ -29,9 +22,9 @@ import {
 } from "../../../../../lib/publish/http";
 import { refuseUntrustedOrigin } from "../../../../../lib/publish/origin";
 import {
+  changeOwnedSiteName,
   ownerResponse,
   refuse,
-  renameOwnedSite,
   signedOut,
 } from "../../../../../lib/sites/owner-routes";
 
@@ -66,5 +59,5 @@ export async function PATCH(
   }
 
   const { id } = await params;
-  return ownerResponse(await renameOwnedSite(id, body, profile.id));
+  return ownerResponse(await changeOwnedSiteName(id, body, profile.id));
 }

@@ -6,7 +6,7 @@
  * envelope `{ error: { code, message } }`.
  *
  * THE COLLECTION ROUTE, and a static sibling of `[id]` — Next resolves the two
- * without ambiguity, and `[id]/keep`, `[id]/demote`, `[id]/replace`, `[id]/slug`
+ * without ambiguity, and `[id]/keep`, `[id]/demote`, `[id]/replace`, `[id]/name`
  * and `swap` are all untouched by it.
  *
  * ⚠️ IT IS NOT `POST /api/publish` WITH A COOKIE, AND THE TWO MUST NOT MERGE.

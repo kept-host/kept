@@ -3,7 +3,7 @@
  * extended by E06.
  *
  * `POST /api/sites` · `POST /api/sites/:id/keep` · `POST /api/sites/:id/demote`
- * `POST /api/sites/swap` · `PATCH /api/sites/:id/slug`
+ * `POST /api/sites/swap` · `PATCH /api/sites/:id/name` · `GET /api/names/check`
  * `POST /api/sites/:id/replace` · `DELETE /api/sites/:id` · `DELETE /api/account`
  *
  * ── WHAT THIS MODULE IS FOR ────────────────────────────────────────────────
@@ -47,7 +47,7 @@
  * ⚠️ PUBLISH, RENAME, REPLACE AND DELETE ARE THE EXCEPTIONS, AND THEY ARE ON
  * PURPOSE. Storing a page's first bytes, moving a slug, storing new bytes and
  * taking a page off the internet are all unavoidably edge operations — but each
- * ordering lives in exactly one place, `./publish.ts`, `./rename.ts` and
+ * ordering lives in exactly one place, `./publish.ts`, `../names/rename.ts` and
  * `./manage.ts`, and this module only maps their refusals. Nothing here calls
  * `writeManifest`/`removeManifest`/`r2Store` directly, and nothing new may.
  *
@@ -66,9 +66,10 @@ import {
   deleteResultSchema,
   demoteResultSchema,
   keepResultSchema,
+  nameChangeRequestSchema,
+  nameChangeResultSchema,
+  nameCheckResultSchema,
   ownedPublishResultSchema,
-  renameRequestSchema,
-  renameResultSchema,
   replaceResultSchema,
   studioErrorSchema,
   swapResultSchema,
@@ -76,9 +77,10 @@ import {
   type DeleteResult,
   type DemoteResult,
   type KeepResult,
+  type NameChangeResult,
+  type NameCheckResult,
   type OwnedPublishResult,
   type PublishErrorCode,
-  type RenameResult,
   type ReplaceResult,
   type StudioErrorCode,
   type SwapResult,
@@ -87,6 +89,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { SlugUnavailableError } from "../db/queries/publish";
+import { allowNameCheck, checkName } from "../names/check";
+import { renameSite } from "../names/rename";
 import { checkHeuristics } from "../publish/hooks";
 import {
   contentRejected,
@@ -95,12 +99,10 @@ import {
   type PublishFailure,
   type PublisherContext,
 } from "../publish/pipeline";
-import { checkChosenSlug, type SlugRefusalReason } from "../publish/slug";
 import { deleteAccount } from "./account-deletion";
 import { demoteSite, keepSite, SITE_NOT_FOUND_MESSAGE, swapKept } from "./keep";
 import { deleteSite, ownerPageBodySchema, replaceSite } from "./manage";
 import { publishOwnedPage } from "./publish";
-import { renameSite } from "./rename";
 import { StudioRefusal } from "./studio-refusal";
 
 /** A studio refusal, ready to answer: the status and the validated envelope. */
@@ -402,62 +404,68 @@ export async function swapOwnedSites(
   }
 }
 
-/** `checkChosenSlug`'s three refusals, in studio vocabulary. */
-const NAME_CODE_FOR: Record<SlugRefusalReason, StudioErrorCode> = {
-  shape: "name_invalid",
-  reserved: "name_reserved",
-  profanity: "name_inappropriate",
-};
-
 /**
- * `PATCH /api/sites/:id/slug` — move an owned page to a name its owner chose.
+ * `PATCH /api/sites/:id/name` — move an owned kept page to a name its owner
+ * chose (PRD §5.4).
  *
- * THREE REFUSALS BEFORE ANY WRITE, and each one applies nothing: a malformed
- * body, a slug that fails `checkChosenSlug` (shape, reserved label, profanity),
- * and — inside `renameSite`, where the unique index answers it — a slug that is
- * taken. The first two never open a transaction at all.
+ * Every rule lives in `../names/rename.ts`, inside one transaction: the name
+ * rule, kept-and-`live` only (a draft is `409 not_allowed_in_status`, AC17), the
+ * namespace under a per-name lock, the quota and the 24 h limit — each refusal a
+ * `StudioRefusal` carrying the field's own sentence. A name taken between the
+ * field's check and this save is `409 name_taken`, never a 500 (edge case 3).
  *
- * ⚠️ THERE IS NO PRE-FLIGHT AVAILABILITY QUERY, AND ADDING ONE WOULD BE A BUG.
- * `slug.ts` states the rule: "a pre-flight 'is this slug free?' query is a race,
- * and `sites_slug_key` is the only authority." The availability signal a rename
- * field shows while you type is therefore ADVISORY and comes from this endpoint's
- * own error path — a `409 name_taken` — not from a
- * separate GET that the write then trusts. A check that gates the write is a
- * TOCTOU bug with a nice spinner: two people can pass it in the same second and
- * only one of them can have the name. The shape/reserved/profanity half of the
- * live indicator needs no server at all, because `checkChosenSlug` is pure and
- * the browser runs the same function (see `./owner-client.ts`).
- *
- * A collision that appears BETWEEN whatever the field last showed and this call
- * therefore arrives as "taken", never as a 500.
+ * Success is the page as it now is: the new `slug` and `liveUrl`, `nameKind:
+ * "chosen"`, and a moved `updatedAt`.
  */
-export async function renameOwnedSite(
+export async function changeOwnedSiteName(
   rawSiteId: string,
   raw: unknown,
   profileId: string,
-): Promise<OwnerOutcome<RenameResult>> {
+): Promise<OwnerOutcome<NameChangeResult>> {
   const parsedId = siteIdSchema.safeParse(rawSiteId);
   if (!parsedId.success) return ownerNotFound();
 
-  const parsed = renameRequestSchema.safeParse(raw);
+  const parsed = nameChangeRequestSchema.safeParse(raw);
   if (!parsed.success) {
-    return refuse("invalid_request", "Send `{ slug }` — the new name for this page.");
+    return refuse("invalid_request", "Send `{ name }` — the new name for this page.");
   }
 
-  // Shape, reserved labels and profanity, in the one function the browser also
-  // calls. `null` means the string is acceptable; whether it is AVAILABLE is a
-  // different question and only the index below can answer it.
-  const refusal = checkChosenSlug(parsed.data.slug);
-  if (refusal) return refuse(NAME_CODE_FOR[refusal.reason], refusal.message);
+  try {
+    const site = await renameSite(parsedId.data, profileId, parsed.data.name);
+    return { ok: true, status: 200, body: nameChangeResultSchema.parse({ site }) };
+  } catch (err) {
+    return studioFailure(err, "rename");
+  }
+}
+
+/**
+ * `GET /api/names/check?name=&siteId=` — what the name field shows as you type.
+ *
+ * A READ: one status and the numbers its sentence needs, no copy (the words
+ * are `apps/web`'s, `lib/names/messages.ts`). `siteId` must be the caller's
+ * page — anything else is the same 404 as a page that does not exist. The
+ * answer is advisory: the rename re-asks under its locks.
+ *
+ * A per-minute budget per account, in process (`allowNameCheck`); over it
+ * is `429 rate_limited`. The durable rename limit is a check STATUS, not this.
+ */
+export async function checkOwnedName(
+  rawSiteId: string | null,
+  rawName: string | null,
+  profileId: string,
+): Promise<OwnerOutcome<NameCheckResult>> {
+  if (!allowNameCheck(profileId)) {
+    return refuse("rate_limited", "That's a lot of names in a minute. Wait a moment, then try again.");
+  }
+
+  const parsedId = siteIdSchema.safeParse(rawSiteId);
+  if (!parsedId.success) return ownerNotFound();
 
   try {
-    const result = await renameSite(parsedId.data, profileId, parsed.data.slug);
-    return { ok: true, status: 200, body: renameResultSchema.parse(result) };
+    const result = await checkName(rawName ?? "", profileId, parsedId.data);
+    return { ok: true, status: 200, body: nameCheckResultSchema.parse(result) };
   } catch (err) {
-    // `name_taken` and `not_allowed_in_status` are 409s, not 400s: the request
-    // was well-formed and the answer is about the world's state. Both are
-    // thrown by `./rename.ts`, and the store failure logs its failed step.
-    return studioFailure(err, "rename");
+    return studioFailure(err, "check a name for", "kept could not check that name just now. Try again.");
   }
 }
 

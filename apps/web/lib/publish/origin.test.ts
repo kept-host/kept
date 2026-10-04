@@ -198,9 +198,9 @@ test("every cookie-authenticated mutating route imports the gate", async () => {
     "app/api/sites/[id]/keep/route.ts",
     "app/api/sites/[id]/demote/route.ts",
     "app/api/sites/swap/route.ts",
-    // E06 task 005 — rename. An unguarded cross-origin call here could move
+    // E06 task 006 — rename. An unguarded cross-origin call here could move
     // somebody's permanent link.
-    "app/api/sites/[id]/slug/route.ts",
+    "app/api/sites/[id]/name/route.ts",
     // E06 task 006 — replace and delete, the two verbs that change what a page
     // IS. Ungated, a script on a hosted page could rewrite its publisher's
     // other pages' contents, or take them off the internet, using nothing but
@@ -501,15 +501,15 @@ test(
   "a cross-origin rename is 403 and the slug is untouched on re-read",
   { skip: skipDb },
   async () => {
-    const { PATCH } = await import("../../app/api/sites/[id]/slug/route");
+    const { PATCH } = await import("../../app/api/sites/[id]/name/route");
     const { appOrigin } = await import("../storage/env");
     const owner = await makeProfile();
     const kept = await makeSite(owner, true);
     const before = await snapshot(kept);
-    const body = { slug: `e05a-006-renamed-${kept.slice(0, 8)}` };
+    const body = { name: `e05a-006-renamed-${kept.slice(0, 8)}` };
 
     const res = await PATCH(
-      new Request(`https://app.kept-dev.xyz/api/sites/${kept}/slug`, {
+      new Request(`https://app.kept-dev.xyz/api/sites/${kept}/name`, {
         method: "PATCH",
         headers: { cookie: COOKIE, origin: HOSTED, "content-type": "application/json" },
         body: JSON.stringify(body),
@@ -528,7 +528,7 @@ test(
     // itself the proof the gate runs before the session lookup.
     const allowed = await statusOrThrow(() =>
       PATCH(
-        new Request(`https://app.kept-dev.xyz/api/sites/${kept}/slug`, {
+        new Request(`https://app.kept-dev.xyz/api/sites/${kept}/name`, {
           method: "PATCH",
           headers: {
             cookie: COOKIE,

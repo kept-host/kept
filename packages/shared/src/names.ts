@@ -106,7 +106,7 @@ export type NameValidation =
  * That is **E07-abuse-and-moderation's** scope ("No impersonation or typosquat
  * policy for user-chosen slugs. Explicitly deferred to E07, and the deferral is
  * recorded in code where the rename validation lives" — this is that record;
- * it moved here from `checkChosenSlug`). Until E07 lands, `paypa1-secure` IS an
+ * it moved here with the rename rule). Until E07 lands, `paypa1-secure` IS an
  * acceptable name. Do not read these checks as a claim the namespace is policed.
  */
 export function validateName(name: string, plan: Plan): NameValidation {

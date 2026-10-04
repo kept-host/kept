@@ -1,16 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { RESERVED_NAMES, SLUG_MAX_LENGTH, slugSchema } from "@kept/shared";
+import { RESERVED_NAMES, slugSchema } from "@kept/shared";
+import { isInappropriateName } from "@kept/shared/names";
 
-import {
-  SLUG_ALPHABET,
-  SLUG_LENGTH,
-  checkChosenSlug,
-  containsProfanity,
-  isReservedSlug,
-  mintSlugCandidate,
-} from "./slug";
+import { SLUG_ALPHABET, SLUG_LENGTH, isReservedSlug, mintSlugCandidate } from "./slug";
 
 const SAMPLE = 5_000;
 
@@ -55,65 +49,28 @@ test("`app` stays reserved even though the Worker no longer reserves the label",
   );
 });
 
-test("profane substrings are rejected and never minted", () => {
-  assert.ok(containsProfanity("x7assq2b"));
-  assert.ok(containsProfanity("fckz3m9p"));
-  assert.ok(containsProfanity("2b3xxxkq"));
-  assert.equal(containsProfanity("k3nt5wqz"), false);
+test("a minted name never trips the inappropriate-name matcher chosen names use", () => {
+  // Decision 5: the SAME matcher refuses chosen names and generated ones — on a
+  // match the mint draws again. These spellings use only SLUG_ALPHABET, so a
+  // random draw can produce them; the matcher must see them for the redraw to
+  // mean anything.
+  for (const spelled of ["x7fckq2b", "fvck2m9p", "h8fckbb9"]) {
+    assert.ok(isInappropriateName(spelled), `${spelled} must be caught`);
+  }
+  assert.equal(isInappropriateName("k3nt5wqz"), false);
   for (let i = 0; i < SAMPLE; i++) {
-    assert.equal(containsProfanity(mintSlugCandidate()), false);
+    const slug = mintSlugCandidate();
+    assert.equal(isInappropriateName(slug), false, slug);
   }
 });
 
 test("`site` and `settings` are reserved — E06's own two control-plane routes", () => {
   // The studio's page detail (`/site/[id]`) and `/settings`. The list carries
   // `dashboard`, `auth`, `p` and `keep` for exactly this reason; these two
-  // joined it when E06 added the routes, and rename is the first path that
-  // lets a human ask for either.
+  // joined it when E06 added the routes.
   for (const label of ["site", "settings"]) {
     assert.ok((RESERVED_NAMES as readonly string[]).includes(label));
-    assert.equal(checkChosenSlug(label)?.reason, "reserved");
-  }
-});
-
-test("a chosen slug is refused for shape, reserved label or profanity — and for nothing else", () => {
-  // Shape: the rule is `slugSchema`'s, not a second regex.
-  for (const bad of [
-    "Has-Capitals",
-    "under_scores",
-    "-leading",
-    "trailing-",
-    "double--hyphen",
-    "spaces here",
-    "",
-    "a".repeat(SLUG_MAX_LENGTH + 1),
-    "dots.in.it",
-  ]) {
-    assert.equal(checkChosenSlug(bad)?.reason, "shape", bad);
-  }
-
-  assert.equal(checkChosenSlug("dashboard")?.reason, "reserved");
-  assert.equal(checkChosenSlug("app")?.reason, "reserved");
-  assert.equal(checkChosenSlug("my-ass-page")?.reason, "profanity");
-
-  // Acceptable, including at the length limit and with digits.
-  for (const good of [
-    "my-notes",
-    "a",
-    "2026-review",
-    "a".repeat(SLUG_MAX_LENGTH),
-    mintSlugCandidate(),
-  ]) {
-    assert.equal(checkChosenSlug(good), null, good);
-  }
-
-  // ⚠️ THE E07 DEFERRAL, ASSERTED SO IT IS A DECISION AND NOT A SURPRISE.
-  // Impersonation, typosquatting and homoglyph tricks are NOT covered by these
-  // three rules and are explicitly E07's. If a future change starts refusing
-  // these, this expectation is the place to record that the policy arrived —
-  // not a bug to fix by loosening it back.
-  for (const unpoliced of ["paypal-verify", "signin-microsoft", "paypa1-secure", "g00gle-docs"]) {
-    assert.equal(checkChosenSlug(unpoliced), null, unpoliced);
+    assert.ok(isReservedSlug(label), label);
   }
 });
 

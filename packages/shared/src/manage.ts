@@ -12,7 +12,7 @@
 
 import { z } from "zod";
 
-import { siteStatusEnum } from "./enums";
+import { nameKindEnum, siteStatusEnum } from "./enums";
 import { keptQuotaSchema, type KeptQuota } from "./keep";
 
 /**
@@ -92,6 +92,8 @@ export const studioSiteSchema = z.object({
   liveUrl: z.string().url(),
   title: z.string().nullable(),
   status: siteStatusEnum,
+  /** `generated` (minted) or `chosen` (renamed by the owner, counted against the name quota — D3). */
+  nameKind: nameKindEnum,
   /** The draft clock. Set ⇒ draft; `null` ⇒ kept. */
   expiresAt: z.string().datetime().nullable(),
   /** End of the post-expiry grace window; `null` on a kept page. */
@@ -123,48 +125,62 @@ export const ownedPublishResultSchema = z.object({
 export type OwnedPublishResult = z.infer<typeof ownedPublishResultSchema>;
 
 /**
- * `PATCH /api/sites/:id/slug`.
+ * `PATCH /api/sites/:id/name` — the name the owner chose (PRD §5.4).
  *
- * The slug is typed only as a string HERE, deliberately, and NOT as
- * `slugSchema`. The shape rule, the reserved-label rule and the profanity rule
- * are applied together by `checkChosenSlug` in
- * `apps/web/lib/publish/slug.ts`, which owns the wording of all three refusals
- * so a human editing their own URL gets one voice instead of a zod string. If
- * this schema enforced the shape as well, the route would answer with zod's
- * message before that function was ever reached.
+ * Typed only as a string HERE, deliberately, and NOT as `slugSchema`: every
+ * refusal and its wording belong to `validateName` (`@kept/shared/names`) and
+ * the names module in `apps/web`, so a person editing their own URL reads the
+ * field's sentence rather than zod's.
  */
-export const renameRequestSchema = z.object({
-  slug: z.string(),
+export const nameChangeRequestSchema = z.object({
+  name: z.string(),
 });
 
-export type RenameRequest = z.infer<typeof renameRequestSchema>;
+export type NameChangeRequest = z.infer<typeof nameChangeRequestSchema>;
 
 /**
- * What a rename returns.
- *
- * `slug` IS THE FIELD THAT MATTERS. `/site/[slug]` is keyed by slug, so the
- * client must `router.replace` onto this value the moment the response lands —
- * otherwise the user's next navigation 404s on their own page.
- *
- * `previousSlug` is carried so the success copy can name the old URL it is
- * telling the truth about (it keeps serving briefly — see `renameNotice` in
- * `apps/web/lib/sites/owner-client.ts`). It equals `slug` on the one no-op
- * case: renaming a page to the name it already has, which writes nothing.
+ * What a rename returns: the page as it now is — the new `slug` and `liveUrl`,
+ * `nameKind: "chosen"`, and an `updatedAt` that moved (the OG card's cache key).
  */
-export interface RenameResult {
-  siteId: string;
-  slug: string;
-  previousSlug: string;
-  /** `https://{slug}.{base}` — built by the control plane, never by the client. */
-  liveUrl: string;
-}
-
-export const renameResultSchema = z.object({
-  siteId: z.string(),
-  slug: z.string(),
-  previousSlug: z.string(),
-  liveUrl: z.string().url(),
+export const nameChangeResultSchema = z.object({
+  site: studioSiteSchema,
 });
+
+export type NameChangeResult = z.infer<typeof nameChangeResultSchema>;
+
+/**
+ * What `GET /api/names/check?name=&siteId=` returns: ONE status in PRD §5.4's
+ * precedence (`NAME_CHECK_STATUSES`), plus the numbers its sentence needs.
+ *
+ * ⚠️ NO COPY ON THE WIRE. The words live in `apps/web` and interpolate these
+ * numbers, which come from `limitsFor(plan)` and the database (PRD §11: no
+ * numbers in strings). `too_short` carries the plan's minimum; `quota` the
+ * chosen names in use and the plan's quota; `rate_limited` the renames made in
+ * the last 24 hours. `held_for_you` reads as available — and `taken` covers a
+ * name held for somebody else, so the hold is never revealed.
+ */
+export const nameCheckResultSchema = z.union([
+  z.object({ status: z.literal("too_short"), min: z.number().int().positive() }),
+  z.object({
+    status: z.literal("quota"),
+    count: z.number().int().nonnegative(),
+    quota: z.number().int().positive(),
+  }),
+  z.object({ status: z.literal("rate_limited"), count: z.number().int().nonnegative() }),
+  z.object({
+    status: z.enum([
+      "invalid",
+      "pro_length",
+      "reserved",
+      "inappropriate",
+      "held_for_you",
+      "taken",
+      "available",
+    ]),
+  }),
+]);
+
+export type NameCheckResult = z.infer<typeof nameCheckResultSchema>;
 
 /**
  * What a replace returns — `POST /api/sites/:id/replace`.

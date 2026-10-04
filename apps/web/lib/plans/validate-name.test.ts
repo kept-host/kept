@@ -135,7 +135,7 @@ test("decision 5: the word filter accepts ordinary words that merely contain one
 });
 
 test("policy pins: the outcomes the old substring list gave, under the new filter", () => {
-  // The hand-rolled substring list `checkChosenSlug` applied refused
+  // The hand-rolled substring list E06's first rename rule applied refused
   // `my-ass-page` AND `classic` (it contains `ass`). Decision 5 replaced it
   // with `obscenity` for chosen names: the first is still refused, the second
   // is not. Any further policy change — E07 owns moderation — is an edit to

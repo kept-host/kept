@@ -15,19 +15,19 @@
  * body that does not parse — becomes `COULD_NOT_SAVE`, "Couldn't save. Try
  * again." A caller never sees a half-parsed body or a second error shape.
  *
- * ⚠️ BROWSER-SAFE ON PURPOSE. Nothing here may import `lib/sites/rename.ts`,
- * `lib/db/*` or `lib/storage/*` — those reach Postgres, R2 and KV. The one
- * validation rule it shares with the server comes from `lib/publish/slug.ts`,
- * which is pure by design precisely so this file can call it.
+ * ⚠️ BROWSER-SAFE ON PURPOSE. Nothing here may import `lib/names/*` (other than
+ * the pure `messages.ts`), `lib/db/*` or `lib/storage/*` — those reach
+ * Postgres, R2 and KV. The name rule is the server's: the field asks
+ * `GET /api/names/check` rather than re-running a lookalike.
  */
 import {
   accountDeletionResultSchema,
   deleteResultSchema,
   demoteResultSchema,
   keepResultSchema,
-  MANIFEST_KV_CACHE_TTL_SECONDS,
+  nameChangeResultSchema,
+  nameCheckResultSchema,
   ownedPublishResultSchema,
-  renameResultSchema,
   replaceResultSchema,
   studioErrorSchema,
   swapResultSchema,
@@ -35,17 +35,16 @@ import {
   type DeleteResult,
   type DemoteResult,
   type KeepResult,
+  type NameChangeRequest,
+  type NameCheckResult,
   type OwnedPublishResult,
   type PublishRequest,
-  type RenameRequest,
-  type RenameResult,
   type ReplaceResult,
   type StudioError,
+  type StudioSite,
   type SwapResult,
 } from "@kept/shared";
 import type { z } from "zod";
-
-export { checkChosenSlug, type SlugRefusal, type SlugRefusalReason } from "../publish/slug";
 
 /**
  * What every failure that is NOT the studio envelope becomes — the epic's one
@@ -118,57 +117,22 @@ export type OwnedPublishOutcome =
   | { ok: true; page: OwnedPublishResult }
   | { ok: false; error: StudioError };
 
-/** A rename attempt: the moved page, or an error from the closed enum. */
+/** A rename attempt: the renamed page, or an error from the closed enum. */
 export type RenameOutcome =
-  | { ok: true; page: RenameResult }
+  | { ok: true; site: StudioSite }
   | { ok: false; error: StudioError };
 
-const SECONDS_PER_MINUTE = 60;
+/** A name check: the status and its numbers, or why there is no answer. */
+export type NameCheckOutcome =
+  | { ok: true; result: NameCheckResult }
+  | { ok: false; error: StudioError };
 
 /**
- * How long the edge can still answer from the state a write just replaced, in
- * whole minutes — the old address after a rename, the old bytes after a replace.
- *
- * Derived, never typed as a literal: it is the same
- * `2 × MANIFEST_KV_CACHE_TTL_SECONDS + 5 s` that `lib/storage/manifest.ts`
- * sizes its second purge from. Past that point the re-purge has run and the
- * edge cannot be holding a response built from the pre-write manifest.
+ * What to tell someone who just renamed a page — PRD §5.4's toast,
+ * `{new}.{base}` read off the `liveUrl` the server built from configuration.
  */
-const STALE_EDGE_MINUTES = Math.round(
-  (2 * MANIFEST_KV_CACHE_TTL_SECONDS + 5) / SECONDS_PER_MINUTE,
-);
-
-/**
- * What to tell someone who just renamed a page.
- *
- * ⚠️ THE OLD URL DOES NOT 404 IMMEDIATELY AND THIS SENTENCE MUST NOT SAY IT
- * DOES. The Worker reads KV with `cacheTtl: MANIFEST_KV_CACHE_TTL_SECONDS` (60,
- * already Cloudflare's floor) and `purge_cache` does not reach that layer, so
- * "live at the new URL, old URL 404s instantly" is not achievable and never was
- * — epic decision D2 says so in as many words.
- *
- * MEASURED, not calculated — dev stack, 2026-08-22, with the repo's own
- * `writeManifest`/`removeManifest` against the deployed Worker:
- *
- *   · a page warmed for 90 s (Cache API `HIT`, `age` climbing to 86) stopped
- *     serving **4 seconds** after `removeManifest` returned;
- *   · a page one second old stopped serving in **1 second**;
- *   · neither run reproduced the re-cached-from-a-stale-KV-read tail that
- *     `manifest.ts` documents from 2026-08-05, because a Cache API HIT never
- *     re-reads KV — that tail needs a cache miss landing inside the 60 s
- *     window, and the delayed second purge is what ends it.
- *
- * So the truthful shape of the sentence is: it is over in seconds in practice,
- * bounded by `STALE_EDGE_MINUTES` in the worst case, and **nobody is dropped in
- * the meantime** — both slugs resolve to the same page while the old one lives,
- * which is exactly why the rename writes the new manifest before removing the
- * old one. Do not "tighten" this to an instant cutover.
- */
-export function renameNotice(page: RenameResult): string {
-  if (page.previousSlug === page.slug) {
-    return "That is already this page's address — nothing changed.";
-  }
-  return `Your page is live at ${page.liveUrl}. The old address keeps working for up to about ${STALE_EDGE_MINUTES} minutes and then stops, so nobody following an old link is dropped in the meantime.`;
+export function renameNotice(site: Pick<StudioSite, "liveUrl">): string {
+  return `Renamed. Your page is at ${new URL(site.liveUrl).host}.`;
 }
 
 /**
@@ -208,32 +172,44 @@ export async function publishOwnedHtml(
 }
 
 /**
- * `PATCH /api/sites/:id/slug`.
+ * `PATCH /api/sites/:id/name` — rename a kept page (PRD §5.4).
  *
- * ⚠️ THE CALLER MUST NAVIGATE. `/site/[slug]` is keyed by slug, so on success
- * the client has to `router.replace` onto `page.slug` — otherwise the user's
- * next navigation 404s on their own page. That is why the response carries it.
- *
- * The slug is checked locally first (`checkChosenSlug`) only to save a round
- * trip on an obviously-wrong name; the server runs the identical function and
- * is the only authority — and availability is not checked here AT ALL, because
- * `sites_slug_key` is the only thing that can answer it. A "taken" answer
- * arrives as a 409 from this call, never from a pre-flight probe.
+ * The page's address moves, so the caller repaints from `site` — its `slug`,
+ * `liveUrl` and `updatedAt` are the server's. Every refusal arrives with the
+ * field's own sentence; a name taken since the last check is `name_taken`.
  *
  * Never throws, including on abort.
  */
 export async function renamePage(
   siteId: string,
-  slug: string,
+  name: string,
   signal?: AbortSignal,
 ): Promise<RenameOutcome> {
-  const body: RenameRequest = { slug };
+  const body: NameChangeRequest = { name };
   const sent = await send(
-    `/api/sites/${encodeURIComponent(siteId)}/slug`,
+    `/api/sites/${encodeURIComponent(siteId)}/name`,
     jsonInit("PATCH", body, signal),
-    renameResultSchema,
+    nameChangeResultSchema,
   );
-  return sent.ok ? { ok: true, page: sent.body } : { ok: false, error: sent.error };
+  return sent.ok ? { ok: true, site: sent.body.site } : { ok: false, error: sent.error };
+}
+
+/**
+ * `GET /api/names/check` — what the server would say about `name` for this page
+ * right now. ADVISORY: the rename re-asks under its locks, so a field may show
+ * it but must never treat it as permission. `nameStatusMessage`
+ * (`lib/names/messages.ts`) turns the result into the field's sentence.
+ *
+ * Never throws, including on abort.
+ */
+export async function checkName(
+  siteId: string,
+  name: string,
+  signal?: AbortSignal,
+): Promise<NameCheckOutcome> {
+  const query = new URLSearchParams({ name, siteId });
+  const sent = await send(`/api/names/check?${query}`, { signal }, nameCheckResultSchema);
+  return sent.ok ? { ok: true, result: sent.body } : { ok: false, error: sent.error };
 }
 
 /** A keep attempt: the parsed outcome, or an error from the closed enum. */
@@ -359,8 +335,8 @@ export type ReplaceOutcome =
  * accommodates: `writeManifest` purges immediately, but the Worker may answer a
  * cache MISS from a KV read it made up to `MANIFEST_KV_CACHE_TTL_SECONDS` ago
  * and rebuild a response from the previous manifest. That tail is what the
- * delayed second purge ends, and `STALE_EDGE_MINUTES` is its bound. In practice
- * it is seconds — do not "tighten" this to an instant swap.
+ * delayed second purge ends (`KV_REPURGE_DELAY_MS`, about two minutes). In
+ * practice it is seconds — do not "tighten" this to an instant swap.
  */
 export function replaceNotice(page: ReplaceResult): string {
   return `The new file is live at ${page.liveUrl} — same address, nothing to re-share. A browser that already had the old version open may keep showing it for a minute or two; a reload past that always gets the new one.`;

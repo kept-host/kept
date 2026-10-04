@@ -32,7 +32,8 @@ import { waitForTokensApplied } from "./tokens-applied";
  * pass. What none of them can prove is the half this screen owns:
  *
  *   · the inline rename resolves through FOUR states and leaves nothing changed
- *     on any refusal — including the collision that only the database can find;
+ *     on any refusal — including a collision, which the live check reports and
+ *     the save still refuses;
  *   · `router.replace` lands on the new slug, without which the user's very next
  *     navigation 404s on their own page;
  *   · the demote warning is on screen BEFORE the write, not after it — a warning
@@ -82,20 +83,21 @@ test.describe("the site detail screen", () => {
 
     const status = page.getByTestId("rename-status");
 
-    /** Type a candidate and wait for the advisory verdict to settle. */
+    /** Type a candidate and wait for the advisory verdict (`GET /api/names/check`) to settle. */
     async function propose(candidate: string) {
       await page.getByTestId("rename-start").click();
       await page.getByTestId("rename-input").fill(candidate);
-      await expect(status).toHaveAttribute("data-phase", "resolved");
+      await expect(status).toHaveAttribute("data-phase", "resolved", {
+        timeout: LIVE_STACK_TIMEOUT,
+      });
     }
 
-    // ── The three the pure rule refuses, client-side and identically to the
-    //    handler. `checkChosenSlug` is the SAME function on both sides, which is
-    //    why the reason codes can be asserted rather than the prose.
+    // ── The name rule's refusals, answered by the live check with the same
+    //    status the PATCH would give — asserted as the reason code, not prose.
     const clientRefusals: [string, string][] = [
-      ["Not A Slug!", "shape"],
+      ["Not A Slug!", "invalid"],
       ["settings", "reserved"],
-      ["-leading-hyphen", "shape"],
+      ["-leading-hyphen", "invalid"],
     ];
     for (const [candidate, reason] of clientRefusals) {
       await propose(candidate);
@@ -107,15 +109,12 @@ test.describe("the site detail screen", () => {
       await page.getByRole("button", { name: "Cancel" }).click();
     }
 
-    // ── The fourth: a collision only `sites_slug_key` can find. The advisory
-    //    check passes (the shape is fine), the PATCH goes out anyway — gating on
-    //    the advisory answer would be a TOCTOU bug with a nice spinner — and the
-    //    handler's own 409 sentence comes back.
+    // ── The fourth: a collision. The live check already knows the name is
+    //    taken — and the PATCH goes out anyway, because the check is advisory
+    //    and gating on it would hide the write's own answer — and the handler's
+    //    own 409 sentence comes back.
     await propose(neighbour.slug);
-    // The advisory verdict ACCEPTS it — availability is not a property of the
-    // string, so the pure rule has nothing to object to and `data-reason` is
-    // unset. Only the write can know, which is exactly why the write is sent.
-    await expect(status).toContainText("That name is allowed");
+    await expect(status).toHaveAttribute("data-reason", "taken");
     await page.getByTestId("rename-save").click();
     // The live-stack budget, not the default 5 s: this is a real PATCH against
     // the dev Neon branch and the field sits in `saving` until it answers. See
@@ -123,7 +122,7 @@ test.describe("the site detail screen", () => {
     await expect(status).toHaveAttribute("data-reason", "taken", {
       timeout: LIVE_STACK_TIMEOUT,
     });
-    await expect(status).toContainText("already taken");
+    await expect(status).toContainText("That name is taken.");
 
     // Neither page moved. A collision that half-applied would be the worst
     // outcome here: two pages, one address.

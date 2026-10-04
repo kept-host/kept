@@ -1,7 +1,8 @@
 import {
   MANIFEST_KV_CACHE_TTL_SECONDS,
+  nameChangeResultSchema,
+  nameCheckResultSchema,
   publishErrorSchema,
-  renameResultSchema,
   studioErrorSchema,
   type StudioErrorCode,
 } from "@kept/shared";
@@ -24,8 +25,9 @@ import {
 import { jarlessContext, sessionHeaders } from "./session-request";
 
 /**
- * `PATCH /api/sites/:id/slug` over the wire, against the REAL dev stack —
- * E06 task 005.
+ * `PATCH /api/sites/:id/name` and `GET /api/names/check` over the wire, against
+ * the REAL dev stack — E06 task 006 (AC17 on the wire, AC18, AC22 route half,
+ * AC44 for these two routes). Rewritten from E06's first rename drill.
  *
  * NO MOCKS AND NO FIXTURE ROWS FOR THE PAGES THAT MATTER. A rename is the one
  * management verb that touches the edge, so a hand-inserted `sites` row with no
@@ -36,14 +38,15 @@ import { jarlessContext, sessionHeaders } from "./session-request";
  *
  * WHAT THIS FILE IS FOR, that no unit drill can reach:
  *
- *   1. **The promise is true.** The new URL serves the same bytes immediately;
- *      the old URL stops serving within the window; `sites_slug_key` still
- *      holds; **R2 is untouched** — the object is keyed by `siteId`, so the
- *      same key answers before and after.
- *   2. **Every refusal applies nothing.** Collision, reserved label, profanity,
- *      shape-invalid and a non-`live` page each leave the row, the pointer and
- *      the served page exactly as they were. Asserted per case.
- *   3. **The session boundary and the origin gate**, on the wire.
+ *   1. **AC18 — the promise is true.** The new URL serves the same bytes
+ *      immediately; the old URL returns the branded 404 within the window;
+ *      **R2 is untouched** — the object is keyed by `siteId`, so the same key
+ *      answers before and after. (Task 014 re-runs this in the drill.)
+ *   2. **Every refusal applies nothing.** Collision, reserved, inappropriate,
+ *      shape, length, a draft (AC17) and a page under review each leave the
+ *      row, the pointer and the served page exactly as they were.
+ *   3. **The session boundary and the origin gate** on both routes (AC44), and
+ *      the check route's `reserved` answer for the platform names (AC22).
  *
  * ⚠️ THE OLD URL DOES NOT 404 INSTANTLY AND THIS SPEC DOES NOT ASSERT THAT IT
  * DOES. `MANIFEST_KV_CACHE_TTL_SECONDS` is 60, already Cloudflare's floor, and
@@ -118,6 +121,9 @@ test.describe("owner rename", () => {
       }
     }
     if (createdSiteIds.length) {
+      // A rename's history and any hold it left carry the site id, not an FK.
+      await db.delete(schema.nameEvents).where(inArray(schema.nameEvents.siteId, createdSiteIds));
+      await db.delete(schema.nameHolds).where(inArray(schema.nameHolds.siteId, createdSiteIds));
       await db.delete(schema.sites).where(inArray(schema.sites.id, createdSiteIds));
     }
     if (createdUserIds.length) {
@@ -131,13 +137,13 @@ test.describe("owner rename", () => {
     const { auth } = await import("../lib/auth");
     const ctx = await auth.$context;
     const token = crypto.randomUUID().replace(/-/g, "");
-    const email = `e06-005-${token.slice(0, 8)}@kept-e06-005.invalid`;
+    const email = `e06-006-${token.slice(0, 8)}@kept-e06-006.invalid`;
 
     // The inbox, and only the inbox: `storeToken` defaults to "plain", so the
     // identifier IS the token `sendMagicLink` would have put in a URL.
     await ctx.internalAdapter.createVerificationValue({
       identifier: token,
-      value: JSON.stringify({ email, name: "E06-005 rename drill" }),
+      value: JSON.stringify({ email, name: "E06-006 rename drill" }),
       expiresAt: new Date(Date.now() + 300_000),
     });
 
@@ -178,7 +184,7 @@ test.describe("owner rename", () => {
     baseURL: string,
     cookie: string,
   ): Promise<OwnedPage> {
-    const marker = `e06-005-${crypto.randomUUID().slice(0, 8)}`;
+    const marker = `e06-006-${crypto.randomUUID().slice(0, 8)}`;
     const html = pageHtml(marker);
     const published = await publishViaApi(request, html, { "user-agent": marker });
     expect(published.status(), await published.text()).toBe(201);
@@ -211,12 +217,26 @@ test.describe("owner rename", () => {
     baseURL: string,
     cookie: string,
     siteId: string,
-    slug: string,
+    name: string,
   ) =>
-    request.patch(`${baseURL}/api/sites/${siteId}/slug`, {
+    request.patch(`${baseURL}/api/sites/${siteId}/name`, {
       headers: sessionHeaders(cookie, baseURL),
-      data: { slug },
+      data: { name },
     });
+
+  const check = (
+    request: import("@playwright/test").APIRequestContext,
+    baseURL: string,
+    cookie: string,
+    siteId: string,
+    name: string,
+  ) =>
+    request.get(`${baseURL}/api/names/check?${new URLSearchParams({ name, siteId })}`, {
+      headers: sessionHeaders(cookie, baseURL),
+    });
+
+  /** A fresh name the free plan accepts: long enough, nothing reserved in it. */
+  const freshName = (label: string) => `e06-006-${label}-${crypto.randomUUID().slice(0, 8)}`;
 
   /** Poll a URL until it stops serving, or until the architectural bound. */
   async function waitUntilGone(url: string): Promise<number> {
@@ -233,7 +253,7 @@ test.describe("owner rename", () => {
     }
   }
 
-  test("the new URL serves immediately, the old one stops, and R2 never moved", async ({
+  test("AC18: the new URL serves immediately, the old one returns the branded 404, and R2 never moved", async ({
     request,
     baseURL,
   }) => {
@@ -251,20 +271,25 @@ test.describe("owner rename", () => {
     // cached — the case the copy describes, not a slug one second old.
     expect((await probeEdge(urlsFor(page.slug)[0]!)).status).toBe(200);
 
-    const nextSlug = `e06-005-renamed-${crypto.randomUUID().slice(0, 8)}`;
+    const nextSlug = freshName("renamed");
     createdSlugs.add(nextSlug);
+    const rowBefore = await readSite(page.siteId);
 
     const response = await rename(request, baseURL!, cookie, page.siteId, nextSlug);
     expect(response.status(), await response.text()).toBe(200);
-    const body = renameResultSchema.parse(await response.json());
-    // The client `router.replace`s onto this; without it the next navigation
-    // 404s on the user's own page.
-    expect(body.slug).toBe(nextSlug);
-    expect(body.previousSlug).toBe(page.slug);
-    expect(body.liveUrl).toBe(`https://${nextSlug}.${servingDomain()}`);
+    const { site } = nameChangeResultSchema.parse(await response.json());
+    // The page as it now is — the client repaints from this body.
+    expect(site.id).toBe(page.siteId);
+    expect(site.slug).toBe(nextSlug);
+    expect(site.nameKind).toBe("chosen");
+    expect(site.liveUrl).toBe(`https://${nextSlug}.${servingDomain()}`);
 
-    // Postgres moved.
-    expect((await readSite(page.siteId)).slug).toBe(nextSlug);
+    // Postgres moved, and `updated_at` with it (the OG card's cache key).
+    const rowAfter = await readSite(page.siteId);
+    expect(rowAfter.slug).toBe(nextSlug);
+    expect(rowAfter.nameKind).toBe("chosen");
+    expect(rowAfter.updatedAt.getTime()).toBeGreaterThan(rowBefore.updatedAt.getTime());
+    expect(site.updatedAt).toBe(rowAfter.updatedAt.toISOString());
 
     // The NEW slug serves the same bytes, in both URL forms, right away.
     for (const url of urlsFor(nextSlug)) {
@@ -279,6 +304,10 @@ test.describe("owner rename", () => {
     for (const url of urlsFor(page.slug)) {
       const elapsed = await waitUntilGone(url);
       expect(elapsed).toBeLessThanOrEqual(OLD_URL_WINDOW_MS);
+      // …and what answers instead is the Worker's branded 404, not an error.
+      const gone = await probeEdge(url);
+      expect(gone.status, url).toBe(404);
+      expect(gone.body, url).toContain("Nothing kept here");
     }
 
     // THE POINTERS: the new slug has one, the old one does not. This is the KV
@@ -298,7 +327,7 @@ test.describe("owner rename", () => {
     expect(versions).toHaveLength(1);
   });
 
-  test("renaming a page to its own slug writes nothing", async ({ request, baseURL }) => {
+  test("renaming a page to its own name writes nothing", async ({ request, baseURL }) => {
     const cookie = await signIn(baseURL!);
     const page = await ownedPage(request, baseURL!, cookie);
 
@@ -310,16 +339,16 @@ test.describe("owner rename", () => {
 
     const response = await rename(request, baseURL!, cookie, page.siteId, page.slug);
     expect(response.status(), await response.text()).toBe(200);
-    const body = renameResultSchema.parse(await response.json());
-    expect(body.slug).toBe(page.slug);
-    expect(body.previousSlug).toBe(page.slug);
+    const { site } = nameChangeResultSchema.parse(await response.json());
+    expect(site.slug).toBe(page.slug);
+    expect(site.nameKind).toBe("generated");
 
     expect(await r2Store().get(pointerKey(page.slug))).toBe(pointerBefore);
     expect(await readSite(page.siteId)).toEqual(rowBefore);
     expect((await probeEdge(urlsFor(page.slug)[0]!)).status).toBe(200);
   });
 
-  test("collision, reserved, profanity and bad shape each change nothing", async ({
+  test("collision, reserved, inappropriate, shape and length each change nothing", async ({
     request,
     baseURL,
   }) => {
@@ -328,14 +357,15 @@ test.describe("owner rename", () => {
     const theirs = await ownedPage(request, baseURL!, cookie);
 
     const cases: [string, string, number, StudioErrorCode][] = [
-      // Taken — by the unique index, which is the only authority. 409 and
-      // `name_taken`, never a 500.
+      // Taken — another active page has it. 409 and `name_taken`, never a 500.
       ["collision", theirs.slug, 409, "name_taken"],
       ["reserved", "dashboard", 400, "name_reserved"],
       ["reserved (E06's own route)", "settings", 400, "name_reserved"],
-      ["profanity", "my-ass-page", 400, "name_inappropriate"],
+      ["inappropriate", "my-ass-page", 400, "name_inappropriate"],
       ["shape", "Not A Slug", 400, "name_invalid"],
       ["shape (doubled hyphen)", "two--hyphens", 400, "name_invalid"],
+      ["too short for anyone", "abc", 400, "name_too_short"],
+      ["four letters on free", "qz7x", 400, "name_pro_length"],
     ];
 
     for (const [label, slug, status, code] of cases) {
@@ -367,11 +397,28 @@ test.describe("owner rename", () => {
     expect(rows[0]!.id).toBe(theirs.siteId);
   });
 
-  test("a page under review refuses the rename and keeps its address", async ({
+  test("AC17: a draft refuses the rename; so does a page under review", async ({
     request,
     baseURL,
   }) => {
     const cookie = await signIn(baseURL!);
+
+    // A draft: chosen names are for kept pages only (D3). Demoted through the
+    // real route, so the clock is the product's, not a fixture's.
+    const draft = await ownedPage(request, baseURL!, cookie);
+    const demoted = await request.post(`${baseURL}/api/sites/${draft.siteId}/demote`, {
+      headers: sessionHeaders(cookie, baseURL!),
+    });
+    expect(demoted.status(), await demoted.text()).toBe(200);
+    const draftBefore = await readSite(draft.siteId);
+    expect(draftBefore.expiresAt).not.toBeNull();
+    const draftRefused = await rename(request, baseURL!, cookie, draft.siteId, freshName("draft"));
+    expect(draftRefused.status()).toBe(409);
+    expect(studioErrorSchema.parse(await draftRefused.json()).error.code).toBe(
+      "not_allowed_in_status",
+    );
+    expect(await readSite(draft.siteId)).toEqual(draftBefore);
+
     const page = await ownedPage(request, baseURL!, cookie);
 
     // E06 RENDERS these states and writes none of them, so the fixture sets it
@@ -387,7 +434,7 @@ test.describe("owner rename", () => {
       baseURL!,
       cookie,
       page.siteId,
-      `e06-005-flagged-${crypto.randomUUID().slice(0, 8)}`,
+      freshName("flagged"),
     );
     expect(response.status()).toBe(409);
     const { error } = studioErrorSchema.parse(await response.json());
@@ -399,44 +446,44 @@ test.describe("owner rename", () => {
     expect(await readSite(page.siteId)).toEqual(rowBefore);
   });
 
-  test("signed out is 401, another account's page is the not-found body", async ({
+  test("AC44: signed out is 401, another account's page is the not-found body — on both routes", async ({
     request,
     baseURL,
   }) => {
     const cookie = await signIn(baseURL!);
     const mine = await ownedPage(request, baseURL!, cookie);
 
-    const signedOut = await request.patch(`${baseURL}/api/sites/${mine.siteId}/slug`, {
-      data: { slug: "e06-005-signed-out" },
+    const signedOut = await request.patch(`${baseURL}/api/sites/${mine.siteId}/name`, {
+      data: { name: freshName("signed-out") },
     });
     expect(signedOut.status(), "the gate must hold before any database work").toBe(401);
     studioErrorSchema.parse(await signedOut.json());
     expect((await readSite(mine.siteId)).slug).toBe(mine.slug);
+    const signedOutCheck = await request.get(
+      `${baseURL}/api/names/check?${new URLSearchParams({ name: "anything", siteId: mine.siteId })}`,
+    );
+    expect(signedOutCheck.status()).toBe(401);
 
     // A second account, from this account's session.
     const otherCookie = await signIn(baseURL!);
     const theirs = await ownedPage(request, baseURL!, otherCookie);
 
-    const refused = await rename(
-      request,
-      baseURL!,
-      cookie,
-      theirs.siteId,
-      `e06-005-stolen-${crypto.randomUUID().slice(0, 8)}`,
-    );
-    const absent = await rename(
-      request,
-      baseURL!,
-      cookie,
-      crypto.randomUUID(),
-      `e06-005-absent-${crypto.randomUUID().slice(0, 8)}`,
-    );
+    const name = freshName("stolen");
+    const refused = await rename(request, baseURL!, cookie, theirs.siteId, name);
+    const absent = await rename(request, baseURL!, cookie, crypto.randomUUID(), name);
     expect(refused.status()).toBe(404);
     expect(absent.status()).toBe(404);
     // Byte-identical: "not yours" must not be an existence oracle.
     expect(await refused.text()).toBe(await absent.text());
     expect(studioErrorSchema.parse(await refused.json()).error.code).toBe("not_found");
     expect((await readSite(theirs.siteId)).slug).toBe(theirs.slug);
+
+    // The check: the same 404, the same body, for their page and for no page.
+    const checkTheirs = await check(request, baseURL!, cookie, theirs.siteId, name);
+    const checkAbsent = await check(request, baseURL!, cookie, crypto.randomUUID(), name);
+    expect(checkTheirs.status()).toBe(404);
+    expect(checkAbsent.status()).toBe(404);
+    expect(await checkTheirs.text()).toBe(await checkAbsent.text());
   });
 
   test("a rename from a hosted page's origin is refused and moves nothing", async ({
@@ -446,16 +493,16 @@ test.describe("owner rename", () => {
     const cookie = await signIn(baseURL!);
     const page = await ownedPage(request, baseURL!, cookie);
     const rowBefore = await readSite(page.siteId);
-    const nextSlug = `e06-005-csrf-${crypto.randomUUID().slice(0, 8)}`;
+    const nextSlug = freshName("csrf");
 
-    const refused = await request.patch(`${baseURL}/api/sites/${page.siteId}/slug`, {
+    const refused = await request.patch(`${baseURL}/api/sites/${page.siteId}/name`, {
       // A REAL session cookie carrying a HOSTED page's origin: same-site, so
       // `SameSite=Lax` does not block it and `__Host-` does nothing about it.
       // A script on a page kept hosts renaming its publisher's other pages is
       // exactly the attack E05a exists for — and a rename is the worst verb to
       // lose, because the permanent link is the product.
       headers: { cookie, origin: `https://${page.slug}.${servingDomain()}` },
-      data: { slug: nextSlug },
+      data: { name: nextSlug },
     });
 
     expect(refused.status()).toBe(403);
@@ -464,5 +511,32 @@ test.describe("owner rename", () => {
     expect(await readSite(page.siteId)).toEqual(rowBefore);
     expect(await r2Store().get(pointerKey(nextSlug))).toBeNull();
     expect((await probeEdge(urlsFor(page.slug)[0]!)).status).toBe(200);
+  });
+
+  test("AC22 (route): the check answers reserved for the platform names, and taken / available honestly", async ({
+    request,
+    baseURL,
+  }) => {
+    const cookie = await signIn(baseURL!);
+    const mine = await ownedPage(request, baseURL!, cookie);
+    const theirs = await ownedPage(request, baseURL!, await signIn(baseURL!));
+
+    for (const name of ["app", "www", "explore", "docs"]) {
+      const response = await check(request, baseURL!, cookie, mine.siteId, name);
+      expect(response.status(), `${name}: ${await response.text()}`).toBe(200);
+      expect(response.headers()["cache-control"]).toBe("no-store");
+      expect(nameCheckResultSchema.parse(await response.json()), name).toEqual({
+        status: "reserved",
+      });
+    }
+
+    const taken = await check(request, baseURL!, cookie, mine.siteId, theirs.slug);
+    expect(nameCheckResultSchema.parse(await taken.json())).toEqual({ status: "taken" });
+
+    const fresh = await check(request, baseURL!, cookie, mine.siteId, freshName("free"));
+    expect(nameCheckResultSchema.parse(await fresh.json())).toEqual({ status: "available" });
+
+    // A read: nothing moved.
+    expect((await readSite(mine.siteId)).slug).toBe(mine.slug);
   });
 });
