@@ -13,8 +13,6 @@
 
 import { z } from "zod";
 
-import { KEPT_PAGE_LIMIT } from "./constants";
-
 /**
  * How a keep attempt resolved.
  *
@@ -33,14 +31,20 @@ export type KeepOutcome = (typeof KEEP_OUTCOMES)[number];
 
 /** The account's kept-page allowance at the moment a keep/demote/swap resolved. */
 export interface KeptQuota {
-  /** Always `KEPT_PAGE_LIMIT` — never a literal. */
+  /** `limitsFor(plan).keptPages` for the account's plan — never a literal. */
   limit: number;
   used: number;
   remaining: number;
 }
 
+/**
+ * ⚠️ `limit` IS A NUMBER, NOT A LITERAL. It was `z.literal(KEPT_PAGE_LIMIT)`,
+ * which made every `keepResultSchema.parse` throw — a 500 on every keep — the
+ * moment an account's limit was anything but the free one. The plan decides
+ * the value (`limitsFor`); the schema only decides its shape.
+ */
 export const keptQuotaSchema = z.object({
-  limit: z.literal(KEPT_PAGE_LIMIT),
+  limit: z.number().int().positive(),
   used: z.number().int().nonnegative(),
   remaining: z.number().int().nonnegative(),
 });

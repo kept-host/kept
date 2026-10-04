@@ -21,6 +21,37 @@ export const DRAFT_TTL_DAYS = 7 as const;
 export const DRAFT_GRACE_DAYS = 30 as const;
 
 /**
+ * Longest a page title may be, in characters, after extraction and sanitising
+ * (D11). The same cap binds an owner-set title.
+ */
+export const PAGE_TITLE_MAX_LENGTH = 80 as const;
+
+/**
+ * Days of per-page visits the studio keeps and charts — and the most a visits
+ * sync may backfill (`?days=`), the retention Cloudflare's adaptive datasets
+ * allow (D8).
+ */
+export const VISITS_HISTORY_DAYS = 30 as const;
+
+/** The "recent" visits window: the home sort, the swap chooser and the card. */
+export const VISITS_RECENT_DAYS = 7 as const;
+
+/** Hours after the last successful visits sync before the studio calls it stale. */
+export const VISITS_STALE_HOURS = 36 as const;
+
+/**
+ * `job_runs.job` key of the daily visits sync — written by the sync route,
+ * read by every surface that shows "as of".
+ */
+export const VISITS_SYNC_JOB = "visits-sync" as const;
+
+/**
+ * Where abuse reports and moderation appeals go — the quarantined / under-review
+ * banner's `mailto:`. The one address; no surface hardcodes another.
+ */
+export const ABUSE_CONTACT_EMAIL = "abuse@kept.host" as const;
+
+/**
  * `cacheTtl` the Worker asks for on its KV manifest read, in seconds. **60 is
  * Cloudflare's minimum accepted value** and cannot be lowered.
  *

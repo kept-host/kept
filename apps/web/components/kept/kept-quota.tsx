@@ -12,8 +12,8 @@ import { cn } from "@/lib/utils";
  * component rendering it. A screen that formats `used`/`limit` itself is how the
  * four drift.
  *
- * EVERY NUMBER COMES OFF THE `KeptQuota`, and `packages/shared` pins its `limit`
- * as `z.literal(KEPT_PAGE_LIMIT)`. There is no `3` below — including inside the
+ * EVERY NUMBER COMES OFF THE `KeptQuota` the server computed, or out of
+ * `@kept/shared`. There is no `3` below — including inside the
  * prose, for the same reason `draft-chip.tsx` has no `7`: the day the cap moves,
  * a typed number turns the product into a liar.
  *

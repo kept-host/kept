@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { SLUG_MAX_LENGTH, slugSchema } from "@kept/shared";
+import { RESERVED_NAMES, SLUG_MAX_LENGTH, slugSchema } from "@kept/shared";
 
 import {
-  RESERVED_SLUGS,
   SLUG_ALPHABET,
   SLUG_LENGTH,
   checkChosenSlug,
@@ -31,7 +30,7 @@ test("every candidate satisfies slugSchema and the declared shape", () => {
 });
 
 test("reserved labels are rejected and never minted", () => {
-  for (const label of RESERVED_SLUGS) {
+  for (const label of RESERVED_NAMES) {
     assert.ok(isReservedSlug(label), `${label} should be reserved`);
   }
   assert.equal(isReservedSlug("k3nt5wqz"), false);
@@ -43,12 +42,12 @@ test("reserved labels are rejected and never minted", () => {
 test("`app` stays reserved even though the Worker no longer reserves the label", () => {
   // E05a: `app` left `RESERVED_LABELS` in apps/edge/src/host.ts so the Worker
   // stops 301'ing the control plane away from `app.{base}`. It must NOT leave
-  // this list to match — keeping it is what makes an accidentally re-proxied
-  // `app.` record a branded 404 instead of a user page published at the control
-  // plane's own hostname.
+  // `RESERVED_NAMES` to match — keeping it is what makes an accidentally
+  // re-proxied `app.` record a branded 404 instead of a user page published at
+  // the control plane's own hostname.
   assert.ok(
-    RESERVED_SLUGS.includes("app"),
-    "`app` must stay in RESERVED_SLUGS: removing it lets a user page be minted at the control plane's hostname (app.kept.host)",
+    (RESERVED_NAMES as readonly string[]).includes("app"),
+    "`app` must stay in RESERVED_NAMES: removing it lets a user page be minted at the control plane's hostname (app.kept.host)",
   );
   assert.ok(
     isReservedSlug("app"),
@@ -67,12 +66,12 @@ test("profane substrings are rejected and never minted", () => {
 });
 
 test("`site` and `settings` are reserved — E06's own two control-plane routes", () => {
-  // `/site/[slug]` and `/settings`. The list already carries `dashboard`,
-  // `auth`, `p` and `keep` for exactly this reason; these two joined it when
-  // E06 added the routes, and the rename endpoint is the first path that lets a
-  // human ask for either.
+  // The studio's page detail (`/site/[id]`) and `/settings`. The list carries
+  // `dashboard`, `auth`, `p` and `keep` for exactly this reason; these two
+  // joined it when E06 added the routes, and rename is the first path that
+  // lets a human ask for either.
   for (const label of ["site", "settings"]) {
-    assert.ok(RESERVED_SLUGS.includes(label as (typeof RESERVED_SLUGS)[number]));
+    assert.ok((RESERVED_NAMES as readonly string[]).includes(label));
     assert.equal(checkChosenSlug(label)?.reason, "reserved");
   }
 });

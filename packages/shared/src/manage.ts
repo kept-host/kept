@@ -15,6 +15,59 @@ import { z } from "zod";
 import { keepResultBranches, keptQuotaSchema, type KeepResult, type KeptQuota } from "./keep";
 
 /**
+ * Every code a studio (cookie-authenticated) route may answer with — the error
+ * half of the result schemas below, the way `PUBLISH_ERROR_CODES` is the error
+ * half of `./publish`. A closed enum: the studio client switches on it, so a
+ * free-form code is a branch nobody wrote.
+ *
+ * ⚠️ TWO ERROR SHAPES, ON PURPOSE. Studio routes answer `studioErrorSchema`'s
+ * envelope; the keyless agent routes (`POST /api/publish`, `/api/anon/*`) keep
+ * their frozen flat `PublishError`, because agents parse it. E05a's origin 403
+ * keeps its own body too — it runs before any route code.
+ */
+export const STUDIO_ERROR_CODES = [
+  // PRD §7's closed list.
+  "not_found",
+  "invalid_file",
+  "file_too_large",
+  "name_invalid",
+  "name_too_short",
+  "name_pro_length",
+  "name_reserved",
+  "name_taken",
+  "name_quota",
+  "rename_rate_limited",
+  "not_allowed_in_status",
+  "at_kept_limit",
+  "version_not_found",
+  "unchanged",
+  "last_sign_in_method",
+  // The epic's five (Risk 2): the studio routes run the shared publish
+  // pipeline and the names-check limiter, which already fail these ways, and
+  // the PRD's list would leave them unrepresentable.
+  "invalid_request",
+  "content_rejected",
+  "slug_unavailable",
+  "rate_limited",
+  "internal_error",
+  // Arun's decision 5: the word filter pulled forward from E07 refuses with its
+  // own code, mirroring `validateName`'s `inappropriate`.
+  "name_inappropriate",
+] as const;
+
+export const studioErrorCodeEnum = z.enum(STUDIO_ERROR_CODES);
+export type StudioErrorCode = (typeof STUDIO_ERROR_CODES)[number];
+
+/** The body every non-2xx studio response carries: `{ error: { code, message } }`. */
+export const studioErrorSchema = z.object({
+  error: z.object({
+    code: studioErrorCodeEnum,
+    /** Written for the person reading the field or toast, not for a log. */
+    message: z.string(),
+  }),
+});
+
+/**
  * What a signed-in publish returns — `POST /api/sites` (task 004, epic D1).
  *
  * ⚠️ THE OUTCOME VOCABULARY IS `KeepResult`'s, NOT A NEW ONE. A signed-in

@@ -12,7 +12,7 @@
 // this module has no database access at all — its whole job is to produce a
 // candidate that is well-shaped, not reserved and not offensive.
 
-import { SLUG_MAX_LENGTH, slugSchema } from "@kept/shared";
+import { RESERVED_NAMES, SLUG_MAX_LENGTH, slugSchema } from "@kept/shared";
 
 /**
  * Crockford base32, lowercased: the digits plus the letters minus `i`, `l`, `o`
@@ -32,55 +32,7 @@ export const SLUG_LENGTH = 8;
 /** Attempts before `mintSlugCandidate` gives up rather than looping forever. */
 const MAX_MINT_ATTEMPTS = 16;
 
-/**
- * Labels a minted slug may never take.
- *
- * **This list and the Worker's `RESERVED_LABELS` (`apps/edge/src/host.ts`) are
- * deliberately no longer mirrors as of E05a. Do not "fix" the divergence.**
- *
- * `app` is **absent there** on purpose: `app.{base}` is the control plane,
- * answered by Railway on a DNS-only (grey-cloud) record, so making it a reserved
- * serving label would 301 the control plane away from its own hostname and take
- * sign-in with it.
- *
- * `app` is **present here** on purpose: if that record is ever proxied by
- * accident, the Worker resolves `app.{base}` as an ordinary slug — and because
- * no page can be minted at `app`, the lookup misses and serves the branded 404
- * rather than somebody's uploaded HTML. Deleting it from this tuple to restore
- * the old symmetry is exactly the bug this comment exists to prevent.
- *
- * The rest of the tuple is the Worker's remaining reserved set (`www`, `api`,
- * `assets`) plus the control plane's own product routes. Duplicated rather than
- * imported on purpose: `apps/web` must not import from `apps/edge` (the
- * one-directional serve-path rule, enforced by ESLint), and hoisting it into
- * `@kept/shared` would drag the control plane's route names into the Worker
- * bundle for no reason. The Worker rejects its labels before they reach KV; this
- * list is the narrower rule the control plane applies when it assigns one.
- */
-export const RESERVED_SLUGS = [
-  // Reserved by the Worker too (`RESERVED_LABELS`), except `app` — which is
-  // reserved ONLY here, by design. See the note above before touching it.
-  "www",
-  "app",
-  "api",
-  "assets",
-  // Control-plane product routes.
-  "p",
-  "keep",
-  "stats",
-  "promise",
-  "dashboard",
-  "auth",
-  "health",
-  // E06's two: `/site/[slug]` and `/settings`. Since E05a the control plane
-  // lives at `app.`, so the collision is no longer structural — but the four
-  // labels above are here for exactly this reason and leaving these two out
-  // would read as an oversight rather than as a decision.
-  "site",
-  "settings",
-] as const;
-
-const reservedSet = new Set<string>(RESERVED_SLUGS);
+const reservedSet = new Set<string>(RESERVED_NAMES);
 
 /**
  * Substrings that disqualify a candidate.
@@ -129,7 +81,11 @@ const PROFANITY_SUBSTRINGS = [
   "xxx",
 ] as const;
 
-/** True when the label is reserved for the edge or for a control-plane route. */
+/**
+ * True when the label is one no page may take — `RESERVED_NAMES`, the single
+ * list in `@kept/shared` (why `app` is on it, and why the Worker's own
+ * `RESERVED_LABELS` is a different, smaller list, is recorded there).
+ */
 export function isReservedSlug(slug: string): boolean {
   return reservedSet.has(slug);
 }
@@ -192,7 +148,7 @@ export interface SlugRefusal {
  *
  * ⚠️ NECESSARY, NOT SUFFICIENT — AND E07 OWNS THE REST. Every slug before E06
  * came out of `mintSlugCandidate`, and both lists below were written for that
- * threat model: `RESERVED_SLUGS` protects labels the platform answers on, and
+ * threat model: `RESERVED_NAMES` protects labels the platform answers on, and
  * `PROFANITY_SUBSTRINGS` is about eight random characters happening to spell a
  * word, not about a person choosing one. A human typing a name walks straight
  * through both. **None of the following is covered here, deliberately:**
