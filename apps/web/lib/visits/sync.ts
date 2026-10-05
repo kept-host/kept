@@ -123,8 +123,17 @@ async function loadCurrentNames(): Promise<Map<string, string>> {
   return new Map(rows.map((row) => [row.slug, row.id]));
 }
 
-/** The renames made during each of `days`, keyed by UTC day — one query. */
-async function loadNameEventsByDay(days: readonly string[]): Promise<Map<string, NameEvent[]>> {
+/**
+ * The renames made during each of `days`, keyed by UTC day — one query.
+ *
+ * Only renames whose page still exists. `name_events.site_id` has no FK (the
+ * history outlives the page), but `page_views_daily.site_id` does: one event
+ * for a purged page would map its host to a missing site and fail the whole
+ * run's upsert. Its visits have nowhere to go, so the event is left out here.
+ */
+export async function loadNameEventsByDay(
+  days: readonly string[],
+): Promise<Map<string, NameEvent[]>> {
   const byDay = new Map<string, NameEvent[]>();
   const first = days[0];
   const last = days.at(-1);
@@ -138,6 +147,7 @@ async function loadNameEventsByDay(days: readonly string[]): Promise<Map<string,
       createdAt: nameEvents.createdAt,
     })
     .from(nameEvents)
+    .innerJoin(sites, eq(sites.id, nameEvents.siteId))
     .where(
       and(
         gte(nameEvents.createdAt, dayBounds(first).start),

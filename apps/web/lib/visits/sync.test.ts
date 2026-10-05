@@ -27,10 +27,16 @@ import { config } from "dotenv";
 import { asc, eq, inArray } from "drizzle-orm";
 
 import { closeDb, db } from "../db";
-import { jobRuns, pageViewsDaily, sites } from "../db/schema";
+import { jobRuns, nameEvents, pageViewsDaily, sites } from "../db/schema";
 import type { VisitGroup } from "./graphql";
 import { mapVisits } from "./map";
-import { completeUtcDays, parseSyncDays, withJobRun, writeVisitRows } from "./sync";
+import {
+  completeUtcDays,
+  loadNameEventsByDay,
+  parseSyncDays,
+  withJobRun,
+  writeVisitRows,
+} from "./sync";
 
 config({ path: ".env.local", quiet: true });
 
@@ -140,6 +146,7 @@ describe("AC35 — only the daily sync writes visits", () => {
 // ── live: real dev Postgres ──────────────────────────────────────────────────
 
 const createdSites = new Set<string>();
+const createdNameEvents = new Set<string>();
 const JOB = `visits-sync-drill-${crypto.randomUUID()}`;
 
 /** An anonymous live page — the cheapest real `sites` row a visit can map to. */
@@ -176,6 +183,9 @@ async function jobRow() {
 after(async () => {
   if (skipLive) return;
   await db.delete(jobRuns).where(eq(jobRuns.job, JOB));
+  if (createdNameEvents.size > 0) {
+    await db.delete(nameEvents).where(inArray(nameEvents.id, [...createdNameEvents]));
+  }
   // `page_views_daily.site_id` cascades, so the visit rows go with the sites.
   if (createdSites.size > 0) await db.delete(sites).where(inArray(sites.id, [...createdSites]));
   await closeDb();
@@ -271,5 +281,43 @@ describe("withJobRun — job_runs bookkeeping", { skip: skipLive }, () => {
 
     // And the replay of the same rows left the count where it was.
     assert.deepEqual(await viewsFor(site.id), [{ day, views: 3 }]);
+  });
+});
+
+describe("loadNameEventsByDay — renames the sync maps a past day through", { skip: skipLive }, () => {
+  test("a rename whose page has since been purged is left out — its visit row would break the run", async () => {
+    // `name_events.site_id` has no FK: the history outlives the page. Found on
+    // the real dev zone: e2e cleanup hard-deletes renamed pages, the next
+    // morning's sync mapped their hosts through those events, and the upsert
+    // failed on `page_views_daily_site_id_*_fk` — a whole day lost to one
+    // purged page.
+    const live = await makeSite();
+    const purgedSiteId = crypto.randomUUID();
+    const [day] = completeUtcDays(2);
+    const createdAt = new Date(`${day}T12:00:00.000Z`);
+    const tag = live.id.slice(0, 8);
+    const inserted = await db
+      .insert(nameEvents)
+      .values([
+        { siteId: live.id, oldName: `e06-009-was-${tag}`, newName: live.slug, createdAt },
+        {
+          siteId: purgedSiteId,
+          oldName: `e06-009-gone-${tag}`,
+          newName: `e06-009-gone-now-${tag}`,
+          createdAt,
+        },
+      ])
+      .returning({ id: nameEvents.id });
+    for (const { id } of inserted) createdNameEvents.add(id);
+
+    const events = (await loadNameEventsByDay([day!])).get(day!) ?? [];
+    const ours = events.filter((event) => event.oldName.endsWith(tag));
+    assert.deepEqual(ours, [
+      { siteId: live.id, oldName: `e06-009-was-${tag}`, newName: live.slug },
+    ]);
+    assert.ok(
+      events.every((event) => event.siteId !== purgedSiteId),
+      "an event for a page that no longer exists must not reach the mapper",
+    );
   });
 });
