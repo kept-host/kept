@@ -11,6 +11,10 @@
  *
  * `PublishForm` is also the empty state's large drop zone, so the two cannot
  * drift: same zone, same paste, same inline error.
+ *
+ * The sheet closes the moment a request leaves (`usePublish`'s `onSend`, task
+ * 015), so the mint card on the wall is what the owner watches; only a
+ * pre-flight refusal — nothing sent — is shown here.
  */
 import { useState } from "react";
 
@@ -43,10 +47,6 @@ export function PublishSheet({
   atLimit: boolean;
   keptLimit: number;
 }) {
-  const close = (landed: boolean) => {
-    if (landed) onOpenChange(false);
-  };
-
   return (
     <Dialog
       open={open}
@@ -59,6 +59,8 @@ export function PublishSheet({
         data-testid="publish-sheet"
         className={cn(
           "gap-6 bg-bg p-8 md:top-16 md:max-w-[560px] md:translate-y-0 md:rounded-[var(--r-xl)]",
+          // The dialog's zoom is movement; under reduced motion it just appears.
+          "motion-reduce:!animate-none",
           // A bottom sheet on a phone (the design's `mobile` sheet).
           "max-md:bottom-0 max-md:left-0 max-md:top-auto max-md:max-h-[92dvh] max-md:max-w-none max-md:translate-x-0 max-md:translate-y-0 max-md:overflow-y-auto max-md:rounded-b-none max-md:rounded-t-[var(--r-xl)] max-md:px-4 max-md:pb-7 max-md:pt-3",
         )}
@@ -77,11 +79,7 @@ export function PublishSheet({
         </DialogHeader>
 
         <div className="rounded-[var(--r-lg)] border border-border bg-surface p-5">
-          <PublishForm
-            publisher={publisher}
-            onFile={async (file) => close(await publisher.publishFile(file))}
-            onHtml={async (html) => close(await publisher.publishHtml(html))}
-          />
+          <PublishForm publisher={publisher} />
         </div>
       </DialogContent>
     </Dialog>
@@ -91,25 +89,21 @@ export function PublishSheet({
 /** The drop zone, the paste box and the inline error under them. */
 export function PublishForm({
   publisher,
-  onFile,
-  onHtml,
   zoneClassName,
 }: {
   publisher: Publisher;
-  onFile: (file: File) => void;
-  onHtml: (html: string) => void;
   zoneClassName?: string;
 }) {
   const [pasteOpen, setPasteOpen] = useState(false);
   const [paste, setPaste] = useState("");
-  const busy = publisher.minting !== null;
+  const busy = publisher.busy;
 
   return (
     <div className="flex flex-col gap-3">
       <DropTarget
         scope="zone"
         disabled={busy}
-        onFile={onFile}
+        onFile={publisher.publishFile}
         onRefuse={publisher.refuse}
         className={zoneClassName}
       />
@@ -117,12 +111,6 @@ export function PublishForm({
       {publisher.error ? (
         <p role="alert" data-testid="publish-error" className="text-sm leading-relaxed text-danger">
           {publisher.error}
-        </p>
-      ) : null}
-
-      {busy ? (
-        <p aria-live="polite" className="font-mono text-xs text-text-secondary">
-          Publishing {publisher.minting?.label}…
         </p>
       ) : null}
 
@@ -141,7 +129,7 @@ export function PublishForm({
             variant="secondary"
             size="sm"
             disabled={busy || paste.trim() === ""}
-            onClick={() => onHtml(paste)}
+            onClick={() => void publisher.publishHtml(paste)}
             className="self-start font-body font-medium"
           >
             Publish pasted HTML

@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Publishing from the Pages home — D9, PRD §5.1 (E06 task 011).
+ * Publishing from the Pages home — D9, PRD §5.1 (E06 tasks 011, 015).
  *
  * One path for every way a page arrives — a file dropped anywhere on the
  * screen, a file dropped on or chosen in the sheet's zone, pasted HTML — and it
@@ -9,22 +9,25 @@
  *
  *   1. Pre-flight: `checkPageFile` / `checkPageHtml`, the same courtesy checks
  *      the landing runs, against the same `MAX_PAGE_BYTES` the server enforces.
- *      A refused file never becomes a request (AC7). The server re-validates
- *      every byte and is the only authority.
- *   2. While the request is in flight, a placeholder card in the mint state
- *      stands where the page will land (`minting`).
- *   3. On the answer: the PRD's toast — kept, at the limit, or "already
- *      published" — then `router.refresh()` inside a transition, so the mint
- *      card gives way to the real one in the same commit and the new (or
- *      existing, on a duplicate) card is highlighted (AC8).
+ *      A refused file never becomes a request (AC7) and its sentence is
+ *      `error`, shown where it was dropped. The server re-validates every byte
+ *      and is the only authority.
+ *   2. The request leaves: `onSend` closes the sheet (the design's `publish()`)
+ *      and the mint card stands where the page will land (`minting`, `sending`).
+ *   3. The answer: the PRD's toast — kept, at the limit, or "already published"
+ *      — with Copy link; the mint card's mascot hops (`landed`); then one
+ *      transition swaps the mint card for the real one, arriving (AC8: on a
+ *      duplicate, the existing card).
  *
- * A failure is kept as `error` for the caller to show inline on the drop zone
- * that was used, in the server's or the pre-flight's own words.
+ * A failed request turns the mint card into its error (`failed`) in the
+ * server's own words, with Try again (the same bytes again) and dismiss — the
+ * sheet is closed by then, so PRD §9.1's "inline error on the drop zone" has no
+ * zone to sit on.
  */
-import { useCallback, useEffect, useRef, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
-import { toast } from "sonner";
+import { useCallback, useEffect, useRef, useState } from "react";
 
+import { toastWithCopyLink } from "@/components/kept/link-toast";
+import { prefersReducedMotion } from "@/lib/motion";
 import { checkPageHtml, publishErrorText } from "@/lib/publish/client";
 import {
   ALREADY_PUBLISHED_NOTICE,
@@ -33,80 +36,106 @@ import {
 } from "@/lib/sites/display";
 import { publishOwnedHtml } from "@/lib/sites/owner-client";
 
-/** How long a just-published (or duplicate) card stays ringed. */
-const HIGHLIGHT_MS = 4000;
+import type { Arrival } from "./use-arrival";
 
-/** The placeholder card shown while a publish is in flight. */
-export interface Minting {
-  /** What is arriving — the file's name, or "Pasted HTML". */
+/** How long the mint card's mascot hops before the real card takes its place. */
+export const MINT_HOP_MS = 450;
+
+/** The page that is arriving, and what Try again would send. */
+export type Minting = {
+  /** The file's name, or "Pasted HTML". */
   label: string;
-}
+  html: string;
+} & ({ phase: "sending" } | { phase: "landed" } | { phase: "failed"; error: string });
 
 export interface Publisher {
   minting: Minting | null;
+  /** A publish is in flight — the drop targets stand down. */
+  busy: boolean;
+  /** A pre-flight refusal, for the drop target that was used. */
   error: string | null;
-  highlightId: string | null;
-  /** A file that passed `DropTarget`'s pre-flight. Resolves `true` when it landed. */
-  publishFile: (file: File) => Promise<boolean>;
-  /** Pasted markup. Resolves `true` when it landed. */
-  publishHtml: (html: string) => Promise<boolean>;
+  /** A file that passed `DropTarget`'s pre-flight. */
+  publishFile: (file: File) => Promise<void>;
+  /** Pasted markup. */
+  publishHtml: (html: string) => Promise<void>;
   /** A pre-flight refusal from a drop target, shown where the error goes. */
   refuse: (message: string) => void;
   clearError: () => void;
+  /** Send the failed page again. */
+  retry: () => void;
+  /** Put the failed mint card away. */
+  dismiss: () => void;
 }
 
-export function usePublish({ keptLimit }: { keptLimit: number }): Publisher {
-  const router = useRouter();
-  const [, startTransition] = useTransition();
+/** Resolve after `ms`, or at once when `signal` aborts. */
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+  });
+}
+
+export function usePublish({
+  keptLimit,
+  onSend,
+  arrive,
+}: {
+  keptLimit: number;
+  /** The request is leaving. Stable (a callback), or every drop target re-binds. */
+  onSend: () => void;
+  arrive: (next: Arrival, before?: () => void) => void;
+}): Publisher {
   const [minting, setMinting] = useState<Minting | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [highlightId, setHighlightId] = useState<string | null>(null);
   const abort = useRef<AbortController | null>(null);
-  const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // An answer arriving after the screen is gone must not set state on it. The
   // write itself is not undone — the page is published either way.
   useEffect(() => {
-    return () => {
-      abort.current?.abort();
-      if (highlightTimer.current) clearTimeout(highlightTimer.current);
-    };
+    return () => abort.current?.abort();
   }, []);
 
   const send = useCallback(
-    async (html: string, label: string): Promise<boolean> => {
+    async (html: string, label: string) => {
       abort.current?.abort();
       const controller = new AbortController();
       abort.current = controller;
 
       setError(null);
-      setMinting({ label });
+      setMinting({ label, html, phase: "sending" });
+      onSend();
       const outcome = await publishOwnedHtml(html, controller.signal);
-      if (controller.signal.aborted) return false;
+      if (controller.signal.aborted) return;
 
       if (!outcome.ok) {
-        setMinting(null);
-        setError(outcome.error.message);
-        return false;
+        setMinting({ label, html, phase: "failed", error: outcome.error.message });
+        return;
       }
 
       const { site, duplicate } = outcome.page;
-      const host = new URL(site.liveUrl).host;
-      if (duplicate) toast(ALREADY_PUBLISHED_NOTICE, { description: host });
-      else if (site.expiresAt !== null) toast.success(atLimitPublishToast(keptLimit), { description: host });
-      else toast.success(PUBLISHED_KEPT_TOAST, { description: host });
+      toastWithCopyLink(
+        duplicate
+          ? ALREADY_PUBLISHED_NOTICE
+          : site.expiresAt !== null
+            ? atLimitPublishToast(keptLimit)
+            : PUBLISHED_KEPT_TOAST,
+        site.liveUrl,
+        !duplicate,
+      );
 
-      // One transition: the mint card leaves, the real card arrives ringed.
-      startTransition(() => {
-        setMinting(null);
-        setHighlightId(site.id);
-        router.refresh();
-      });
-      if (highlightTimer.current) clearTimeout(highlightTimer.current);
-      highlightTimer.current = setTimeout(() => setHighlightId(null), HIGHLIGHT_MS);
-      return true;
+      setMinting({ label, html, phase: "landed" });
+      if (!prefersReducedMotion()) await pause(MINT_HOP_MS, controller.signal);
+      if (controller.signal.aborted) return;
+      arrive({ id: site.id, kind: duplicate ? "duplicate" : "published" }, () => setMinting(null));
     },
-    [keptLimit, router],
+    [keptLimit, onSend, arrive],
   );
 
   const publishFile = useCallback(
@@ -116,9 +145,9 @@ export function usePublish({ keptLimit }: { keptLimit: number }): Publisher {
         html = await file.text();
       } catch {
         setError("That file could not be read. Try choosing it again.");
-        return false;
+        return;
       }
-      return send(html, file.name);
+      await send(html, file.name);
     },
     [send],
   );
@@ -128,15 +157,30 @@ export function usePublish({ keptLimit }: { keptLimit: number }): Publisher {
       const refusal = checkPageHtml(html);
       if (refusal) {
         setError(publishErrorText(refusal));
-        return false;
+        return;
       }
-      return send(html, "Pasted HTML");
+      await send(html, "Pasted HTML");
     },
     [send],
   );
 
+  const retry = useCallback(() => {
+    if (minting?.phase === "failed") void send(minting.html, minting.label);
+  }, [minting, send]);
+
   const refuse = useCallback((message: string) => setError(message), []);
   const clearError = useCallback(() => setError(null), []);
+  const dismiss = useCallback(() => setMinting(null), []);
 
-  return { minting, error, highlightId, publishFile, publishHtml, refuse, clearError };
+  return {
+    minting,
+    busy: minting !== null && minting.phase !== "failed",
+    error,
+    publishFile,
+    publishHtml,
+    refuse,
+    clearError,
+    retry,
+    dismiss,
+  };
 }

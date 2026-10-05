@@ -19,6 +19,10 @@
   --text: #1a1714;
   --text-secondary: #6b645c;
   --text-muted: #9b948b;
+  /* Secondary text on an inverted surface (`bg-text` — the toast): the
+     design's toast address. --text-muted is tuned for --bg and reads too dark
+     on --text; this clears 4.5:1 against --text in both themes (E06 task 015). */
+  --text-inverse-muted: #a8a096;
   --border: #e5e0d8;
   --accent: #6d4aff;
   --accent-hover: #5b38f0;
@@ -55,6 +59,7 @@
   --text: #f5f1ea;
   --text-secondary: #a8a096;
   --text-muted: #6e6760;
+  --text-inverse-muted: #6b645c;
   --border: #2a2620;
   --accent: #8b6dff;
   --accent-hover: #9d83ff;
@@ -73,6 +78,7 @@
   --color-text: var(--text);
   --color-text-secondary: var(--text-secondary);
   --color-text-muted: var(--text-muted);
+  --color-text-inverse-muted: var(--text-inverse-muted);
   --color-border: var(--border);
   --color-accent: var(--accent);
   --color-accent-hover: var(--accent-hover);
@@ -283,6 +289,63 @@
   }
   [data-mascot] {
     animation: keptMascotHover 3s ease-in-out infinite alternate;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   The studio's kept moment (E06 task 015): the landing's drop → mint → live
+   language, rebuilt from tokens for the Pages home. The mint card's scan
+   sweep, the mascot's hop when the page lands (on a WRAPPER — a transform on
+   the <svg> would fight keptMascotHover), the new card's rise (the design's
+   kUp) and its one ring pulse. Every one is applied through `motion-safe:`,
+   so under reduced motion the states still change and nothing moves.
+   ───────────────────────────────────────────────────────────────────────── */
+@keyframes keptScan {
+  from {
+    top: -2.5rem;
+  }
+  to {
+    top: 100%;
+  }
+}
+
+@keyframes keptHop {
+  0%,
+  65%,
+  100% {
+    transform: translateY(0);
+  }
+  35% {
+    transform: translateY(-22%);
+  }
+  82% {
+    transform: translateY(-6%);
+  }
+}
+
+@keyframes keptRise {
+  from {
+    transform: translateY(8px);
+    opacity: 0;
+  }
+}
+
+@keyframes keptRingPulse {
+  from {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+  to {
+    box-shadow: 0 0 0 12px color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+}
+
+/* The studio's phone tab bar (`app/(app)/layout.tsx`, below `md`) covers the
+   foot of the screen, so toasts sit above it — the design's 96px. Read by the
+   Toaster's offsets (`components/ui/sonner.tsx`); everywhere else they keep
+   Sonner's own. */
+@media (width < 48rem) {
+  body:has([data-tab-bar]) {
+    --toast-offset-bottom: 96px;
   }
 }
 

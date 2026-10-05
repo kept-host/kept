@@ -346,13 +346,19 @@ test.describe("the Pages home", () => {
     scope.siteIds.push(row!.id);
     scope.slugs.add(row!.slug);
     expect(row!.expiresAt, "under the limit it lands kept").toBeNull();
-    await expect(card(page, row!.id)).toHaveAttribute("data-highlighted", "true");
+    // The card arrives after the mint card's hop and the refresh (task 015).
+    await expect(card(page, row!.id)).toHaveAttribute("data-highlighted", "true", {
+      timeout: LIVE_STACK_TIMEOUT,
+    });
 
     // AC8 — the same bytes again: no new page, the toast, the card highlighted.
     await expect(card(page, row!.id)).not.toHaveAttribute("data-highlighted", "true", { timeout: 10_000 });
     await drop(page, anywhere, { name: "dropped-again.html", type: "text/html", body: html });
     await expect(page.getByText(ALREADY_PUBLISHED_NOTICE)).toBeVisible({ timeout: LIVE_STACK_TIMEOUT });
-    await expect(card(page, row!.id)).toHaveAttribute("data-highlighted", "true");
+    await expect(card(page, row!.id)).toHaveAttribute("data-highlighted", "true", {
+      timeout: LIVE_STACK_TIMEOUT,
+    });
+    await expect(card(page, row!.id)).toHaveAttribute("data-arrival", "duplicate");
     expect(await rows(), "publishing identical bytes twice creates one page").toHaveLength(1);
 
     // Paste (design ↔ PRD call 9): the sheet posts { html } to the same route.
@@ -362,7 +368,9 @@ test.describe("the Pages home", () => {
     await sheet.getByRole("button", { name: "Or paste HTML" }).click();
     await sheet.getByRole("textbox", { name: "Paste HTML" }).fill(titledHtml(pasted));
     await sheet.getByRole("button", { name: "Publish pasted HTML" }).click();
-    await expect(sheet).toBeHidden({ timeout: LIVE_STACK_TIMEOUT });
+    // The sheet closes as the request leaves (task 015); the page lands after.
+    await expect(sheet).toBeHidden();
+    await expect(page.getByTestId("mint-card")).toHaveCount(0, { timeout: LIVE_STACK_TIMEOUT });
     const [pastedRow] = await db
       .select({ id: schema.sites.id, slug: schema.sites.slug })
       .from(schema.sites)

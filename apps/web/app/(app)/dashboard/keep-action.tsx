@@ -9,7 +9,9 @@
  * One `POST /api/sites/:id/keep`; toast "Kept. It's permanent now."; then
  * `router.refresh()` and the card moves to the wall (PRD §5.1: no live
  * updates). An `expired` draft still inside its grace is kept the same way —
- * the route restores it (late keep, task 004).
+ * the route restores it (late keep, task 004). On the Pages home the move is
+ * the keep moment (task 015): the caller's `onKept` fades the draft and brings
+ * it in on the wall, and does the refresh itself.
  *
  * ── AT THE LIMIT ─────────────────────────────────────────────────────────────
  * The action reads **Swap…** (design call 4: not "Make room") and opens the
@@ -39,6 +41,7 @@ export function KeepAction({
   atLimit,
   candidates,
   quota,
+  onKept,
   className,
 }: {
   /** The draft, as the chooser names it. */
@@ -48,6 +51,8 @@ export function KeepAction({
   /** The account's kept pages — the chooser's list. */
   candidates: SwapPage[];
   quota: KeptQuota;
+  /** The draft is kept now (or swapped in) — the caller refreshes. Default: refresh. */
+  onKept?: (id: string) => void;
   className?: string;
 }) {
   const router = useRouter();
@@ -62,6 +67,7 @@ export function KeepAction({
   const swap = atLimit || filledUp;
   const host = new URL(page.liveUrl).host;
   const refresh = () => startTransition(() => router.refresh());
+  const landed = () => (onKept ? onKept(page.id) : refresh());
 
   async function keep() {
     if (swap) {
@@ -84,7 +90,7 @@ export function KeepAction({
     }
     setKept(true);
     toast.success(KEPT_TOAST, { description: host });
-    refresh();
+    landed();
   }
 
   return (
@@ -124,7 +130,7 @@ export function KeepAction({
           onSwapped={() => {
             setKept(true);
             toast.success(SWAPPED_TOAST, { description: host });
-            refresh();
+            landed();
           }}
         />
       ) : null}

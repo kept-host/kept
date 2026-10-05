@@ -6,6 +6,7 @@ import { ArrowUpRight, Check, Copy, QrCode as QrIcon } from "lucide-react";
 import type { SiteStatus } from "@kept/shared";
 
 import { Button } from "@/components/ui/button";
+import { COPY_FAILED } from "@/lib/sites/display";
 import { cn } from "@/lib/utils";
 
 /**
@@ -153,7 +154,7 @@ export function CopyLinkButton({
         {copied === "done"
           ? "Link copied to the clipboard."
           : copied === "failed"
-            ? "Could not copy the link. Select it and copy manually."
+            ? COPY_FAILED
             : ""}
       </span>
     </>

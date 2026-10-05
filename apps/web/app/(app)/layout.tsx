@@ -83,7 +83,11 @@ export default async function AppLayout({
 
       <div className="min-w-0 flex-1 pb-[88px] md:pb-0">{children}</div>
 
-      <div className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-3 border-t border-border bg-surface px-1 pb-5 pt-1 md:hidden">
+      {/* `data-tab-bar`: toasts rise above it on a phone (`globals.css`). */}
+      <div
+        data-tab-bar=""
+        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-3 border-t border-border bg-surface px-1 pb-5 pt-1 md:hidden"
+      >
         <StudioNav variant="tabs" />
         <AccountMenu variant="tabs" {...account} />
       </div>

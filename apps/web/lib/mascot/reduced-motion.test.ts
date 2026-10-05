@@ -36,6 +36,7 @@ import {
   KEPT_REST_GAZE,
   KEPT_TRACK_YAW,
   MASCOT_REST_T,
+  gazeToward,
 } from "@kept/shared/mascot";
 
 import { startMascotLoop } from "../../components/kept/mascot";
@@ -247,6 +248,49 @@ test("the gaze eases toward the pointer instead of snapping, and rests where it 
 
   stopSlow();
   stop();
+});
+
+/**
+ * The studio's mint card steers the eyes from the loop's clock (its scan sweep,
+ * E06 task 015) instead of the pointer. Steering must not smuggle a listener or
+ * a loop past reduced motion, and must replace the pointer rather than add to it.
+ */
+test("a steered gaze follows the loop's clock instead of the pointer, and never runs under reduce", () => {
+  const reduced = recordingScheduler();
+  let steerCalls = 0;
+  const stopReduced = startMascotLoop(true, reduced.paint, reduced.raf, reduced.caf, reduced.track, () => {
+    steerCalls += 1;
+    return [0, 1];
+  });
+  stopReduced();
+  assert.equal(steerCalls, 0, "under reduce the steer is never read — there is no frame to read it for");
+  assert.equal(reduced.rafCalls, 0, "and no loop starts because a steer was passed");
+  assert.equal(reduced.trackCalls, 0, "and nothing subscribes to the pointer");
+
+  const s = recordingScheduler();
+  const seen: number[] = [];
+  const stop = startMascotLoop(false, s.paint, s.raf, s.caf, s.track, (seconds) => {
+    seen.push(seconds);
+    return [0, 1];
+  });
+  assert.equal(s.trackCalls, 0, "a steered mascot does not listen to the pointer at all");
+
+  s.advance(1_000);
+  s.advance(1_016);
+  assert.deepEqual(seen, [0, 0.016], "the steer is read once per frame, in seconds from the loop's origin");
+
+  const target = gazeToward(0, 1);
+  const last = s.gazes.at(-1);
+  assert.ok(last, "expected a steered frame");
+  assert.ok(
+    last.pitch < KEPT_REST_GAZE.pitch && last.pitch > target.pitch,
+    `the eyes ease toward the steered target, not snap to it (got pitch ${last.pitch}, rest ` +
+      `${KEPT_REST_GAZE.pitch}, target ${target.pitch})`,
+  );
+
+  stop();
+  assert.deepEqual(s.cancelled, [3], "cleanup cancels the outstanding frame");
+  assert.equal(s.untrackCalls, 0, "and has no pointer subscription to undo");
 });
 
 /**

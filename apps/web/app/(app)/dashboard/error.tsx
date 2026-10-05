@@ -18,7 +18,7 @@ import { useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { RotateCw } from "lucide-react";
 
-import { Mascot } from "@/components/kept/mascot";
+import { MASCOT_DIM, Mascot } from "@/components/kept/mascot";
 import { Button } from "@/components/ui/button";
 
 export default function DashboardError({
@@ -40,9 +40,7 @@ export default function DashboardError({
         role="alert"
         className="flex flex-col items-center gap-3 rounded-[var(--r-xl)] border border-border bg-surface px-6 py-14 text-center"
       >
-        {/* The `dim` mood: the same frame, drained (02 §7). On a wrapper,
-            because the mascot's own `filter` carries its drop shadow. */}
-        <span className="[filter:grayscale(0.5)_opacity(0.5)]">
+        <span className={MASCOT_DIM}>
           <Mascot className="block size-20 text-accent" />
         </span>
         <h2 className="mt-1 font-display text-2xl font-semibold leading-tight tracking-[-0.03em] text-text">

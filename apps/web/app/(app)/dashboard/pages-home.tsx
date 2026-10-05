@@ -12,9 +12,9 @@
  * the owner client and ends in `router.refresh()` — no live updates, no store,
  * no browser storage. Search and sort are React state; the view is the URL.
  */
-import { useMemo, useState, useTransition } from "react";
+import { useCallback, useMemo, useState, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Search, Upload } from "lucide-react";
+import { Search } from "lucide-react";
 
 import {
   limitsFor,
@@ -36,9 +36,11 @@ import { Wordmark } from "../wordmark";
 import { HomeCard, type HomeSite } from "./home-card";
 import { KeepAction } from "./keep-action";
 import { LimitBanner } from "./limit-banner";
+import { MintCard } from "./mint-card";
 import { PublishForm, PublishSheet } from "./publish-sheet";
 import { DEFAULT_SORT, sortSites, Toolbar, type SortKey, type View } from "./toolbar";
-import { type Minting, usePublish } from "./use-publish";
+import { useArrival } from "./use-arrival";
+import { usePublish } from "./use-publish";
 
 function toSwapPage(site: HomeSite): SwapPage {
   return {
@@ -79,7 +81,9 @@ export function PagesHome({
   const [sort, setSort] = useState<SortKey>(DEFAULT_SORT);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [bannerDismissed, setBannerDismissed] = useState(false);
-  const publisher = usePublish({ keptLimit: quota.limit });
+  const arrivals = useArrival();
+  const closeSheet = useCallback(() => setSheetOpen(false), []);
+  const publisher = usePublish({ keptLimit: quota.limit, onSend: closeSheet, arrive: arrivals.arrive });
 
   const view: View = searchParams.get("view") === "list" ? "list" : "grid";
   const atLimit = quota.remaining === 0;
@@ -93,6 +97,17 @@ export function PagesHome({
   );
   const noResults = needle !== "" && shownDrafts.length === 0 && shownKept.length === 0;
   const candidates = useMemo(() => kept.map(toSwapPage), [kept]);
+  const arrivalFor = (site: HomeSite) =>
+    arrivals.current?.id === site.id ? arrivals.current : undefined;
+  const mintCard = (variant: View | "draft") =>
+    publisher.minting ? (
+      <MintCard
+        minting={publisher.minting}
+        variant={variant}
+        onRetry={publisher.retry}
+        onDismiss={publisher.dismiss}
+      />
+    ) : null;
 
   function setView(next: View) {
     // The URL is the view's only home (no browser storage), and Next's router
@@ -110,7 +125,7 @@ export function PagesHome({
   };
 
   return (
-    <DropTarget scope="window" disabled={publisher.minting !== null} onFile={publisher.publishFile} onRefuse={publisher.refuse}>
+    <DropTarget scope="window" disabled={publisher.busy} onFile={publisher.publishFile} onRefuse={publisher.refuse}>
       {() => (
         <>
           <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-border bg-bg px-4 md:px-8">
@@ -185,12 +200,7 @@ export function PagesHome({
 
             {empty ? (
               <EmptyState>
-                <PublishForm
-                  publisher={publisher}
-                  onFile={publisher.publishFile}
-                  onHtml={publisher.publishHtml}
-                  zoneClassName="min-h-56"
-                />
+                <PublishForm publisher={publisher} zoneClassName="min-h-56" />
               </EmptyState>
             ) : (
               <>
@@ -216,22 +226,27 @@ export function PagesHome({
                       data-testid="drafts-strip"
                       // Three across at most, then the strip scrolls sideways (the
                       // design's strip); a lone draft does not stretch the full width.
-                      className="grid auto-cols-[minmax(250px,calc((100%-1.5rem)/3))] grid-flow-col gap-3 overflow-x-auto pb-1"
+                      // The scroller clips, so it is padded (and pulled back by as
+                      // much) for an arriving card's ring pulse to spread into.
+                      className="-m-3 grid auto-cols-[minmax(250px,calc((100%-1.5rem)/3))] grid-flow-col gap-3 overflow-x-auto p-3 pb-4"
                     >
-                      {publisher.minting && atLimit ? <MintCard minting={publisher.minting} variant="draft" /> : null}
+                      {atLimit ? mintCard("draft") : null}
                       {shownDrafts.map((site) => (
                         <HomeCard
                           key={site.id}
                           site={site}
                           variant="draft"
                           plan={plan}
-                          highlighted={publisher.highlightId === site.id}
+                          arrival={arrivalFor(site)}
+                          onSettled={arrivals.settle}
+                          leaving={arrivals.leavingId === site.id}
                           action={
                             <KeepAction
                               page={toSwapPage(site)}
                               atLimit={atLimit}
                               candidates={candidates}
                               quota={quota}
+                              onKept={arrivals.keep}
                             />
                           }
                         />
@@ -252,16 +267,15 @@ export function PagesHome({
                           : "flex flex-col gap-2",
                       )}
                     >
-                      {publisher.minting && !atLimit ? (
-                        <MintCard minting={publisher.minting} variant={view} />
-                      ) : null}
+                      {atLimit ? null : mintCard(view)}
                       {shownKept.map((site) => (
                         <HomeCard
                           key={site.id}
                           site={site}
                           variant={view}
                           plan={plan}
-                          highlighted={publisher.highlightId === site.id}
+                          arrival={arrivalFor(site)}
+                          onSettled={arrivals.settle}
                         />
                       ))}
                     </ul>
@@ -328,34 +342,5 @@ function EmptyState({ children }: { children: React.ReactNode }) {
       </div>
       <div className="max-w-[640px] rounded-[var(--r-lg)] border border-border bg-surface p-5">{children}</div>
     </section>
-  );
-}
-
-/** The page that is arriving: the card's shape, in the mint state. */
-function MintCard({ minting, variant }: { minting: Minting; variant: View | "draft" }) {
-  return (
-    <li
-      data-testid="mint-card"
-      aria-busy="true"
-      className={cn(
-        "list-none overflow-hidden rounded-[var(--r-lg)] border border-accent bg-surface shadow-[var(--shadow-sm)] ring-2 ring-accent",
-        variant === "list" && "flex items-center gap-3 p-2 pr-3",
-      )}
-    >
-      <div
-        className={cn(
-          "flex items-center justify-center bg-accent-soft text-accent motion-safe:animate-pulse",
-          variant === "grid" && "aspect-[16/10]",
-          variant === "draft" && "h-[88px]",
-          variant === "list" && "aspect-[16/10] w-24 shrink-0 rounded-[var(--r-sm)]",
-        )}
-      >
-        <Upload aria-hidden="true" className="size-5" strokeWidth={1.5} />
-      </div>
-      <div className={cn("flex min-w-0 flex-col gap-0.5", variant !== "list" && "px-3.5 py-3")}>
-        <span className="text-[15px] font-medium text-text">Publishing…</span>
-        <span className="truncate font-mono text-xs text-text-secondary">{minting.label}</span>
-      </div>
-    </li>
   );
 }

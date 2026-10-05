@@ -258,6 +258,17 @@ export const KEPT_TOAST = "Kept. It's permanent now.";
 
 export const SWAPPED_TOAST = "Swapped.";
 
+/**
+ * The publish moment (E06 task 015, the design's `publish()`): the arriving
+ * card's chip, and what the publish toast's Copy link turns it into. A refused
+ * clipboard says so instead of flashing a "copied" that did not happen.
+ */
+export const JUST_PUBLISHED = "Just published";
+
+export const LINK_COPIED_TOAST = "Link copied";
+
+export const COPY_FAILED = "Could not copy the link. Select it and copy manually.";
+
 /** The dismissible banner on the home while the account is at its kept limit. */
 export function atLimitBanner(limit: number): string {
   return `You're keeping ${limit} of ${limit}. New pages land as drafts — swap one out to keep it.`;

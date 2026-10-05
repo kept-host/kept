@@ -104,6 +104,14 @@ const MASCOT_GAZE_K = 6;
 const MASCOT_GAZE_REACH = 8;
 
 /**
+ * Where the eyes look, as a function of the loop's clock in seconds: an offset
+ * from the mascot's centre normalised to roughly [-1, 1] (`gazeToward`'s
+ * input). Given, it replaces the pointer — the studio's mint card aims the eyes
+ * at its scan sweep (E06 task 015). The gaze still eases toward it.
+ */
+export type MascotGaze = (seconds: number) => readonly [nx: number, ny: number];
+
+/**
  * Paint the resting frame, then — unless motion is reduced — keep painting, and
  * keep the eyes pointed at whatever `track` is aiming them at.
  *
@@ -124,7 +132,10 @@ const MASCOT_GAZE_REACH = 8;
  *
  * @param track subscribes to the pointer. It is handed an `aim` callback taking
  *   an offset from the mascot's centre normalised to roughly [-1, 1], and
- *   returns its own unsubscribe. Called at most once, and never under reduce.
+ *   returns its own unsubscribe. Called at most once, never under reduce, and
+ *   never when `steer` is given.
+ * @param steer aims the eyes from the loop's own clock instead of the pointer
+ *   (`MascotGaze`). Read once per frame, never under reduce.
  * @returns the cleanup. It cancels whatever this call started, and under
  *   reduced motion it started nothing — so there is nothing left running,
  *   scheduled or listening once it has been invoked.
@@ -135,6 +146,7 @@ export function startMascotLoop(
   raf: (cb: (now: number) => void) => number,
   caf: (handle: number) => void,
   track: (aim: (nx: number, ny: number) => void) => () => void,
+  steer?: MascotGaze,
 ): () => void {
   paint(MASCOT_REST_T, KEPT_REST_GAZE);
   if (reduced) return () => undefined;
@@ -143,9 +155,11 @@ export function startMascotLoop(
   // are plain locals rather than refs: the loop is the only reader.
   let target = KEPT_REST_GAZE;
   let gaze = KEPT_REST_GAZE;
-  const untrack = track((nx, ny) => {
-    target = gazeToward(nx, ny);
-  });
+  const untrack = steer
+    ? () => undefined
+    : track((nx, ny) => {
+        target = gazeToward(nx, ny);
+      });
 
   let handle = 0;
   let origin = -1;
@@ -161,6 +175,8 @@ export function startMascotLoop(
     // teleporting the eyes through it.
     const dt = Math.min((now - last) / 1000, 0.1);
     last = now;
+    const elapsed = (now - origin) / 1000;
+    if (steer) target = gazeToward(...steer(elapsed));
     const step = 1 - Math.exp(-MASCOT_GAZE_K * dt);
     gaze = {
       yaw: gaze.yaw + (target.yaw - gaze.yaw) * step,
@@ -169,7 +185,7 @@ export function startMascotLoop(
       // it from the target keeps the two in step if that ever changes.
       roll: target.roll,
     };
-    paint(MASCOT_REST_T + (now - origin) / 1000, gaze);
+    paint(MASCOT_REST_T + elapsed, gaze);
     handle = raf(tick);
   };
   handle = raf(tick);
@@ -179,6 +195,12 @@ export function startMascotLoop(
   };
 }
 
+/**
+ * The `dim` mood (02 §7): the same frame, drained. For a WRAPPER — the
+ * mascot's own `filter` carries its drop shadow.
+ */
+export const MASCOT_DIM = "[filter:grayscale(0.5)_opacity(0.5)]";
+
 export interface MascotProps {
   /**
    * Sizing and colour, as token classes — the component sets neither. The body
@@ -186,6 +208,8 @@ export interface MascotProps {
    * `<svg>` has no intrinsic size beyond its viewBox's square aspect.
    */
   className?: string;
+  /** Aim the eyes from the clock instead of the pointer. Pass a stable (module-scope) function. */
+  gaze?: MascotGaze;
 }
 
 /**
@@ -195,7 +219,7 @@ export interface MascotProps {
  * a wrapper `<div>`, and moving the attribute onto the element itself means no
  * future mount site can drop it by forgetting one.
  */
-export function Mascot({ className }: MascotProps) {
+export function Mascot({ className, gaze: steer }: MascotProps) {
   // Not a literal: the moment a second mascot mounts — E06, or the landing —
   // two hardcoded ids would make both instances clip against whichever mask the
   // document parsed last.
@@ -292,8 +316,9 @@ export function Mascot({ className }: MascotProps) {
       (cb) => window.requestAnimationFrame(cb),
       (handle) => window.cancelAnimationFrame(handle),
       track,
+      steer,
     );
-  }, [maskId]);
+  }, [maskId, steer]);
 
   return (
     <svg

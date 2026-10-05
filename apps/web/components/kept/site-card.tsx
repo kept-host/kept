@@ -33,6 +33,15 @@
  * twenty. It flips to expired when `expires_at` passes even while the row still
  * says `live` (edge case 12): the phase comes from the clock, never `status`.
  *
+ * ── ARRIVING (E06 task 015) ──────────────────────────────────────────────────
+ * The design's `publish()` / `keep()` with the landing's live moment: a card
+ * that just landed rises in (the design's kUp), pulses one accent ring, then
+ * wears the steady ring, with the landing's pulsing LIVE badge on a live page.
+ * A freshly published one also says "Just published", and "New" where visits
+ * would be. The screen decides when a card is arriving and for how long.
+ * Every movement is `motion-safe:`; the hover lift is the design's 160 ms on
+ * `translate` (what Tailwind's translate utilities set) and `box-shadow`.
+ *
  * Not rendered, by design (AC10): likes, remixes, the creator, the wall link,
  * "Made with {model}", the EXPLORE pill and the FEATURED variant — all later
  * epics.
@@ -47,8 +56,21 @@ import { DraftChip, draftCountdown } from "@/components/kept/draft-chip";
 import { STATUS_LABEL } from "@/components/kept/live-url";
 import { Badge } from "@/components/ui/badge";
 import { OG_CARD_HEIGHT, OG_CARD_WIDTH, type OgCardSubject, ogCardPath } from "@/lib/og/card-url";
-import { expiredDraftNotice, isDraftUrgent, pageName, visitsLabel } from "@/lib/sites/display";
+import {
+  expiredDraftNotice,
+  isDraftUrgent,
+  JUST_PUBLISHED,
+  pageName,
+  visitsLabel,
+} from "@/lib/sites/display";
 import { cn } from "@/lib/utils";
+
+/**
+ * How a card is arriving: `published` (a new page — rise, chip, "New"), `kept`
+ * (a draft that just moved to the wall — rise) or `duplicate` (an existing page
+ * a same-bytes publish pointed at — it is already on screen, so no rise).
+ */
+export type CardArrival = "published" | "kept" | "duplicate";
 
 /** What a card needs from a row. Structurally satisfied by `OwnedSite`. */
 export interface SiteCardSite extends OgCardSubject {
@@ -70,8 +92,8 @@ interface SiteCardBase {
   host: string;
   /** The card's controls (copy / open / menu, or Keep / Swap…). A slot, never an import. */
   actions?: ReactNode;
-  /** Ring the card — the page a duplicate publish pointed at (PRD §5.1). */
-  highlighted?: boolean;
+  /** The card is arriving — see ARRIVING above. Absent once it has settled. */
+  arrival?: CardArrival;
   className?: string;
 }
 
@@ -169,8 +191,11 @@ function TitleLink({ name, href }: { name: string; href: string }) {
   );
 }
 
-function Visits({ visits }: { visits: number | null | undefined }) {
-  if (visits === null || visits === undefined) return null;
+/** The visits sum — or, on a fresh card that has none yet, "New" (the design's label). */
+function Visits({ visits, fresh }: { visits: number | null | undefined; fresh: boolean }) {
+  if (visits === null || visits === undefined) {
+    return fresh ? <span className="whitespace-nowrap font-mono text-xs text-text-secondary">New</span> : null;
+  }
   return (
     <span
       title={`Visits in the last ${VISITS_RECENT_DAYS} days`}
@@ -182,28 +207,79 @@ function Visits({ visits }: { visits: number | null | undefined }) {
 }
 
 const CARD_SURFACE =
-  "relative min-w-0 rounded-[var(--r-lg)] border border-border bg-surface shadow-[var(--shadow-sm)] motion-safe:transition-[box-shadow,transform] motion-safe:duration-150 motion-safe:ease-[var(--ease-out)]";
+  "relative min-w-0 rounded-[var(--r-lg)] border border-border bg-surface shadow-[var(--shadow-sm)] hover:shadow-[var(--shadow-md)] motion-safe:hover:-translate-y-0.5 motion-safe:transition-[box-shadow,translate] motion-safe:duration-160 motion-safe:ease-[ease]";
+
+/** The arriving card's classes: the steady ring, and the rise unless it was already here. */
+function arrivalClasses(arrival: CardArrival | undefined): string | false {
+  return (
+    arrival !== undefined &&
+    cn(
+      "ring-2 ring-accent",
+      arrival !== "duplicate" && "motion-safe:animate-[keptRise_250ms_var(--ease-out)_both]",
+    )
+  );
+}
+
+/**
+ * One accent ring that expands and fades as the card lands, after its rise. Its
+ * own element, so the pulse never fights the card's box-shadow (the hover
+ * shadow, the steady ring).
+ */
+function RingPulse() {
+  return (
+    <span
+      aria-hidden="true"
+      className="pointer-events-none absolute -inset-px rounded-[inherit] motion-safe:animate-[keptRingPulse_700ms_var(--ease-out)_250ms_both]"
+    />
+  );
+}
+
+/** The landing's LIVE badge, on a live page while it arrives. The status dot already says "Live". */
+function LiveBadge({ className }: { className?: string }) {
+  return (
+    <span
+      aria-hidden="true"
+      data-testid="live-badge"
+      className={cn(
+        "pointer-events-none inline-flex items-center gap-1.5 rounded-full bg-[color-mix(in_srgb,var(--text)_70%,transparent)] px-2 py-1 font-mono text-[10px] font-medium leading-none tracking-[0.08em] text-bg backdrop-blur-sm",
+        className,
+      )}
+    >
+      <span className="size-1.5 rounded-full bg-live motion-safe:animate-[keptLive_2s_ease-in-out_infinite]" />
+      LIVE
+    </span>
+  );
+}
+
+/** "Just published" — the design's kicker, as a chip while a new card arrives. */
+function FreshChip({ className }: { className?: string }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex h-5 shrink-0 items-center whitespace-nowrap rounded-full bg-accent-soft px-[7px] font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-accent-hover",
+        className,
+      )}
+    >
+      {JUST_PUBLISHED}
+    </span>
+  );
+}
 
 function GridCard({
   site,
   href,
   host,
   actions,
-  highlighted,
+  arrival,
   visits,
   className,
 }: Extract<SiteCardProps, { variant: "grid" }>) {
   const flagged = isFlagged(site.status);
+  const fresh = arrival === "published";
 
   return (
-    <article
-      className={cn(
-        CARD_SURFACE,
-        "group hover:shadow-[var(--shadow-md)] motion-safe:hover:-translate-y-0.5",
-        highlighted && "ring-2 ring-accent",
-        className,
-      )}
-    >
+    <article className={cn(CARD_SURFACE, "group", arrivalClasses(arrival), className)}>
+      {arrival ? <RingPulse /> : null}
       <Thumbnail
         site={site}
         href={href}
@@ -214,6 +290,10 @@ function GridCard({
       />
 
       {flagged ? <FlagChip status={site.status} className="absolute left-2.5 top-2.5" /> : null}
+      {/* Sized to sit over the OG card's wordmark corner rather than half on it. */}
+      {arrival && site.status === "live" ? (
+        <LiveBadge className="absolute left-1.5 top-1.5 px-2.5 py-1.5" />
+      ) : null}
 
       {actions ? (
         <div className="absolute right-2.5 top-2.5 flex gap-1.5 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100">
@@ -229,9 +309,10 @@ function GridCard({
         <p className={cn("truncate font-mono text-xs text-text-secondary", flagged && MUTED)}>
           {host}
         </p>
-        {visits !== null && visits !== undefined ? (
-          <div className="mt-2 flex justify-end">
-            <Visits visits={visits} />
+        {fresh || (visits !== null && visits !== undefined) ? (
+          <div className="mt-2 flex items-center justify-end gap-2">
+            {fresh ? <FreshChip className="mr-auto" /> : null}
+            <Visits visits={visits} fresh={fresh} />
           </div>
         ) : null}
       </div>
@@ -244,21 +325,17 @@ function ListRow({
   href,
   host,
   actions,
-  highlighted,
+  arrival,
   visits,
   className,
 }: Extract<SiteCardProps, { variant: "list" }>) {
   const flagged = isFlagged(site.status);
+  const fresh = arrival === "published";
 
   return (
-    <article
-      className={cn(
-        CARD_SURFACE,
-        "flex items-center gap-3 p-2 pr-3 hover:shadow-[var(--shadow-md)]",
-        highlighted && "ring-2 ring-accent",
-        className,
-      )}
-    >
+    <article className={cn(CARD_SURFACE, "flex items-center gap-3 p-2 pr-3", arrivalClasses(arrival), className)}>
+      {arrival ? <RingPulse /> : null}
+      {arrival && site.status === "live" ? <LiveBadge className="absolute left-3 top-3 px-1.5" /> : null}
       <Thumbnail
         site={site}
         href={href}
@@ -277,7 +354,10 @@ function ListRow({
         <p className="truncate font-mono text-xs text-text-secondary">{host}</p>
       </div>
 
-      <Visits visits={visits} />
+      {/* A phone's row has no room for the chip beside the title; "New", the
+          ring and the LIVE badge carry the arrival there. */}
+      {fresh ? <FreshChip className="max-md:hidden" /> : null}
+      <Visits visits={visits} fresh={fresh} />
       {actions ? <div className="flex shrink-0 items-center gap-1.5">{actions}</div> : null}
     </article>
   );
@@ -288,7 +368,7 @@ function DraftCard({
   href,
   host,
   actions,
-  highlighted,
+  arrival,
   className,
 }: Extract<SiteCardProps, { variant: "draft" }>) {
   const now = new Date(useNow());
@@ -300,15 +380,11 @@ function DraftCard({
   const flagged = isFlagged(site.status);
 
   return (
-    <article
-      className={cn(
-        CARD_SURFACE,
-        "overflow-hidden",
-        highlighted && "ring-2 ring-accent",
-        className,
-      )}
-    >
-      <div className="relative">
+    <article className={cn(CARD_SURFACE, arrivalClasses(arrival), className)}>
+      {arrival ? <RingPulse /> : null}
+      {/* The band clips to the card's corners itself, so the ring pulse can
+          spread past the card. */}
+      <div className="relative overflow-hidden rounded-t-[calc(var(--r-lg)-1px)]">
         <Thumbnail
           site={site}
           href={href}
@@ -320,6 +396,7 @@ function DraftCard({
           )}
         />
         {flagged ? <FlagChip status={site.status} className="absolute left-2.5 top-2.5" /> : null}
+        {arrival === "published" && !flagged ? <FreshChip className="absolute left-2.5 top-2.5" /> : null}
         {expiresAt ? (
           <DraftChip
             expiresAt={expiresAt}

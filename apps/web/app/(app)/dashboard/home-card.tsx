@@ -11,8 +11,11 @@
  * `quarantined` refuse replace (edge case 10), so over them the window's
  * "Drop to publish" shows instead and the card says nothing it cannot do.
  *
- * A highlighted card (the one a publish just made, or the one a duplicate
- * publish pointed at — AC8) scrolls into view so the ring is seen.
+ * An arriving card (the one a publish just made, a draft just kept, or the one
+ * a duplicate publish pointed at — AC8) scrolls into view so the ring is seen,
+ * and times its own arrival from the moment it MOUNTS — the rise, then the
+ * design's 2.4 s ring — so a slow refresh never eats into it (task 015). A
+ * draft that was just kept fades where it stands until the wall takes it.
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
@@ -22,6 +25,7 @@ import { toast } from "sonner";
 import type { Plan } from "@kept/shared";
 
 import { type Browse, DropTarget } from "@/components/kept/drop-target";
+import { copyLink } from "@/components/kept/link-toast";
 import { CopyLinkButton } from "@/components/kept/live-url";
 import { toastReplaced } from "@/components/kept/replace-toast";
 import { SiteCard } from "@/components/kept/site-card";
@@ -33,9 +37,21 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { DashboardSite } from "@/lib/db/queries/dashboard";
+import { prefersReducedMotion } from "@/lib/motion";
 import { pageName, siteHref } from "@/lib/sites/display";
 import { replacePage } from "@/lib/sites/owner-client";
 import { cn } from "@/lib/utils";
+
+import type { Arrival } from "./use-arrival";
+
+/** An arrival lasts the card's rise (250 ms, `site-card.tsx`) plus the design's 2.4 s ring. */
+const ARRIVAL_MS = 250 + 2400;
+
+/**
+ * Where an arriving card (or the mint card) scrolls to: clear of the sticky
+ * 64 px top bar, and on a phone of the fixed tab bar.
+ */
+export const ARRIVAL_SCROLL_MARGIN = "scroll-mt-20 max-md:scroll-mb-28";
 
 /** A page as the home renders it: the row, its visits and its public URL. */
 export interface HomeSite extends DashboardSite {
@@ -49,13 +65,20 @@ export function HomeCard({
   site,
   variant,
   plan,
-  highlighted,
+  arrival,
+  onSettled,
+  leaving = false,
   action,
 }: {
   site: HomeSite;
   variant: HomeCardVariant;
   plan: Plan;
-  highlighted: boolean;
+  /** This card is arriving (`useArrival().current`, when it names this card). */
+  arrival?: Arrival;
+  /** Called with the card's id when its arrival is over. Stable. */
+  onSettled: (id: string) => void;
+  /** A draft just kept: it fades until the wall takes it. */
+  leaving?: boolean;
   /** A draft's primary action (Keep / Swap…). Kept cards get copy · open · replace. */
   action?: ReactNode;
 }) {
@@ -67,10 +90,14 @@ export function HomeCard({
   const replaceable = site.status === "live";
 
   useEffect(() => {
-    if (!highlighted) return;
-    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    itemRef.current?.scrollIntoView({ block: "nearest", behavior: reduce ? "auto" : "smooth" });
-  }, [highlighted]);
+    if (!arrival) return;
+    itemRef.current?.scrollIntoView({
+      block: "nearest",
+      behavior: prefersReducedMotion() ? "auto" : "smooth",
+    });
+    const timer = setTimeout(() => onSettled(arrival.id), ARRIVAL_MS);
+    return () => clearTimeout(timer);
+  }, [arrival, onSettled]);
 
   async function replace(file: File) {
     setReplacing(true);
@@ -103,7 +130,7 @@ export function HomeCard({
           busy={replacing}
         />
       );
-    const common = { site, href, host, actions, highlighted };
+    const common = { site, href, host, actions, arrival: arrival?.kind };
     return variant === "draft" ? (
       <SiteCard variant="draft" {...common} />
     ) : (
@@ -116,9 +143,14 @@ export function HomeCard({
       ref={itemRef}
       data-testid="home-card"
       data-site-id={site.id}
-      data-highlighted={highlighted ? "true" : undefined}
+      data-highlighted={arrival ? "true" : undefined}
+      data-arrival={arrival?.kind}
       aria-busy={replacing || undefined}
-      className="min-w-0 list-none"
+      className={cn(
+        "min-w-0 list-none motion-safe:transition-opacity motion-safe:duration-400 motion-safe:ease-[ease]",
+        ARRIVAL_SCROLL_MARGIN,
+        leaving && "opacity-55",
+      )}
     >
       <DropTarget
         scope="card"
@@ -156,15 +188,6 @@ function KeptActions({
   busy: boolean;
 }) {
   const host = new URL(liveUrl).host;
-
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(liveUrl);
-      toast.success("Link copied", { description: host });
-    } catch {
-      toast.error("Could not copy the link. Select it and copy manually.", { description: host });
-    }
-  }
 
   return (
     <>
@@ -209,7 +232,7 @@ function KeptActions({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem onSelect={copy}>Copy link</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => void copyLink(liveUrl)}>Copy link</DropdownMenuItem>
           <DropdownMenuItem asChild>
             <a href={liveUrl} target="_blank" rel="noopener noreferrer">
               Open ↗
