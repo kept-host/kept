@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
 import { PUBLISHED_KEPT_TOAST, REPLACED_TOAST } from "../lib/sites/display";
@@ -48,20 +48,8 @@ test.describe("one drop, one owner", () => {
     await warmDb();
   });
 
-  // Whatever an account ended up owning — a page a drop published by mistake
-  // included — is collected, so a failing run leaves nothing serving.
-  test.afterEach(async () => {
-    if (SKIP_OWNER_UI || scope.userIds.length === 0) return;
-    const owned = await db
-      .select({ id: schema.sites.id, slug: schema.sites.slug })
-      .from(schema.sites)
-      .where(inArray(schema.sites.ownerId, scope.userIds));
-    for (const { id, slug } of owned) {
-      if (!scope.siteIds.includes(id)) scope.siteIds.push(id);
-      scope.slugs.add(slug);
-    }
-  });
-
+  // `cleanup` collects whatever the accounts ended up owning — a page a drop
+  // published by mistake included — so a failing run leaves nothing serving.
   test.afterAll(async () => {
     if (SKIP_OWNER_UI) return;
     await cleanup(scope);

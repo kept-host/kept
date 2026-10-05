@@ -319,10 +319,26 @@ export async function drop(page: Page, target: Locator, file: DroppedFile): Prom
  * row whose page keeps serving. Best-effort throughout: a teardown that threw
  * would mask the assertion that already passed above it, and would leave the
  * REST of the fixtures behind as well.
+ *
+ * Every page the scope's accounts still own is collected too, registered or
+ * not: a UI publish a test failed before registering, a page a drop published
+ * by mistake. Left behind, deleting the user below nulls its `owner_id` (the FK
+ * is `set null`) and leaves a live page serving that no authority can reach.
  */
 export async function cleanup(scope: OwnerScope): Promise<void> {
   const { removeManifest } = await import("../lib/storage/manifest");
   const { pageObjectKey, r2Store } = await import("../lib/storage/r2");
+
+  if (scope.userIds.length) {
+    const owned = await db
+      .select({ id: schema.sites.id, slug: schema.sites.slug })
+      .from(schema.sites)
+      .where(inArray(schema.sites.ownerId, scope.userIds));
+    for (const { id, slug } of owned) {
+      if (!scope.siteIds.includes(id)) scope.siteIds.push(id);
+      scope.slugs.add(slug);
+    }
+  }
 
   for (const slug of scope.slugs) {
     await removeManifest(slug).catch(() => undefined);
