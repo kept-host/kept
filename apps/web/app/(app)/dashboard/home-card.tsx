@@ -39,7 +39,7 @@ import {
 import type { DashboardSite } from "@/lib/db/queries/dashboard";
 import { prefersReducedMotion } from "@/lib/motion";
 import { pageName, siteHref } from "@/lib/sites/display";
-import { replacePage } from "@/lib/sites/owner-client";
+import { readPageHtml, replacePage } from "@/lib/sites/owner-client";
 import { cn } from "@/lib/utils";
 
 import type { Arrival } from "./use-arrival";
@@ -57,6 +57,12 @@ export const ARRIVAL_SCROLL_MARGIN = "scroll-mt-20 max-md:scroll-mb-28";
 export interface HomeSite extends DashboardSite {
   /** `https://{slug}.{base}` — built on the server from configuration. */
   liveUrl: string;
+  /**
+   * The card may show the page itself on hover (task 016): it is `live` and its
+   * bytes fit `PREVIEW_MAX_BYTES` (`previewFits`). Decided on the server, where
+   * the cap lives.
+   */
+  previewable: boolean;
 }
 
 export type HomeCardVariant = "grid" | "list" | "draft";
@@ -131,11 +137,17 @@ export function HomeCard({
         />
       );
     const common = { site, href, host, actions, arrival: arrival?.kind };
-    return variant === "draft" ? (
-      <SiteCard variant="draft" {...common} />
-    ) : (
-      <SiteCard variant={variant} visits={site.visits} {...common} />
-    );
+    // The page's own HTML on hover, through the owner-only download route.
+    // A list row has no preview: its thumbnail is too small to show a page.
+    const preview = site.previewable ? readPageHtml : undefined;
+    switch (variant) {
+      case "draft":
+        return <SiteCard variant="draft" preview={preview} {...common} />;
+      case "grid":
+        return <SiteCard variant="grid" visits={site.visits} preview={preview} {...common} />;
+      case "list":
+        return <SiteCard variant="list" visits={site.visits} {...common} />;
+    }
   };
 
   return (

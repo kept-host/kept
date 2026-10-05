@@ -13,11 +13,14 @@
  *
  *   1. **It draws only what is already public.** The page's title — which the
  *      page itself serves to the world — or its name, which is its hostname.
- *      Plus the brand mark. Nothing else; see `lib/og/card.tsx` and the
+ *      Plus the brand mark, on the theme the requested id hashes to (task 016,
+ *      `lib/og/palette.ts`) — a function of the URL the caller already holds.
+ *      Nothing else; see `lib/og/card.tsx` and the
  *      three-column read in `lib/db/queries/og-card.ts`.
  *   2. **Unknown, malformed and non-existent ids answer exactly like real
  *      ones**: HTTP 200, `image/png`, the same `Cache-Control`, the same
- *      dimensions, the same frame, the same brand mark. A 404 for one and a 200
+ *      dimensions, the same frame, the same brand mark, and a theme picked from
+ *      the id exactly as a real page's is. A 404 for one and a 200
  *      for the other would turn a UUID guess into a membership test, which is
  *      why there is no error path in this file at all.
  *
@@ -51,6 +54,7 @@ import { getOgCardSite } from "../../../../lib/db/queries/og-card";
 import { OgCard, ogHeadline } from "../../../../lib/og/card";
 import { OG_CARD_HEIGHT, OG_CARD_WIDTH } from "../../../../lib/og/card-url";
 import { ogTypefaces } from "../../../../lib/og/font";
+import { ogTheme } from "../../../../lib/og/palette";
 import { servingBaseDomain } from "../../../../lib/storage/env";
 
 /**
@@ -115,7 +119,11 @@ export async function GET(
     host = servingHost(site.slug);
   }
 
-  return new ImageResponse(<OgCard headline={headline} host={host} />, {
+  // The id as asked for, valid or not, real or not: every response picks its
+  // theme the same way, so the background says nothing about which it was.
+  const theme = ogTheme(siteId);
+
+  return new ImageResponse(<OgCard headline={headline} host={host} theme={theme} />, {
     width: OG_CARD_WIDTH,
     height: OG_CARD_HEIGHT,
     fonts,

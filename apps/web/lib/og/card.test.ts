@@ -9,10 +9,12 @@ import { OgCard, ogHeadline, ogRenderable } from "./card";
 import {
   OG_CARD_HEIGHT,
   OG_CARD_WIDTH,
+  OG_TEMPLATE_VERSION,
   ogCardPath,
   ogCardRevision,
 } from "./card-url";
 import { ogTypefaces } from "./font";
+import { OG_PALETTE, type OgTheme } from "./palette";
 
 /**
  * The OG card — E06 task 010 (D10).
@@ -36,16 +38,25 @@ test("bug 4: two updated_at values give two card URLs", () => {
   assert.notEqual(ogCardPath(before), ogCardPath(after));
 });
 
-test("the revision token is updated_at in epoch milliseconds", () => {
+test("the revision token is updated_at in epoch milliseconds, then the template version", () => {
   const updatedAt = new Date("2026-10-04T12:34:56.789Z");
-  assert.equal(ogCardRevision({ id: "s", updatedAt }), String(updatedAt.getTime()));
+  assert.equal(ogCardRevision({ id: "s", updatedAt }), `${updatedAt.getTime()}-t2`);
+});
+
+test("task 016: the template version is in the key, so mascot cards cached for a year are never asked for again", () => {
+  // `?v=<ms>` was task 010's key, under which the mascot card sits in caches
+  // with `immutable` on it. The gradient card must live at a different URL for
+  // the very same row.
+  assert.equal(OG_TEMPLATE_VERSION, "t2");
+  const updatedAt = new Date("2026-10-04T00:00:00.000Z");
+  assert.notEqual(ogCardPath({ id: "abc", updatedAt }), `/api/og/abc?v=${updatedAt.getTime()}`);
 });
 
 test("the card path is app-relative and carries the revision", () => {
   const updatedAt = new Date("2026-10-04T00:00:00.000Z");
   assert.equal(
     ogCardPath({ id: "abc", updatedAt }),
-    `/api/og/abc?v=${updatedAt.getTime()}`,
+    `/api/og/abc?v=${updatedAt.getTime()}-t2`,
   );
 });
 
@@ -105,7 +116,11 @@ function pngSize(png: Buffer): { width: number; height: number } {
  * real. `next/og` fetches a fallback for any glyph the registered faces lack —
  * the recorder is how a test sees that happen.
  */
-async function render(headline: string | null, host: string | null) {
+async function render(
+  headline: string | null,
+  host: string | null,
+  theme: OgTheme = OG_PALETTE[0]!,
+) {
   const { fonts } = await ogTypefaces();
   const requests: string[] = [];
   const realFetch = globalThis.fetch;
@@ -114,7 +129,7 @@ async function render(headline: string | null, host: string | null) {
     return realFetch(input, init);
   }) as typeof fetch;
   try {
-    const response = new ImageResponse(OgCard({ headline, host }), {
+    const response = new ImageResponse(OgCard({ headline, host, theme }), {
       width: OG_CARD_WIDTH,
       height: OG_CARD_HEIGHT,
       fonts,
@@ -153,6 +168,21 @@ test("the generic card renders with no title and no runtime fetch", async () => 
   const { png, requests } = await render(null, null);
   assert.deepEqual(pngSize(png), { width: OG_CARD_WIDTH, height: OG_CARD_HEIGHT });
   assert.deepEqual(requests, []);
+});
+
+test("task 016: every theme renders — gradient, orb or none — with no runtime fetch", async () => {
+  for (const theme of OG_PALETTE) {
+    const { png, requests } = await render("Recipe notes", "recipe-notes.kept.host", theme);
+    assert.deepEqual(pngSize(png), { width: OG_CARD_WIDTH, height: OG_CARD_HEIGHT }, theme.name);
+    assert.deepEqual(requests, [], theme.name);
+  }
+});
+
+test("task 016: the theme is in the image — the same card on two themes differs", async () => {
+  const [a, b] = await Promise.all(
+    OG_PALETTE.slice(0, 2).map((theme) => render(null, null, theme)),
+  );
+  assert.equal(a!.png.equals(b!.png), false);
 });
 
 test("the title is in the image: a named card differs from the generic one", async () => {

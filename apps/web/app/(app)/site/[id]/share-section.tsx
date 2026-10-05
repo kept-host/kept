@@ -21,6 +21,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Download } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { pageDownloadHref } from "@/lib/sites/display";
 
 import { Section } from "./section";
 
@@ -161,7 +162,7 @@ export function ShareSection({
 
       <div className={reachable ? "border-t border-border pt-3" : undefined}>
         <Button asChild variant="secondary" size="sm" className="font-body font-medium">
-          <a href={`/api/sites/${siteId}/download`} data-testid="download-page" download>
+          <a href={pageDownloadHref(siteId)} data-testid="download-page" download>
             <Download aria-hidden="true" strokeWidth={1.5} />
             Download page
           </a>

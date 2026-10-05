@@ -2,7 +2,8 @@
  * The browser's client for the owner-scoped (studio) routes — publish, keep,
  * demote, swap, rename, details, replace, restore, delete, and account deletion.
  * Downloads and the export are plain links (`GET`, `Content-Disposition:
- * attachment`), so they have no call here.
+ * attachment`); the one read of the download route here is `readPageHtml`, the
+ * studio card's hover preview (task 016), which wants the page as text.
  *
  * Same posture as `lib/publish/client.ts`: this module knows the endpoint's URL
  * and nothing else. It serializes the request the route already accepts, parses
@@ -52,6 +53,8 @@ import {
   type SwapResult,
 } from "@kept/shared";
 import type { z } from "zod";
+
+import { pageDownloadHref } from "./display";
 
 /**
  * What every failure that is NOT the studio envelope becomes — the epic's one
@@ -107,6 +110,20 @@ async function send<T>(
   return parsed.success
     ? { ok: true, body: parsed.data }
     : { ok: false, status: response.status, error: COULD_NOT_SAVE };
+}
+
+/**
+ * A page's current HTML, for the card's hover preview — the owner-only
+ * `GET /api/sites/:id/download` read as text. `null` on any failure, an abort
+ * included: a preview is worth zero errors, and the card simply stays a card.
+ */
+export async function readPageHtml(siteId: string, signal: AbortSignal): Promise<string | null> {
+  try {
+    const response = await fetch(pageDownloadHref(siteId), { signal });
+    return response.ok ? await response.text() : null;
+  } catch {
+    return null;
+  }
 }
 
 /** A JSON request body, with the header the routes read it by. */

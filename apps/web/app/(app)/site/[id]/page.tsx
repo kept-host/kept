@@ -43,9 +43,9 @@ import { listVersions } from "@/lib/db/queries/versions";
 import { dailyVisits, lastVisitsSync } from "@/lib/db/queries/visits";
 import { ogCardPath } from "@/lib/og/card-url";
 import { liveUrl } from "@/lib/publish/pipeline";
-import { PREVIEW_MAX_BYTES, readPreviewHtml } from "@/lib/publish/preview";
+import { previewFits, readPreviewHtml } from "@/lib/publish/preview";
 import { qrSvg } from "@/lib/qr/qr-code";
-import { archivedNotice, pageName } from "@/lib/sites/display";
+import { archivedNotice, pageDownloadHref, pageName } from "@/lib/sites/display";
 import { isDownloadable } from "@/lib/sites/export";
 import { siteIdSchema } from "@/lib/sites/owner-routes";
 import { visitsView, type VisitsView } from "@/lib/sites/visits-view";
@@ -139,7 +139,7 @@ export default async function SiteDetailPage({ params }: { params: Promise<{ id:
             {archivedNotice(site.updatedAt, site.purgeAfter)}
           </p>
           <Button asChild variant="secondary" className="self-start font-body font-medium">
-            <a href={`/api/sites/${site.id}/download`} data-testid="download-page" download>
+            <a href={pageDownloadHref(site.id)} data-testid="download-page" download>
               <Download aria-hidden="true" strokeWidth={1.5} />
               Download
             </a>
@@ -188,7 +188,7 @@ export default async function SiteDetailPage({ params }: { params: Promise<{ id:
         }))}
         baseDomain={servingBaseDomain()}
         html={html}
-        previewTooLarge={site.sizeBytes !== null && site.sizeBytes > PREVIEW_MAX_BYTES}
+        previewTooLarge={!previewFits(site)}
         thumbnail={ogCardPath(site)}
         versions={versions}
         visits={visits}

@@ -24,8 +24,16 @@
  * ── THE THUMBNAIL IS THE OG CARD ─────────────────────────────────────────────
  * `<img src={ogCardPath(site)}>` with the card's own dimensions reserved — the
  * one Satori card (D10), keyed on `updated_at`, so a rename or a title edit
- * shows up here the moment the row moves. The design's per-page themes are
- * sample data and are not drawn.
+ * shows up here the moment the row moves. Under it, the page's own gradient
+ * (`ogTheme(site.id)`, task 016 — the same one the card is drawn on) as inline
+ * style data, so a card is never blank while the PNG loads or if it fails.
+ *
+ * ── THE PAGE ITSELF, ON HOVER (task 016) ─────────────────────────────────────
+ * A grid or draft card handed a `preview` loader shows the live page over its
+ * thumbnail while a mouse rests on it (`hover-preview.tsx`): sandboxed
+ * `srcdoc`, scaled from a desktop width, `pointer-events-none` so a click still
+ * lands on the thumbnail's link. The list row takes none — at 96 px wide a page
+ * is noise, not a preview.
  *
  * ── THE CLOCK IS THE SCREEN'S, NOT THE CARD'S ────────────────────────────────
  * A draft's countdown reads `useNow()` — the screen's one minute ticker in
@@ -47,15 +55,17 @@
  * epics.
  */
 import Link from "next/link";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 
 import { type SiteStatus, VISITS_RECENT_DAYS } from "@kept/shared";
 
 import { useNow } from "@/app/(app)/dashboard/clock";
 import { DraftChip, draftCountdown } from "@/components/kept/draft-chip";
+import { HoverPreview, type PreviewLoader, useHoverPreview } from "@/components/kept/hover-preview";
 import { STATUS_LABEL } from "@/components/kept/live-url";
 import { Badge } from "@/components/ui/badge";
 import { OG_CARD_HEIGHT, OG_CARD_WIDTH, type OgCardSubject, ogCardPath } from "@/lib/og/card-url";
+import { ogTheme } from "@/lib/og/palette";
 import {
   expiredDraftNotice,
   isDraftUrgent,
@@ -97,17 +107,27 @@ interface SiteCardBase {
   className?: string;
 }
 
+/** A card that can show the page itself on hover. */
+interface Previewable {
+  /**
+   * Reads the page's HTML for the hover preview. Absent: no preview — the page
+   * is not live, too large to inline, or this surface has no way to read it.
+   */
+  preview?: PreviewLoader;
+}
+
 export type SiteCardProps =
-  | (SiteCardBase & {
-      variant: "grid";
-      /** The `VISITS_RECENT_DAYS` sum; `null`/absent when there is no data yet. */
-      visits?: number | null;
-    })
+  | (SiteCardBase &
+      Previewable & {
+        variant: "grid";
+        /** The `VISITS_RECENT_DAYS` sum; `null`/absent when there is no data yet. */
+        visits?: number | null;
+      })
   | (SiteCardBase & {
       variant: "list";
       visits?: number | null;
     })
-  | (SiteCardBase & { variant: "draft" });
+  | (SiteCardBase & Previewable & { variant: "draft" });
 
 export function SiteCard(props: SiteCardProps) {
   switch (props.variant) {
@@ -153,30 +173,55 @@ function FlagChip({ status, className }: { status: SiteStatus; className?: strin
 }
 
 /**
- * The thumbnail. The link is a pointer convenience only — out of the tab order
- * and hidden from assistive tech, because the title link beside it is the one
- * named, focusable way to the same place.
+ * The thumbnail: the page's gradient, the OG card over it, and — while a mouse
+ * rests on the card — the page itself over both.
+ *
+ * The link is a pointer convenience only — out of the tab order and hidden from
+ * assistive tech, because the title link beside it is the one named, focusable
+ * way to the same place. The preview is its sibling, not its child (an iframe
+ * may not sit inside a link), and lets every click through to it.
  */
-function Thumbnail({ site, href, className }: { site: SiteCardSite; href: string; className?: string }) {
+function Thumbnail({
+  site,
+  href,
+  preview = null,
+  className,
+}: {
+  site: SiteCardSite;
+  href: string;
+  /** The page's HTML while its hover preview is showing. */
+  preview?: string | null;
+  className?: string;
+}) {
+  const src = ogCardPath(site);
+  // A card URL that failed to load is dropped, so the gradient shows instead of
+  // a browser's broken-image glyph. A new URL (the row moved) is tried afresh.
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+
   return (
-    <Link
-      href={href}
-      tabIndex={-1}
-      aria-hidden="true"
-      className={cn("block overflow-hidden bg-sunken", className)}
+    <div
+      data-testid="card-thumbnail"
+      className={cn("relative overflow-hidden", className)}
+      style={{ backgroundImage: ogTheme(site.id).image }}
     >
-      {/* eslint-disable-next-line @next/next/no-img-element -- the OG card is
-          already a sized, immutable PNG; there is nothing for next/image to do. */}
-      <img
-        src={ogCardPath(site)}
-        alt=""
-        width={OG_CARD_WIDTH}
-        height={OG_CARD_HEIGHT}
-        loading="lazy"
-        decoding="async"
-        className="size-full object-cover"
-      />
-    </Link>
+      <Link href={href} tabIndex={-1} aria-hidden="true" className="block size-full">
+        {failedSrc === src ? null : (
+          // The OG card is already a sized, immutable PNG; nothing for next/image to do.
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={src}
+            alt=""
+            width={OG_CARD_WIDTH}
+            height={OG_CARD_HEIGHT}
+            loading="lazy"
+            decoding="async"
+            onError={() => setFailedSrc(src)}
+            className="size-full object-cover"
+          />
+        )}
+      </Link>
+      {preview === null ? null : <HoverPreview html={preview} name={pageName(site)} />}
+    </div>
   );
 }
 
@@ -272,17 +317,24 @@ function GridCard({
   actions,
   arrival,
   visits,
+  preview,
   className,
 }: Extract<SiteCardProps, { variant: "grid" }>) {
   const flagged = isFlagged(site.status);
   const fresh = arrival === "published";
+  const hover = useHoverPreview(site, preview);
 
   return (
-    <article className={cn(CARD_SURFACE, "group", arrivalClasses(arrival), className)}>
+    <article
+      onPointerEnter={hover.onPointerEnter}
+      onPointerLeave={hover.onPointerLeave}
+      className={cn(CARD_SURFACE, "group", arrivalClasses(arrival), className)}
+    >
       {arrival ? <RingPulse /> : null}
       <Thumbnail
         site={site}
         href={href}
+        preview={hover.html}
         className={cn(
           "aspect-[16/10] rounded-t-[calc(var(--r-lg)-1px)] border-b border-border",
           flagged && MUTED,
@@ -369,6 +421,7 @@ function DraftCard({
   host,
   actions,
   arrival,
+  preview,
   className,
 }: Extract<SiteCardProps, { variant: "draft" }>) {
   const now = new Date(useNow());
@@ -378,9 +431,15 @@ function DraftCard({
   const expired = expiresAt !== null && draftCountdown(expiresAt, now).phase === "expired";
   const urgent = expiresAt !== null && isDraftUrgent(expiresAt, now);
   const flagged = isFlagged(site.status);
+  // A draft whose clock ran out on screen stops serving, so it stops previewing.
+  const hover = useHoverPreview(site, expired ? undefined : preview);
 
   return (
-    <article className={cn(CARD_SURFACE, arrivalClasses(arrival), className)}>
+    <article
+      onPointerEnter={hover.onPointerEnter}
+      onPointerLeave={hover.onPointerLeave}
+      className={cn(CARD_SURFACE, arrivalClasses(arrival), className)}
+    >
       {arrival ? <RingPulse /> : null}
       {/* The band clips to the card's corners itself, so the ring pulse can
           spread past the card. */}
@@ -388,6 +447,7 @@ function DraftCard({
         <Thumbnail
           site={site}
           href={href}
+          preview={hover.html}
           className={cn(
             // The band shows the card's brand row: the chip sits bottom left,
             // where a cropped headline would otherwise run underneath it.

@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
 import { ogCardPath } from "../lib/og/card-url";
+import { ogThemeIndex } from "../lib/og/palette";
 
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
 import {
@@ -40,6 +41,18 @@ import {
 const CACHE_CONTROL = "public, max-age=31536000, immutable";
 /** Anything smaller than this is an error page or an empty render, not a card. */
 const MIN_CARD_BYTES = 5_000;
+
+/**
+ * An id that names nothing and picks the same theme as `id` (task 016: every
+ * card is drawn on the theme its id hashes to). The generic card is then the
+ * same image for both, which is what makes "contains no title" a byte compare.
+ */
+function unknownIdLike(id: string): string {
+  for (;;) {
+    const candidate = crypto.randomUUID();
+    if (ogThemeIndex(candidate) === ogThemeIndex(id)) return candidate;
+  }
+}
 
 /** The dev row behind a freshly published slug. */
 async function siteBySlug(slug: string) {
@@ -97,6 +110,10 @@ test.describe("OG card", () => {
     siteId = row!.id;
     slugA = body.slug;
 
+    // `?v=<updated_at ms>-t2`: the template version keeps task 010's mascot
+    // cards, cached `immutable` under `?v=<ms>`, from ever being asked for again.
+    expect(ogCardPath(row!)).toBe(`/api/og/${row!.id}?v=${row!.updatedAt.getTime()}-t2`);
+
     const card = await request.get(ogCardPath(row!));
     expect(card.status()).toBe(200);
     expect(card.headers()["content-type"]).toContain("image/png");
@@ -120,9 +137,9 @@ test.describe("OG card", () => {
     expect(row!.title).toBe(titleB);
 
     const card = Buffer.from(await (await request.get(ogCardPath(row!))).body());
-    // Same layout, same chip, same brand mark, same-length slug — the title is
-    // the only input that moved, so a byte-identical card would mean the title
-    // never reached the render.
+    // Two pages, two cards. Their ids usually pick two themes (task 016), so
+    // this is not the controlled comparison — the replace below is: same id,
+    // same theme, same host, and only the title moves.
     expect(card.equals(firstCard)).toBe(false);
   });
 
@@ -172,9 +189,10 @@ test.describe("OG card", () => {
       expect(flagged.headers()["content-type"]).toContain("image/png");
       expect(flagged.headers()["cache-control"]).toBe(CACHE_CONTROL);
 
-      // No OCR needed: the generic card is ONE image, so "contains no title"
-      // is "is byte-identical to the card an id that names nothing gets".
-      const generic = await request.get(`/api/og/${crypto.randomUUID()}`);
+      // No OCR needed: the generic card is ONE image per theme, so "contains no
+      // title" is "is byte-identical to the card an id that names nothing, on
+      // the same theme, gets".
+      const generic = await request.get(`/api/og/${unknownIdLike(siteId)}`);
       expect(Buffer.from(await flagged.body()).equals(Buffer.from(await generic.body()))).toBe(
         true,
       );
@@ -208,13 +226,13 @@ test.describe("OG card", () => {
     // Not a UUID at all. A 400 here would say "that is not even a well-formed
     // id", which is one bit more than a stranger is owed.
     const malformed = await request.get("/api/og/not-a-uuid");
-    const unknown = await request.get(`/api/og/${crypto.randomUUID()}`);
+    const unknown = await request.get(`/api/og/${unknownIdLike("not-a-uuid")}`);
 
     expect(malformed.status()).toBe(200);
     expect(malformed.headers()["content-type"]).toContain("image/png");
     expect(malformed.headers()["cache-control"]).toBe(CACHE_CONTROL);
-    // Same generic card, byte for byte: nothing about the shape of the input
-    // survives into the response.
+    // Same generic card, byte for byte, as any id on the same theme: nothing
+    // about the shape of the input survives into the response.
     expect(Buffer.from(await malformed.body()).equals(Buffer.from(await unknown.body()))).toBe(
       true,
     );

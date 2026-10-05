@@ -135,14 +135,19 @@ export interface OwnedPage {
  * Deliberately NOT asserting which branch came back: the caller decides whether
  * it wanted `kept` or `owned_draft`, and a fixture that insisted on `kept` could
  * not be used to build the at-cap cases three of these specs are about.
+ *
+ * `body` replaces the heading's text (raw HTML — a script, for the hover
+ * preview spec); by default the heading repeats the title.
  */
 export async function publishOwned(
   page: Page,
   baseURL: string,
   scope: OwnerScope,
   title: string,
+  body?: string,
 ): Promise<OwnedPage> {
-  const html = titledHtml(`${title} ${crypto.randomUUID().slice(0, 8)}`);
+  const suffixed = `${title} ${crypto.randomUUID().slice(0, 8)}`;
+  const html = titledHtml(suffixed, body ?? suffixed);
   const response = await page.request.post(`${baseURL}/api/sites`, {
     headers: { origin: new URL(baseURL).origin, "content-type": "text/html" },
     data: html,

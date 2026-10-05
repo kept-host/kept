@@ -16,13 +16,21 @@ import { getSession } from "@/lib/auth/session";
 import { getDashboardSites, type DashboardSite } from "@/lib/db/queries/dashboard";
 import { getProfileForSession } from "@/lib/db/queries/profile";
 import { liveUrl } from "@/lib/publish/pipeline";
+import { previewFits } from "@/lib/publish/preview";
+import { effectiveStatus } from "@/lib/sites/display";
 
 import { ClockProvider } from "./clock";
 import type { HomeSite } from "./home-card";
 import { PagesHome } from "./pages-home";
 
-function withLiveUrl(site: DashboardSite): HomeSite {
-  return { ...site, liveUrl: liveUrl(site.slug) };
+/** The row as the home renders it, as of `now` (a draft past its clock is not live). */
+function toHomeSite(site: DashboardSite, now: number): HomeSite {
+  const expiredByClock = site.expiresAt !== null && site.expiresAt.getTime() <= now;
+  return {
+    ...site,
+    liveUrl: liveUrl(site.slug),
+    previewable: effectiveStatus(site.status, expiredByClock) === "live" && previewFits(site),
+  };
 }
 
 export default async function DashboardPage() {
@@ -35,12 +43,13 @@ export default async function DashboardPage() {
   }
 
   const home = await getDashboardSites(profile.id);
+  const now = Date.now();
 
   return (
-    <ClockProvider initialNow={Date.now()}>
+    <ClockProvider initialNow={now}>
       <PagesHome
-        kept={home.kept.map(withLiveUrl)}
-        drafts={home.drafts.map(withLiveUrl)}
+        kept={home.kept.map((site) => toHomeSite(site, now))}
+        drafts={home.drafts.map((site) => toHomeSite(site, now))}
         quota={home.quota}
         names={home.names}
         plan={profile.plan}

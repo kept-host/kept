@@ -395,3 +395,11 @@ export const PRO_VERSIONS_LINE = `Keep ${limitsFor("premium").previousVersions} 
 export function siteHref(id: string): string {
   return `/site/${id}`;
 }
+
+/**
+ * The owner-only `GET /api/sites/:id/download` (task 008): the page's current
+ * HTML as an attachment for a link, and as text for the card's hover preview.
+ */
+export function pageDownloadHref(id: string): string {
+  return `/api/sites/${id}/download`;
+}

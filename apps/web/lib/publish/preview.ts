@@ -44,6 +44,16 @@ export interface PreviewSubject {
 }
 
 /**
+ * Whether a page's bytes are small enough to preview at all (`PREVIEW_MAX_BYTES`).
+ * The one size rule for every preview: the screens above, and the studio card's
+ * hover preview (E06 task 016), which the Pages home only offers for a page
+ * this says yes to.
+ */
+export function previewFits(site: Pick<PreviewSubject, "sizeBytes">): boolean {
+  return site.sizeBytes === null || site.sizeBytes <= PREVIEW_MAX_BYTES;
+}
+
+/**
  * The page's HTML, or `null` when it cannot be shown. Never throws.
  *
  * `context` names the calling screen in the failure log. The log names the site
@@ -54,8 +64,7 @@ export async function readPreviewHtml(
   site: PreviewSubject,
   context: string,
 ): Promise<string | null> {
-  if (!site.currentVersionId) return null;
-  if (site.sizeBytes !== null && site.sizeBytes > PREVIEW_MAX_BYTES) return null;
+  if (!site.currentVersionId || !previewFits(site)) return null;
 
   try {
     return await r2Store().get(pageObjectKey(site.id, site.currentVersionId));
