@@ -18,6 +18,7 @@ import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
 import {
   cleanup,
   drop,
+  hold,
   hydrated,
   newScope,
   publishOwned,
@@ -41,9 +42,10 @@ import { waitForTokensApplied } from "./tokens-applied";
  * into Postgres (`seedKept`, `seedDraft`) — the screens and the cap count them
  * like any page. Visits are real `page_views_daily` rows.
  *
- * Drops are real `DragEvent`s carrying a real `DataTransfer` with a real `File`,
- * dispatched at the element a user would drop on; the window-level target and
- * the card targets receive them exactly as they would a drag from the desktop.
+ * Drops are real files dragged through Chromium's own input pipeline onto the
+ * element a user would drop on (`hold` / `drop` in `owner-fixtures.ts`); the
+ * window-level target and the card targets receive them exactly as they would a
+ * drag from the desktop.
  *
  * SKIPS without dev credentials: CI runs fork PRs with no secrets.
  */
@@ -325,14 +327,14 @@ test.describe("the Pages home", () => {
 
     // A .png anywhere on the home: the PRD's sentence, and nothing sent.
     const anywhere = page.getByRole("heading", { level: 1, name: "Your pages" });
-    await drop(page, anywhere, { name: "shot.png", type: "image/png", body: "\u0089PNG" });
+    await drop(page, anywhere, { name: "shot.png", body: "\u0089PNG" });
     await expect(page.getByTestId("publish-error")).toHaveText(PNG_REFUSAL);
     expect(posts, "a refused file never becomes a request").toEqual([]);
 
     // An HTML file anywhere on the home: published, kept, toasted, highlighted.
     const title = `E06 dropped ${crypto.randomUUID().slice(0, 8)}`;
     const html = titledHtml(title);
-    await drop(page, anywhere, { name: "dropped.html", type: "text/html", body: html });
+    await drop(page, anywhere, { name: "dropped.html", body: html });
     await expect(page.getByText(PUBLISHED_KEPT_TOAST)).toBeVisible({ timeout: LIVE_STACK_TIMEOUT });
     expect(posts).toHaveLength(1);
 
@@ -353,7 +355,7 @@ test.describe("the Pages home", () => {
 
     // AC8 — the same bytes again: no new page, the toast, the card highlighted.
     await expect(card(page, row!.id)).not.toHaveAttribute("data-highlighted", "true", { timeout: 10_000 });
-    await drop(page, anywhere, { name: "dropped-again.html", type: "text/html", body: html });
+    await drop(page, anywhere, { name: "dropped-again.html", body: html });
     await expect(page.getByText(ALREADY_PUBLISHED_NOTICE)).toBeVisible({ timeout: LIVE_STACK_TIMEOUT });
     await expect(card(page, row!.id)).toHaveAttribute("data-highlighted", "true", {
       timeout: LIVE_STACK_TIMEOUT,
@@ -405,7 +407,6 @@ test.describe("the Pages home", () => {
     const title = `E06 at limit ${crypto.randomUUID().slice(0, 8)}`;
     await drop(page, page.getByRole("heading", { level: 1, name: "Your pages" }), {
       name: "at-limit.html",
-      type: "text/html",
       body: titledHtml(title),
     });
     await expect(page.getByText(atLimitPublishToast(FREE.keptPages))).toBeVisible({
@@ -514,7 +515,7 @@ test.describe("the Pages home", () => {
     await hydrated(page);
     const article = card(page, target.siteId).locator("article");
 
-    await drop(page, article, { name: "same.html", type: "text/html", body: target.html });
+    await drop(page, article, { name: "same.html", body: target.html });
     await expect(page.getByText("No changes — that's already the live version.")).toBeVisible({
       timeout: LIVE_STACK_TIMEOUT,
     });
@@ -522,7 +523,6 @@ test.describe("the Pages home", () => {
 
     await drop(page, article, {
       name: "new.html",
-      type: "text/html",
       body: titledHtml(`E06 replaced ${crypto.randomUUID().slice(0, 8)}`),
     });
     const toast = page.locator("[data-sonner-toast]").filter({ hasText: REPLACED_TOAST });
@@ -537,9 +537,16 @@ test.describe("the Pages home", () => {
     );
 
     // Edge case 10: a page under review cannot be replaced, so it is no drop
-    // target and offers no Replace file.
+    // target — a file held over it gets the window's "Drop to publish" — and it
+    // offers no Replace file.
     const reviewed = card(page, flagged!.siteId);
-    await expect(reviewed.locator("[data-drop-target]")).toHaveCount(0);
+    const held = await hold(page, reviewed.locator("article"), {
+      name: "held.html",
+      body: titledHtml("E06 held over a reviewed page"),
+    });
+    await expect(page.getByTestId("drop-overlay-window")).toBeVisible();
+    await expect(reviewed.getByText("Drop to replace this page")).toHaveCount(0);
+    await held.cancel();
     await expect(reviewed.getByRole("button", { name: /Replace file/ })).toHaveCount(0);
   });
 

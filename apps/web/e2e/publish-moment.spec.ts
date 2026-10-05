@@ -235,7 +235,7 @@ test.describe("the publish moment", () => {
     await hydrated(page);
 
     const title = `E06-015 toast ${crypto.randomUUID().slice(0, 8)}`;
-    await drop(page, anywhere(page), { name: "toast.html", type: "text/html", body: titledHtml(title) });
+    await drop(page, anywhere(page), { name: "toast.html", body: titledHtml(title) });
     const toast = page.locator("[data-sonner-toast]").filter({ hasText: PUBLISHED_KEPT_TOAST });
     await expect(toast).toBeVisible({ timeout: LIVE_STACK_TIMEOUT });
     // The pointer rests on the toast: Sonner holds a hovered toast open, so the
@@ -316,7 +316,7 @@ test.describe("the publish moment", () => {
       }
     });
 
-    await drop(page, anywhere(page), { name: "first.html", type: "text/html", body: titledHtml("E06-015 dismissed") });
+    await drop(page, anywhere(page), { name: "first.html", body: titledHtml("E06-015 dismissed") });
     const mint = page.getByTestId("mint-card");
     await expect(mint).toHaveAttribute("data-phase", "failed", { timeout: LIVE_STACK_TIMEOUT });
     await expect(mint.getByRole("alert")).toHaveText("Sign in to manage this page.");
@@ -324,7 +324,7 @@ test.describe("the publish moment", () => {
     await expect(mint).toHaveCount(0);
 
     const title = `E06-015 retried ${crypto.randomUUID().slice(0, 8)}`;
-    await drop(page, anywhere(page), { name: "retried.html", type: "text/html", body: titledHtml(title) });
+    await drop(page, anywhere(page), { name: "retried.html", body: titledHtml(title) });
     await expect(mint).toHaveAttribute("data-phase", "failed", { timeout: LIVE_STACK_TIMEOUT });
     await expect(mint).toContainText("retried.html");
 
@@ -437,7 +437,7 @@ test.describe("the publish moment", () => {
     // At the limit, so the new page lands as a draft in the strip.
     const post = await holdNext(page, isPublish);
     const title = `E06-015 reduced ${crypto.randomUUID().slice(0, 8)}`;
-    await drop(page, anywhere(page), { name: "reduced.html", type: "text/html", body: titledHtml(title) });
+    await drop(page, anywhere(page), { name: "reduced.html", body: titledHtml(title) });
     await post.reached;
     const mint = page.getByTestId("mint-card");
     await expect(mint).toContainText("Keeping it…");

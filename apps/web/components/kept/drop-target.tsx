@@ -16,9 +16,20 @@
  *     `<button>` that is a drop target and opens the file picker when pressed.
  *
  * It replaced the three per-screen drop zones the dashboard and the old
- * slug-keyed detail screen each carried (deleted by tasks 011 and 012): the
- * window-level precedence rule (`DROP_TARGET_ATTR`, the one coordinate a card
- * and the window agree on) and the drag listeners are theirs, carried over.
+ * slug-keyed detail screen each carried (deleted by tasks 011 and 012); their
+ * drag listeners are carried over.
+ *
+ * ── ONE DROP, ONE OWNER ──────────────────────────────────────────────────────
+ * A card or a zone that takes a drag cancels it (`preventDefault` — which it
+ * must anyway, or `drop` never fires on it), and the window takes only a drag
+ * nothing inside it cancelled: `event.defaultPrevented` is the whole precedence
+ * rule, for the overlay and for the drop alike. It is read off the event, never
+ * off the DOM, because the DOM has moved by then: a browser-dispatched drop
+ * runs React's listener, then a microtask checkpoint in which the card renders
+ * itself busy (and stops being a target), and only then the window's listener.
+ * A rule that asked the DOM "was this inside a card?" got "no" there, and the
+ * window published the file the card was already replacing (E06 task 015,
+ * post-test fix).
  *
  * ── A KEYBOARD PATH FOR EVERY DROP ───────────────────────────────────────────
  * Every scope owns a real `<input type="file">`. `zone` IS its own browse
@@ -45,22 +56,12 @@ import { Upload } from "lucide-react";
 import { checkPageFile, publishErrorText } from "@/lib/publish/client";
 import { cn } from "@/lib/utils";
 
-/**
- * Marks a region that owns its own drops. The window-level target ignores a
- * drop that lands inside one — that card or zone has already taken it.
- */
-const DROP_TARGET_ATTR = "data-drop-target";
-
 /** What the file pickers offer. `checkPageFile` is the actual rule. */
 const ACCEPT = "text/html,.html,.htm";
 
 /** Whether a drag is carrying files at all, rather than selected text. */
 function draggingFiles(transfer: DataTransfer | null): boolean {
   return transfer !== null && Array.from(transfer.types).includes("Files");
-}
-
-function insideDropTarget(target: EventTarget | null): boolean {
-  return target instanceof Element && target.closest(`[${DROP_TARGET_ATTR}]`) !== null;
 }
 
 /** Opens this target's file picker. Handed to children so a visible control can. */
@@ -112,18 +113,21 @@ export function DropTarget(props: DropTargetProps) {
 
     function onDragOver(event: DragEvent) {
       if (!draggingFiles(event.dataTransfer)) return;
+      // A card or a zone has claimed this drag (one drop, one owner).
+      const claimed = event.defaultPrevented;
       // Required for `drop` to fire at all — and what stops the browser
       // navigating away from the studio to the dropped file.
       event.preventDefault();
-      setDragging(!disabled && !insideDropTarget(event.target));
+      setDragging(!disabled && !claimed);
     }
 
     function onDrop(event: DragEvent) {
       if (!draggingFiles(event.dataTransfer)) return;
+      const claimed = event.defaultPrevented;
       event.preventDefault();
       setDragging(false);
       // A card or a zone owns this one; its own handler has already taken it.
-      if (insideDropTarget(event.target)) return;
+      if (claimed) return;
       take(event.dataTransfer?.files.item(0));
     }
 
@@ -150,8 +154,8 @@ export function DropTarget(props: DropTargetProps) {
   }, [disabled, isWindow, take]);
 
   // ── A card or a zone: its own React handlers ──────────────────────────────
+  // Each cancels the drag it takes, which is what the window stands down for.
   const region = {
-    [DROP_TARGET_ATTR]: "",
     onDragOver(event: React.DragEvent) {
       if (!draggingFiles(event.dataTransfer)) return;
       event.preventDefault();

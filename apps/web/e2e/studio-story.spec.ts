@@ -93,7 +93,6 @@ test.describe("the studio story", () => {
     const title = `E06 story ${crypto.randomUUID().slice(0, 8)}`;
     await drop(page, page.getByRole("heading", { level: 1, name: "Your pages" }), {
       name: "one-more.html",
-      type: "text/html",
       body: titledHtml(title),
     });
     await expect(page.getByText(atLimitPublishToast(FREE.keptPages))).toBeVisible({

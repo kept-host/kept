@@ -1,5 +1,8 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
+
 import { ownedPublishResultSchema } from "@kept/shared";
-import { expect, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { config } from "dotenv";
 import { eq, inArray } from "drizzle-orm";
 
@@ -238,19 +241,69 @@ export async function hydrated(page: Page): Promise<void> {
   await expect(page.getByTestId("publish-sheet")).toBeHidden();
 }
 
-/** A real drop: dragover then drop, with a real `File` in a real `DataTransfer`. */
-export async function drop(
-  page: Page,
-  target: Locator,
-  file: { name: string; type: string; body: string },
-): Promise<void> {
-  const transfer = await page.evaluateHandle(({ name, type, body }) => {
-    const data = new DataTransfer();
-    data.items.add(new File([body], name, { type }));
-    return data;
-  }, file);
-  await target.dispatchEvent("dragover", { dataTransfer: transfer });
-  await target.dispatchEvent("drop", { dataTransfer: transfer });
+/** A file to drop. Its type is the browser's to infer from `name`, as from a desktop. */
+export interface DroppedFile {
+  name: string;
+  body: string;
+}
+
+/** A file the browser is holding over the screen — see `hold`. */
+export interface HeldFile {
+  /** Let go: the browser drops it where it is held. */
+  drop: () => Promise<void>;
+  /** Carry it away: the drag ends with no drop. */
+  cancel: () => Promise<void>;
+}
+
+/**
+ * Hold a real file over the middle of `target`, as a drag from the desktop
+ * does — through Chromium's own input pipeline (`Input.dispatchDragEvent`), so
+ * the browser hit-tests the point and dispatches `dragenter` / `dragover`
+ * itself.
+ *
+ * ── WHY NOT `target.dispatchEvent("drop")` ───────────────────────────────────
+ * That is how this helper used to drop, and it hid a real bug (E06 task 015,
+ * post-test fix). An event the BROWSER dispatches runs a microtask checkpoint
+ * after every listener, so React renders between its own root listener and a
+ * listener on `window`; an event a SCRIPT dispatches runs every listener in one
+ * go. A card that re-rendered on drop therefore looked correct here and, in a
+ * real browser, the window's listener published a second page.
+ *
+ * CDP drops files by path, so the file is written under this test's output
+ * directory first — and left there, because the page reads its bytes after
+ * the drop.
+ */
+export async function hold(page: Page, target: Locator, file: DroppedFile): Promise<HeldFile> {
+  const path = test.info().outputPath(`drop-${crypto.randomUUID()}`, file.name);
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, file.body);
+
+  await target.scrollIntoViewIfNeeded();
+  const box = await target.boundingBox();
+  expect(box, "the drop target is on screen").not.toBeNull();
+  const at = { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 };
+
+  const cdp = await page.context().newCDPSession(page);
+  const send = (type: "dragEnter" | "dragOver" | "drop" | "dragCancel") =>
+    cdp.send("Input.dispatchDragEvent", {
+      type,
+      ...at,
+      // `Copy`: what a file dragged in from the desktop offers.
+      data: { items: [], files: [path], dragOperationsMask: 1 },
+    });
+  const release = (type: "drop" | "dragCancel") => async () => {
+    await send(type);
+    await cdp.detach();
+  };
+
+  await send("dragEnter");
+  await send("dragOver");
+  return { drop: release("drop"), cancel: release("dragCancel") };
+}
+
+/** A real drop: the file is held over `target`, then let go. */
+export async function drop(page: Page, target: Locator, file: DroppedFile): Promise<void> {
+  await (await hold(page, target, file)).drop();
 }
 
 /**
