@@ -6,15 +6,17 @@
  * `dimensions.clientRequestHTTPHost`, the exact selection `graphql.ts` makes)
  * plus a hand-built set of names and `name_events`, and asserts the exact rows.
  *
- * AC31 — the same function over a CAPTURED real response — needs a token with
- * `Zone → Analytics → Read`, which dev does not have yet. It is deferred to the
- * human step that adds the scope; `pnpm --filter @kept/web visits:capture`
- * writes the fixture it runs on (see `scripts/capture-visits.ts`).
+ * AC31 runs the same function over a CAPTURED real response:
+ * `fixtures/visits-2026-10-04.json` is what Cloudflare answered the sync's own
+ * query for the dev zone on that day, written by
+ * `pnpm --filter @kept/web visits:capture` (see `scripts/capture-visits.ts`).
+ * Recorded data, not a mock — it is read by the live path's own parser.
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, test } from "node:test";
 
-import type { VisitGroup } from "./graphql";
+import { visitGroupsOf, type VisitGroup } from "./graphql";
 import { mapVisits, type NameEvent, type VisitsMapContext } from "./map";
 
 const BASE = "kept-dev.xyz";
@@ -147,5 +149,47 @@ describe("mapVisits", () => {
       [SITE_A, SITE_B, SITE_C],
     );
     assert.deepEqual(mapVisits([], context(names)), []);
+  });
+});
+
+describe("AC31: mapVisits over a captured real Cloudflare response", () => {
+  // The dev zone's `httpRequestsAdaptiveGroups` for 2026-10-04, unedited: 150
+  // host groups, every host a dev test page or the apex. No hostname needed
+  // anonymising — none of them is a real user's page.
+  const CAPTURED_DAY = "2026-10-04";
+  const captured: unknown = JSON.parse(
+    readFileSync(new URL(`./fixtures/visits-${CAPTURED_DAY}.json`, import.meta.url), "utf8"),
+  );
+
+  test("hand-built names + that day's name_events → the exact page_views_daily rows", () => {
+    const groups = visitGroupsOf(captured);
+    assert.equal(groups.length, 150, "the capture parses whole through the live path's parser");
+
+    // Names for four of the captured hosts, one of them renamed that day:
+    //   hba6gmzr          8 views  → SITE_A, a current name
+    //   rjzll → lrcqv     4 + 4    → SITE_B, renamed mid-day (edge case 15)
+    //   e06-014-af78a48a  1 view   → SITE_C, a current name
+    //   quiet-page        absent   → SITE_D, a name with no traffic, so no row
+    // Every other page host in the capture is unknown here and is ignored, and
+    // so are the apex's two groups, `kept-dev.xyz` (35) and `kept-dev.xyz:443`
+    // (1, Cloudflare reports the Host header as sent, port included).
+    const SITE_D = "00000000-0000-4000-8000-00000000000d";
+    const rows = mapVisits(groups, {
+      day: CAPTURED_DAY,
+      baseDomain: BASE,
+      currentNames: new Map([
+        ["hba6gmzr", SITE_A],
+        ["lrcqv", SITE_B],
+        ["e06-014-af78a48a", SITE_C],
+        ["quiet-page", SITE_D],
+      ]),
+      nameEventsForDay: [{ siteId: SITE_B, oldName: "rjzll", newName: "lrcqv" }],
+    });
+
+    assert.deepEqual(rows, [
+      { siteId: SITE_A, day: CAPTURED_DAY, views: 8 },
+      { siteId: SITE_B, day: CAPTURED_DAY, views: 8 },
+      { siteId: SITE_C, day: CAPTURED_DAY, views: 1 },
+    ]);
   });
 });
