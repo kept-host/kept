@@ -152,6 +152,30 @@ function normalizePath(pathname: string): string {
 }
 
 /**
+ * Where to send somebody who no longer has an account — E06 task 012.
+ *
+ * The landing, on the hostname that owns it. `"/"` on the `app.` host would be
+ * 307'd to `/dashboard` by the rule above and then bounced to `/auth` by the
+ * `(app)` gate, so a just-deleted user's farewell would be a sign-in screen.
+ *
+ * ⚠️ FROM CONFIGURATION, NEVER FROM THE REQUEST. It derives from the same
+ * `NEXT_PUBLIC_APP_URL` the split rule reads and reuses the same two private
+ * helpers, so there is no second place for the apex to be worked out — and no
+ * `request.url` in the derivation, which on Railway would resolve to the
+ * server's own listen address.
+ *
+ * `"/"` when this deploy has only one hostname (local development), which is
+ * correct there: the apex and the app are the same origin and `/` is the
+ * landing.
+ */
+export function farewellHref(appUrl: string | undefined): string {
+  const appOrigin = parseAppOrigin(appUrl);
+  if (!appOrigin) return "/";
+  const apex = apexOriginFor(appOrigin);
+  return apex ? `${apex.origin}/` : "/";
+}
+
+/**
  * The split rule. `host` and `pathname`/`search` come from `request.nextUrl`;
  * `appUrl` is the raw `process.env.NEXT_PUBLIC_APP_URL`, unvalidated on purpose
  * so the missing-value branch is part of the tested surface.

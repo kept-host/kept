@@ -12,11 +12,12 @@
  * inconsistency with a defined unwind (`deleteSiteCascade`) rather than an
  * object in R2 that nobody can name.
  */
-import type { Region, SiteStatus } from "@kept/shared";
-import { and, desc, eq, gt, sql } from "drizzle-orm";
+import type { PublishChannel, Region, SiteStatus } from "@kept/shared";
+import { and, desc, eq, gt, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 
+import { isNameAvailable } from "../../names/availability";
 import { mintSlugCandidate } from "../../publish/slug";
-import { db } from "../index";
+import { db, type Tx } from "../index";
 import { sites, siteVersions } from "../schema";
 
 /**
@@ -25,7 +26,8 @@ import { sites, siteVersions } from "../schema";
  * independent attempts with ~1e-48: exhausting this bound means the unique index
  * or the CSPRNG is broken, not that the namespace is full. Bounded and loudly
  * fatal rather than an unbounded loop, because an unbounded retry against a
- * broken index is an outage that looks like a hang.
+ * broken index is an outage that looks like a hang. `withMintedSlug` is the one
+ * loop that reads it, for both mint paths.
  */
 const MAX_SLUG_ATTEMPTS = 8;
 
@@ -47,8 +49,15 @@ export class SlugUnavailableError extends Error {
  * answers a question that stops being true the instant it returns. The unique
  * index is the only authority, so a collision is detected by inserting and
  * reading the constraint name off the error.
+ *
+ * ⚠️ EXPORTED FOR E06's RENAME (`lib/names/rename.ts`). It asks the namespace
+ * under a per-name lock, which closes the race between renames, but a minted
+ * page takes no name lock — so the rename's UPDATE still reads the constraint
+ * name off a failure and answers `name_taken`. A second copy of this predicate
+ * is a second answer to "was that a collision or a real error", and the wrong
+ * answer is a 500 shown to somebody whose only mistake was picking a taken name.
  */
-function isSlugCollision(err: unknown): boolean {
+export function isSlugCollision(err: unknown): boolean {
   for (let cursor: unknown = err, depth = 0; cursor && depth < 5; depth++) {
     const candidate = cursor as { code?: unknown; constraint_name?: unknown; cause?: unknown };
     if (candidate.code === "23505" && candidate.constraint_name === "sites_slug_key") {
@@ -140,6 +149,59 @@ export async function claimDedupCandidate(input: {
   });
 }
 
+/**
+ * The statuses in which an owned page still counts as "already published" for
+ * the studio's dedup (PRD §5.1, AC8): the ones a page can hold while it is
+ * still the owner's page on the internet, including E07's two flags. `expired`
+ * is not here, and neither is a `live` draft whose clock has run out but which
+ * the expiry sweep has not reached yet — both are offline (or about to be), so
+ * re-publishing their bytes mints a fresh page instead of pointing at a dead
+ * one. `archived` and `removed` are gone.
+ */
+export const OWNER_DEDUP_STATUSES = [
+  "live",
+  "under_review",
+  "quarantined",
+] as const satisfies readonly SiteStatus[];
+
+/**
+ * The studio's dedup probe: this OWNER's newest active page with these exact
+ * bytes, or `null` — E06 task 005, PRD §5.1, AC8.
+ *
+ * ⚠️ IT TAKES THE CALLER'S TRANSACTION, WHICH MUST ALREADY HOLD `lockOwner`.
+ * That lock is what makes two identical publishes from two tabs converge: the
+ * second waits on the first, then probes a snapshot that includes the first's
+ * row. A probe outside the lock is a check-then-insert race that mints two.
+ *
+ * Scoped by `owner_id`, never global and never by `publisher_hash` — the
+ * keyless probe above is per publisher because a stranger must never be handed
+ * somebody else's page; here the account IS the authority, so the same bytes
+ * from a second device are still this account's one page.
+ *
+ * Returns the id only; the caller reads the row it answers with through the
+ * same transaction.
+ */
+export async function findOwnedDuplicate(
+  tx: Tx,
+  ownerId: string,
+  contentHash: string,
+): Promise<string | null> {
+  const [row] = await tx
+    .select({ id: sites.id })
+    .from(sites)
+    .where(
+      and(
+        eq(sites.ownerId, ownerId),
+        eq(sites.contentHash, contentHash),
+        inArray(sites.status, OWNER_DEDUP_STATUSES),
+        or(isNull(sites.expiresAt), gt(sites.expiresAt, sql`now()`)),
+      ),
+    )
+    .orderBy(desc(sites.createdAt))
+    .limit(1);
+  return row?.id ?? null;
+}
+
 export interface AnonymousDraftInput {
   /** Pre-generated so the R2 key is known before the row exists. */
   siteId: string;
@@ -152,6 +214,51 @@ export interface AnonymousDraftInput {
   expiresAt: Date;
   purgeAfter: Date;
   reminderEmail?: string;
+  /**
+   * The page's own `<title>`, from `lib/publish/page-title.ts`. `null` when the
+   * document has no readable one — every consumer renders `title ?? slug`, so
+   * that is a name, not a failure. REQUIRED rather than optional so a new write
+   * path cannot forget it and quietly ship a wall of slugs.
+   */
+  title: string | null;
+  /**
+   * The door these bytes came through (§5.9): `web` or `api` on this path.
+   * REQUIRED for the reason `title` is — the column's default is a guess.
+   */
+  publishedVia: PublishChannel;
+}
+
+/**
+ * THE generate-and-retry loop — both mint paths run it: the anonymous draft
+ * below and the owned publish (`lib/sites/publish.ts`), whose `attempt` re-opens
+ * its transaction and so re-takes the owner lock on every retry.
+ *
+ * Each candidate is first asked of the ONE namespace check (D5, AC23): a name
+ * an active page has, or one held for somebody, is skipped before any insert, so
+ * the mint can never hand out a held name. That read is advisory for active
+ * names — `sites_slug_key` stays the final arbiter, and a unique violation on it
+ * (`isSlugCollision`) is retried with a fresh candidate. Any other error is not
+ * a collision and is rethrown.
+ *
+ * `candidates` is the generator, `mintSlugCandidate` in production; the AC23
+ * drill passes a source that emits a held and an active name first.
+ *
+ * @throws {SlugUnavailableError} `MAX_SLUG_ATTEMPTS` candidates were all refused
+ */
+export async function withMintedSlug<T>(
+  attempt: (slug: string) => Promise<T>,
+  candidates: () => string = mintSlugCandidate,
+): Promise<T> {
+  for (let tries = 0; tries < MAX_SLUG_ATTEMPTS; tries++) {
+    const slug = candidates();
+    if ((await isNameAvailable(slug, null)) !== "available") continue;
+    try {
+      return await attempt(slug);
+    } catch (err) {
+      if (!isSlugCollision(err)) throw err;
+    }
+  }
+  throw new SlugUnavailableError();
 }
 
 /**
@@ -172,47 +279,133 @@ export interface AnonymousDraftInput {
 export async function insertAnonymousDraft(
   input: AnonymousDraftInput,
 ): Promise<{ slug: string }> {
-  for (let attempt = 0; attempt < MAX_SLUG_ATTEMPTS; attempt++) {
-    const slug = mintSlugCandidate();
-    try {
-      await db.transaction(async (tx) => {
-        // `sites` first: `site_versions.site_id` has an FK onto it.
-        // `current_version_id` has no DB-level FK (it would be circular), so it
-        // can point at the version row before that row is written.
-        await tx.insert(sites).values({
-          id: input.siteId,
-          slug,
-          status: "live",
-          region: "auto",
-          currentVersionId: input.versionId,
-          ownerId: null,
-          anonTokenHash: input.anonTokenHash,
-          publisherHash: input.publisherHash,
-          expiresAt: input.expiresAt,
-          purgeAfter: input.purgeAfter,
-          contentHash: input.contentHash,
-          sizeBytes: input.sizeBytes,
-          reminderEmail: input.reminderEmail ?? null,
-        });
-        await tx.insert(siteVersions).values({
-          id: input.versionId,
-          siteId: input.siteId,
-          region: "auto",
-          r2Key: input.r2Key,
-          contentHash: input.contentHash,
-          sizeBytes: input.sizeBytes,
-        });
+  return withMintedSlug(async (slug) => {
+    await db.transaction(async (tx) => {
+      // `sites` first: `site_versions.site_id` has an FK onto it.
+      // `current_version_id` has no DB-level FK (it would be circular), so it
+      // can point at the version row before that row is written.
+      await tx.insert(sites).values({
+        id: input.siteId,
+        slug,
+        status: "live",
+        region: "auto",
+        currentVersionId: input.versionId,
+        ownerId: null,
+        anonTokenHash: input.anonTokenHash,
+        publisherHash: input.publisherHash,
+        expiresAt: input.expiresAt,
+        purgeAfter: input.purgeAfter,
+        title: input.title,
+        contentHash: input.contentHash,
+        sizeBytes: input.sizeBytes,
+        reminderEmail: input.reminderEmail ?? null,
       });
-      return { slug };
-    } catch (err) {
-      if (!isSlugCollision(err)) throw err;
-    }
-  }
-  throw new SlugUnavailableError();
+      await tx.insert(siteVersions).values({
+        id: input.versionId,
+        siteId: input.siteId,
+        region: "auto",
+        r2Key: input.r2Key,
+        contentHash: input.contentHash,
+        sizeBytes: input.sizeBytes,
+        publishedVia: input.publishedVia,
+      });
+    });
+    return { slug };
+  });
+}
+
+export interface OwnedPageInput {
+  /** Pre-generated so the R2 key is known before the row exists. */
+  siteId: string;
+  versionId: string;
+  /** Minted by `withMintedSlug`, which owns the collision handling. */
+  slug: string;
+  r2Key: string;
+  ownerId: string;
+  publisherHash: string;
+  title: string | null;
+  contentHash: string;
+  sizeBytes: number;
+  /**
+   * The draft clock, or its absence. **Both null ⇒ kept** (permanent, no
+   * countdown); **both set ⇒ an owned draft** at the cap. Never one of the two:
+   * a row with `expires_at` and no `purge_after` expires into a grace window
+   * that has no end, and E07's purge sweep orders on the column that is missing.
+   */
+  expiresAt: Date | null;
+  purgeAfter: Date | null;
+  /** When the page became this account's. On this path, its creation. */
+  claimedAt: Date;
+  /** The door these bytes came through (§5.9) — `studio` for `POST /api/sites`. */
+  publishedVia: PublishChannel;
 }
 
 /**
- * What a bearer token resolves to. The token itself is never part of this.
+ * Insert the `sites` + `site_versions` pair for a page that is OWNED from its
+ * first byte — E06 task 004, epic decision D1.
+ *
+ * ⚠️ IT TAKES THE CALLER'S TRANSACTION, AND THAT IS THE WHOLE POINT. The cap
+ * decision (`lockOwner` → count → kept-or-draft) and this insert must commit
+ * together, or two concurrent publishes one slot short of the limit both read
+ * the same count and both land kept.
+ * `insertAnonymousDraft` above opens its own transaction because an anonymous
+ * publish has no cap to decide; this one must not, and there is deliberately no
+ * `db.transaction` in this function to make that impossible to forget.
+ *
+ * ⚠️ NO `anon_token_hash`. NOT "not yet", NOT "null for now" — never. A page
+ * that already belongs to an account must not also carry a bearer credential:
+ * two authorities on one page is the bug E05 was explicit about, and it is why
+ * `keepSite` clears the column the moment an account takes an anonymous draft.
+ * The column is written here as an explicit `null` rather than omitted, so that
+ * a reader of this insert can see the decision instead of inferring it.
+ *
+ * `publisher_hash` IS still recorded. An owned publish is still a publish, and
+ * E07's volume governors key on that column (`sites_publisher_created_idx`).
+ * Dropping it because the caller is signed in would make the one class of
+ * publisher that *has* a name invisible to the machinery that counts them.
+ */
+export async function insertOwnedPage(tx: Tx, input: OwnedPageInput): Promise<void> {
+  // `sites` first: `site_versions.site_id` has an FK onto it.
+  await tx.insert(sites).values({
+    id: input.siteId,
+    slug: input.slug,
+    // DRAFTS ARE `live`, exactly as on the anonymous path — the difference
+    // between a draft and a kept page is the clock column and nothing else.
+    status: "live",
+    region: "auto",
+    currentVersionId: input.versionId,
+    ownerId: input.ownerId,
+    anonTokenHash: null,
+    publisherHash: input.publisherHash,
+    expiresAt: input.expiresAt,
+    purgeAfter: input.purgeAfter,
+    claimedAt: input.claimedAt,
+    title: input.title,
+    contentHash: input.contentHash,
+    sizeBytes: input.sizeBytes,
+  });
+  await tx.insert(siteVersions).values({
+    id: input.versionId,
+    siteId: input.siteId,
+    region: "auto",
+    r2Key: input.r2Key,
+    contentHash: input.contentHash,
+    sizeBytes: input.sizeBytes,
+    publishedVia: input.publishedVia,
+  });
+}
+
+/**
+ * What a manage path resolves a page to. The bearer token itself is never part
+ * of this.
+ *
+ * ⚠️ THE NAME RECORDS WHERE IT STARTED, NOT WHO MAY READ IT. E06's owner-scoped
+ * replace resolves a page by `(id, owner_id)` instead of by token hash and needs
+ * exactly these columns for exactly the same reasons — see `findSiteForOwner`
+ * below, which returns this shape. A second, identical interface named
+ * `OwnedSite` would be the duplication that drifts the first time one of them
+ * grows a column, and the *authority* difference lives in the two queries'
+ * WHERE clauses where it is enforceable, not in a type where it is decorative.
  *
  * Carries the current content state as well as the identity, because the
  * replace path needs exactly these three values to put the row back if a store
@@ -239,9 +432,36 @@ export interface AnonSite {
   expiresAt: Date | null;
   /** End of the post-expiry grace window; null on a kept page. */
   purgeAfter: Date | null;
+  /**
+   * The page's `<title>` as of the CURRENT bytes. Carried for the same reason
+   * `contentHash` and `sizeBytes` are: a failed replace has to put the row back
+   * exactly as it found it, and a row describing bytes it no longer points at
+   * is the bug this column was added to avoid.
+   */
+  title: string | null;
   contentHash: string | null;
   sizeBytes: number | null;
 }
+
+/**
+ * The columns both resolvers below project. One object so the token-scoped and
+ * owner-scoped reads cannot drift in shape, which is what would make `AnonSite`
+ * a lie on one of the two paths — the same rule `dashboard.ts` states about
+ * `OWNED_SITE_COLUMNS`.
+ */
+const MANAGED_SITE_COLUMNS = {
+  id: sites.id,
+  slug: sites.slug,
+  status: sites.status,
+  region: sites.region,
+  ownerId: sites.ownerId,
+  currentVersionId: sites.currentVersionId,
+  expiresAt: sites.expiresAt,
+  purgeAfter: sites.purgeAfter,
+  title: sites.title,
+  contentHash: sites.contentHash,
+  sizeBytes: sites.sizeBytes,
+} as const;
 
 /**
  * THE ONLY QUERY IN THE REPO THAT READS `sites.anon_token_hash`.
@@ -260,21 +480,60 @@ export async function findSiteByAnonTokenHash(
   anonTokenHash: string,
 ): Promise<AnonSite | null> {
   const [site] = await db
-    .select({
-      id: sites.id,
-      slug: sites.slug,
-      status: sites.status,
-      region: sites.region,
-      ownerId: sites.ownerId,
-      currentVersionId: sites.currentVersionId,
-      expiresAt: sites.expiresAt,
-      purgeAfter: sites.purgeAfter,
-      contentHash: sites.contentHash,
-      sizeBytes: sites.sizeBytes,
-    })
+    .select(MANAGED_SITE_COLUMNS)
     .from(sites)
     .where(eq(sites.anonTokenHash, anonTokenHash))
     .limit(1);
+
+  return site ?? null;
+}
+
+/**
+ * The same page, resolved by OWNER instead of by bearer token — E06 task 006's
+ * replace and delete.
+ *
+ * ⚠️ THE OWNER SCOPE IS IN THE SQL, NEVER APPLIED AFTERWARDS IN JS. A read that
+ * fetched by id and then compared `row.ownerId` in the caller is a cross-account
+ * read that happens to be discarded — one forgotten early return away from being
+ * written to. `owner_id` is in the WHERE clause, so a page belonging to somebody
+ * else is indistinguishable here from a page that never existed: both are
+ * `null`, and both become the single `ownerNotFound()` body one layer up.
+ *
+ * ⚠️ IT DOES NOT FILTER ON STATUS. Delete must reach a `quarantined` page —
+ * delete and download are the only affordances left on one — and replace has to
+ * be able to tell an owner *why* their flagged page cannot be replaced. A
+ * resolver that hid non-`live` rows would answer both of those with a 404 that
+ * reads as data loss. The status decision belongs to `lib/sites/manage.ts`.
+ */
+export async function findSiteForOwner(
+  siteId: string,
+  ownerId: string,
+): Promise<AnonSite | null> {
+  const [site] = await db
+    .select(MANAGED_SITE_COLUMNS)
+    .from(sites)
+    .where(and(eq(sites.id, siteId), eq(sites.ownerId, ownerId)))
+    .limit(1);
+
+  return site ?? null;
+}
+
+/**
+ * `findSiteForOwner`, with the row locked `FOR UPDATE` until `tx` ends — for a
+ * restore (E06 task 007), which decides on `current_version_id` and must not
+ * race a prune deleting the version it is about to point at. Same columns, same
+ * owner scope in the SQL, same `null` for "not yours" and "does not exist".
+ */
+export async function lockSiteForOwner(
+  tx: Tx,
+  siteId: string,
+  ownerId: string,
+): Promise<AnonSite | null> {
+  const [site] = await tx
+    .select(MANAGED_SITE_COLUMNS)
+    .from(sites)
+    .where(and(eq(sites.id, siteId), eq(sites.ownerId, ownerId)))
+    .for("update");
 
   return site ?? null;
 }
@@ -285,6 +544,65 @@ export interface ReplaceVersionInput {
   r2Key: string;
   contentHash: string;
   sizeBytes: number;
+  /**
+   * Re-extracted from the NEW bytes. Required, and set in the SAME statement as
+   * the `current_version_id` swap below: a replace that updates the bytes but
+   * not the title leaves the dashboard confidently displaying the PREVIOUS
+   * page's name, which is worse than displaying the slug. Unless the OWNER set
+   * the title — see `htmlTitle`.
+   */
+  title: string | null;
+  /** The door these bytes came through (§5.9). */
+  publishedVia: PublishChannel;
+}
+
+/**
+ * `sites.title` for a write that carries new bytes (D11): the HTML's title,
+ * unless the owner set one (`title_source = 'owner'`), which no replace may
+ * overwrite. Decided IN the UPDATE, against the row as it is at that instant,
+ * so an owner's title edit racing a replace can never be lost to a value read
+ * a moment earlier.
+ */
+function htmlTitle(title: string | null): SQL {
+  return sql`case when ${sites.titleSource} = 'owner' then ${sites.title} else ${title} end`;
+}
+
+/**
+ * What a site row says about the bytes it serves: the version, and the three
+ * columns denormalised from it. They move together or the row describes bytes
+ * it no longer points at — the dedup probe and the replace no-op read
+ * `content_hash` off the row, never off `site_versions`.
+ */
+export interface SitePointer {
+  versionId: string | null;
+  /** The served bytes' `<title>`; an owner title is kept regardless (`htmlTitle`). */
+  title: string | null;
+  contentHash: string | null;
+  sizeBytes: number | null;
+}
+
+/**
+ * Point a site at a version — THE one statement every version move runs:
+ * replace, its unwind, restore and restore's unwind. Returns the title the row
+ * ENDED UP with (the owner's, when they set one).
+ */
+export async function pointSiteAt(
+  tx: Tx,
+  siteId: string,
+  target: SitePointer,
+): Promise<{ title: string | null }> {
+  const [row] = await tx
+    .update(sites)
+    .set({
+      currentVersionId: target.versionId,
+      title: htmlTitle(target.title),
+      contentHash: target.contentHash,
+      sizeBytes: target.sizeBytes,
+      updatedAt: new Date(),
+    })
+    .where(eq(sites.id, siteId))
+    .returning({ title: sites.title });
+  return { title: row?.title ?? null };
 }
 
 /**
@@ -301,8 +619,8 @@ export interface ReplaceVersionInput {
  */
 export async function insertReplacementVersion(
   input: ReplaceVersionInput,
-): Promise<void> {
-  await db.transaction(async (tx) => {
+): Promise<{ title: string | null }> {
+  return db.transaction(async (tx) => {
     await tx.insert(siteVersions).values({
       id: input.versionId,
       siteId: input.siteId,
@@ -310,16 +628,9 @@ export async function insertReplacementVersion(
       r2Key: input.r2Key,
       contentHash: input.contentHash,
       sizeBytes: input.sizeBytes,
+      publishedVia: input.publishedVia,
     });
-    await tx
-      .update(sites)
-      .set({
-        currentVersionId: input.versionId,
-        contentHash: input.contentHash,
-        sizeBytes: input.sizeBytes,
-        updatedAt: new Date(),
-      })
-      .where(eq(sites.id, input.siteId));
+    return pointSiteAt(tx, input.siteId, input);
   });
 }
 
@@ -330,18 +641,11 @@ export async function insertReplacementVersion(
 export async function revertReplacementVersion(input: {
   siteId: string;
   versionId: string;
-  previous: { versionId: string | null; contentHash: string | null; sizeBytes: number | null };
+  previous: SitePointer;
 }): Promise<void> {
   await db.transaction(async (tx) => {
-    await tx
-      .update(sites)
-      .set({
-        currentVersionId: input.previous.versionId,
-        contentHash: input.previous.contentHash,
-        sizeBytes: input.previous.sizeBytes,
-        updatedAt: new Date(),
-      })
-      .where(eq(sites.id, input.siteId));
+    // Guarded like the forward write: an owner title set in between stays.
+    await pointSiteAt(tx, input.siteId, input.previous);
     await tx.delete(siteVersions).where(eq(siteVersions.id, input.versionId));
   });
 }

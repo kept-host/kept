@@ -26,10 +26,7 @@ import { getSession } from "../../../../../lib/auth/session";
 import { getProfileForSession } from "../../../../../lib/db/queries/profile";
 import { errorResponse } from "../../../../../lib/publish/http";
 import { refuseUntrustedOrigin } from "../../../../../lib/publish/origin";
-import { keepAnonymousPage } from "../../../../../lib/sites/anon-keep";
-// The one signed-out body in the epic, shared with the owner routes so a client
-// sees the same 401 whichever keep it called.
-import { signedOut } from "../../../../../lib/sites/owner-routes";
+import { keepAnonymousPage, signedOut } from "../../../../../lib/sites/anon-keep";
 
 /** `postgres-js` needs TCP sockets and `aws4fetch` signs with Node's crypto. */
 export const runtime = "nodejs";

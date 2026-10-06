@@ -29,6 +29,20 @@
       "when": 1786045603470,
       "tag": "0003_reminder_sent_at_and_keep_token",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1787353241964,
+      "tag": "0004_page_title",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791131533656,
+      "tag": "0005_creator_studio",
+      "breakpoints": true
     }
   ]
 }

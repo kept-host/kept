@@ -50,19 +50,30 @@ function byteLength(html: string): number {
   return new TextEncoder().encode(html).length;
 }
 
+/** A file's extension, when it has a plausible one: `notes.png` → `png`. */
+const FILE_EXTENSION = /\.([a-z0-9]{1,10})$/i;
+
+/**
+ * The refusal for a file that is not a page — PRD §5.1 / AC7, verbatim, naming
+ * what was actually dropped so the person can see why.
+ */
+function notAPageMessage(name: string): string {
+  const extension = FILE_EXTENSION.exec(name)?.[1]?.toLowerCase();
+  const what = extension ? `That's a .${extension}.` : "That isn't an HTML file.";
+  return `${what} kept publishes HTML pages — drop an .html file.`;
+}
+
 /**
  * The one pre-flight check for a chosen/dropped file: type, then size. Returns
- * the error to show, or `null` to proceed.
+ * the error to show, or `null` to proceed. Every drop surface — the landing
+ * tile, the studio's `DropTarget`, the anonymous replace — reads this one, so
+ * they refuse the same files with the same sentence before any request.
  */
-export function checkPageFile(file: File): PublishError | null {
+export function checkPageFile(file: Pick<File, "name" | "type" | "size">): PublishError | null {
   const type = file.type.split(";")[0]!.trim().toLowerCase();
   const isHtml = type ? type === "text/html" : HTML_FILE_NAME.test(file.name);
   if (!isHtml) {
-    return {
-      error: "invalid_request",
-      message:
-        "kept hosts a single HTML document. Choose a .html file, or paste the markup instead.",
-    };
+    return { error: "invalid_request", message: notAPageMessage(file.name) };
   }
   if (file.size === 0) {
     return { error: "empty_page", message: "That file is empty — there is nothing to keep." };

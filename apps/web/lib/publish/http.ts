@@ -11,6 +11,8 @@
 import { publishErrorSchema, type PublishError } from "@kept/shared";
 import { NextResponse } from "next/server";
 
+import type { PublisherContext } from "./pipeline";
+
 const JSON_TYPE = "application/json";
 const MULTIPART_TYPE = "multipart/form-data";
 const HTML_TYPE = "text/html";
@@ -85,6 +87,43 @@ export async function readJsonOnlyBody(request: Request): Promise<unknown> {
     throw new UnreadableBodyError(`Unsupported content type. Send ${JSON_TYPE}.`);
   }
   return readJson(request);
+}
+
+/**
+ * The publisher's identity for dedup and E07's rate limiter.
+ *
+ * The raw address is read here, handed to the salted hash by the pipeline, and
+ * then dropped: it is never stored, never logged and never returned. Railway
+ * (and any proxy in front of it) sets `x-forwarded-for`; the first entry is the
+ * client.
+ *
+ * Shared by the KEYLESS publish and the OWNED one (E06 task 004) — two routes
+ * with two authority models, but the same one question about the transport, and
+ * `publisher_hash` must mean the same thing on both or E07's governors are
+ * counting two different populations.
+ */
+export function publisherFrom(request: Request): PublisherContext {
+  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  const real = request.headers.get("x-real-ip")?.trim();
+  return {
+    ip: forwarded || real || "unknown",
+    userAgent: request.headers.get("user-agent") ?? "",
+  };
+}
+
+/**
+ * Which door an anonymous replace came through (`site_versions.published_via`,
+ * PRD §5.9): `web` when the browser itself says the request came from the app's
+ * own origin — the `/p/:token` manage screen — and `api` for everyone else.
+ *
+ * `Sec-Fetch-Site` is a forbidden header name: a page script cannot set it and
+ * the browser computes it from the true initiator, so `same-origin` cannot be
+ * claimed by a `curl`. It labels a row; it authorises nothing — the bearer
+ * token in the path is still the whole of the authority, and this route stays
+ * free of the cookie routes' origin gate.
+ */
+export function browserChannel(request: Request): "web" | "api" {
+  return request.headers.get("sec-fetch-site") === "same-origin" ? "web" : "api";
 }
 
 /**

@@ -3,10 +3,38 @@
 kept is licensed under the **GNU Affero General Public License v3.0** (see
 [`LICENSE`](./LICENSE)). This file carries the notices for third-party work that
 is *derived from* rather than merely depended on — code that was read and
-adapted by hand, so no `node_modules` entry records it.
+adapted by hand, or binaries checked into this repository, so no `node_modules`
+entry records it.
 
 Runtime dependencies keep their own licences in `node_modules` and in
 `pnpm-lock.yaml`; they are not repeated here.
+
+---
+
+## Geist and Inter (vendored font files)
+
+- **Files:** `apps/web/lib/og/fonts/Geist-SemiBold.ttf`,
+  `apps/web/lib/og/fonts/Inter-Regular.ttf`
+- **Licence:** SIL Open Font Licence 1.1 — full text alongside each file, as
+  `Geist-LICENSE.txt` and `Inter-LICENSE.txt`
+- **Copyright:** © 2023 Vercel, in collaboration with basement.studio (Geist);
+  © 2016 The Inter Project Authors (Inter)
+- **Used by:** `apps/web/lib/og/font.ts` — the OG card renderer only
+
+**Why they are checked in rather than depended on.** `ImageResponse` (satori)
+needs raw font bytes, and `next/font/google` exposes none. `geist` ships TTFs in
+`node_modules` but declares an `exports` map with no `.` entry, so there is no
+supported way to resolve a path to them; Inter arrives from Google Fonts at build
+time and never touches disk at all. Fetching either at request time would put a
+third-party outage on the path that renders a shared link. So the bytes are
+ordinary repository files. `Geist-SemiBold.ttf` is copied verbatim from
+`geist@1.7.2`, and a unit test asserts it stays byte-identical to the installed
+package; `Inter-Regular.ttf` is the static TTF `fonts.gstatic.com` serves for
+`Inter:wght@400` (v20) — the same binary `next/font/google` downloads.
+
+Both faces are unmodified. The OFL asks that redistributed originals travel with
+their licence and not be sold on their own; both conditions are met, and the OFL
+is compatible with distributing them alongside AGPL-3.0 software.
 
 ---
 

@@ -1,10 +1,11 @@
 /**
- * The published page's own bytes, for the two screens that show a preview of it
- * — `/p/[anonToken]` (task 008) and `/keep/[anonToken]` (task 009).
+ * The published page's own bytes, for the screens that show a preview of it —
+ * `/p/[anonToken]` (task 008), `/keep/[anonToken]` (task 009) and the studio's
+ * page detail (E06 task 012).
  *
- * ONE READER FOR BOTH. The size cap, the failure policy and the "which store is
- * the authority" answer are the same on both screens, so they live once. A
- * second copy would drift the moment one of the three changed.
+ * ONE READER FOR ALL OF THEM. The size cap, the failure policy and the "which
+ * store is the authority" answer are the same on every screen, so they live
+ * once. A second copy would drift the moment one of them changed.
  *
  * THE BYTES COME FROM R2, not from the edge. R2 is the authority on them, and
  * the edge could not serve this purpose anyway: hosted pages go out with
@@ -15,7 +16,6 @@
  * fails or the store is unconfigured, `null` comes back and the screen renders
  * with everything that actually matters.
  */
-import type { AnonSite } from "../db/queries/publish";
 import { pageObjectKey, r2Store } from "../storage/r2";
 
 /**
@@ -26,6 +26,34 @@ import { pageObjectKey, r2Store } from "../storage/r2";
 export const PREVIEW_MAX_BYTES = 256 * 1024;
 
 /**
+ * The four columns a preview read actually consults.
+ *
+ * ⚠️ THE PARAMETER IS THIS SHAPE, NOT `AnonSite`, and that is deliberate. E06's
+ * page-detail screen, `/site/[id]` (task 012), previews an **owner-scoped** row
+ * — `OwnedSiteDetail` from `lib/db/queries/dashboard.ts`, which carries no
+ * `region`, `ownerId` or `contentHash` because no owner screen needs them. Both row types satisfy this
+ * interface structurally, so one reader serves the anonymous and the signed-in
+ * path without either query growing columns to please a function that never
+ * looks at them.
+ */
+export interface PreviewSubject {
+  id: string;
+  slug: string;
+  currentVersionId: string | null;
+  sizeBytes: number | null;
+}
+
+/**
+ * Whether a page's bytes are small enough to preview at all (`PREVIEW_MAX_BYTES`).
+ * The one size rule for every preview: the screens above, and the studio card's
+ * hover preview (E06 task 016), which the Pages home only offers for a page
+ * this says yes to.
+ */
+export function previewFits(site: Pick<PreviewSubject, "sizeBytes">): boolean {
+  return site.sizeBytes === null || site.sizeBytes <= PREVIEW_MAX_BYTES;
+}
+
+/**
  * The page's HTML, or `null` when it cannot be shown. Never throws.
  *
  * `context` names the calling screen in the failure log. The log names the site
@@ -33,11 +61,10 @@ export const PREVIEW_MAX_BYTES = 256 * 1024;
  * token is never logged.
  */
 export async function readPreviewHtml(
-  site: AnonSite,
+  site: PreviewSubject,
   context: string,
 ): Promise<string | null> {
-  if (!site.currentVersionId) return null;
-  if (site.sizeBytes !== null && site.sizeBytes > PREVIEW_MAX_BYTES) return null;
+  if (!site.currentVersionId || !previewFits(site)) return null;
 
   try {
     return await r2Store().get(pageObjectKey(site.id, site.currentVersionId));

@@ -1,0 +1,98 @@
+name: Cron — visits sync (dev)
+
+# E06 task 009 (D8). A mirror of cron-draft-reminder.yml — read that file's
+# header for why the scheduler is a GitHub Actions workflow calling an
+# authenticated route and never a Worker `[triggers]` cron: a Worker cron would
+# make the data plane call the control plane. Same substrate, same secret
+# (`CRON_SECRET`), same `SMOKE_WEB_URL`; nothing new to provision except the
+# token scope below.
+#
+# WHAT IT DOES: once a day, POST /api/cron/visits-sync, which reads the most
+# recent complete UTC day's per-hostname request counts from Cloudflare's
+# GraphQL Analytics API (`httpRequestsAdaptiveGroups`) and upserts
+# `page_views_daily`. Visits are never counted per view — the serve path does
+# not change. `workflow_dispatch` takes `days` (1–30) for the first-run
+# backfill: run it once by hand with `days=30`.
+#
+# OFF UNTIL SWITCHED ON — the one deliberate difference from the template. The
+# route needs `Zone → Analytics → Read` on the control plane's
+# CLOUDFLARE_API_TOKEN (Railway dev), which dev does not have yet (E06 task
+# 009, human step 2). Until it does, every scheduled run would fail on
+# Cloudflare's `authz` refusal and paint the Actions tab red daily for a
+# reason nobody can act on in code. So the SCHEDULED job runs only when the
+# repository variable `VISITS_SYNC_ENABLED` is `true` (Settings → Secrets and
+# variables → Actions → Variables); otherwise it is skipped, grey, not red.
+# A MANUAL dispatch always runs: asking for a sync by hand is asking to see
+# whether it works, and a refusal there should fail loudly.
+#
+# A repository variable, not an environment one: a job-level `if:` is decided
+# before the job enters `environment: dev`, so environment variables are not
+# visible to it yet.
+#
+# PROD IS DEFERRED, exactly as for the draft reminder: a copy of this file with
+# `environment: prod` once prod exists.
+
+on:
+  schedule:
+    # 03:17 UTC daily: the previous UTC day is complete, and an off-the-hour
+    # minute keeps it out of the top-of-the-hour queue GitHub delays most.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Most recent complete UTC days to sync (1–30). 30 = first-run backfill."
+        required: false
+        default: "1"
+
+# Never two syncs at once. The upsert is idempotent, but two overlapping runs
+# race on job_runs and make the reported counts unreadable.
+concurrency:
+  group: cron-visits-sync-dev
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Sync visits (dev)
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.VISITS_SYNC_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      # No checkout and no toolchain: one authenticated HTTP call. The day
+      # arithmetic, the mapping and the idempotency live in the application,
+      # where they are typechecked and tested — not in YAML.
+      - name: POST /api/cron/visits-sync
+        env:
+          APP_URL: ${{ vars.SMOKE_WEB_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          # Through env, never interpolated into the script: an input is text a
+          # dispatcher typed. Digits are checked here; the range (1–30, else
+          # 400) is the route's to enforce.
+          DAYS: ${{ inputs.days || '1' }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${APP_URL}" ] || [ -z "${CRON_SECRET}" ]; then
+            echo "::error::SMOKE_WEB_URL (variable) and CRON_SECRET (secret) must both be set on the dev environment."
+            exit 1
+          fi
+
+          case "${DAYS}" in
+            '' | *[!0-9]*)
+              echo "::error::days must be a whole number from 1 to 30, got '${DAYS}'."
+              exit 1
+              ;;
+          esac
+
+          # `--fail-with-body` so a non-2xx fails the step and prints what the
+          # endpoint said. A success body is counts only ({ ok, days, rows });
+          # a failure is a bare 500 — the detail is in job_runs.last_error and
+          # the Railway log, never in a public build log.
+          curl --fail-with-body --silent --show-error \
+            --max-time 300 \
+            --request POST \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            --header "Content-Length: 0" \
+            "${APP_URL%/}/api/cron/visits-sync?days=${DAYS}"

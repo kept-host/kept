@@ -13,6 +13,7 @@ import {
   publishErrorSchema,
   publishRequestSchema,
   publishResponseSchema,
+  studioErrorSchema,
 } from "@kept/shared";
 
 test("the request schema takes html/turnstileToken/reminderEmail and no slug", () => {
@@ -60,6 +61,45 @@ test("the error schema is a closed code enum with an optional backoff", () => {
   assert.equal(
     publishErrorSchema.safeParse({ error: "kaboom", message: "x" }).success,
     false,
+  );
+});
+
+test("the 201 body is pinned to its seven keys — a field cannot be added without this failing", () => {
+  // `respond()` builds the body THROUGH this schema, and zod drops unknown keys,
+  // so the schema's key set is the wire's key set. E06 task 005 added a title
+  // and a channel to the publish path; neither may surface here.
+  assert.deepEqual(Object.keys(publishResponseSchema.shape).sort(), [
+    "anonToken",
+    "claim_url",
+    "deduped",
+    "expires_at",
+    "expires_in",
+    "live_url",
+    "slug",
+  ]);
+});
+
+test("the agent routes' flat error and the studio envelope never parse as each other", () => {
+  // Two shapes on purpose (E06 Risk 3): `/api/publish` and `/api/anon/*` answer
+  // the frozen flat body agents parse; the studio answers the envelope. A body
+  // that satisfied both would mean one of them had drifted toward the other.
+  const flat = { error: "invalid_request", message: "x" };
+  const envelope = { error: { code: "invalid_request", message: "x" } };
+  assert.equal(publishErrorSchema.safeParse(flat).success, true);
+  assert.equal(studioErrorSchema.safeParse(flat).success, false);
+  assert.equal(studioErrorSchema.safeParse(envelope).success, true);
+  assert.equal(publishErrorSchema.safeParse(envelope).success, false);
+});
+
+test("the anonymous keep's signed-out 401 is still the flat body, byte for byte", async () => {
+  // It used to borrow the owner routes' refusal; those now answer the studio
+  // envelope, so `/api/anon/:token/keep` owns its own — and it must not change.
+  const { signedOut } = await import("../sites/anon-keep");
+  const refusal = signedOut();
+  assert.equal(refusal.status, 401);
+  assert.equal(
+    JSON.stringify(refusal.body),
+    JSON.stringify({ error: "invalid_request", message: "Sign in to manage this page." }),
   );
 });
 

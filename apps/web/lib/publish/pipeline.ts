@@ -64,6 +64,7 @@ import {
   enqueueScan,
   verifyTurnstile,
 } from "./hooks";
+import { extractPageTitle } from "./page-title";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -134,10 +135,15 @@ export function requestError(error: z.ZodError): PublishFailure {
 /** `expires_at` and `purge_after`, both from `@kept/shared`. No literals. */
 export function draftClocks(now: Date): { expiresAt: Date; purgeAfter: Date } {
   const expiresAt = new Date(now.getTime() + DRAFT_TTL_DAYS * MS_PER_DAY);
-  return {
-    expiresAt,
-    purgeAfter: new Date(expiresAt.getTime() + DRAFT_GRACE_DAYS * MS_PER_DAY),
-  };
+  return { expiresAt, purgeAfter: graceEnds(expiresAt) };
+}
+
+/**
+ * `from + DRAFT_GRACE_DAYS` — the ONE grace window: after a draft's clock, and
+ * after an owner archives a page (D14, D16). Not a second 30-day constant.
+ */
+export function graceEnds(from: Date): Date {
+  return new Date(from.getTime() + DRAFT_GRACE_DAYS * MS_PER_DAY);
 }
 
 /** The public URL of a published slug: `https://{slug}.{KEPT_BASE_DOMAIN}`. */
@@ -319,18 +325,22 @@ export async function publishPage(
   }
 
   const heuristics = await checkHeuristics(html);
-  if (!heuristics.allowed) {
-    return fail(422, {
-      error: "content_rejected",
-      message: `This page was refused by the content check (${heuristics.reason}).`,
-    });
-  }
+  if (!heuristics.allowed) return contentRejected(heuristics.reason);
 
   // ── 3. content hash ────────────────────────────────────────────────────────
   // Over the exact bytes that will be stored: `hashContent` digests the UTF-8
   // encoding, which is what `r2.put` sends.
   const contentHash = await hashContent(html);
   const sizeBytes = Buffer.byteLength(html, "utf8");
+  // The page's display name, off the SAME in-memory buffer that was just hashed
+  // and sized — one read of the bytes, not a second. `null` when the document
+  // has no readable `<title>`; the helper cannot throw, so extraction can never
+  // fail a publish (E06 task 001).
+  const title = extractPageTitle(html);
+  // The door (§5.9), on E04's existing distinction: the landing's browser path
+  // is the one that carries a Turnstile token; a keyless caller never does.
+  // Recorded on the version row only — the wire response does not change.
+  const publishedVia = turnstileToken !== undefined ? "web" : "api";
 
   // One token, used either to rotate the deduped row or to create a new one.
   const anonToken = generateAnonToken();
@@ -367,6 +377,7 @@ export async function publishPage(
       siteId,
       versionId,
       r2Key,
+      title,
       contentHash,
       sizeBytes,
       anonTokenHash,
@@ -374,15 +385,12 @@ export async function publishPage(
       expiresAt,
       purgeAfter,
       reminderEmail,
+      publishedVia,
     }));
   } catch (err) {
     if (err instanceof SlugUnavailableError) {
       console.error(`[kept] ${err.message}`);
-      return fail(503, {
-        error: "slug_unavailable",
-        message:
-          "Could not assign a link for this page right now. This is transient — retry the request.",
-      });
+      return slugUnavailable();
     }
     console.error(`[kept] publish: Postgres write failed — ${message(err)}`);
     return internalError();
@@ -417,6 +425,31 @@ export async function publishPage(
   void enqueueScan(siteId, versionId);
 
   return respond({ slug, anonToken, expiresAt, deduped: false });
+}
+
+/**
+ * The heuristic content check refused the bytes. One sentence for every path
+ * that stores bytes — the keyless publish and replace here, the studio's
+ * publish and replace through `lib/sites/owner-routes.ts`.
+ */
+export function contentRejected(reason: string): PublishFailure {
+  return fail(422, {
+    error: "content_rejected",
+    message: `This page was refused by the content check (${reason}).`,
+  });
+}
+
+/**
+ * Slug minting exhausted its attempts (`SlugUnavailableError`) — a broken index
+ * or CSPRNG, transient from the caller's side. Shared with the studio publish,
+ * which mints through the same bound.
+ */
+export function slugUnavailable(): PublishFailure {
+  return fail(503, {
+    error: "slug_unavailable",
+    message:
+      "Could not assign a link for this page right now. This is transient — retry the request.",
+  });
 }
 
 /** The generic 5xx. Shared with the anonymous manage routes (task 006). */

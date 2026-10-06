@@ -13,18 +13,19 @@
 
 import { z } from "zod";
 
-import { KEPT_PAGE_LIMIT } from "./constants";
-
 /**
  * How a keep attempt resolved.
  *
  * - `kept`        — the page is permanent: `expires_at`/`purge_after` cleared.
- * - `owned_draft` — the account was already at `KEPT_PAGE_LIMIT`, so the page is
- *                   now *owned* but keeps its clock, its countdown and a swap
- *                   prompt.
+ * - `owned_draft` — ANONYMOUS DOOR ONLY: the account was already at its plan's
+ *                   kept limit (`limitsFor(plan).keptPages`), so the page is now
+ *                   *owned* but keeps its clock, its countdown and a swap prompt.
  *
- * The cap is a **branch, not a guard clause**: keeping past it never errors,
- * never no-ops and never loses the page. Both outcomes are HTTP success.
+ * On the anonymous door the cap is a **branch, not a guard clause**: keeping
+ * past it never errors, never no-ops and never loses the page, and both outcomes
+ * are HTTP success. The owner door (`POST /api/sites/:id/keep`) keeps a page the
+ * account already owns, so it has nothing to attach and answers the cap with
+ * `409 at_kept_limit` instead (E06, PRD §10.2).
  */
 export const KEEP_OUTCOMES = ["kept", "owned_draft"] as const;
 
@@ -33,14 +34,20 @@ export type KeepOutcome = (typeof KEEP_OUTCOMES)[number];
 
 /** The account's kept-page allowance at the moment a keep/demote/swap resolved. */
 export interface KeptQuota {
-  /** Always `KEPT_PAGE_LIMIT` — never a literal. */
+  /** `limitsFor(plan).keptPages` for the account's plan — never a literal. */
   limit: number;
   used: number;
   remaining: number;
 }
 
+/**
+ * ⚠️ `limit` IS A NUMBER, NOT A LITERAL. It was `z.literal(KEPT_PAGE_LIMIT)`,
+ * which made every `keepResultSchema.parse` throw — a 500 on every keep — the
+ * moment an account's limit was anything but the free one. The plan decides
+ * the value (`limitsFor`); the schema only decides its shape.
+ */
 export const keptQuotaSchema = z.object({
-  limit: z.literal(KEPT_PAGE_LIMIT),
+  limit: z.number().int().positive(),
   used: z.number().int().nonnegative(),
   remaining: z.number().int().nonnegative(),
 });
@@ -67,14 +74,20 @@ export type KeepResult =
       purgeAfter: string;
     };
 
-export const keepResultSchema = z.discriminatedUnion("outcome", [
-  z.object({
+/**
+ * The two branches, named rather than inlined into the union below, because
+ * the swap's kept half (`swapResultSchema`) IS the `kept` branch and reuses it
+ * rather than re-spelling `outcome`/`siteId`/`slug`/`quota` — a second spelling
+ * agrees with this one only until somebody edits one of them.
+ */
+const keepResultBranches = {
+  kept: z.object({
     outcome: z.literal("kept"),
     siteId: z.string(),
     slug: z.string(),
     quota: keptQuotaSchema,
   }),
-  z.object({
+  ownedDraft: z.object({
     outcome: z.literal("owned_draft"),
     siteId: z.string(),
     slug: z.string(),
@@ -82,6 +95,11 @@ export const keepResultSchema = z.discriminatedUnion("outcome", [
     expiresAt: z.string().datetime(),
     purgeAfter: z.string().datetime(),
   }),
+} as const;
+
+export const keepResultSchema = z.discriminatedUnion("outcome", [
+  keepResultBranches.kept,
+  keepResultBranches.ownedDraft,
 ]);
 
 /**
@@ -118,10 +136,5 @@ export interface SwapResult {
 
 export const swapResultSchema = z.object({
   demoted: demoteResultSchema,
-  kept: z.object({
-    outcome: z.literal("kept"),
-    siteId: z.string(),
-    slug: z.string(),
-    quota: keptQuotaSchema,
-  }),
+  kept: keepResultBranches.kept,
 });

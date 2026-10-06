@@ -1,9 +1,9 @@
 import {
   DRAFT_GRACE_DAYS,
   DRAFT_TTL_DAYS,
-  KEPT_PAGE_LIMIT,
   generateAnonToken,
   hashToken,
+  limitsFor,
 } from "@kept/shared";
 import { expect, test, type Page } from "@playwright/test";
 import { config } from "dotenv";
@@ -13,6 +13,7 @@ import { closeDb, db, schema } from "../lib/db";
 import { PENDING_KEEP_COOKIE } from "../lib/auth/pending-keep";
 
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
+import { seedKept } from "./owner-fixtures";
 import { TRANSPARENT, gotoWithTokensApplied } from "./tokens-applied";
 
 /**
@@ -30,8 +31,10 @@ import { TRANSPARENT, gotoWithTokensApplied } from "./tokens-applied";
  *   2. Signed in, `/auth/callback` spends the cookie exactly once: the page is
  *      kept, the bearer token is dead, and a **replay of the same URL keeps
  *      nothing** because the cookie is already gone.
- *   3. At `KEPT_PAGE_LIMIT` the visitor is not refused — they land on the swap
- *      prompt with the page owned and its countdown still running.
+ *   3. At the account's kept limit the visitor is not refused — they land on
+ *      the swap prompt with the page owned and its countdown still running, and
+ *      the screen names THEIR plan's limit (`limitsFor`, carried from the keep's
+ *      `quota.limit`), not a typed number.
  *   4. A token that resolves to nothing gets the one indistinguishable answer,
  *      as a readable screen rather than a 404 or a stack trace.
  *   5. Already signed in, the sign-in screen is skipped entirely.
@@ -194,26 +197,6 @@ test.describe("the pending-keep round trip", () => {
     return { id, slug, token };
   }
 
-  /** A kept page on an account, to fill the cap. */
-  async function makeKeptSite(ownerId: string): Promise<string> {
-    const id = crypto.randomUUID();
-    await db.insert(schema.sites).values({
-      id,
-      slug: `e05-009-full-${id.slice(0, 12)}`,
-      status: "live",
-      region: "auto",
-      ownerId,
-      anonTokenHash: null,
-      publisherHash: "e05-009-flow",
-      expiresAt: null,
-      purgeAfter: null,
-      contentHash: "e05-009-flow",
-      sizeBytes: 128,
-    });
-    createdSiteIds.push(id);
-    return id;
-  }
-
   async function pendingKeepCookieOf(page: Page) {
     const cookies = await page.context().cookies();
     return cookies.find((cookie) => cookie.name === PENDING_KEEP_COOKIE);
@@ -336,14 +319,15 @@ test.describe("the pending-keep round trip", () => {
     expect(row?.anonTokenHash).toBeNull();
   });
 
-  test(`at ${KEPT_PAGE_LIMIT} kept pages the visitor gets the swap prompt, not an error`, async ({
+  test("at the kept limit the visitor gets the swap prompt, not an error — and the screen names the plan's limit", async ({
     page,
     baseURL,
   }) => {
+    // AC3: the at-cap screen's number is the account's plan's (a new account is
+    // free), read through `limitsFor` — the test types no limit either.
+    const limit = limitsFor("free").keptPages;
     const userId = await signIn(page, baseURL!);
-    for (let index = 0; index < KEPT_PAGE_LIMIT; index += 1) {
-      await makeKeptSite(userId);
-    }
+    await seedKept({ siteIds: createdSiteIds }, userId, limit);
     const site = await makeAnonSite();
 
     await page.goto(`/keep/${site.token}`);
@@ -352,12 +336,12 @@ test.describe("the pending-keep round trip", () => {
     await expect(page).toHaveURL(/\/auth\/callback\/done\?outcome=draft/, {
       timeout: KEEP_TIMEOUT,
     });
+    // The limit travels from the keep's own `quota.limit`, not a lookup.
+    expect(new URL(page.url()).searchParams.get("limit")).toBe(String(limit));
     await expect(
       page.getByRole("heading", { name: "Saved to your account — as a draft" }),
     ).toBeVisible();
-    await expect(
-      page.getByText(new RegExp(`You're keeping ${KEPT_PAGE_LIMIT} pages`)),
-    ).toBeVisible();
+    await expect(page.getByText(new RegExp(`You're keeping ${limit} pages\\.`))).toBeVisible();
     // The countdown is visible, and the entry point into the swap is offered.
     await expect(page.locator("time")).toBeVisible();
     await expect(page.getByRole("link", { name: "Swap it in" })).toBeVisible();

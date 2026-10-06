@@ -14,20 +14,26 @@
  * the sort of routing property that is free to check and expensive to discover.
  *
  * The atomicity is the feature: one transaction, so the account can never be
- * observed a slot short or a page over `KEPT_PAGE_LIMIT`. No store call here
- * either — a swap is two Postgres writes and nothing else.
+ * observed a slot short or a page over its kept limit. `demote` must be a kept
+ * `live` page and `keep` a draft, else `409 not_allowed_in_status`. A swap is two
+ * Postgres writes — plus, when `keep` is an `expired` draft inside its grace
+ * window, the late keep's manifest write after the commit (`lib/sites/keep.ts`).
  */
 import type { NextResponse } from "next/server";
 
 import { getSession } from "../../../../lib/auth/session";
 import { getProfileForSession } from "../../../../lib/db/queries/profile";
 import {
-  errorResponse,
   readJsonOnlyBody,
   UnreadableBodyError,
 } from "../../../../lib/publish/http";
 import { refuseUntrustedOrigin } from "../../../../lib/publish/origin";
-import { ownerResponse, signedOut, swapOwnedSites } from "../../../../lib/sites/owner-routes";
+import {
+  ownerResponse,
+  refuse,
+  signedOut,
+  swapOwnedSites,
+} from "../../../../lib/sites/owner-routes";
 
 /** `postgres-js` needs TCP sockets. */
 export const runtime = "nodejs";
@@ -49,7 +55,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     body = await readJsonOnlyBody(request);
   } catch (err) {
     if (err instanceof UnreadableBodyError) {
-      return errorResponse(400, { error: "invalid_request", message: err.message });
+      return ownerResponse(refuse("invalid_request", err.message));
     }
     throw err;
   }

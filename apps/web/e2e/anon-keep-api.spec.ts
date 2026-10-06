@@ -1,9 +1,9 @@
 import {
   DRAFT_GRACE_DAYS,
   DRAFT_TTL_DAYS,
-  KEPT_PAGE_LIMIT,
   generateAnonToken,
   hashToken,
+  limitsFor,
   publishErrorSchema,
 } from "@kept/shared";
 import { expect, test } from "@playwright/test";
@@ -228,7 +228,8 @@ test.describe("anonymous keep route", () => {
     expect(body.slug).toBe(site.slug);
     expect(body.restored).toBe(false);
     expect(body.liveUrl).toContain(site.slug);
-    expect(body.quota.limit).toBe(KEPT_PAGE_LIMIT);
+    // The keeper's plan's limit (new accounts are free), never the alias.
+    expect(body.quota.limit).toBe(limitsFor("free").keptPages);
 
     const [row] = await db
       .select()

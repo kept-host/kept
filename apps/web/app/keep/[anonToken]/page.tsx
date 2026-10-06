@@ -112,7 +112,9 @@ const COPY: Record<DraftPhase, { eyebrow: string; heading: string; body: string 
  *
  * `KEPT_PAGE_LIMIT` comes from `@kept/shared` for the same reason every other
  * number on this screen does — a literal here is kept lying to a stranger the
- * day the cap changes.
+ * day the cap changes. It is the FREE alias on purpose: the visitor has no
+ * account yet, so there is no plan to ask `limitsFor` about, and "free accounts
+ * keep N pages" is exactly the offer being made.
  */
 const KEEP_CTA_NOTE = `Free. Sign in with GitHub, Google, or email — free accounts keep ${KEPT_PAGE_LIMIT} pages.`;
 

@@ -9,8 +9,8 @@
  *    stub — the same technique `anon-manage.test.ts` uses to inject real
  *    misconfiguration. No mocks anywhere (project rule).
  *
- * 2. THE WIRING, run against the real dev Neon branch. The four in-scope route
- *    modules are imported and their exported `POST` is CALLED — the actual
+ * 2. THE WIRING, run against the real dev Neon branch. Every in-scope route
+ *    module is imported and its exported handler is CALLED — the actual
  *    handler, not a re-implementation — and the site rows are RE-READ
  *    afterwards, because "it answered 403" and "it changed nothing" are
  *    different claims and only the second one matters. That the handlers are
@@ -187,6 +187,57 @@ test("the refusal is the publish family's closed error shape, uncacheable", asyn
   assert.equal(body.message.includes(HOSTED), false);
 });
 
+test("every cookie-authenticated mutating route imports the gate", async () => {
+  // THE POSITIVE HALF OF THE PIN. The list below is the whole set of routes
+  // whose authority is the `__Host-` session cookie, and each one must call
+  // `refuseUntrustedOrigin` — the negative list further down is the set that
+  // must not. A new mutating route under `/api/sites/` is added HERE, in the
+  // task that ships it, rather than discovered red later.
+  const { readFile } = await import("node:fs/promises");
+  const cookieRoutes = [
+    "app/api/sites/[id]/keep/route.ts",
+    "app/api/sites/[id]/demote/route.ts",
+    "app/api/sites/swap/route.ts",
+    // E06 task 006 — rename. An unguarded cross-origin call here could move
+    // somebody's permanent link.
+    "app/api/sites/[id]/name/route.ts",
+    // E06 task 006 — replace and delete, the two verbs that change what a page
+    // IS. Ungated, a script on a hosted page could rewrite its publisher's
+    // other pages' contents, or take them off the internet, using nothing but
+    // the session cookie the browser attaches for it.
+    "app/api/sites/[id]/replace/route.ts",
+    "app/api/sites/[id]/route.ts",
+    // E06 task 007 — restore (and the Undo toast). It writes no bytes, but it
+    // changes which bytes a page serves: ungated, a hosted page could roll its
+    // publisher's other pages back to any version they still keep.
+    "app/api/sites/[id]/versions/[versionId]/restore/route.ts",
+    // E06 task 004 — the OWNED publish. Its keyless twin `POST /api/publish` is
+    // in the negative list below and must stay there; this one spends the
+    // session cookie, so ungated a hosted page could publish into its visitor's
+    // account — and, at the cap, silently demote nothing while consuming the
+    // slot they were saving.
+    "app/api/sites/route.ts",
+    // E06 task 011 — ACCOUNT DELETION, the only irreversible verb in the
+    // product. Ungated, a script on a hosted page could destroy its visitor's
+    // whole account — every kept page, every permanent link somebody else may
+    // be pointing at — using nothing but the session cookie the browser
+    // attaches for it. The typed account email in the body is the second gate;
+    // this is the first.
+    "app/api/account/route.ts",
+
+    // The anonymous keep carries TWO credentials (bearer token in the path AND
+    // a session cookie), so it is gated like a cookie route.
+    "app/api/anon/[anonToken]/keep/route.ts",
+  ];
+  for (const path of cookieRoutes) {
+    const source = await readFile(new URL(`../../${path}`, import.meta.url), "utf8");
+    assert.ok(
+      source.includes("refuseUntrustedOrigin"),
+      `${path} spends the session cookie and must refuse a foreign origin first.`,
+    );
+  }
+});
+
 test("the five bearer-credential routes do not import the gate", async () => {
   const { readFile } = await import("node:fs/promises");
   const bearerRoutes = [
@@ -207,6 +258,32 @@ test("the five bearer-credential routes do not import the gate", async () => {
       source.includes("refuseUntrustedOrigin"),
       false,
       `${path} must stay keyless — E08's agents send no Origin header.`,
+    );
+  }
+});
+
+test("the public read routes do not import the gate", async () => {
+  // A THIRD CATEGORY, kept separate from the two above on purpose. These are
+  // neither cookie-authenticated nor bearer-credentialed: they authenticate
+  // nobody and mutate nothing. `refuseUntrustedOrigin` exists for ambient
+  // session authority spent on a state change (E05a D3), and a read that has
+  // neither gains nothing from it while losing every consumer it exists for.
+  const { readFile } = await import("node:fs/promises");
+  const publicRoutes = [
+    // E06 task 010 — the OG card. Fetched as an `<img>` by the dashboard and as
+    // `og:image` by crawlers and social previews, which send no `Origin` at all
+    // and frequently a foreign one. Gating it would break every one of them.
+    // Recorded here rather than left to silence, which is what the criterion
+    // asks for: the absence of the gate on this route is a decision.
+    "app/api/og/[siteId]/route.tsx",
+    "app/api/health/route.ts",
+  ];
+  for (const path of publicRoutes) {
+    const source = await readFile(new URL(`../../${path}`, import.meta.url), "utf8");
+    assert.equal(
+      source.includes("refuseUntrustedOrigin"),
+      false,
+      `${path} authenticates nobody and mutates nothing — a gate here only breaks callers.`,
     );
   }
 });
@@ -420,6 +497,233 @@ test(
     );
 
     assert.equal(res.status, 403);
+    assert.equal(await snapshot(kept), before);
+  },
+);
+
+test(
+  "a cross-origin rename is 403 and the slug is untouched on re-read",
+  { skip: skipDb },
+  async () => {
+    const { PATCH } = await import("../../app/api/sites/[id]/name/route");
+    const { appOrigin } = await import("../storage/env");
+    const owner = await makeProfile();
+    const kept = await makeSite(owner, true);
+    const before = await snapshot(kept);
+    const body = { name: `e05a-006-renamed-${kept.slice(0, 8)}` };
+
+    const res = await PATCH(
+      new Request(`https://app.kept-dev.xyz/api/sites/${kept}/name`, {
+        method: "PATCH",
+        headers: { cookie: COOKIE, origin: HOSTED, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      { params: Promise.resolve({ id: kept }) },
+    );
+
+    assert.equal(res.status, 403);
+    assert.equal(publishErrorSchema.parse(await res.json()).error, "invalid_request");
+    // The claim that matters. A refused rename that had already written the new
+    // KV manifest would be a 403 with the page moved — worse than no check.
+    assert.equal(await snapshot(kept), before);
+
+    // The same call from the app's own origin gets past the gate. It cannot
+    // COMPLETE out here (`getSession()` needs a Next request scope), which is
+    // itself the proof the gate runs before the session lookup.
+    const allowed = await statusOrThrow(() =>
+      PATCH(
+        new Request(`https://app.kept-dev.xyz/api/sites/${kept}/name`, {
+          method: "PATCH",
+          headers: {
+            cookie: COOKIE,
+            origin: appOrigin(),
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(body),
+        }),
+        { params: Promise.resolve({ id: kept }) },
+      ),
+    );
+    assert.notEqual(allowed, 403);
+    assert.equal(await snapshot(kept), before);
+  },
+);
+
+test(
+  "a cross-origin replace is 403 and the page still points at the version it did",
+  { skip: skipDb },
+  async () => {
+    const { POST } = await import("../../app/api/sites/[id]/replace/route");
+    const { appOrigin } = await import("../storage/env");
+    const owner = await makeProfile();
+    const kept = await makeSite(owner, true);
+    const before = await snapshot(kept);
+    const html = "<!doctype html><html lang=\"en\"><head><title>e05a-006 replace</title></head><body>x</body></html>";
+
+    const res = await POST(
+      new Request(`https://app.kept-dev.xyz/api/sites/${kept}/replace`, {
+        method: "POST",
+        headers: { cookie: COOKIE, origin: HOSTED, "content-type": "text/html" },
+        body: html,
+      }),
+      { params: Promise.resolve({ id: kept }) },
+    );
+
+    assert.equal(res.status, 403);
+    assert.equal(publishErrorSchema.parse(await res.json()).error, "invalid_request");
+    // The claim that matters: no new version, no new title, no new content hash.
+    // A refused replace that had already written R2 and KV would be a 403 with
+    // the page's contents swapped — worse than no check at all.
+    assert.equal(await snapshot(kept), before);
+
+    const allowed = await statusOrThrow(() =>
+      POST(
+        new Request(`https://app.kept-dev.xyz/api/sites/${kept}/replace`, {
+          method: "POST",
+          headers: { cookie: COOKIE, origin: appOrigin(), "content-type": "text/html" },
+          body: html,
+        }),
+        { params: Promise.resolve({ id: kept }) },
+      ),
+    );
+    assert.notEqual(allowed, 403);
+    assert.equal(await snapshot(kept), before);
+  },
+);
+
+test(
+  "a cross-origin delete is 403 and the page is still live",
+  { skip: skipDb },
+  async () => {
+    const { DELETE } = await import("../../app/api/sites/[id]/route");
+    const { appOrigin } = await import("../storage/env");
+    const owner = await makeProfile();
+    const kept = await makeSite(owner, true);
+    const before = await snapshot(kept);
+
+    const res = await DELETE(
+      new Request(`https://app.kept-dev.xyz/api/sites/${kept}`, {
+        method: "DELETE",
+        headers: { cookie: COOKIE, origin: HOSTED },
+      }),
+      { params: Promise.resolve({ id: kept }) },
+    );
+
+    assert.equal(res.status, 403);
+    assert.equal(publishErrorSchema.parse(await res.json()).error, "invalid_request");
+    // Still `live`: the manifest was never removed and the row never archived.
+    assert.equal(await snapshot(kept), before);
+
+    const allowed = await statusOrThrow(() =>
+      DELETE(
+        new Request(`https://app.kept-dev.xyz/api/sites/${kept}`, {
+          method: "DELETE",
+          headers: { cookie: COOKIE, origin: appOrigin() },
+        }),
+        { params: Promise.resolve({ id: kept }) },
+      ),
+    );
+    assert.notEqual(allowed, 403);
+    assert.equal(await snapshot(kept), before);
+  },
+);
+
+test(
+  "a cross-origin owned publish is 403 and no page is created",
+  { skip: skipDb },
+  async () => {
+    const { POST } = await import("../../app/api/sites/route");
+    const { appOrigin } = await import("../storage/env");
+    const html =
+      '<!doctype html><html lang="en"><head><title>e05a-006 owned publish</title></head><body>x</body></html>';
+
+    const request = new Request("https://app.kept-dev.xyz/api/sites", {
+      method: "POST",
+      headers: { cookie: COOKIE, origin: HOSTED, "content-type": "text/html" },
+      body: html,
+    });
+    const res = await POST(request);
+
+    assert.equal(res.status, 403);
+    assert.equal(publishErrorSchema.parse(await res.json()).error, "invalid_request");
+    // THE CLAIM THAT MATTERS, and on a CREATE route it cannot be "the row is
+    // unchanged" — there is no row yet to re-read. It is that the document was
+    // never even read off the wire: `bodyUsed` false proves the refusal
+    // happened before `readPageBody`, and therefore before the hash, the
+    // transaction and every store call that could have put a page on the
+    // internet. A row count would race every other spec sharing this database.
+    assert.equal(request.bodyUsed, false);
+
+    // The same call from the app's own origin gets past the gate and fails
+    // later, on the session — which is the proof the refusal is origin-dependent
+    // rather than blanket, and that the gate runs BEFORE `getSession()`.
+    const allowed = await statusOrThrow(() =>
+      POST(
+        new Request("https://app.kept-dev.xyz/api/sites", {
+          method: "POST",
+          headers: { cookie: COOKIE, origin: appOrigin(), "content-type": "text/html" },
+          body: html,
+        }),
+      ),
+    );
+    assert.notEqual(allowed, 403);
+  },
+);
+
+test(
+  "a cross-origin account deletion is 403, and the account and its pages survive",
+  { skip: skipDb },
+  async () => {
+    const { DELETE } = await import("../../app/api/account/route");
+    const { appOrigin } = await import("../storage/env");
+    const owner = await makeProfile();
+    const kept = await makeSite(owner, true);
+    const before = await snapshot(kept);
+    const client = await db();
+    const { profiles, user } = await import("../db/schema");
+    const { eq } = await import("drizzle-orm");
+    const [profile] = await client
+      .select({ email: profiles.email })
+      .from(profiles)
+      .where(eq(profiles.id, owner));
+    // The account's own address — the body that WOULD delete it from the app's
+    // origin, so the refusal below is the origin gate's and nothing else's.
+    const body = JSON.stringify({ email: profile!.email });
+
+    const res = await DELETE(
+      new Request("https://app.kept-dev.xyz/api/account", {
+        method: "DELETE",
+        headers: { cookie: COOKIE, origin: HOSTED, "content-type": "application/json" },
+        body,
+      }),
+    );
+
+    assert.equal(res.status, 403);
+    assert.equal(publishErrorSchema.parse(await res.json()).error, "invalid_request");
+    // THE CLAIM THAT MATTERS, on the one irreversible verb in the product: the
+    // page is still `live` and still owned. A refused deletion that had already
+    // unwound the edge would be a 403 with the account's pages dark.
+    assert.equal(await snapshot(kept), before);
+    const rows = await client.select({ id: user.id }).from(user).where(eq(user.id, owner));
+    assert.equal(rows.length, 1, "the user row must survive a refused deletion");
+
+    // The same call from the app's own origin gets past the gate and fails
+    // later, on the session — proof the refusal is origin-dependent rather than
+    // blanket, and that the gate runs BEFORE `getSession()`.
+    const allowed = await statusOrThrow(() =>
+      DELETE(
+        new Request("https://app.kept-dev.xyz/api/account", {
+          method: "DELETE",
+          headers: {
+            cookie: COOKIE,
+            origin: appOrigin(),
+            "content-type": "application/json",
+          },
+          body,
+        }),
+      ),
+    );
+    assert.notEqual(allowed, 403);
     assert.equal(await snapshot(kept), before);
   },
 );

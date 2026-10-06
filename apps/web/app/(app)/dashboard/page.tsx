@@ -1,23 +1,61 @@
 /**
- * `(app)/dashboard` — the page a signed-in user lands on.
+ * `(app)/dashboard` — the Pages home. E06 task 011 (PRD §5.1, §9.1).
  *
- * Still a placeholder, and the placeholder is now honest about which epic owns
- * what: **E05** gates this route group and lands the user here (`layout.tsx`),
- * **E06** builds the surface itself — the kept/draft listing, quota, rename,
- * replace, delete, keep/demote and the swap chooser.
+ * A READ, STRAIGHT TO POSTGRES. `getDashboardSites` is one round trip: the
+ * owner's kept pages and drafts, the kept allowance from the same predicate the
+ * cap enforces with, the chosen-names count, and each page's recent visits with
+ * the sync's "as of". No fetch to this app's own API, no server action, and no
+ * second gate — `(app)/layout.tsx` gates every route in the group. Every
+ * mutation is the client's, through the owner routes, followed by
+ * `router.refresh()`, which re-runs this.
+ *
+ * `ClockProvider` gets the server's `Date.now()` so the drafts' countdowns
+ * render identically on the server and on first paint, then tick client-side.
  */
-export default function DashboardPlaceholder() {
+import { getSession } from "@/lib/auth/session";
+import { getDashboardSites, type DashboardSite } from "@/lib/db/queries/dashboard";
+import { getProfileForSession } from "@/lib/db/queries/profile";
+import { liveUrl } from "@/lib/publish/pipeline";
+import { previewFits } from "@/lib/publish/preview";
+import { effectiveStatus } from "@/lib/sites/display";
+
+import { ClockProvider } from "./clock";
+import type { HomeSite } from "./home-card";
+import { PagesHome } from "./pages-home";
+
+/** The row as the home renders it, as of `now` (a draft past its clock is not live). */
+function toHomeSite(site: DashboardSite, now: number): HomeSite {
+  const expiredByClock = site.expiresAt !== null && site.expiresAt.getTime() <= now;
+  return {
+    ...site,
+    liveUrl: liveUrl(site.slug),
+    previewable: effectiveStatus(site.status, expiredByClock) === "live" && previewFits(site),
+  };
+}
+
+export default async function DashboardPage() {
+  const profile = await getProfileForSession(await getSession());
+  if (!profile) {
+    // Unreachable past the layout unless the profile bootstrap itself failed.
+    // Rendering the empty state would tell somebody with pages that they have
+    // none, so this lands on `./error.tsx`, which offers a retry.
+    throw new Error("Signed in, but no profile resolved for the session.");
+  }
+
+  const home = await getDashboardSites(profile.id);
+  const now = Date.now();
+
   return (
-    <main className="mx-auto flex min-h-dvh max-w-3xl flex-col justify-center gap-3 px-6 py-16">
-      <p className="mono-label text-text-muted">Control plane</p>
-      <h1 className="font-display text-3xl font-semibold text-text">
-        Dashboard placeholder
-      </h1>
-      <p className="text-text-secondary">
-        You are signed in — sign-in and the gate on this route group landed in
-        E05. The dashboard itself (your kept pages and drafts, quota, rename,
-        replace, delete and swap) is built in E06.
-      </p>
-    </main>
+    <ClockProvider initialNow={now}>
+      <PagesHome
+        kept={home.kept.map((site) => toHomeSite(site, now))}
+        drafts={home.drafts.map((site) => toHomeSite(site, now))}
+        quota={home.quota}
+        names={home.names}
+        plan={profile.plan}
+        visitsAsOf={home.visitsAsOf}
+        visitsFailed={home.visitsFailed}
+      />
+    </ClockProvider>
   );
 }

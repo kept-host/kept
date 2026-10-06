@@ -17,6 +17,7 @@ import { NextResponse } from "next/server";
 
 import { replacePage } from "../../../../../lib/publish/anon-manage";
 import {
+  browserChannel,
   errorResponse,
   readPageBody,
   UnreadableBodyError,
@@ -44,7 +45,7 @@ export async function POST(
     throw err;
   }
 
-  const outcome = await replacePage(anonToken, body);
+  const outcome = await replacePage(anonToken, body, browserChannel(request));
 
   if (!outcome.ok) return errorResponse(outcome.status, outcome.body);
 

@@ -44,6 +44,10 @@ import { linesContaining, stripComments } from "../testing/strip-comments";
 const MASCOT_DIR = new URL("../../../../packages/shared/src/mascot/", import.meta.url);
 const SHARED_PKG = new URL("../../../../packages/shared/package.json", import.meta.url);
 const SHARED_BARREL = new URL("../../../../packages/shared/src/index.ts", import.meta.url);
+const SHARED_SRC = new URL("../../../../packages/shared/src/", import.meta.url);
+const EDGE_SRC = new URL("../../../edge/src/", import.meta.url);
+const EDGE_TEST = new URL("../../../edge/test/", import.meta.url);
+const EDGE_PKG = new URL("../../../edge/package.json", import.meta.url);
 
 /**
  * One verbatim code fragment per file, proving the comment strip left the logic
@@ -120,10 +124,12 @@ test("packages/shared gains no dependency for the mascot", async () => {
     exports?: Record<string, string>;
   };
   assert.deepEqual(
-    Object.keys(pkg.dependencies ?? {}),
-    ["zod"],
-    "packages/shared's dependencies must stay exactly { zod }. The mascot is plain TypeScript " +
-      "emitting SVG strings — no path-morph library, no colour library, nothing.",
+    Object.keys(pkg.dependencies ?? {}).sort(),
+    ["obscenity", "zod"],
+    "packages/shared's dependencies must stay exactly { obscenity, zod }. The mascot is plain " +
+      "TypeScript emitting SVG strings — no path-morph library, no colour library, nothing. " +
+      "`obscenity` is the name rule's word list (E06 task 001) and is admitted only because " +
+      "the next test pins it behind the ./names subpath.",
   );
   assert.equal(
     pkg.devDependencies,
@@ -135,6 +141,96 @@ test("packages/shared gains no dependency for the mascot", async () => {
     "./src/mascot/index.ts",
     "the ./mascot subpath must exist in packages/shared's exports map — it is what keeps the " +
       "blink calendar and the sample tables out of the Worker's hot path.",
+  );
+  assert.equal(
+    pkg.exports?.["./names"],
+    "./src/names.ts",
+    "the ./names subpath must exist in packages/shared's exports map — it is the only door to " +
+      "the obscenity word list.",
+  );
+});
+
+/**
+ * Every module specifier a source file imports, re-exports or requires.
+ *
+ * Scans RAW text rather than `stripComments` output: the stripper does not know
+ * regex literals, and `names.ts` is exactly the kind of file that grows one.
+ * The pattern only matches import-shaped text (`from "x"`, `import("x")`,
+ * `import "x"`), so prose that names a module in backticks does not trip it.
+ */
+function importSpecifiers(source: string): string[] {
+  return [
+    ...source.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)["']([^"']+)["']/g),
+  ].map((m) => m[1]!);
+}
+
+async function tsFiles(dir: URL): Promise<string[]> {
+  return (await readdir(dir, { recursive: true })).filter((n) => n.endsWith(".ts")).sort();
+}
+
+test("obscenity is reachable only through the ./names subpath — never the barrel, the mascot or apps/edge", async () => {
+  // packages/shared: `obscenity` is imported by names.ts alone, and nothing in
+  // the package imports names.ts — so neither the barrel nor ./mascot (nor any
+  // future module either of them pulls in) can carry the word list.
+  const sharedFiles = await tsFiles(SHARED_SRC);
+  assert.ok(sharedFiles.includes("names.ts"), "packages/shared/src/names.ts is missing");
+  for (const name of sharedFiles) {
+    const specifiers = importSpecifiers(await readFile(new URL(name, SHARED_SRC), "utf8"));
+    if (name === "names.ts") {
+      assert.ok(
+        specifiers.includes("obscenity"),
+        "names.ts no longer imports obscenity as this scan sees it, so the bans below prove " +
+          "nothing. Fix importSpecifiers, or drop obscenity from packages/shared's dependencies.",
+      );
+      continue;
+    }
+    assert.equal(
+      specifiers.includes("obscenity"),
+      false,
+      `packages/shared/src/${name} imports obscenity. Only names.ts may: every other module is ` +
+        "reachable from the barrel or ./mascot, and both are on the Worker's import graph.",
+    );
+    const namesImports = specifiers.filter((s) => /(?:^\.{1,2}|^@kept\/shared)\/names$/.test(s));
+    assert.deepEqual(
+      namesImports,
+      [],
+      `packages/shared/src/${name} imports the name rule (${namesImports.join(", ")}). Nothing in ` +
+        "packages/shared may — it would put the obscenity word list on the Worker's import graph. " +
+        "Consumers import @kept/shared/names directly.",
+    );
+  }
+
+  // apps/edge: the Worker and its workerd suite never import the subpath or the
+  // library. Read-only scan; AC35 keeps the edge diff empty.
+  const edgeSpecifiers: string[] = [];
+  for (const dir of [EDGE_SRC, EDGE_TEST]) {
+    for (const name of await tsFiles(dir)) {
+      const specifiers = importSpecifiers(await readFile(new URL(name, dir), "utf8"));
+      edgeSpecifiers.push(...specifiers);
+      for (const banned of ["obscenity", "@kept/shared/names"]) {
+        assert.equal(
+          specifiers.includes(banned),
+          false,
+          `apps/edge/${dir === EDGE_SRC ? "src" : "test"}/${name} imports ${banned}. The Worker ` +
+            "has no use for a word list; the name rule runs on the control plane only.",
+        );
+      }
+    }
+  }
+  assert.ok(
+    edgeSpecifiers.includes("@kept/shared"),
+    "the apps/edge scan found no import of @kept/shared at all, so it is not reading imports — " +
+      "the ban above proves nothing. Fix importSpecifiers or the edge paths.",
+  );
+
+  const edgePkg = JSON.parse(await readFile(EDGE_PKG, "utf8")) as {
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+  };
+  assert.equal(
+    "obscenity" in { ...edgePkg.dependencies, ...edgePkg.devDependencies },
+    false,
+    "apps/edge must not depend on obscenity directly either.",
   );
 });
 

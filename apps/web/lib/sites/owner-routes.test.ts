@@ -9,14 +9,21 @@
  * makes uncallable outside a Next request scope and which
  * `e2e/owner-sites-api.spec.ts` covers over the wire instead.
  *
- * TWO PROPERTIES ARE LOAD-BEARING HERE and are asserted byte for byte rather
+ * THREE PROPERTIES ARE LOAD-BEARING HERE and are asserted byte for byte rather
  * than by status code alone:
  *
  *   1. A site that does not exist, a site owned by somebody else and an id that
  *      is not a uuid produce the IDENTICAL body. "You don't own this" is an
  *      existence oracle over other people's pages.
- *   2. Being at `KEPT_PAGE_LIMIT` is HTTP 200 with `outcome: "owned_draft"`,
- *      never a 4xx. The cap degrades; it does not reject.
+ *   2. Being at the plan's kept limit is `409 at_kept_limit` on the OWNER keep
+ *      (E06 task 004, PRD §10.2): the page is already an owned draft, so there
+ *      is nothing for the cap to degrade into. Nothing is written.
+ *   3. Every refusal is the studio envelope `{ error: { code, message } }`
+ *      (E06 task 005) — one typed-failure table, never a flat `PublishError`.
+ *
+ * Drill accounts are `free`, so the cap is `limitsFor("free").keptPages` (D1) —
+ * never a literal. Cap-filling rows are seeded in ONE multi-row insert: real
+ * rows, but not one round trip each.
  *
  * Nothing here touches R2, KV or the purge endpoint, because the module under
  * test must not either.
@@ -34,9 +41,12 @@ import { after, test } from "node:test";
 import {
   DRAFT_GRACE_DAYS,
   DRAFT_TTL_DAYS,
-  KEPT_PAGE_LIMIT,
+  MAX_PAGE_BYTES,
+  STUDIO_ERROR_CODES,
   demoteResultSchema,
   keepResultSchema,
+  limitsFor,
+  studioErrorSchema,
   swapResultSchema,
 } from "@kept/shared";
 import { config } from "dotenv";
@@ -48,6 +58,9 @@ const skipLive = process.env.DATABASE_URL
   : "DATABASE_URL absent — run locally with apps/web/.env.local";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/** The cap every drill account (`free`) is held to. */
+const FREE_LIMIT = limitsFor("free").keptPages;
 
 const createdSites = new Set<string>();
 const createdProfiles = new Set<string>();
@@ -80,22 +93,17 @@ interface MakeSite {
   kept?: boolean;
 }
 
-async function makeSite({ ownerId = null, kept = false }: MakeSite = {}): Promise<{
-  id: string;
-  slug: string;
-}> {
-  const db = await client();
-  const { sites } = await schema();
+/** One drill row's column values, tracked for teardown. Inserting is the caller's. */
+function siteRow({ ownerId = null, kept = false }: MakeSite = {}) {
   const id = crypto.randomUUID();
-  const slug = `e05-010-${id.slice(0, 12)}`;
   const now = new Date();
   const expiresAt = new Date(now.getTime() + DRAFT_TTL_DAYS * MS_PER_DAY);
-
-  await db.insert(sites).values({
+  createdSites.add(id);
+  return {
     id,
-    slug,
-    status: "live",
-    region: "auto",
+    slug: `e05-010-${id.slice(0, 12)}`,
+    status: "live" as const,
+    region: "auto" as const,
     ownerId,
     anonTokenHash: ownerId === null ? `e05-010-${id}` : null,
     publisherHash: "e05-010-drill",
@@ -104,9 +112,15 @@ async function makeSite({ ownerId = null, kept = false }: MakeSite = {}): Promis
     claimedAt: ownerId === null ? null : now,
     contentHash: "e05-010",
     sizeBytes: 128,
-  });
-  createdSites.add(id);
-  return { id, slug };
+  };
+}
+
+async function makeSite(options: MakeSite = {}): Promise<{ id: string; slug: string }> {
+  const db = await client();
+  const { sites } = await schema();
+  const row = siteRow(options);
+  await db.insert(sites).values(row);
+  return { id: row.id, slug: row.slug };
 }
 
 async function readSite(siteId: string) {
@@ -118,25 +132,30 @@ async function readSite(siteId: string) {
   return row;
 }
 
-/** The kept-ness predicate, asked of the database rather than of a result object. */
+/**
+ * The kept-ness predicate, asked of the database rather than of a result object
+ * — through the module's own `isKeptCondition`, never a re-spelled WHERE clause
+ * that could drift from the one the cap enforces.
+ */
 async function keptCount(profileId: string): Promise<number> {
   const db = await client();
   const { sites } = await schema();
-  const { and, eq, isNull, sql } = await import("drizzle-orm");
+  const { sql } = await import("drizzle-orm");
+  const { isKeptCondition } = await import("./keep");
   const [row] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(sites)
-    .where(
-      and(eq(sites.ownerId, profileId), isNull(sites.expiresAt), eq(sites.status, "live")),
-    );
+    .where(isKeptCondition(profileId));
   return row?.count ?? 0;
 }
 
-/** `n` kept pages against one profile, the way the cap drills need them. */
+/** `n` kept pages against one profile, in ONE insert — the way the cap drills need them. */
 async function fillKept(profileId: string, n: number): Promise<{ id: string; slug: string }[]> {
-  const made: { id: string; slug: string }[] = [];
-  for (let i = 0; i < n; i++) made.push(await makeSite({ ownerId: profileId, kept: true }));
-  return made;
+  const db = await client();
+  const { sites } = await schema();
+  const rows = Array.from({ length: n }, () => siteRow({ ownerId: profileId, kept: true }));
+  if (rows.length > 0) await db.insert(sites).values(rows);
+  return rows.map(({ id, slug }) => ({ id, slug }));
 }
 
 /** A `timestamp` column the drill has just asserted must be set. */
@@ -182,9 +201,9 @@ test(
     assert.equal(body.siteId, site.id);
     assert.equal(body.slug, site.slug);
     assert.deepEqual(body.quota, {
-      limit: KEPT_PAGE_LIMIT,
+      limit: FREE_LIMIT,
       used: 1,
-      remaining: KEPT_PAGE_LIMIT - 1,
+      remaining: FREE_LIMIT - 1,
     });
 
     const row = await readSite(site.id);
@@ -196,33 +215,30 @@ test(
 );
 
 test(
-  "keep, at cap: HTTP 200 with owned_draft and the clock retained — never a 4xx",
+  "keep, at cap: 409 at_kept_limit in the studio envelope, and the owned draft is untouched",
   { skip: skipLive },
   async () => {
     const { keepOwnedSite } = await import("./owner-routes");
     const profileId = await makeProfile();
-    await fillKept(profileId, KEPT_PAGE_LIMIT);
+    await fillKept(profileId, FREE_LIMIT);
     const site = await makeSite({ ownerId: profileId });
     const before = await readSite(site.id);
 
     const outcome = await keepOwnedSite(site.id, profileId);
 
-    assert.equal(outcome.ok, true, "the cap is a branch, not an error");
-    assert.equal(outcome.status, 200);
-    const body = keepResultSchema.parse(outcome.body);
-    assert.equal(body.outcome, "owned_draft");
-    assert.deepEqual(body.quota, { limit: KEPT_PAGE_LIMIT, used: KEPT_PAGE_LIMIT, remaining: 0 });
-    assert.equal(
-      body.outcome === "owned_draft" ? body.expiresAt : null,
-      stamp(before.expiresAt).toISOString(),
-      "the existing countdown is retained, not restarted",
+    assert.equal(outcome.ok, false, "the owner keep at the cap is a refusal (PRD §10.2)");
+    assert.equal(outcome.status, 409);
+    const { error } = studioErrorSchema.parse(outcome.body);
+    assert.equal(error.code, "at_kept_limit");
+    assert.ok(
+      error.message.includes(String(FREE_LIMIT)),
+      `the sentence names the plan's limit, from limitsFor: ${error.message}`,
     );
 
-    const row = await readSite(site.id);
-    assert.equal(row.status, "live", "an owned draft is live and already serving");
+    assert.deepEqual(await readSite(site.id), before, "the countdown and every column are retained");
     assert.equal(
       await keptCount(profileId),
-      KEPT_PAGE_LIMIT,
+      FREE_LIMIT,
       "the account never exceeds the cap",
     );
   },
@@ -242,9 +258,9 @@ test(
     const body = keepResultSchema.parse(outcome.body);
     assert.equal(body.outcome, "kept");
     assert.deepEqual(body.quota, {
-      limit: KEPT_PAGE_LIMIT,
+      limit: FREE_LIMIT,
       used: 1,
-      remaining: KEPT_PAGE_LIMIT - 1,
+      remaining: FREE_LIMIT - 1,
     });
     assert.equal(await keptCount(profileId), 1, "no second slot was consumed");
   },
@@ -294,7 +310,7 @@ test(
     assert.equal(body.slug, target.slug);
     assert.deepEqual(
       body.quota,
-      { limit: KEPT_PAGE_LIMIT, used: 1, remaining: KEPT_PAGE_LIMIT - 1 },
+      { limit: FREE_LIMIT, used: 1, remaining: FREE_LIMIT - 1 },
       "the freed slot is visible without a second request",
     );
 
@@ -318,19 +334,26 @@ test(
 );
 
 test(
-  "demoting an already-draft page is a no-op success, and keeping it again has no cooldown",
+  "demoting a draft is 409 not_allowed_in_status with its clock untouched, and keeping it then has no cooldown",
   { skip: skipLive },
   async () => {
     const { demoteOwnedSite, keepOwnedSite } = await import("./owner-routes");
     const profileId = await makeProfile();
     const site = await makeSite({ ownerId: profileId });
+    const before = await readSite(site.id);
 
+    // Only a kept `live` page can be demoted: a second clock on a draft would
+    // silently move its deadline.
     const first = await demoteOwnedSite(site.id, profileId);
-    assert.equal(first.ok, true, "demoting a draft is not an error");
-    assert.equal(first.status, 200);
-    assert.ok(stamp((await readSite(site.id)).expiresAt) instanceof Date);
+    assert.equal(first.ok, false);
+    assert.equal(first.status, 409);
+    assert.equal(studioErrorSchema.parse(first.body).error.code, "not_allowed_in_status");
+    assert.deepEqual(await readSite(site.id), before, "the draft's clock did not move");
 
-    // Demote → immediate regret → keep. No cooldown, by design.
+    // Keep → immediate regret → demote → keep. No cooldown, by design.
+    assert.equal((await keepOwnedSite(site.id, profileId)).ok, true);
+    assert.equal((await demoteOwnedSite(site.id, profileId)).ok, true);
+    assert.ok(stamp((await readSite(site.id)).expiresAt) instanceof Date);
     const kept = await keepOwnedSite(site.id, profileId);
     assert.equal(kept.ok, true);
     assert.equal(keepResultSchema.parse(kept.body).outcome, "kept");
@@ -341,12 +364,12 @@ test(
 // ── POST /api/sites/swap ────────────────────────────────────────────────────
 
 test(
-  "swap: one transaction, and the account lands at exactly KEPT_PAGE_LIMIT",
+  "swap: one transaction, and the account lands at exactly its kept limit",
   { skip: skipLive },
   async () => {
     const { swapOwnedSites } = await import("./owner-routes");
     const profileId = await makeProfile();
-    const kept = await fillKept(profileId, KEPT_PAGE_LIMIT);
+    const kept = await fillKept(profileId, FREE_LIMIT);
     const incoming = await makeSite({ ownerId: profileId });
     const outgoing = kept[0]!;
 
@@ -367,16 +390,12 @@ test(
       "both halves report the same post-swap quota",
     );
     assert.deepEqual(body.kept.quota, {
-      limit: KEPT_PAGE_LIMIT,
-      used: KEPT_PAGE_LIMIT,
+      limit: FREE_LIMIT,
+      used: FREE_LIMIT,
       remaining: 0,
     });
 
-    assert.equal(
-      await keptCount(profileId),
-      KEPT_PAGE_LIMIT,
-      "never KEPT_PAGE_LIMIT − 1, never + 1",
-    );
+    assert.equal(await keptCount(profileId), FREE_LIMIT, "never one short, never one over");
     assert.ok(
       stamp((await readSite(outgoing.id)).expiresAt) instanceof Date,
       "the demoted half is back on a clock",
@@ -391,16 +410,17 @@ test(
   async () => {
     const { swapOwnedSites } = await import("./owner-routes");
     const profileId = await makeProfile();
-    const kept = await fillKept(profileId, KEPT_PAGE_LIMIT);
+    const kept = await fillKept(profileId, FREE_LIMIT);
     const site = kept[0]!;
 
     const outcome = await swapOwnedSites({ demote: site.id, keep: site.id }, profileId);
 
     assert.equal(outcome.ok, false);
     assert.equal(outcome.status, 400);
+    assert.equal(studioErrorSchema.parse(outcome.body).error.code, "invalid_request");
     assert.equal(
       await keptCount(profileId),
-      KEPT_PAGE_LIMIT,
+      FREE_LIMIT,
       "and nothing moved — the page is still kept",
     );
   },
@@ -489,6 +509,8 @@ test(
       1,
       `all ${bodies.length} refusals must be one body — a difference is an existence oracle: ${[...new Set(bodies)].join(" | ")}`,
     );
+    // …and that one body is the studio envelope's `not_found` (D17: never 403).
+    assert.equal(studioErrorSchema.parse(JSON.parse(bodies[0]!)).error.code, "not_found");
 
     // And their page is untouched by any of it.
     assert.equal((await readSite(theirKept.id)).ownerId, theirs);
@@ -505,9 +527,205 @@ test(
 
     assert.equal(refusal.ok, false);
     assert.equal(refusal.status, 401);
+    assert.deepEqual(studioErrorSchema.parse(refusal.body), refusal.body, "the envelope, too");
     // Distinguishable from the 404 by status, which is what a caller acts on:
     // "sign in again" and "that page is gone" are different remedies.
     const { ownerNotFound } = await import("./owner-routes");
     assert.notEqual(refusal.status, ownerNotFound().status);
+  },
+);
+
+// ── The envelope (E06 task 005) ─────────────────────────────────────────────
+
+test(
+  "a typed refusal answers its own code at the table's status; anything else is a 500 that leaks nothing",
+  { skip: skipLive },
+  async () => {
+    const { studioFailure } = await import("./owner-routes");
+    const { StudioRefusal } = await import("./studio-refusal");
+
+    // Every code in the closed enum has a status, and it is a 4xx/5xx — the
+    // table is a `Record` over the enum, so this is the runtime half of that.
+    for (const code of STUDIO_ERROR_CODES) {
+      const failure = studioFailure(new StudioRefusal(code, `sentence for ${code}`), "drill");
+      assert.equal(failure.ok, false);
+      assert.ok(failure.status >= 400 && failure.status < 600, `${code} → ${failure.status}`);
+      assert.deepEqual(failure.body, { error: { code, message: `sentence for ${code}` } });
+    }
+
+    // The detail is the LOG's: it never reaches the body.
+    const withDetail = studioFailure(
+      new StudioRefusal("internal_error", "Try again in a moment.", "R2 put: secret-ish detail"),
+      "drill",
+    );
+    assert.equal(withDetail.status, 503);
+    assert.equal(JSON.stringify(withDetail.body).includes("secret-ish"), false);
+
+    const realError = console.error;
+    console.error = () => undefined;
+    try {
+      const untyped = studioFailure(new Error("driver exploded: password=hunter2"), "keep");
+      assert.equal(untyped.status, 500);
+      assert.equal(studioErrorSchema.parse(untyped.body).error.code, "internal_error");
+      assert.equal(JSON.stringify(untyped.body).includes("hunter2"), false);
+    } finally {
+      console.error = realError;
+    }
+  },
+);
+
+test(
+  "pipeline refusals are translated at the boundary: an empty and an oversized page are invalid_file and file_too_large",
+  { skip: skipLive },
+  async () => {
+    const { publishOwnedSite, replaceOwnedSite } = await import("./owner-routes");
+    const profileId = await makeProfile();
+    const site = await makeSite({ ownerId: profileId, kept: true });
+    const publisher = { ip: "203.0.113.5", userAgent: "kept-e06-005-drill/1.0" };
+    const oversized = `<!doctype html><title>x</title>${"a".repeat(MAX_PAGE_BYTES)}`;
+
+    for (const [label, call] of [
+      ["publish", (html: unknown) => publishOwnedSite({ html }, profileId, publisher)],
+      ["replace", (html: unknown) => replaceOwnedSite(site.id, { html }, profileId)],
+    ] as const) {
+      const empty = await call("");
+      assert.equal(empty.ok, false, label);
+      assert.equal(empty.status, 400, label);
+      assert.equal(studioErrorSchema.parse(empty.body).error.code, "invalid_file", label);
+
+      const tooBig = await call(oversized);
+      assert.equal(tooBig.status, 413, label);
+      assert.equal(studioErrorSchema.parse(tooBig.body).error.code, "file_too_large", label);
+
+      const malformed = await call(42);
+      assert.equal(malformed.status, 400, label);
+      assert.equal(studioErrorSchema.parse(malformed.body).error.code, "invalid_request", label);
+    }
+
+    // None of it wrote anything: the account has exactly the page it started with.
+    const db = await client();
+    const { sites } = await schema();
+    const { eq } = await import("drizzle-orm");
+    const rows = await db.select({ id: sites.id }).from(sites).where(eq(sites.ownerId, profileId));
+    assert.deepEqual(rows.map((row) => row.id), [site.id]);
+  },
+);
+
+// ── Versions: replace and restore refusals (E06 task 007) ───────────────────
+//
+// Every refusal below is decided before a store is touched — the status gate,
+// the owner scope and the version scope are all Postgres reads — so these run
+// on seeded rows. The store-touching half (no-op, prune, restore) is
+// `versions.test.ts`.
+
+/** A `site_versions` row for a seeded site, optionally made current. No bytes. */
+async function addVersion(siteId: string, current = false): Promise<string> {
+  const db = await client();
+  const { siteVersions, sites } = await schema();
+  const { eq } = await import("drizzle-orm");
+  const id = crypto.randomUUID();
+  await db.insert(siteVersions).values({
+    id,
+    siteId,
+    r2Key: `sites/${siteId}/${id}/index.html`,
+    contentHash: `e06-007-${id}`,
+    sizeBytes: 1,
+  });
+  if (current) await db.update(sites).set({ currentVersionId: id }).where(eq(sites.id, siteId));
+  return id;
+}
+
+async function versionCount(siteId: string): Promise<number> {
+  const db = await client();
+  const { siteVersions } = await schema();
+  const { eq, sql } = await import("drizzle-orm");
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(siteVersions)
+    .where(eq(siteVersions.siteId, siteId));
+  return row?.count ?? 0;
+}
+
+test(
+  "replace and restore share the status gate: under_review, quarantined, expired and archived are 409 not_allowed_in_status, removed is 404, and nothing is written (AC29)",
+  { skip: skipLive },
+  async () => {
+    const { replaceOwnedSite, restoreOwnedVersion } = await import("./owner-routes");
+    const db = await client();
+    const { sites } = await schema();
+    const { eq } = await import("drizzle-orm");
+    const profileId = await makeProfile();
+
+    for (const [status, expected] of [
+      ["under_review", 409],
+      ["quarantined", 409],
+      ["expired", 409],
+      ["archived", 409],
+      ["removed", 404],
+    ] as const) {
+      const site = await makeSite({ ownerId: profileId, kept: true });
+      await addVersion(site.id, true);
+      const older = await addVersion(site.id);
+      await db.update(sites).set({ status }).where(eq(sites.id, site.id));
+      const before = await readSite(site.id);
+
+      const replaced = await replaceOwnedSite(site.id, { html: `<!doctype html><title>${status}</title>` }, profileId);
+      const restored = await restoreOwnedVersion(site.id, older, profileId);
+
+      for (const [verb, outcome] of [["replace", replaced], ["restore", restored]] as const) {
+        assert.equal(outcome.ok, false, `${verb} on ${status}`);
+        assert.equal(outcome.status, expected, `${verb} on ${status}`);
+        const { error } = studioErrorSchema.parse(outcome.body);
+        assert.equal(error.code, expected === 409 ? "not_allowed_in_status" : "not_found", `${verb} on ${status}`);
+      }
+      assert.deepEqual(await readSite(site.id), before, `${status}: no column moved`);
+      assert.equal(await versionCount(site.id), 2, `${status}: no version written`);
+    }
+  },
+);
+
+test(
+  "restore: another account's page is the not-found body; another page's version, an unknown one and a malformed one are version_not_found; the current version is { unchanged: true } (AC44)",
+  { skip: skipLive },
+  async () => {
+    const { restoreOwnedVersion } = await import("./owner-routes");
+    const mine = await makeProfile();
+    const theirs = await makeProfile();
+    const page = await makeSite({ ownerId: mine, kept: true });
+    const current = await addVersion(page.id, true);
+    const previous = await addVersion(page.id);
+    const otherPage = await makeSite({ ownerId: mine, kept: true });
+    const otherVersion = await addVersion(otherPage.id, true);
+    const before = await readSite(page.id);
+
+    // Not yours, does not exist, not a uuid: one body (D17).
+    const notFound = [
+      await restoreOwnedVersion(page.id, previous, theirs),
+      await restoreOwnedVersion(crypto.randomUUID(), previous, mine),
+      await restoreOwnedVersion("not-a-uuid", previous, mine),
+    ];
+    for (const outcome of notFound) assert.equal(outcome.status, 404);
+    assert.equal(new Set(notFound.map((outcome) => JSON.stringify(outcome.body))).size, 1);
+    assert.equal(studioErrorSchema.parse(notFound[0]!.body).error.code, "not_found");
+
+    // A version that is not THIS page's — even the same owner's other page.
+    const versionNotFound = [
+      await restoreOwnedVersion(page.id, otherVersion, mine),
+      await restoreOwnedVersion(page.id, crypto.randomUUID(), mine),
+      await restoreOwnedVersion(page.id, "not-a-uuid", mine),
+    ];
+    for (const outcome of versionNotFound) {
+      assert.equal(outcome.status, 404);
+      assert.equal(studioErrorSchema.parse(outcome.body).error.code, "version_not_found");
+    }
+    assert.equal(new Set(versionNotFound.map((outcome) => JSON.stringify(outcome.body))).size, 1);
+
+    // The version already served: a no-op success that writes nothing.
+    const unchanged = await restoreOwnedVersion(page.id, current, mine);
+    assert.equal(unchanged.status, 200);
+    assert.deepEqual(unchanged.body, { unchanged: true });
+
+    assert.deepEqual(await readSite(page.id), before, "none of it moved the page");
+    assert.equal((await readSite(otherPage.id)).currentVersionId, otherVersion);
   },
 );

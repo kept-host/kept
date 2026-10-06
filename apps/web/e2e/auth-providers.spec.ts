@@ -517,10 +517,10 @@ test.describe("the provider boundary", () => {
     expect(stored[0]!.domain).toBe(new URL(baseURL!).hostname);
 
     await page.goto("/dashboard");
-    await expect(page.getByRole("heading", { name: "Dashboard placeholder" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Your pages" })).toBeVisible();
 
     await page.reload();
-    await expect(page.getByRole("heading", { name: "Dashboard placeholder" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Your pages" })).toBeVisible();
     expect(new URL(page.url()).pathname).toBe("/dashboard");
   });
 

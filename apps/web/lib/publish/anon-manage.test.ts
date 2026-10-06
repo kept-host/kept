@@ -154,7 +154,7 @@ test(
     const bodies = new Set<string>();
 
     for (const token of tokens) {
-      const replaced = await replacePage(token, { html: pageHtml(runId()) });
+      const replaced = await replacePage(token, { html: pageHtml(runId()) }, "api");
       const deleted = await deletePage(token);
       const reminded = await updateReminderEmail(token, { reminderEmail: "a@b.co" });
 
@@ -202,7 +202,7 @@ test(
     assert.equal((await probeUntil(page.liveUrl, /-v1/)).status, 200);
 
     const second = pageHtml(`${runId()}-v2`);
-    const replaced = await replacePage(page.token, { html: second });
+    const replaced = await replacePage(page.token, { html: second }, "api");
     assert.equal(replaced.ok, true, replaced.ok ? "" : JSON.stringify(replaced.body));
     if (!replaced.ok) return;
 
@@ -233,6 +233,12 @@ test(
     assert.ok(current);
     assert.equal(current.r2Key, pageObjectKey(page.siteId, current.id));
     assert.equal(current.contentHash, after_.contentHash);
+    // §5.9: the door is recorded on the version — a non-browser replace is `api`,
+    // and so was the keyless publish before it (no Turnstile token).
+    assert.equal(current.publishedVia, "api");
+    assert.equal(versions.find((v) => v.id === firstVersionId)?.publishedVia, "api");
+    // The title follows the NEW bytes (D11) — the row's `title_source` is `html`.
+    assert.equal(after_.title, second.match(/<title>(.*)<\/title>/)?.[1]);
 
     // ARCHIVE, DON'T DELETE: the previous version's object is still in R2.
     const r2 = r2Store();
@@ -264,7 +270,7 @@ test(
     const { result: replaced, errors } = await withCapturedErrors(async () => {
       delete process.env.CLOUDFLARE_ZONE_ID;
       try {
-        return await replacePage(page.token, { html: third });
+        return await replacePage(page.token, { html: third }, "api");
       } finally {
         restoreEnv("CLOUDFLARE_ZONE_ID", prior);
       }
@@ -317,7 +323,7 @@ test(
       // one with something to unwind.
       process.env.KV_NAMESPACE_ID = "00000000000000000000000000000000";
       try {
-        return await replacePage(page.token, { html: pageHtml(`${runId()}-v4`) });
+        return await replacePage(page.token, { html: pageHtml(`${runId()}-v4`) }, "api");
       } finally {
         restoreEnv("KV_NAMESPACE_ID", priorNamespace);
       }
@@ -458,7 +464,7 @@ test(
     // The token still resolves — it is how E05/E07's late-recovery path finds
     // the page — but the manage operations are closed, and they close with the
     // same 404 a stranger's token gets.
-    const replaced = await replacePage(page.token, { html: pageHtml(runId()) });
+    const replaced = await replacePage(page.token, { html: pageHtml(runId()) }, "api");
     assert.equal(replaced.ok === false && replaced.status, 404);
     const reminded = await updateReminderEmail(page.token, { reminderEmail: "a@b.co" });
     assert.equal(reminded.ok === false && reminded.status, 404);

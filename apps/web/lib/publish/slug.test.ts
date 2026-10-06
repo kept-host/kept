@@ -1,16 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { slugSchema } from "@kept/shared";
+import { RESERVED_NAMES, slugSchema } from "@kept/shared";
+import { isInappropriateName } from "@kept/shared/names";
 
-import {
-  RESERVED_SLUGS,
-  SLUG_ALPHABET,
-  SLUG_LENGTH,
-  containsProfanity,
-  isReservedSlug,
-  mintSlugCandidate,
-} from "./slug";
+import { SLUG_ALPHABET, SLUG_LENGTH, isReservedSlug, mintSlugCandidate } from "./slug";
 
 const SAMPLE = 5_000;
 
@@ -30,7 +24,7 @@ test("every candidate satisfies slugSchema and the declared shape", () => {
 });
 
 test("reserved labels are rejected and never minted", () => {
-  for (const label of RESERVED_SLUGS) {
+  for (const label of RESERVED_NAMES) {
     assert.ok(isReservedSlug(label), `${label} should be reserved`);
   }
   assert.equal(isReservedSlug("k3nt5wqz"), false);
@@ -42,12 +36,12 @@ test("reserved labels are rejected and never minted", () => {
 test("`app` stays reserved even though the Worker no longer reserves the label", () => {
   // E05a: `app` left `RESERVED_LABELS` in apps/edge/src/host.ts so the Worker
   // stops 301'ing the control plane away from `app.{base}`. It must NOT leave
-  // this list to match — keeping it is what makes an accidentally re-proxied
-  // `app.` record a branded 404 instead of a user page published at the control
-  // plane's own hostname.
+  // `RESERVED_NAMES` to match — keeping it is what makes an accidentally
+  // re-proxied `app.` record a branded 404 instead of a user page published at
+  // the control plane's own hostname.
   assert.ok(
-    RESERVED_SLUGS.includes("app"),
-    "`app` must stay in RESERVED_SLUGS: removing it lets a user page be minted at the control plane's hostname (app.kept.host)",
+    (RESERVED_NAMES as readonly string[]).includes("app"),
+    "`app` must stay in RESERVED_NAMES: removing it lets a user page be minted at the control plane's hostname (app.kept.host)",
   );
   assert.ok(
     isReservedSlug("app"),
@@ -55,13 +49,28 @@ test("`app` stays reserved even though the Worker no longer reserves the label",
   );
 });
 
-test("profane substrings are rejected and never minted", () => {
-  assert.ok(containsProfanity("x7assq2b"));
-  assert.ok(containsProfanity("fckz3m9p"));
-  assert.ok(containsProfanity("2b3xxxkq"));
-  assert.equal(containsProfanity("k3nt5wqz"), false);
+test("a minted name never trips the inappropriate-name matcher chosen names use", () => {
+  // Decision 5: the SAME matcher refuses chosen names and generated ones — on a
+  // match the mint draws again. These spellings use only SLUG_ALPHABET, so a
+  // random draw can produce them; the matcher must see them for the redraw to
+  // mean anything.
+  for (const spelled of ["x7fckq2b", "fvck2m9p", "h8fckbb9"]) {
+    assert.ok(isInappropriateName(spelled), `${spelled} must be caught`);
+  }
+  assert.equal(isInappropriateName("k3nt5wqz"), false);
   for (let i = 0; i < SAMPLE; i++) {
-    assert.equal(containsProfanity(mintSlugCandidate()), false);
+    const slug = mintSlugCandidate();
+    assert.equal(isInappropriateName(slug), false, slug);
+  }
+});
+
+test("`site` and `settings` are reserved — E06's own two control-plane routes", () => {
+  // The studio's page detail (`/site/[id]`) and `/settings`. The list carries
+  // `dashboard`, `auth`, `p` and `keep` for exactly this reason; these two
+  // joined it when E06 added the routes.
+  for (const label of ["site", "settings"]) {
+    assert.ok((RESERVED_NAMES as readonly string[]).includes(label));
+    assert.ok(isReservedSlug(label), label);
   }
 });
 

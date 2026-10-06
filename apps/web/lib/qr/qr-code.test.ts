@@ -13,7 +13,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { QrCode } from "../../components/kept/qr";
-import { QR_QUIET_ZONE_MODULES, qrMatrix, qrPath } from "./qr-code";
+import { QR_QUIET_ZONE_MODULES, qrMatrix, qrPath, qrSvg } from "./qr-code";
 
 // `tsconfig.json` sets `jsx: "preserve"` for Next, so the `tsx` runner falls
 // back to the CLASSIC JSX transform and emits bare `React.createElement` calls.
@@ -100,4 +100,18 @@ test("the rendered QR makes zero outbound network requests", () => {
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+test("qrSvg is a standalone document: the same path, its own colours, no stylesheet needed", () => {
+  const svg = qrSvg(URL_UNDER_TEST);
+  const matrix = qrMatrix(URL_UNDER_TEST);
+
+  assert.match(svg, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
+  assert.ok(svg.includes(`viewBox="0 0 ${matrix.size} ${matrix.size}"`));
+  // AC38's anchor: the downloaded file's geometry IS the screen's.
+  assert.equal(/ d="([^"]*)"/.exec(svg)?.[1], qrPath(matrix));
+  // A saved file cannot resolve the studio's tokens; it carries real colours.
+  assert.doesNotMatch(svg, /var\(|currentColor/);
+  assert.match(svg, /fill="white"/);
+  assert.match(svg, /fill="black"/);
 });

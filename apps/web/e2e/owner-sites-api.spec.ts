@@ -1,17 +1,23 @@
 import {
   DRAFT_GRACE_DAYS,
   DRAFT_TTL_DAYS,
-  KEPT_PAGE_LIMIT,
   keepResultSchema,
+  limitsFor,
+  MANIFEST_KV_CACHE_TTL_SECONDS,
+  ownedPublishResultSchema,
   publishErrorSchema,
+  studioErrorSchema,
 } from "@kept/shared";
 import { expect, test } from "@playwright/test";
 import { config } from "dotenv";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
+import { pageObjectKey, r2Store } from "../lib/storage/r2";
 
+import { pageHtml, probeEdge, SKIP_LIVE_PUBLISH } from "./live-publish";
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
+import { seedKept } from "./owner-fixtures";
 import { rawRequest } from "./raw-request";
 import { jarlessContext, sessionHeaders } from "./session-request";
 
@@ -38,6 +44,11 @@ import { jarlessContext, sessionHeaders } from "./session-request";
  *      the rows are re-read, not merely the status asserted. `lib/publish/
  *      origin.test.ts` drills the decision; only this file can prove the
  *      refusal happens before the two Postgres writes.
+ *   5. **The cap and the late keep, on the wire** (E06 task 004). Two parallel
+ *      keeps one slot short land exactly one `200 kept` and one
+ *      `409 at_kept_limit` (AC13, edge case 2); a late keep of an expired page
+ *      in its grace window answers `200 kept` and the page serves from the dev
+ *      edge again after the purge window (AC15).
  *
  * NO MOCKS. Real dev Neon branch, real Better Auth instance, real signed
  * cookie, real HTTP. The one thing substituted is the **inbox**: with no
@@ -61,6 +72,12 @@ const SKIP: string | false =
   missing.length > 0
     ? `auth/dev credentials absent (${missing.join(", ")}) — run locally with apps/web/.env.local`
     : false;
+
+/** The delayed re-purge's deadline (`2 × cacheTtl + 5 s`) — derived, never a literal. */
+const STALE_EDGE_WINDOW_MS = (2 * MANIFEST_KV_CACHE_TTL_SECONDS + 5) * 1000;
+/** How long a restored manifest may take to reach a KV read (contract §6). */
+const SERVE_TIMEOUT_MS = 60_000;
+const SERVE_INTERVAL_MS = 2_000;
 
 /** The slug every fixture page in this file is minted under. */
 const wireSlug = (id: string) => `e05-010-wire-${id.slice(0, 12)}`;
@@ -86,6 +103,8 @@ test.describe("owner site routes", () => {
 
   const createdUserIds: string[] = [];
   const createdSiteIds: string[] = [];
+  /** Slugs a real publish gave a manifest, removed again in `afterAll`. */
+  const createdSlugs = new Set<string>();
 
   test.beforeAll(async () => {
     if (SKIP) return;
@@ -94,6 +113,23 @@ test.describe("owner site routes", () => {
 
   test.afterAll(async () => {
     if (SKIP) return;
+    // The edge first, then the bytes, then the rows — the dangerous half-state
+    // is a deleted row whose page keeps serving.
+    const { removeManifest } = await import("../lib/storage/manifest");
+    for (const slug of createdSlugs) {
+      await removeManifest(slug).catch(() => undefined);
+    }
+    for (const id of createdSiteIds) {
+      const versions = await db
+        .select({ id: schema.siteVersions.id })
+        .from(schema.siteVersions)
+        .where(eq(schema.siteVersions.siteId, id));
+      for (const version of versions) {
+        await r2Store()
+          .delete(pageObjectKey(id, version.id))
+          .catch(() => undefined);
+      }
+    }
     if (createdSiteIds.length) {
       await db.delete(schema.sites).where(inArray(schema.sites.id, createdSiteIds));
     }
@@ -190,8 +226,8 @@ test.describe("owner site routes", () => {
     for (const [url, data] of targets) {
       const response = await request.post(url, data === undefined ? {} : { data });
       expect(response.status(), `${url} must gate before it reads anything`).toBe(401);
-      // The closed error shape, so a client can branch on it.
-      publishErrorSchema.parse(await response.json());
+      // The studio envelope, so a client can branch on it (E06 task 005).
+      studioErrorSchema.parse(await response.json());
       expect(response.headers()["cache-control"]).toContain("no-store");
     }
   });
@@ -217,7 +253,7 @@ test.describe("owner site routes", () => {
       data: { demote: site, keep: site },
     });
     expect(response.status()).toBe(400);
-    publishErrorSchema.parse(await response.json());
+    expect(studioErrorSchema.parse(await response.json()).error.code).toBe("invalid_request");
   });
 
   test("signed in, keep and demote round-trip and a stranger's page is 404", async ({
@@ -234,7 +270,8 @@ test.describe("owner site routes", () => {
     expect(kept.status()).toBe(200);
     const keepBody = keepResultSchema.parse(await kept.json());
     expect(keepBody.outcome).toBe("kept");
-    expect(keepBody.quota.limit).toBe(KEPT_PAGE_LIMIT);
+    // The account's plan's limit (new accounts are free), never the alias.
+    expect(keepBody.quota.limit).toBe(limitsFor("free").keptPages);
     expect(
       (await db.select().from(schema.sites).where(eq(schema.sites.id, draft)))[0]?.expiresAt,
     ).toBeNull();
@@ -260,6 +297,8 @@ test.describe("owner site routes", () => {
     });
     expect(absent.status()).toBe(404);
     expect(await refused.text()).toBe(await absent.text());
+    // Not 403 — and the envelope's `not_found` (D17).
+    expect(studioErrorSchema.parse(await refused.json()).error.code).toBe("not_found");
   });
 
   /** The row as the app reads it, for a before/after comparison. */
@@ -291,8 +330,8 @@ test.describe("owner site routes", () => {
 
     expect(refused.status()).toBe(403);
     const body = publishErrorSchema.parse(await refused.json());
-    // The publish family's closed `{ error, message }` shape — not a bespoke
-    // code minted at this call site.
+    // E05a's own flat `{ error, message }` body — deliberately NOT the studio
+    // envelope: the gate runs before any route code (E06 task 005).
     expect(body.error).toBe("invalid_request");
     // The message names the origin that IS trusted, so a developer who hits
     // this can see immediately which host they were expected to call from.
@@ -358,5 +397,122 @@ test.describe("owner site routes", () => {
     expect(response.sent).not.toContain("sec-fetch-site");
     expect(response.status, response.body).toBe(403);
     expect(await readSite(draft)).toEqual(before);
+  });
+
+  /** Kept pages by the enforcer's own predicate — composed, never re-spelled. */
+  async function countKept(ownerId: string): Promise<number> {
+    const { isKeptCondition } = await import("../lib/sites/keep");
+    const [row] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.sites)
+      .where(isKeptCondition(ownerId));
+    return row?.count ?? 0;
+  }
+
+  test("AC13 — two parallel keeps one slot short: exactly one 200 kept, the other 409 at_kept_limit", async ({
+    request,
+    baseURL,
+  }) => {
+    const cookie = await signIn(baseURL!);
+    const ownerId = await profileIdFor(cookie, baseURL!);
+    const limit = limitsFor("free").keptPages;
+    // Real rows by the enforcer's predicate; only the two drafts are asserted on.
+    await seedKept({ siteIds: createdSiteIds }, ownerId, limit - 1);
+    const drafts = [await makeSite(ownerId, false), await makeSite(ownerId, false)];
+    const before = new Map(await Promise.all(drafts.map(async (id) => [id, await readSite(id)] as const)));
+
+    // Two tabs, one click each, at the same moment (edge case 2). `lockOwner`
+    // serialises them server-side; nothing here orders them.
+    const responses = await Promise.all(
+      drafts.map((id) =>
+        request.post(`${baseURL}/api/sites/${id}/keep`, { headers: sessionHeaders(cookie, baseURL!) }),
+      ),
+    );
+
+    expect(responses.map((response) => response.status()).sort()).toEqual([200, 409]);
+    const won = keepResultSchema.parse(await responses.find((r) => r.status() === 200)!.json());
+    expect(won.outcome).toBe("kept");
+    expect(won.quota).toEqual({ limit, used: limit, remaining: 0 });
+
+    const lost = responses.find((r) => r.status() === 409)!;
+    const { error } = studioErrorSchema.parse(await lost.json());
+    expect(error.code).toBe("at_kept_limit");
+    expect(error.message, "the limit in the sentence is the plan's").toContain(String(limit));
+    expect(lost.headers()["cache-control"]).toContain("no-store");
+
+    expect(await countKept(ownerId), "never one over the limit").toBe(limit);
+    const loser = drafts.find((id) => id !== won.siteId)!;
+    expect(await readSite(loser), "the refused keep wrote nothing").toEqual(before.get(loser));
+  });
+
+  test("late keep over HTTP: an expired page in grace is kept, live again, and serves after the purge window (AC15)", async ({
+    request,
+    baseURL,
+  }) => {
+    test.skip(!!SKIP_LIVE_PUBLISH, SKIP_LIVE_PUBLISH || undefined);
+    // Waits out the delayed re-purge on purpose; see `STALE_EDGE_WINDOW_MS`.
+    test.setTimeout(LIVE_STACK_TIMEOUT + STALE_EDGE_WINDOW_MS + SERVE_TIMEOUT_MS);
+
+    const cookie = await signIn(baseURL!);
+    const marker = `e06-004-${crypto.randomUUID().slice(0, 8)}`;
+    const published = await request.post(`${baseURL}/api/sites`, {
+      headers: sessionHeaders(cookie, baseURL!),
+      data: { html: pageHtml(marker) },
+    });
+    expect(published.status(), await published.text()).toBe(201);
+    const { site } = ownedPublishResultSchema.parse(await published.json());
+    createdSiteIds.push(site.id);
+    createdSlugs.add(site.slug);
+
+    // E07's expiry sweep, performed by hand: the manifest is REMOVED and the row
+    // goes to `expired` with its grace window still open. The URL is never
+    // requested while it is down, so no colo has cached the absence.
+    const { removeManifest } = await import("../lib/storage/manifest");
+    expect((await removeManifest(site.slug)).ok).toBe(true);
+    const msPerDay = 24 * 60 * 60 * 1000;
+    await db
+      .update(schema.sites)
+      .set({
+        status: "expired",
+        expiresAt: new Date(Date.now() - msPerDay),
+        purgeAfter: new Date(Date.now() + (DRAFT_GRACE_DAYS - 1) * msPerDay),
+      })
+      .where(eq(schema.sites.id, site.id));
+
+    const kept = await request.post(`${baseURL}/api/sites/${site.id}/keep`, {
+      headers: sessionHeaders(cookie, baseURL!),
+    });
+    expect(kept.status(), await kept.text()).toBe(200);
+    const body = keepResultSchema.parse(await kept.json());
+    expect(body.outcome).toBe("kept");
+    expect(body.siteId).toBe(site.id);
+
+    const row = await readSite(site.id);
+    expect(row.status, "the late keep flips the row back to live").toBe("live");
+    expect(row.expiresAt).toBeNull();
+    expect(row.purgeAfter).toBeNull();
+
+    // AC15: the page is back at its own URL — first as soon as KV propagates…
+    const servedBy = async (deadline: number) => {
+      let last = await probeEdge(site.liveUrl);
+      while (!(last.status === 200 && last.body.includes(marker)) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, SERVE_INTERVAL_MS));
+        last = await probeEdge(site.liveUrl);
+      }
+      return last;
+    };
+    const restoredAt = Date.now();
+    const first = await servedBy(restoredAt + SERVE_TIMEOUT_MS);
+    expect(first.status, "the restored page serves again").toBe(200);
+    expect(first.body).toContain(marker);
+
+    // …and still after the delayed second purge has run, so nothing in the
+    // purge sequence takes it back down.
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.max(0, restoredAt + STALE_EDGE_WINDOW_MS - Date.now())),
+    );
+    const after = await servedBy(Date.now() + SERVE_TIMEOUT_MS);
+    expect(after.status, "still serving after the purge window").toBe(200);
+    expect(after.body).toContain(marker);
   });
 });

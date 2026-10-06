@@ -37,6 +37,53 @@ test.describe("the design-token readiness guard", () => {
     expect(token).not.toBe("");
   });
 
+  test("the font tokens carry the design's faces: Hanken Grotesk, Geist, JetBrains Mono", async ({
+    page,
+  }) => {
+    // E06 decision 1: display Hanken Grotesk, body Geist, mono JetBrains Mono,
+    // bound through `--font-display` / `--font-body` / `--font-mono` and nowhere
+    // else. next/font mangles family names (`__Hanken_Grotesk_1a2b3c`), so each
+    // token is resolved on a probe element and compared with `_`/`-` read as
+    // spaces.
+    await gotoWithTokensApplied(page, ROUTE);
+
+    const families = await page.evaluate(() => {
+      const resolve = (token: string) => {
+        const probe = document.createElement("span");
+        probe.style.fontFamily = `var(${token})`;
+        document.body.appendChild(probe);
+        const family = getComputedStyle(probe).fontFamily;
+        probe.remove();
+        return family;
+      };
+      return {
+        display: resolve("--font-display"),
+        body: resolve("--font-body"),
+        mono: resolve("--font-mono"),
+      };
+    });
+    const words = (family: string) => family.replace(/[_-]+/g, " ").toLowerCase();
+
+    expect(words(families.display)).toContain("hanken grotesk");
+    expect(words(families.body)).toContain("geist");
+    expect(words(families.mono)).toContain("jetbrains mono");
+    // The faces they replaced are gone from every token: Geist is no longer the
+    // display face, and Inter is not loaded at all.
+    expect(words(families.display)).not.toContain("geist");
+    expect(words(Object.values(families).join(","))).not.toMatch(/\binter\b/);
+
+    // And the faces actually arrived — a family name with no file behind it
+    // would pass the checks above and render in the fallback.
+    const loaded = await page.evaluate(async () => {
+      await document.fonts.ready;
+      return [...document.fonts]
+        .filter((face) => face.status === "loaded")
+        .map((face) => face.family.replace(/[_-]+/g, " ").toLowerCase());
+    });
+    expect(loaded.some((family) => family.includes("hanken grotesk"))).toBe(true);
+    expect(loaded.some((family) => family.includes("geist"))).toBe(true);
+  });
+
   test("with the layout stylesheet dropped, the guard fails and names it", async ({
     page,
   }) => {

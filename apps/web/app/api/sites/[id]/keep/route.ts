@@ -9,12 +9,17 @@
  * session-authenticated end to end (epic decision D3); a bearer token gets
  * nothing here.
  *
- * ⚠️ AT THE CAP THIS IS STILL A 200. The page becomes an *owned draft* with its
- * countdown intact and `outcome: "owned_draft"` in the body. There is no 4xx
- * for being at `KEPT_PAGE_LIMIT`.
+ * ⚠️ AT THE CAP THIS IS `409 at_kept_limit` (E06 task 004, PRD §10.2). The page
+ * is already an owned draft, so — unlike the anonymous door, which still lands
+ * `owned_draft` — there is nothing to attach and nothing is written. The limit
+ * is the account's plan's (`limitsFor(plan).keptPages`).
  *
- * No store call on this path: keeping is a Postgres write, the page is already
- * `live` and already serving, and nothing in the Worker reads `owner_id`.
+ * Archived, removed and past-grace pages are the same 404 as a page that never
+ * existed; `under_review` / `quarantined` are `409 not_allowed_in_status`.
+ *
+ * One store call, on one branch: the LATE KEEP of an `expired` page inside its
+ * grace window writes its manifest again after the Postgres commit, through
+ * `lib/sites/keep.ts`. Keeping a `live` page is a Postgres write only.
  */
 import type { NextResponse } from "next/server";
 

@@ -4,7 +4,7 @@
 
 import { z } from "zod";
 
-import { MAX_PAGE_BYTES } from "./constants";
+import { MAX_PAGE_BYTES, SLUG_MAX_LENGTH } from "./constants";
 import { planEnum, regionEnum, siteStatusEnum } from "./enums";
 
 /**
@@ -33,7 +33,7 @@ function utf8ByteLength(str: string): number {
 export const slugSchema = z
   .string()
   .min(1)
-  .max(63)
+  .max(SLUG_MAX_LENGTH)
   .regex(
     /^[a-z0-9]+(?:-[a-z0-9]+)*$/,
     "Slug must be lowercase alphanumeric with single hyphens between segments.",

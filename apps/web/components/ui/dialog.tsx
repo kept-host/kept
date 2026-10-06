@@ -21,6 +21,9 @@ function DialogOverlay({
       className={cn(
         "fixed inset-0 z-50 bg-[color-mix(in_srgb,var(--text)_45%,transparent)] backdrop-blur-sm",
         "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
+        // §11: reduced motion is honoured everywhere. A dialog that fades and
+        // zooms is the most noticeable thing on the screen when it opens.
+        "motion-reduce:animate-none",
         className,
       )}
       {...props}
@@ -41,6 +44,7 @@ function DialogContent({
         className={cn(
           "fixed left-1/2 top-1/2 z-50 grid w-full max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 rounded-[var(--r-lg)] border border-border bg-surface p-6 shadow-[var(--shadow-lg)]",
           "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95",
+          "motion-reduce:animate-none",
           className,
         )}
         {...props}

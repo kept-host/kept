@@ -1,3 +1,4 @@
+import { MANIFEST_KV_CACHE_TTL_SECONDS } from "@kept/shared";
 import { config } from "dotenv";
 import {
   request as apiRequest,
@@ -167,4 +168,56 @@ export async function probeEdge(url: string): Promise<EdgeProbe> {
     contentType: res.headers.get("content-type") ?? "",
     body: await res.text(),
   };
+}
+
+/**
+ * How long the edge may still answer with bytes a replace or restore just
+ * superseded: the delayed re-purge's own deadline, derived from the shared
+ * constant exactly as `lib/storage/manifest.ts` derives `KV_REPURGE_DELAY_MS`.
+ * `writeManifest` purges immediately, but the Worker can answer a cache MISS
+ * from a KV read up to `MANIFEST_KV_CACHE_TTL_SECONDS` old; the second purge is
+ * what ends that tail. Never a literal.
+ */
+export const STALE_EDGE_WINDOW_MS = (2 * MANIFEST_KV_CACHE_TTL_SECONDS + 5) * 1000;
+
+/**
+ * Poll a served URL until it answers 200 with exactly `expected`, or throw at
+ * the architectural bound above. Returns how long it took.
+ */
+export async function waitForBytes(url: string, expected: string): Promise<number> {
+  const started = Date.now();
+  for (;;) {
+    const probe = await probeEdge(url);
+    if (probe.status === 200 && probe.body === expected) return Date.now() - started;
+    if (Date.now() - started > STALE_EDGE_WINDOW_MS) {
+      throw new Error(
+        `${url} still did not serve the expected bytes after ${Math.round(STALE_EDGE_WINDOW_MS / 1000)}s — past the delayed re-purge, which means a purge did not land.`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+}
+
+/** Both URL forms of a page — `/index.html` is a separate cache entry from `/`, and `slugPurgeUrls` purges both. */
+export const urlsFor = (slug: string): string[] => [
+  `https://${slug}.${servingDomain()}/`,
+  `https://${slug}.${servingDomain()}/index.html`,
+];
+
+/**
+ * Poll a served URL until it stops answering 200, or throw at the same bound
+ * as `waitForBytes`. Returns how long it took.
+ */
+export async function waitUntilGone(url: string): Promise<number> {
+  const started = Date.now();
+  for (;;) {
+    const probe = await probeEdge(url);
+    if (probe.status !== 200) return Date.now() - started;
+    if (Date.now() - started > STALE_EDGE_WINDOW_MS) {
+      throw new Error(
+        `${url} still served 200 after ${Math.round(STALE_EDGE_WINDOW_MS / 1000)}s — past the delayed re-purge, which means a purge did not land.`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
 }
