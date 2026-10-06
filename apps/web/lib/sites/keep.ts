@@ -292,10 +292,26 @@ async function lockSite(tx: Tx, siteId: string) {
 type LockedSite = NonNullable<Awaited<ReturnType<typeof lockSite>>>;
 
 /**
- * Nothing left for an owner to act on: deleted, taken down, or expired past its
- * grace window and awaiting E07's hard delete (edge case 13). An `expired` row
- * with no `purge_after` cannot be shown to be inside a window, so it is gone
- * rather than guessed at.
+ * THE GRACE RULE, AND THE ONLY SPELLING OF IT: the row's `purge_after` has
+ * passed, so whatever it was is E07's to collect and no longer its owner's to
+ * act on. For a draft that is `expires_at + DRAFT_GRACE_DAYS` (`draftClocks`
+ * writes both at publish); for an archived page, the end of its download window
+ * (D14). A kept page has no `purge_after` and is never past it.
+ *
+ * ⚠️ IT READS THE CLOCK, NEVER `status`. No expiry sweep exists until E07, so a
+ * draft whose grace ran out weeks ago still says `live` — and the home listed it
+ * with a Keep button that worked. The home's read, the keep primitives below and
+ * the owner's download / detail screen (`./export.ts`) all ask this one function.
+ */
+export function isPastGrace(site: { purgeAfter: Date | null }, now: Date): boolean {
+  return site.purgeAfter !== null && site.purgeAfter <= now;
+}
+
+/**
+ * Nothing left for an owner to act on: deleted, taken down, or past its grace
+ * window and awaiting E07's hard delete (edge case 13) — whatever its `status`
+ * says. An `expired` row with no `purge_after` cannot be shown to be inside a
+ * window, so it is gone rather than guessed at.
  *
  * Answered as the SAME not-found as a page that never existed: telling an owner
  * "that page exists but is gone" through a different body is the oracle
@@ -303,7 +319,7 @@ type LockedSite = NonNullable<Awaited<ReturnType<typeof lockSite>>>;
  */
 function isGone(site: LockedSite, now: Date): boolean {
   if ((ENDED_STATUSES as readonly SiteStatus[]).includes(site.status)) return true;
-  return site.status === "expired" && !(site.purgeAfter && site.purgeAfter > now);
+  return isPastGrace(site, now) || (site.status === "expired" && site.purgeAfter === null);
 }
 
 /** What a late keep still owes the edge once its transaction has committed. */
