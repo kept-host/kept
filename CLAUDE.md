@@ -189,6 +189,13 @@ Criticism is welcome — say when I'm wrong or might be wrong. Flag better appro
 - **ALWAYS RUN `pnpm typecheck`** before claiming any task complete (zero TypeScript errors). Not `pnpm tsc --noEmit` — there is no root `tsconfig.json`, so that command prints tsc's help and verifies nothing. `pnpm typecheck` runs `turbo run typecheck` across every workspace, which is the real gate.
 - **ALWAYS RUN `pnpm lint`** before claiming any task complete (zero ESLint errors; warnings OK). This maps to `turbo run lint`. ⚠️ The `rtk` hook rewrites the command and **summarises** its output, and its summariser invents errors: it reports phantom failures in `KeptLanding.tsx` / `next-env.d.ts` / `lib/auth/return-path.ts` that do not exist. **`rtk proxy pnpm lint` is the truth** (currently 0 errors, 1 pre-existing warning). `git status` is filtered the same way and can show a clean tree while files are untracked — use `/usr/bin/git` when it matters.
 - **Node ≥22 is required** (`engines` and `.nvmrc` both say so). Wrangler will not run on Node 20, so `apps/edge` cannot build or test there. Use `nvm use` at the repo root.
+- **NEVER READ ENV FILES OR PRINT SECRETS.** This applies to the main thread and to every subagent.
+  - **Don't open, `cat`, `grep`, `head`, `sed` or otherwise display** `.env*` files (`.env.local`, `apps/web/.env.local`, `.dev.vars`, …), and don't echo secret-bearing variables or connection strings. That holds even for one line, even masked, and even "just to check the dev branch".
+  - **Code may load env; nobody prints it.** Tests, scripts and the app can load env as they always do (`dotenv`, Next, Wrangler). No human or agent prints it.
+  - **To check that something is configured,** ask Arun, or rely on the app's own fail-fast config errors.
+  - **Every subagent brief must state this rule explicitly,** and must tell the agent to report back if it reads an env file or sees a secret anyway.
+  - **If a secret is exposed anyway** (read by a tool, printed in output, written to a log, transcript, commit, PR or artifact), the main thread **reports it to Arun immediately**. The report says what was exposed (partial or full), where it landed, which file or variable, and recommends rotation. Never stay silent about it, and never quietly scrub it.
+  - **Why:** on 2026-10-05 a subagent's grep of `apps/web/.env.local` put part of the dev Neon password into a session transcript.
 
 ## Other conventions
 
