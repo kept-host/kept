@@ -43,6 +43,13 @@
       "when": 1791131533656,
       "tag": "0005_creator_studio",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791301257104,
+      "tag": "0006_waitlist",
+      "breakpoints": true
     }
   ]
 }

@@ -10,13 +10,14 @@
  * scrolls the `#kept-root` container, docking it into each section.
  *
  * Discrete React state (phase, copied, agentNotify, proNotify,
- * openTab, humanPresent, gaugeRevealed) is owned by the React component and
+ * openTab, humanPresent, gaugeRevealed, waitlist) is owned by the React component and
  * mirrored here via `getState` / `setState`; everything per-frame is written
  * straight to the DOM through refs (never React state) to stay at 60fps.
  */
 
 import type { PublishError, PublishResponse } from "@kept/shared";
 
+import { keptOpen } from "@/lib/launch";
 import {
   checkPageFile,
   checkPageHtml,
@@ -54,6 +55,11 @@ export interface EngineState {
    * whose zero is the honest global pre-launch baseline.
    */
   mintedCount: number;
+  /**
+   * The waitlist dialog is open. Only a closed deploy (`lib/launch.ts`) ever
+   * sets it: there, a valid page opens the waitlist instead of publishing.
+   */
+  waitlist: boolean;
 }
 
 export interface EngineRefs {
@@ -1155,6 +1161,14 @@ export class KeptEngine {
     const invalid = checkPageHtml(html);
     if (invalid) {
       this.applyError(invalid);
+      return;
+    }
+    // Closed (`lib/launch.ts`): the page was a valid one and nothing is sent.
+    // The waitlist takes the drop instead, and the tile goes back to idle
+    // behind it, so closing the dialog leaves the drop box as it was.
+    if (!keptOpen()) {
+      this.applyPhase("idle");
+      this.setState({ waitlist: true });
       return;
     }
     const r = this.refs;

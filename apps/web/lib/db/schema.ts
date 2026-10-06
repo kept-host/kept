@@ -8,7 +8,8 @@
  *
  * Core tables: `profiles`, `sites`, `site_versions`, plus Better Auth's four
  * tables (E05), plus the creator studio's `name_holds`, `name_events`,
- * `page_views_daily` and `job_runs` (E06, migration 0005). Other per-epic tables
+ * `page_views_daily` and `job_runs` (E06, migration 0005), plus the launch
+ * `waitlist` (migration 0006). Other per-epic tables
  * (E07 `scans`/`abuse_reports`/`moderation_actions`) are intentionally NOT
  * created here — they arrive via their own epic's migration.
  */
@@ -471,6 +472,17 @@ export const jobRuns = pgTable("job_runs", {
   lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
   lastSuccessAt: timestamp("last_success_at", { withTimezone: true }),
   lastError: text("last_error"),
+});
+
+// ── waitlist ─────────────────────────────────────────────────────────────────
+// Addresses left on the landing while kept is closed (`lib/launch.ts`). Stored
+// lowercased, so the primary key is the dedup and joining twice is a no-op.
+// Nothing sends to them yet.
+export const waitlist = pgTable("waitlist", {
+  email: text("email").primaryKey(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 // ── relations ────────────────────────────────────────────────────────────────

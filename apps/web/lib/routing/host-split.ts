@@ -79,6 +79,13 @@ const API_PREFIX = "/api/";
 /** The one API subtree that may exist on exactly one origin. */
 const AUTH_API_PREFIX = "/api/auth/";
 
+/**
+ * The only route handlers that answer while kept is closed (`lib/launch.ts`):
+ * the release smoke's probe, and the waitlist the landing posts to. An allow
+ * list, so a route added later is closed until someone decides otherwise.
+ */
+const CLOSED_API_PATHS = new Set(["/api/health", "/api/waitlist"]);
+
 /** What `middleware()` should do with this request. */
 export type HostAction =
   /** Continue to the route. `stampPathname` drives the `x-kept-pathname` header. */
@@ -173,6 +180,62 @@ export function farewellHref(appUrl: string | undefined): string {
   if (!appOrigin) return "/";
   const apex = apexOriginFor(appOrigin);
   return apex ? `${apex.origin}/` : "/";
+}
+
+/**
+ * The closed rule — what a deploy that is not yet open (`lib/launch.ts`) does
+ * before the split rule runs. `undefined` means "not mine": the request is the
+ * split rule's to decide, exactly as on an open deploy.
+ *
+ *   /api/health, /api/waitlist        → not mine
+ *   every other /api/*                → 404, so no route handler runs — no
+ *                                       publish, and no `Set-Cookie` from auth
+ *   _next/*                           → not mine
+ *   a `(marketing)` path on the host
+ *   that serves the landing           → not mine (the split rule passes it)
+ *   a `(marketing)` path elsewhere    → 307 to the same path on the landing's
+ *                                       host (`app.`'s `/` included, which the
+ *                                       split rule would send to the closed
+ *                                       `/dashboard`)
+ *   everything else                   → 307 to the landing's `/`
+ *
+ * "The host that serves the landing" is the apex paired with `app.`, or the
+ * one origin when there is no second hostname (local development). Without a
+ * usable `NEXT_PUBLIC_APP_URL` there is nowhere configured to send anyone, so
+ * the closed pages 404 instead — never a redirect built from the request.
+ *
+ * Not an auth gate either: like the split rule it reads no session. It does not
+ * need one. With `/api/auth/*` gone nobody can sign in, and the routes that
+ * write without a session (`/api/publish`, `/api/anon/*`) are gone too.
+ */
+export function decideClosedAction({
+  host,
+  pathname,
+  search = "",
+  appUrl,
+}: {
+  host: string;
+  pathname: string;
+  search?: string;
+  appUrl: string | undefined;
+}): HostAction | undefined {
+  if (pathname === "/api" || pathname.startsWith(API_PREFIX)) {
+    return CLOSED_API_PATHS.has(normalizePath(pathname)) ? undefined : { kind: "not-found" };
+  }
+  if (pathname.startsWith(FRAMEWORK_PREFIX)) return undefined;
+
+  const appOrigin = parseAppOrigin(appUrl);
+  const landing = appOrigin ? (apexOriginFor(appOrigin) ?? appOrigin) : undefined;
+  const marketing = APEX_PATHS.has(normalizePath(pathname));
+
+  if (marketing && (!landing || host.toLowerCase() === landing.host.toLowerCase())) {
+    return undefined;
+  }
+  if (!landing) return { kind: "not-found" };
+  return {
+    kind: "redirect",
+    location: `${landing.origin}${marketing ? `${pathname}${search}` : "/"}`,
+  };
 }
 
 /**

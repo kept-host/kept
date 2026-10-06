@@ -37,6 +37,10 @@
  * purge — proven against the deployment that was just released, on every deploy.
  * It leaves nothing behind: a smoke that accumulates pages stops being runnable.
  *
+ * A CLOSED deploy (`lib/launch.ts`, reported by `/api/health`) has no publish
+ * path, so there `smokeClosed` replaces it and asserts the opposite: publish
+ * and sign-in both answer the closed rule's 404.
+ *
  * There is deliberately NO hostname literal in either half. The canary's slug is
  * derived from `--edge-url`; the published page's host comes back in the API
  * response and is checked against the slug the same response returned.
@@ -147,8 +151,15 @@ function errText(err: unknown): string {
  * same endpoint `e2e/api-health.spec.ts` asserts on, not a second one.
  * Warms through 502/503/504 with bounded backoff; every other outcome is
  * immediate.
+ *
+ * It also carries back the deploy's launch gate (`lib/launch.ts`), which picks
+ * the publish check below. Read from the deployment rather than configured
+ * here, so the smoke cannot disagree with what is actually running.
  */
-async function smokeWeb(baseUrl: string, deadline: number): Promise<StoreResult> {
+async function smokeWeb(
+  baseUrl: string,
+  deadline: number,
+): Promise<StoreResult & { open?: boolean }> {
   const url = new URL("/api/health", baseUrl).toString();
   const name = "web";
 
@@ -183,12 +194,19 @@ async function smokeWeb(baseUrl: string, deadline: number): Promise<StoreResult>
 
     const body = (await res.json().catch(() => null)) as {
       status?: string;
+      open?: unknown;
     } | null;
     if (body?.status !== "ok") {
       return fail(name, `GET ${url} → 200 but body.status !== "ok"`);
     }
+    if (typeof body.open !== "boolean") {
+      return fail(name, `GET ${url} → 200 but body.open is not a boolean — is this build older than the launch gate?`);
+    }
     const warmed = attempt > 0 ? ` (after ${attempt} warm retr${attempt === 1 ? "y" : "ies"})` : "";
-    return pass(name, `GET ${url} → 200 {status:"ok"}${warmed}`);
+    return {
+      ...pass(name, `GET ${url} → 200 {status:"ok", open:${body.open}}${warmed}`),
+      open: body.open,
+    };
   }
 }
 
@@ -510,6 +528,46 @@ async function smokePublish(webUrl: string, deadline: number): Promise<StoreResu
 }
 
 /**
+ * The publish check on a CLOSED deploy (`lib/launch.ts`): the gate must hold.
+ * Nothing can be published and nobody can sign in, so both doors are probed
+ * and both must answer 404 — the closed rule's answer, given before any route
+ * handler runs.
+ *
+ * The publish probe sends an EMPTY body on purpose. Were the gate down, the
+ * route would refuse it 400 `empty_page` and write nothing — so this check can
+ * fail, but it can never leave a page behind on a deploy that should have none.
+ */
+async function smokeClosed(webUrl: string, deadline: number): Promise<StoreResult> {
+  const name = "publish";
+  const probes = [
+    { method: "POST", path: "/api/publish", headers: { "content-type": "text/html" }, body: "" },
+    { method: "GET", path: "/api/auth/get-session" },
+  ];
+
+  for (const { path, ...init } of probes) {
+    const url = new URL(path, webUrl).toString();
+    let res: Response;
+    try {
+      res = await send(url, deadline, init);
+    } catch (err) {
+      return fail(name, `${init.method} ${url} — no HTTP response (${errText(err)})`);
+    }
+    await drain(res);
+    if (res.status !== 404) {
+      return fail(
+        name,
+        `${init.method} ${url} → HTTP ${res.status} on a closed deploy (expected 404) — the launch gate is not holding`,
+      );
+    }
+  }
+
+  return pass(
+    name,
+    "closed (waitlist): POST /api/publish and GET /api/auth/get-session → 404, nothing published",
+  );
+}
+
+/**
  * Neon reachability: a trivial `SELECT 1` over the runtime (pooled) URL, which
  * is PgBouncer in transaction mode — hence `prepare: false`, matching
  * lib/db/index.ts. Proves the deployed control plane's database is actually
@@ -552,17 +610,21 @@ async function main(): Promise<void> {
   console.log(`      web:  ${webUrl}`);
   console.log(`      edge: ${edgeUrl}\n`);
 
-  const results = await Promise.all([
+  const [web, ...stores] = await Promise.all([
     smokeWeb(webUrl, deadline),
     smokeEdge(edgeUrl, deadline),
     smokeR2(),
     smokeKv(),
     smokeNeon(),
   ]);
+  const results: StoreResult[] = [web, ...stores];
 
   // Sequential, and last: it publishes a real page, and it wants the control
   // plane already warmed by `smokeWeb` because its POST must not be retried.
-  results.push(await smokePublish(webUrl, deadline));
+  // A closed deploy has nothing to publish, so it proves the gate instead. An
+  // unknown gate (health failed) runs the open check, which fails loudly.
+  const closed = web.open === false;
+  results.push(closed ? await smokeClosed(webUrl, deadline) : await smokePublish(webUrl, deadline));
 
   for (const r of results) console.log(line(r));
 
@@ -580,7 +642,9 @@ async function main(): Promise<void> {
     "      Both halves are covered: the edge check serves the hand-seeded canary,",
   );
   console.log(
-    "      and the publish check writes a page through the API, serves it and deletes it.",
+    closed
+      ? "      and the publish check proves this closed deploy publishes nothing and signs nobody in."
+      : "      and the publish check writes a page through the API, serves it and deletes it.",
   );
   process.exit(0);
 }

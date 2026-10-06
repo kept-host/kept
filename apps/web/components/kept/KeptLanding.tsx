@@ -11,6 +11,7 @@ import {
 
 import { DRAFT_TTL_DAYS, KEPT_PAGE_LIMIT } from "@kept/shared";
 
+import { keptOpen } from "@/lib/launch";
 import { infraCostMonth, keptCount, uptime } from "@/lib/landing-stats";
 
 import {
@@ -19,6 +20,7 @@ import {
   type EngineState,
   type Tab,
 } from "./kept-engine";
+import { WaitlistDialog } from "./waitlist-dialog";
 
 /**
  * kept Landing v2 (Claude Design) — faithful React port of the single-page
@@ -86,6 +88,7 @@ const INITIAL: UIState = {
   humanPresent: false,
   gaugeRevealed: false,
   mintedCount: 0,
+  waitlist: false,
 };
 
 function reducer(state: UIState, patch: Partial<UIState>): UIState {
@@ -338,10 +341,22 @@ export default function KeptLanding() {
                 remain, unconditional. Every colour is a token, so light/dark
                 parity is free. Unlike #nav-links it survives the ≤820px
                 collapse: sign-in is the one nav affordance a phone still
-                needs. */}
-            <a id="nav-signin" href={DASHBOARD_HREF} style={navSignIn}>
-              SIGN&nbsp;IN
-            </a>
+                needs. A closed deploy (`lib/launch.ts`) has no sign-in, so
+                the same slot offers the waitlist instead. */}
+            {keptOpen() ? (
+              <a id="nav-signin" href={DASHBOARD_HREF} style={navSignIn}>
+                SIGN&nbsp;IN
+              </a>
+            ) : (
+              <button
+                id="nav-waitlist"
+                type="button"
+                onClick={() => dispatch({ waitlist: true })}
+                style={{ ...navSignIn, border: "none", cursor: "pointer" }}
+              >
+                JOIN&nbsp;WAITLIST
+              </button>
+            )}
           </div>
         </div>
       </header>
@@ -3222,6 +3237,11 @@ export default function KeptLanding() {
           PREFETCHING&nbsp;<span ref={bind(refs.loadCountRef)}>0</span>&nbsp;KEPT&nbsp;PAGES
         </div>
       </div>
+
+      <WaitlistDialog
+        open={state.waitlist}
+        onOpenChange={(waitlist) => dispatch({ waitlist })}
+      />
     </div>
   );
 }
