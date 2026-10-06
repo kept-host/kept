@@ -85,6 +85,26 @@ export function isDraftUrgent(expiresAt: Date, now: Date): boolean {
 }
 
 /**
+ * The drafts tab's filter chips: every draft, the ones inside their last
+ * `DRAFT_URGENT_HOURS` (the warning chip's own rule), and the expired ones still
+ * inside their grace. Past grace is not a filter — those never reach the screen
+ * (`isPastGrace`).
+ */
+export const DRAFT_FILTERS = ["all", "expiring", "expired"] as const;
+export type DraftFilter = (typeof DRAFT_FILTERS)[number];
+
+export function draftMatchesFilter(expiresAt: Date, filter: DraftFilter, now: Date): boolean {
+  switch (filter) {
+    case "all":
+      return true;
+    case "expiring":
+      return isDraftUrgent(expiresAt, now);
+    case "expired":
+      return expiresAt <= now;
+  }
+}
+
+/**
  * What an expired draft in its grace window says on its card — PRD §5.1:
  * "Expired {n} days ago — keep within {m} days".
  *
@@ -229,6 +249,46 @@ export function deletePageWarning(chosenName: string | null): string {
 export const DELETE_PAGE_NOTE = `The link stops working. You can still download the files for ${DRAFT_GRACE_DAYS} days.`;
 
 /**
+ * Deleting drafts from the drafts tab — Arun's copy. The same archive as the
+ * Danger zone's Delete (D14); a draft carries a generated name, which nothing
+ * holds, so there is no name sentence. No Undo (design call 5).
+ */
+export function deleteDraftsTitle(count: number): string {
+  return count === 1 ? "Delete this draft?" : `Delete ${plural(count, "draft")}?`;
+}
+
+export function deleteDraftsNote(count: number): string {
+  return count === 1 ? "It goes offline now." : "They go offline now.";
+}
+
+export function draftsDeletedToast(count: number): string {
+  return count === 1 ? "Draft deleted." : `Deleted ${plural(count, "draft")}.`;
+}
+
+export function draftsKeptToast(count: number): string {
+  return count === 1 ? KEPT_TOAST : `Kept ${plural(count, "draft")}. They're permanent now.`;
+}
+
+/** Some of a bulk verb's pages were refused — how many, and the first one's reason. */
+export function bulkFailedToast(count: number, verb: "kept" | "deleted", reason: string): string {
+  return `${count} couldn't be ${verb} — ${reason}`;
+}
+
+/**
+ * Why keeping `selected` drafts at once is refused, or `null` when it fits.
+ * ALL OR NOTHING: a bulk keep never keeps some of a selection, so past the
+ * owner's free kept slots the whole Keep is off — on the drafts tab's bar and,
+ * if a request gets there anyway, in the server's `409 at_kept_limit`, with
+ * this one sentence. Swap… stays a one-page flow, on the card.
+ */
+export function bulkKeepRefusal(selected: number, free: number, limit: number): string | null {
+  if (selected <= free) return null;
+  return free === 0
+    ? `You're keeping ${limit} of ${limit} — swap drafts in one at a time.`
+    : `You can keep ${free} more — select ${free} or fewer.`;
+}
+
+/**
  * An archived page's reduced view (PRD §5.2): the page was deleted by its owner
  * and stays downloadable until `purge_after`, when E07's purge collects it.
  */
@@ -340,6 +400,21 @@ const UPDATED_FORMAT = new Intl.DateTimeFormat("en-GB", {
 
 export function formatUpdatedAt(date: Date): string {
   return UPDATED_FORMAT.format(date);
+}
+
+/**
+ * When a draft was first published — `Published 3 Oct`, pinned like
+ * `formatUpdatedAt` and for its reason. No year: a draft lives for days, not
+ * years, and the full stamp rides along as the tooltip (`formatTimestamp`).
+ */
+const PUBLISHED_FORMAT = new Intl.DateTimeFormat("en-GB", {
+  day: "numeric",
+  month: "short",
+  timeZone: "UTC",
+});
+
+export function publishedLabel(date: Date): string {
+  return `Published ${PUBLISHED_FORMAT.format(date)}`;
 }
 
 /**

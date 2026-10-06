@@ -29,7 +29,7 @@ import { sites } from "../db/schema";
 import { liveUrl } from "../publish/pipeline";
 import { PAGE_CONTENT_TYPE, pageObjectKey, r2Store } from "../storage/r2";
 
-import { SiteNotFoundError } from "./keep";
+import { isPastGrace, SiteNotFoundError } from "./keep";
 
 /** A file ready to hand to the browser: its name, its type and its bytes, as a stream. */
 export interface Download {
@@ -64,7 +64,7 @@ export function isDownloadable(
   site: { status: SiteStatus; purgeAfter: Date | null },
   now: Date,
 ): boolean {
-  return site.status !== "removed" && (site.purgeAfter === null || site.purgeAfter > now);
+  return site.status !== "removed" && !isPastGrace(site, now);
 }
 
 /**

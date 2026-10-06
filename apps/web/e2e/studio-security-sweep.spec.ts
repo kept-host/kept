@@ -108,6 +108,12 @@ interface SweptRoute {
    * caller's own account.
    */
   stranger: true | string;
+  /**
+   * The route answers 200 with one result per page it names (the bulk route),
+   * so "not found" is that page's result, not the response's status. B naming
+   * A's page must read exactly as naming nothing, apart from the id itself.
+   */
+  perPage?: true;
 }
 
 const sweepName = () => `e06-014-sweep-${crypto.randomUUID().slice(0, 8)}`;
@@ -164,6 +170,12 @@ const SWEPT: Record<string, SweptRoute> = {
         data: { demote: t.siteId, keep: t.draftId },
       }),
     stranger: true,
+  },
+  "POST /api/sites/bulk": {
+    send: (ctx, base, t, headers) =>
+      ctx.post(`${base}/api/sites/bulk`, { headers, data: { action: "delete", ids: [t.draftId] } }),
+    stranger: true,
+    perPage: true,
   },
   "DELETE /api/account": {
     send: (ctx, base, t, headers) =>
@@ -365,6 +377,16 @@ test.describe("the sweep, on the wire (AC44)", () => {
           sameOrigin(baseURL!),
         );
         const absent = await route.send(stranger.request, baseURL!, nothing, sameOrigin(baseURL!));
+        if (route.perPage) {
+          expect(theirs.status(), `${key}: ${await theirs.text()}`).toBe(200);
+          expect(absent.status(), key).toBe(200);
+          const unnamed = (body: string, id: string) => body.replaceAll(id, "<id>");
+          expect(unnamed(await theirs.text(), a.target.draftId), `${key}: "not yours" must read as "not there"`).toBe(
+            unnamed(await absent.text(), nothing.draftId),
+          );
+          expect(await theirs.text(), key).toContain('"code":"not_found"');
+          continue;
+        }
         expect(theirs.status(), `${key}: ${await theirs.text()}`).toBe(404);
         expect(absent.status(), key).toBe(404);
         expect(await theirs.text(), `${key}: "not yours" must read as "not there"`).toBe(await absent.text());

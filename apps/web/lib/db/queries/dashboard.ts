@@ -13,22 +13,26 @@
  *   the cap counts with — so the wall and the `KEPT k / limit` counter can never
  *   disagree. `archived` and `removed` are not kept (latent bug 5: archived kept
  *   rows used to leak onto the wall).
- * - **Drafts** are the owner's clocked pages that are still `live`,
- *   `under_review` or `quarantined`, plus `expired` ones still inside their grace
- *   window (`purge_after > now()`) — those can still be kept late (§5.3).
- *   Flagged pages are shown, labelled, never hidden: a page that vanishes when it
- *   is flagged is indistinguishable from data loss.
+ * - **Drafts** are the owner's clocked pages that are `live`, `under_review`,
+ *   `quarantined` or `expired`, and NOT past their grace window (`isPastGrace`,
+ *   the one spelling of that rule) — an expired one inside it can still be kept
+ *   late (§5.3). Flagged pages are shown, labelled, never hidden: a page that
+ *   vanishes when it is flagged is indistinguishable from data loss.
  *
  * `isDraft = expires_at != null` is the split and nothing more. Whether a draft
- * has already run out is the clock's business, resolved at render time — never
- * by `status`, because an expired-but-unswept row still says `live` until E07's
- * sweep runs.
+ * has already run out is the clock's business — never `status`'s, because an
+ * expired-but-unswept row still says `live` until E07's sweep runs. That is
+ * exactly how a draft 40 days past its clock used to reach the home with a Keep
+ * button: the grace cut-off keyed on `status = 'expired'`, which nothing writes
+ * yet. It is now `isPastGrace`, applied in JS to the rows read below — the same
+ * function the keep primitives refuse with, so the screen and the server cannot
+ * disagree about which drafts exist.
  */
 import { type KeptQuota, type NameKind, type SiteStatus } from "@kept/shared";
-import { and, desc, eq, gt, inArray, isNotNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, or } from "drizzle-orm";
 
 import { chosenNameCount } from "../../names/check";
-import { isKeptCondition, keptQuotaFor } from "../../sites/keep";
+import { isKeptCondition, isPastGrace, keptQuotaFor } from "../../sites/keep";
 import { db } from "../index";
 import { siteVersions, sites } from "../schema";
 import { lastVisitsSync, recentVisitsByOwner } from "./visits";
@@ -58,6 +62,8 @@ export interface OwnedSite {
   purgeAfter: Date | null;
   /** Denormalised on `sites`, so a card renders a size with no join needed. */
   sizeBytes: number | null;
+  /** The page's first publish — a draft card's "Published 3 Oct". */
+  createdAt: Date;
   updatedAt: Date;
   /** When the current version's bytes were written — "updated 3 days ago". */
   versionCreatedAt: Date | null;
@@ -101,26 +107,25 @@ const OWNED_SITE_COLUMNS = {
   expiresAt: sites.expiresAt,
   purgeAfter: sites.purgeAfter,
   sizeBytes: sites.sizeBytes,
+  createdAt: sites.createdAt,
   updatedAt: sites.updatedAt,
   versionCreatedAt: siteVersions.createdAt,
 } as const;
 
-/** A draft still serving, or under review: on the home whatever its clock says. */
-const ACTIVE_DRAFT_STATUSES = [
+/** The statuses a draft on the home may have; its grace is `isPastGrace`'s. */
+const HOME_DRAFT_STATUSES = [
   "live",
   "under_review",
   "quarantined",
+  "expired",
 ] as const satisfies readonly SiteStatus[];
 
-/** The owner's drafts the home shows — see the header. */
+/** The owner's drafts the home reads — see the header; past-grace rows are dropped after. */
 function homeDraftCondition(profileId: string) {
   return and(
     eq(sites.ownerId, profileId),
     isNotNull(sites.expiresAt),
-    or(
-      inArray(sites.status, [...ACTIVE_DRAFT_STATUSES]),
-      and(eq(sites.status, "expired"), gt(sites.purgeAfter, sql`now()`)),
-    ),
+    inArray(sites.status, [...HOME_DRAFT_STATUSES]),
   );
 }
 
@@ -158,9 +163,12 @@ export async function getDashboardSites(profileId: string): Promise<DashboardSit
     ),
   ]);
 
+  const now = new Date();
   const kept: DashboardSite[] = [];
   const drafts: DashboardSite[] = [];
   for (const row of rows) {
+    // A kept page has no `purge_after`; only a draft can be past its grace.
+    if (isPastGrace(row, now)) continue;
     const site = { ...row, visits: visitsRead.ok ? (visitsRead.visits.get(row.id) ?? null) : null };
     (row.expiresAt === null ? kept : drafts).push(site);
   }

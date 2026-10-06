@@ -226,9 +226,13 @@ test.describe("the Pages home", () => {
     await expect(summaryItem(page, "Names")).toContainText(`0 / ${FREE.chosenNames}`);
     await expect(summaryItem(page, "Drafts")).toContainText("3");
 
-    const strip = page.getByTestId("drafts-strip");
+    // The drafts are a tab now (Kept opens by default); "Expiring soonest"
+    // is the strip's old order.
     const wall = page.getByTestId("kept-wall");
-    await expect.poll(() => order(strip)).toEqual([urgent.siteId, middle.siteId, later.siteId]);
+    await page.getByRole("tab", { name: /^Drafts/ }).click();
+    const drafts = page.getByTestId("drafts-list");
+    await page.getByRole("button", { name: "Expiring soonest" }).click();
+    await expect.poll(() => order(drafts)).toEqual([urgent.siteId, middle.siteId, later.siteId]);
 
     // AC9 — the last-48-hours chip is `--warning`; the others are not.
     // The chip is the `<time>`'s parent.
@@ -237,11 +241,12 @@ test.describe("the Pages home", () => {
     await expect(chip(urgent.siteId, /^Draft · \d+ hours left$/)).toHaveClass(/--warning/);
     await expect(chip(middle.siteId, /^Draft · \d+ days left$/)).not.toHaveClass(/--warning/);
 
-    // AC6 — search over title and name, client-side.
+    // AC6 — search over title and name, client-side, on the open tab.
+    await page.getByRole("tab", { name: /^Kept/ }).click();
     const search = page.getByRole("searchbox", { name: "Search your pages" });
     await search.fill("beta orbit");
     await expect.poll(() => order(wall)).toEqual([beta.siteId]);
-    await expect(strip).toHaveCount(0);
+    await expect(page.getByRole("tab", { name: /^Drafts/ })).toHaveText(/Drafts\s*0/);
     await search.fill(seeded[1]!.slug);
     await expect.poll(() => order(wall)).toEqual([seeded[1]!.siteId]);
 
@@ -272,7 +277,7 @@ test.describe("the Pages home", () => {
     await expect(page.getByTestId("kept-wall")).toHaveAttribute("data-view", "list");
     await expect(page.getByRole("button", { name: "List" })).toHaveAttribute("aria-pressed", "true");
 
-    // Phone width: no horizontal page scroll (the strip scrolls inside itself).
+    // Phone width: no horizontal page scroll.
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(page.getByTestId("kept-wall")).toBeVisible();
     expect(
@@ -294,7 +299,7 @@ test.describe("the Pages home", () => {
     // The browser's clock, under the test's control — the ROW is real and
     // untouched; only the minute tick is advanced instead of waited for.
     await page.clock.install();
-    await page.goto("/dashboard");
+    await page.goto("/dashboard?tab=drafts");
 
     const flipping = card(page, expiring.siteId);
     await expect(flipping.getByText("Draft · under an hour left")).toBeVisible();
@@ -422,8 +427,10 @@ test.describe("the Pages home", () => {
     scope.slugs.add(row!.slug);
     expect(row!.expiresAt, "at the limit the page lands as a draft, never an error").not.toBeNull();
 
-    // The new draft is in the strip, and at the limit its action is Swap….
-    const draftCard = page.getByTestId("drafts-strip").locator(`[data-site-id="${row!.id}"]`);
+    // At the limit the publish lands on the Drafts tab, which the screen opens
+    // for it, and its action is Swap….
+    await expect(page).toHaveURL(/[?&]tab=drafts\b/);
+    const draftCard = page.getByTestId("drafts-list").locator(`[data-site-id="${row!.id}"]`);
     await expect(draftCard.getByTestId("keep-button")).toHaveText(/^Swap…/);
     // The dismissal outlived the refresh that brought the new card in.
     await expect(page.getByTestId("limit-banner")).toHaveCount(0);
@@ -459,22 +466,30 @@ test.describe("the Pages home", () => {
       })
       .where(eq(schema.sites.id, late.siteId));
 
-    await page.goto("/dashboard");
+    await page.goto("/dashboard?tab=drafts");
     await hydrated(page);
-    const wall = page.getByTestId("kept-wall");
+    const drafts = page.getByTestId("drafts-list");
 
-    // Below the limit: Keep → the toast → the card moves to the wall.
+    // Below the limit: Keep → the toast → the draft leaves the Drafts tab, which
+    // stays open (a long list is worked down without a bounce to the wall).
     await card(page, draft.siteId).getByTestId("keep-button").click();
     await expect(page.getByText(KEPT_TOAST).first()).toBeVisible({ timeout: LIVE_STACK_TIMEOUT });
-    await expect(wall.locator(`[data-site-id="${draft.siteId}"]`)).toBeVisible({ timeout: LIVE_STACK_TIMEOUT });
+    await expect(drafts.locator(`[data-site-id="${draft.siteId}"]`)).toHaveCount(0, { timeout: LIVE_STACK_TIMEOUT });
+    await expect(page.getByRole("tab", { name: /^Drafts/ })).toHaveAttribute("aria-selected", "true");
     expect((await readSite(draft.siteId)).expiresAt).toBeNull();
 
     // Late keep: an expired draft inside its grace is restored and kept.
     await card(page, late.siteId).getByTestId("keep-button").click();
-    await expect(wall.locator(`[data-site-id="${late.siteId}"]`)).toBeVisible({ timeout: LIVE_STACK_TIMEOUT });
+    await expect(drafts.locator(`[data-site-id="${late.siteId}"]`)).toHaveCount(0, { timeout: LIVE_STACK_TIMEOUT });
     const restored = await readSite(late.siteId);
     expect(restored.status).toBe("live");
     expect(restored.expiresAt).toBeNull();
+
+    // Both are on the wall.
+    await page.getByRole("tab", { name: /^Kept/ }).click();
+    const wall = page.getByTestId("kept-wall");
+    await expect(wall.locator(`[data-site-id="${draft.siteId}"]`)).toBeVisible();
+    await expect(wall.locator(`[data-site-id="${late.siteId}"]`)).toBeVisible();
 
     // The race: one slot left when the screen renders, filled in another tab
     // before the click. The server answers 409 at_kept_limit; the card turns
@@ -482,7 +497,7 @@ test.describe("the Pages home", () => {
     const racer = await publishOwned(page, baseURL!, scope, "E06 racer");
     await demote(page, baseURL!, racer.siteId);
     await seedKept(scope, userId, FREE.keptPages - 3);
-    await page.goto("/dashboard");
+    await page.goto("/dashboard?tab=drafts");
     await hydrated(page);
     const racerButton = card(page, racer.siteId).getByTestId("keep-button");
     await expect(racerButton).toHaveText(/^Keep/);

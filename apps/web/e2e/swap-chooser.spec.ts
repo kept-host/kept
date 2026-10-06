@@ -94,7 +94,7 @@ test.describe("the swap chooser", () => {
     await seedVisits(mostVisited!.siteId, 30);
     await seedVisits(someVisits!.siteId, 10);
 
-    await page.goto("/dashboard");
+    await page.goto("/dashboard?tab=drafts");
     await page.waitForLoadState("networkidle");
 
     // At the limit the draft's action reads Swap… and sends nothing: it opens
@@ -135,14 +135,16 @@ test.describe("the swap chooser", () => {
     await expect(dialog).toBeHidden({ timeout: LIVE_STACK_TIMEOUT });
     await expect(page.getByText(SWAPPED_TOAST)).toBeVisible();
 
-    // Both cards move with the refresh: the draft onto the wall, the victim
-    // into the drafts strip.
+    // Both cards move with the refresh: the victim into the drafts (the tab
+    // stays open), the draft onto the wall.
     await expect(
-      page.getByTestId("kept-wall").locator(`[data-site-id="${draft.siteId}"]`),
+      page.getByTestId("drafts-list").locator(`[data-site-id="${victim.siteId}"]`),
     ).toBeVisible({ timeout: LIVE_STACK_TIMEOUT });
     await expect(
-      page.getByTestId("drafts-strip").locator(`[data-site-id="${victim.siteId}"]`),
-    ).toBeVisible();
+      page.getByTestId("drafts-list").locator(`[data-site-id="${draft.siteId}"]`),
+    ).toHaveCount(0);
+    await page.getByRole("tab", { name: /^Kept/ }).click();
+    await expect(page.getByTestId("kept-wall").locator(`[data-site-id="${draft.siteId}"]`)).toBeVisible();
 
     expect((await readSite(draft.siteId)).expiresAt).toBeNull();
     expect((await readSite(victim.siteId)).expiresAt).not.toBeNull();

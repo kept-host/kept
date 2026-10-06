@@ -29,6 +29,7 @@ import { copyLink } from "@/components/kept/link-toast";
 import { CopyLinkButton } from "@/components/kept/live-url";
 import { toastReplaced } from "@/components/kept/replace-toast";
 import { SiteCard } from "@/components/kept/site-card";
+import type { SwapPage } from "@/components/kept/swap-dialog";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -65,7 +66,19 @@ export interface HomeSite extends DashboardSite {
   previewable: boolean;
 }
 
-export type HomeCardVariant = "grid" | "list" | "draft";
+export type HomeCardVariant = "grid" | "list" | "draft" | "draft-list";
+
+/** A page as the swap chooser and the Keep button name it. */
+export function toSwapPage(site: HomeSite): SwapPage {
+  return {
+    id: site.id,
+    name: pageName(site),
+    slug: site.slug,
+    liveUrl: site.liveUrl,
+    status: site.status,
+    visits: site.visits,
+  };
+}
 
 export function HomeCard({
   site,
@@ -75,6 +88,8 @@ export function HomeCard({
   onSettled,
   leaving = false,
   action,
+  selector,
+  selected,
 }: {
   site: HomeSite;
   variant: HomeCardVariant;
@@ -85,8 +100,12 @@ export function HomeCard({
   onSettled: (id: string) => void;
   /** A draft just kept: it fades until the wall takes it. */
   leaving?: boolean;
-  /** A draft's primary action (Keep / Swap…). Kept cards get copy · open · replace. */
+  /** A draft's actions (Keep / Swap…, Delete). Kept cards get copy · open · replace. */
   action?: ReactNode;
+  /** A draft's checkbox in the drafts tab's Select mode. */
+  selector?: ReactNode;
+  /** That checkbox is ticked. */
+  selected?: boolean;
 }) {
   const router = useRouter();
   const [replacing, setReplacing] = useState(false);
@@ -126,7 +145,7 @@ export function HomeCard({
 
   const card = (browse: Browse) => {
     const actions =
-      variant === "draft" ? (
+      variant === "draft" || variant === "draft-list" ? (
         action
       ) : (
         <KeptActions
@@ -138,11 +157,14 @@ export function HomeCard({
       );
     const common = { site, href, host, actions, arrival: arrival?.kind };
     // The page's own HTML on hover, through the owner-only download route.
-    // A list row has no preview: its thumbnail is too small to show a page.
+    // A list row (kept or draft) has no preview: its thumbnail is too small to
+    // show a page.
     const preview = site.previewable ? readPageHtml : undefined;
     switch (variant) {
       case "draft":
-        return <SiteCard variant="draft" preview={preview} {...common} />;
+        return <SiteCard variant="draft" preview={preview} selector={selector} selected={selected} {...common} />;
+      case "draft-list":
+        return <SiteCard variant="draft-list" selector={selector} selected={selected} {...common} />;
       case "grid":
         return <SiteCard variant="grid" visits={site.visits} preview={preview} {...common} />;
       case "list":

@@ -211,6 +211,9 @@ test("every cookie-authenticated mutating route imports the gate", async () => {
     // changes which bytes a page serves: ungated, a hosted page could roll its
     // publisher's other pages back to any version they still keep.
     "app/api/sites/[id]/versions/[versionId]/restore/route.ts",
+    // The drafts tab's bulk keep / delete. Ungated, one request from a hosted
+    // page could take every one of its visitor's drafts offline.
+    "app/api/sites/bulk/route.ts",
     // E06 task 004 — the OWNED publish. Its keyless twin `POST /api/publish` is
     // in the negative list below and must stay there; this one spends the
     // session cookie, so ungated a hosted page could publish into its visitor's

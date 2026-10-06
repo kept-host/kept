@@ -5,7 +5,7 @@
  * `POST /api/sites` · `POST /api/sites/:id/keep` · `POST /api/sites/:id/demote`
  * `POST /api/sites/swap` · `PATCH /api/sites/:id/name` · `GET /api/names/check`
  * `POST /api/sites/:id/replace` · `POST /api/sites/:id/versions/:versionId/restore`
- * `DELETE /api/sites/:id` · `DELETE /api/account`
+ * `DELETE /api/sites/:id` · `POST /api/sites/bulk` · `DELETE /api/account`
  * `GET /api/sites/:id/download` · `GET /api/export`
  *
  * ── WHAT THIS MODULE IS FOR ────────────────────────────────────────────────
@@ -66,6 +66,8 @@
 import {
   accountDeletionRequestSchema,
   accountDeletionResultSchema,
+  bulkRequestSchema,
+  bulkResultSchema,
   confirmsAccountEmail,
   deleteResultSchema,
   demoteResultSchema,
@@ -81,6 +83,8 @@ import {
   studioErrorSchema,
   swapResultSchema,
   type AccountDeletionResult,
+  type BulkItemResult,
+  type BulkResult,
   type DeleteResult,
   type DemoteResult,
   type KeepResult,
@@ -111,8 +115,8 @@ import {
 import { deleteAccount } from "./account-deletion";
 import { updateSiteDetails } from "./details";
 import { openExport, openPageDownload, type Download } from "./export";
-import { demoteSite, keepSite, SITE_NOT_FOUND_MESSAGE, swapKept } from "./keep";
-import { deleteSite, ownerPageBodySchema, replaceSite } from "./manage";
+import { demoteSite, keepSite, keepSites, SITE_NOT_FOUND_MESSAGE, swapKept } from "./keep";
+import { deleteSite, deleteSites, ownerPageBodySchema, replaceSite } from "./manage";
 import { publishOwnedPage } from "./publish";
 import { restoreVersion, VERSION_NOT_FOUND_MESSAGE } from "./restore";
 import { StudioRefusal } from "./studio-refusal";
@@ -620,6 +624,52 @@ export async function deleteOwnedSite(
     return { ok: true, status: 200, body: deleteResultSchema.parse(result) };
   } catch (err) {
     return studioFailure(err, "delete");
+  }
+}
+
+/**
+ * `POST /api/sites/bulk` — `{ action: "keep" | "delete", ids }`, the drafts
+ * tab's multi-select (`bulkRequestSchema`, at most `BULK_MAX_PAGES` ids).
+ *
+ * Every page is the single-page verb, run by the single-page code: `keepSites`
+ * (`keepLocked`, the owner door) and `deleteSites` (`deleteSite`, D14's
+ * archive). Nothing about either is decided here — this maps their outcomes.
+ *
+ * 200 `{ results }`: one per distinct id, in the order sent, each `ok` or the
+ * code and sentence the single route would have answered with — so an id that
+ * is not a uuid, never existed, or is another account's is that page's
+ * `not_found`, indistinguishably (D17), and the rest still happen. The one
+ * whole-request refusal is the keep's cap: past the owner's free kept slots it
+ * is `409 at_kept_limit` and nothing is kept (all or nothing).
+ */
+export async function bulkOwnedSites(
+  raw: unknown,
+  profileId: string,
+): Promise<OwnerOutcome<BulkResult>> {
+  const parsed = bulkRequestSchema.safeParse(raw);
+  if (!parsed.success) {
+    return refuse(
+      "invalid_request",
+      parsed.error.issues[0]?.message ?? "Send `{ action, ids }` — keep or delete, and the pages' ids.",
+    );
+  }
+
+  const { action } = parsed.data;
+  const ids = [...new Set(parsed.data.ids)];
+  const siteIds = ids.filter((id) => siteIdSchema.safeParse(id).success);
+
+  try {
+    const settled = action === "keep" ? await keepSites(siteIds, profileId) : await deleteSites(siteIds, profileId);
+    const byId = new Map(settled.map((item) => [item.id, item]));
+    const results = ids.map((id): BulkItemResult => {
+      const item = byId.get(id);
+      if (item?.ok) return { id, ok: true };
+      const { error } = item ? studioFailure(item.error, action).body : ownerNotFound().body;
+      return { id, ok: false, ...error };
+    });
+    return { ok: true, status: 200, body: bulkResultSchema.parse({ results }) };
+  } catch (err) {
+    return studioFailure(err, action);
   }
 }
 

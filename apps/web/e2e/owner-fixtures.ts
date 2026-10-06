@@ -331,12 +331,20 @@ export async function cleanup(scope: OwnerScope): Promise<void> {
 
   if (scope.userIds.length) {
     const owned = await db
-      .select({ id: schema.sites.id, slug: schema.sites.slug })
+      .select({
+        id: schema.sites.id,
+        slug: schema.sites.slug,
+        currentVersionId: schema.sites.currentVersionId,
+      })
       .from(schema.sites)
       .where(inArray(schema.sites.ownerId, scope.userIds));
-    for (const { id, slug } of owned) {
+    for (const { id, slug, currentVersionId } of owned) {
       if (!scope.siteIds.includes(id)) scope.siteIds.push(id);
-      scope.slugs.add(slug);
+      // A row with no version never had bytes, so never had a manifest — the
+      // rows `seedKept` fills a cap with. Unwinding an edge for each of those
+      // (a pointer delete, a KV delete and a purge apiece) is what ran a
+      // cap-filling spec's `afterAll` past its 30 s.
+      if (currentVersionId !== null) scope.slugs.add(slug);
     }
   }
 

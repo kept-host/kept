@@ -220,6 +220,43 @@ test(
 );
 
 test(
+  "a LIVE draft past its grace window — no expiry sweep ran — is not on the home, and its detail screen is not found",
+  { skip: skipLive },
+  async () => {
+    // The deployed-dev bug: no E07 sweep exists, so a draft whose clock ran out
+    // 40 days ago still says `live`, and the home listed it with a Keep button.
+    const { getDashboardSites, getOwnedSiteById } = await import("./dashboard");
+    const { isDownloadable } = await import("../../sites/export");
+    const db = await client();
+    const { sites } = await schema();
+    const { eq } = await import("drizzle-orm");
+    const profileId = await makeProfile();
+
+    const inGrace = await makeSite({ ownerId: profileId, kept: false });
+    const pastGrace = await makeSite({ ownerId: profileId, kept: false });
+    const expiresAt = new Date(Date.now() - 40 * MS_PER_DAY);
+    await db
+      .update(sites)
+      .set({ expiresAt, purgeAfter: new Date(expiresAt.getTime() + DRAFT_GRACE_DAYS * MS_PER_DAY) })
+      .where(eq(sites.id, pastGrace.id));
+
+    const { kept, drafts } = await getDashboardSites(profileId);
+    assert.deepEqual(kept, []);
+    assert.deepEqual(
+      drafts.map((s) => s.id),
+      [inGrace.id],
+      "a draft past its grace never reaches the home — not the list, not the counts",
+    );
+    assert.equal(drafts[0]?.createdAt instanceof Date, true, "a draft carries its first-publish date");
+
+    // `/site/[id]` shows exactly what its Download link can still serve.
+    const detail = await getOwnedSiteById(profileId, pastGrace.id);
+    assert.ok(detail);
+    assert.equal(isDownloadable(detail, new Date()), false, "the detail screen answers not found");
+  },
+);
+
+test(
   "drafts come back soonest expires_at first, and each page carries its recent visits",
   { skip: skipLive },
   async () => {

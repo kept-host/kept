@@ -90,15 +90,24 @@ test.describe("one drop, one owner", () => {
   const card = (page: Page, siteId: string) =>
     page.locator(`[data-testid="home-card"][data-site-id="${siteId}"]`);
 
-  for (const variant of ["grid", "list", "draft"] as const) {
+  /** Where each card variant is on screen: the Kept tab's wall, or the Drafts tab (a list by default). */
+  const PATHS = {
+    grid: "/dashboard",
+    list: "/dashboard?view=list",
+    draft: "/dashboard?tab=drafts&view=grid",
+    "draft-list": "/dashboard?tab=drafts",
+  } as const;
+
+  for (const variant of ["grid", "list", "draft", "draft-list"] as const) {
     test(`a file dropped on a ${variant} card replaces that page and publishes nothing`, async ({
       page,
       baseURL,
     }) => {
       const { userId } = await signInAs(page, baseURL!, scope);
       const target = await publishOwned(page, baseURL!, scope, `E06 card drop ${variant}`);
-      if (variant === "draft") {
-        // Demoted through the real route: a live draft in the strip takes a drop too.
+      const draft = variant === "draft" || variant === "draft-list";
+      if (draft) {
+        // Demoted through the real route: a live draft takes a drop too.
         const response = await page.request.post(`${baseURL}/api/sites/${target.siteId}/demote`, {
           headers: { origin: new URL(baseURL!).origin },
         });
@@ -108,10 +117,12 @@ test.describe("one drop, one owner", () => {
       const versionsBefore = await versionIds(target.siteId);
       const liveBefore = (await readSite(target.siteId)).currentVersionId;
 
-      await page.goto(variant === "list" ? "/dashboard?view=list" : "/dashboard");
+      await page.goto(PATHS[variant]);
       await hydrated(page);
-      if (variant === "draft") await expect(page.getByTestId("drafts-strip")).toContainText(target.name);
-      else await expect(page.getByTestId("kept-wall")).toHaveAttribute("data-view", variant);
+      if (draft) {
+        await expect(page.getByTestId("drafts-list")).toContainText(target.name);
+        await expect(page.getByTestId("drafts-list")).toHaveAttribute("data-view", variant === "draft" ? "grid" : "list");
+      } else await expect(page.getByTestId("kept-wall")).toHaveAttribute("data-view", variant);
       const writes = watchWrites(page);
 
       // Held over the card: the card says what the drop will do, the window does not.

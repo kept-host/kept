@@ -271,6 +271,17 @@ after(async () => {
   await db.$client.end();
 });
 
+test("isPastGrace reads the row's purge_after and never its status", async () => {
+  const { isPastGrace } = await import("./keep");
+  const now = new Date("2026-10-06T12:00:00Z");
+  const at = (days: number) => new Date(now.getTime() + days * MS_PER_DAY);
+
+  assert.equal(isPastGrace({ purgeAfter: null }, now), false, "a kept page has no grace to run out");
+  assert.equal(isPastGrace({ purgeAfter: at(1) }, now), false, "inside the window");
+  assert.equal(isPastGrace({ purgeAfter: now }, now), true, "the window closes AT purge_after");
+  assert.equal(isPastGrace({ purgeAfter: at(-10) }, now), true);
+});
+
 test(
   "under cap: an anonymous draft becomes kept — clocks and token cleared, status untouched",
   { skip: skipLive },
@@ -351,6 +362,32 @@ test(
       await assert.rejects(() => keepSite(site.id, profileId), SiteNotFoundError);
       assert.deepEqual(await readSite(site.id), before, "the page is gone; nothing is revived");
     }
+  },
+);
+
+test(
+  "a LIVE draft past its grace window — no expiry sweep ran — is not found through either door, and untouched",
+  { skip: skipLive },
+  async () => {
+    // The deployed-dev bug: no E07 sweep exists, so a draft whose clock ran out
+    // long ago still says `live`. Its grace window is over all the same, and the
+    // studio offered Keep on it ("Expired 40 days ago").
+    const { keepSite, SiteNotFoundError } = await import("./keep");
+    const profileId = await makeProfile();
+    const pastGrace = { status: "live", expiresInDays: -(DRAFT_GRACE_DAYS + 10), withVersion: true } as const;
+
+    const owned = await makeSite({ ownerId: profileId, ...pastGrace });
+    const anonymous = await makeSite({ ownerId: null, ...pastGrace });
+
+    for (const [site, options] of [
+      [owned, {}],
+      [anonymous, { expectAnonymous: true }],
+    ] as const) {
+      const before = await readSite(site.id);
+      await assert.rejects(() => keepSite(site.id, profileId, options), SiteNotFoundError);
+      assert.deepEqual(await readSite(site.id), before, "past grace, nothing is kept or revived");
+    }
+    assert.equal(await keptCount(profileId), 0);
   },
 );
 

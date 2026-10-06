@@ -74,7 +74,7 @@ import { profiles, sites } from "../db/schema";
 import { draftClocks } from "../publish/pipeline";
 import { writeManifest } from "../storage/manifest";
 
-import { managementRefusal } from "./display";
+import { bulkKeepRefusal, managementRefusal } from "./display";
 import { StudioRefusal } from "./studio-refusal";
 
 /**
@@ -292,10 +292,26 @@ async function lockSite(tx: Tx, siteId: string) {
 type LockedSite = NonNullable<Awaited<ReturnType<typeof lockSite>>>;
 
 /**
- * Nothing left for an owner to act on: deleted, taken down, or expired past its
- * grace window and awaiting E07's hard delete (edge case 13). An `expired` row
- * with no `purge_after` cannot be shown to be inside a window, so it is gone
- * rather than guessed at.
+ * THE GRACE RULE, AND THE ONLY SPELLING OF IT: the row's `purge_after` has
+ * passed, so whatever it was is E07's to collect and no longer its owner's to
+ * act on. For a draft that is `expires_at + DRAFT_GRACE_DAYS` (`draftClocks`
+ * writes both at publish); for an archived page, the end of its download window
+ * (D14). A kept page has no `purge_after` and is never past it.
+ *
+ * ⚠️ IT READS THE CLOCK, NEVER `status`. No expiry sweep exists until E07, so a
+ * draft whose grace ran out weeks ago still says `live` — and the home listed it
+ * with a Keep button that worked. The home's read, the keep primitives below and
+ * the owner's download / detail screen (`./export.ts`) all ask this one function.
+ */
+export function isPastGrace(site: { purgeAfter: Date | null }, now: Date): boolean {
+  return site.purgeAfter !== null && site.purgeAfter <= now;
+}
+
+/**
+ * Nothing left for an owner to act on: deleted, taken down, or past its grace
+ * window and awaiting E07's hard delete (edge case 13) — whatever its `status`
+ * says. An `expired` row with no `purge_after` cannot be shown to be inside a
+ * window, so it is gone rather than guessed at.
  *
  * Answered as the SAME not-found as a page that never existed: telling an owner
  * "that page exists but is gone" through a different body is the oracle
@@ -303,7 +319,7 @@ type LockedSite = NonNullable<Awaited<ReturnType<typeof lockSite>>>;
  */
 function isGone(site: LockedSite, now: Date): boolean {
   if ((ENDED_STATUSES as readonly SiteStatus[]).includes(site.status)) return true;
-  return site.status === "expired" && !(site.purgeAfter && site.purgeAfter > now);
+  return isPastGrace(site, now) || (site.status === "expired" && site.purgeAfter === null);
 }
 
 /** What a late keep still owes the edge once its transaction has committed. */
@@ -507,6 +523,62 @@ export async function keepSite(
   );
   await restoreManifest(restore);
   return { ...result, restored: restore !== null };
+}
+
+/**
+ * One page's share of a bulk verb: done, or the error that refused it (the
+ * page untouched). The route maps `error` exactly as the single-page route
+ * would (`studioFailure`), so a bulk refusal reads the same as a single one.
+ */
+export type BulkSettled = { id: string; ok: true } | { id: string; ok: false; error: unknown };
+
+/**
+ * Keep many owned drafts at once — the drafts tab's bulk Keep.
+ *
+ * ⚠️ THE CAP IS ALL OR NOTHING, DECIDED ONCE. Under `lockOwner`, before any
+ * page moves: if the owner's free kept slots cannot take every id, the whole
+ * request is refused `at_kept_limit` (`bulkKeepRefusal`'s sentence) and nothing
+ * is written — never "the first N, then a wall". Every id is counted, including
+ * one that turns out not to be keepable: the check is conservative, never
+ * generous.
+ *
+ * Then each page goes through `keepLocked` — the owner door, the very code the
+ * single keep runs — inside one SAVEPOINT apiece, so a page that is not found
+ * (another account's, past its grace), flagged, or broken is refused alone and
+ * the rest still land. The owner lock is held throughout, so the count cannot
+ * move under the loop. Late keeps write their manifests after the COMMIT, as
+ * `keepSite` does; a failed restore is reported against that page.
+ */
+export async function keepSites(siteIds: readonly string[], profileId: string): Promise<BulkSettled[]> {
+  const { settled, restores } = await db.transaction(async (tx) => {
+    const plan = await lockOwner(tx, profileId);
+    const { keptPages } = limitsFor(plan);
+    const free = Math.max(0, keptPages - (await countKept(tx, profileId)));
+    const refusal = bulkKeepRefusal(siteIds.length, free, keptPages);
+    if (refusal) throw new StudioRefusal("at_kept_limit", refusal);
+
+    const settled: BulkSettled[] = [];
+    const restores: { id: string; restore: PendingRestore }[] = [];
+    for (const id of siteIds) {
+      try {
+        const { restore } = await tx.transaction((page) => keepLocked(page, id, profileId, "owner"));
+        settled.push({ id, ok: true });
+        if (restore) restores.push({ id, restore });
+      } catch (error) {
+        settled.push({ id, ok: false, error });
+      }
+    }
+    return { settled, restores };
+  });
+
+  for (const { id, restore } of restores) {
+    try {
+      await restoreManifest(restore);
+    } catch (error) {
+      settled[settled.findIndex((item) => item.id === id)] = { id, ok: false, error };
+    }
+  }
+  return settled;
 }
 
 export interface DemoteOptions {
