@@ -48,6 +48,22 @@ import { defineConfig, devices } from "@playwright/test";
  * (~15s) and then runs `mkcert -install`, which prompts for a password on
  * macOS — nowhere near the compile-only budget the old value assumed.
  */
+/**
+ * ── THE HARNESS IS OPEN UNLESS TOLD OTHERWISE ───────────────────────────────
+ *
+ * The launch gate (`lib/launch.ts`) fails closed: with `NEXT_PUBLIC_KEPT_OPEN`
+ * unset, the app is the waitlist and nearly every spec here would fail for a
+ * reason that has nothing to do with what it asserts. So the harness defaults
+ * it to `true` — set here, before `webServer` starts, so the server it boots
+ * and the workers that read it agree. An explicit value wins: `test:e2e:closed`
+ * sets `false` to run `e2e/waitlist.spec.ts` against a closed server.
+ *
+ * `NEXT_PUBLIC_` values are compiled in, so a server already listening on :3000
+ * (`reuseExistingServer`) keeps whichever gate it was started with — the
+ * waitlist spec checks `/api/health` before trusting it.
+ */
+process.env.NEXT_PUBLIC_KEPT_OPEN ??= "true";
+
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,

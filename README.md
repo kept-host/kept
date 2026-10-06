@@ -192,7 +192,8 @@ Key variable groups (see `.env.example` for the full set):
   same name; distinct from `NEXT_PUBLIC_APP_URL`, which is the control plane's
   own origin.
 - **App** — `NEXT_PUBLIC_APP_URL`, `NEXT_TELEMETRY_DISABLED`,
-  `PUBLISHER_HASH_SALT`.
+  `PUBLISHER_HASH_SALT`, `NEXT_PUBLIC_KEPT_OPEN` (the launch gate: `true` opens
+  publishing and sign-in; unset is the waitlist — it fails closed).
 - **CI/deploy** — `RAILWAY_TOKEN`, `RAILWAY_SERVICE_ID`, `NEON_API_KEY`,
   `SMOKE_WEB_URL`, `SMOKE_EDGE_URL`.
 - **Reserved but empty** — `BETTER_AUTH_*`, `GITHUB_CLIENT_*`, `RESEND_API_KEY`,

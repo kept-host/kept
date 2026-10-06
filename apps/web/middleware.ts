@@ -6,7 +6,9 @@
  *    Railway service. Middleware is the only code that sees the `Host` before
  *    routing, so the split lives here. The rule itself is `decideHostAction` in
  *    `lib/routing/host-split.ts`, kept pure so its cases are unit-testable
- *    without a request scope; this file is the wrapper that applies it.
+ *    without a request scope; this file is the wrapper that applies it. On a
+ *    deploy that is not yet open (`lib/launch.ts`), `decideClosedAction` runs
+ *    first and takes publishing and sign-in away.
  * 2. **Stamping the requested path** onto the request headers, for the `(app)`
  *    gate. Next.js gives a server component no way to learn the path it is
  *    rendering for: `headers()` on a document request carries `host` and the
@@ -36,7 +38,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 import { PATHNAME_HEADER } from "@/lib/auth/return-path";
-import { decideHostAction } from "@/lib/routing/host-split";
+import { keptOpen } from "@/lib/launch";
+import { decideClosedAction, decideHostAction } from "@/lib/routing/host-split";
 
 /**
  * The hostname the VISITOR asked for — which is emphatically not
@@ -73,14 +76,18 @@ function requestHost(request: NextRequest): string {
 
 export function middleware(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
-  const action = decideHostAction({
+  const facts = {
     host: requestHost(request),
     pathname,
     search,
     // `NEXT_PUBLIC_`, never `BETTER_AUTH_URL` — see `host-split.ts`. A
     // server-only read here can be `undefined` in the edge bundle at runtime.
     appUrl: process.env.NEXT_PUBLIC_APP_URL,
-  });
+  };
+  // A closed deploy (`lib/launch.ts`) answers its own cases first; whatever it
+  // leaves alone gets the same split rule an open deploy applies.
+  const action =
+    (keptOpen() ? undefined : decideClosedAction(facts)) ?? decideHostAction(facts);
 
   // 404 rather than a redirect, and constructed here so the route handler never
   // runs: an apex `/api/auth/*` must emit no `Set-Cookie` at all (D6).
@@ -106,17 +113,26 @@ export const config = {
    * remember a new `(app)/*` route, and forgetting it would silently lose the
    * return URL.
    *
-   * The second adds back the one API subtree the split rule has an opinion
-   * about. `/api/publish`, `/api/anon/*`, `/api/cron/*`, `/api/sites/*` and
-   * `/api/health` stay excluded and so stay reachable on every origin — the
-   * landing hero posts to a relative `/api/publish` from the apex, and the
-   * bearer-only `/api/anon/*` routes are E08's keyless agent path.
+   * The second adds back the API surface. The split rule only has an opinion
+   * about `/api/auth/*` — every other API path passes through, so
+   * `/api/publish`, `/api/anon/*`, `/api/cron/*`, `/api/sites/*` and
+   * `/api/health` stay reachable on every origin (the landing hero posts to a
+   * relative `/api/publish` from the apex, and the bearer-only `/api/anon/*`
+   * routes are E08's keyless agent path). The closed rule needs ALL of it: a
+   * closed deploy 404s every API path it does not allow, and a route the
+   * matcher skipped would be a route the gate never saw.
+   *
+   * The cost of seeing every API request: Next buffers a request body through
+   * middleware up to `middlewareClientMaxBodySize` (10 MB by default). That is
+   * twice `MAX_PAGE_BYTES`, so every publish and replace fits; a body past it
+   * reaches the handler truncated and fails to parse — still a 400 for a
+   * request that was already over the limit, just a less specific one.
    *
    * Next requires the matcher be statically analyzable, so this cannot be a
    * runtime condition — `pnpm build` is what checks it.
    */
   matcher: [
     "/((?!api|_next/static|_next/image|favicon.ico|.*\\.[^/]+$).*)",
-    "/api/auth/:path*",
+    "/api/:path*",
   ],
 };

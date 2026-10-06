@@ -77,6 +77,8 @@ const NOT_COOKIE_AUTHENTICATED: Record<string, string> = {
   "POST /api/cron/visits-sync": "Authorization: Bearer CRON_SECRET, from GitHub Actions",
   "POST /api/auth/[...all]":
     "Better Auth's own handler, behind its own trustedOrigins check (auth-providers.spec)",
+  "POST /api/waitlist":
+    "unauthenticated: reads no cookie and writes a row nobody owns; a repeat is a no-op (waitlist.spec)",
 };
 
 /** What a swept request may act on. A's real things, or things that name nothing. */
