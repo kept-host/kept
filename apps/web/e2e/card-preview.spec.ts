@@ -226,20 +226,27 @@ test.describe("card gradients and the hover preview", () => {
     });
     expect(demoted.status(), await demoted.text()).toBe(200);
 
-    await openHome(page);
-    await expect(page.getByTestId("drafts-strip")).toContainText(draft.name);
+    // A draft CARD — the Drafts tab in grid view.
+    await openHome(page, "/dashboard?tab=drafts&view=grid");
+    await expect(page.getByTestId("drafts-list")).toContainText(draft.name);
     await thumbnail(page, draft.siteId).hover();
     await expect(previewFrame(page, draft.siteId).contentFrame().getByText("draft page body")).toBeVisible();
     await leaveTheCards(page);
     await expect(previewFrame(page, draft.siteId)).toHaveCount(0);
 
-    await openHome(page, "/dashboard?view=list");
-    await expect(page.getByTestId("kept-wall")).toHaveAttribute("data-view", "list");
-    const reads = watchReads(page);
-    await thumbnail(page, kept.siteId).hover();
-    await page.waitForTimeout(WELL_PAST_THE_DELAY_MS);
-    await expect(card(page, kept.siteId).getByTestId("card-preview")).toHaveCount(0);
-    expect(reads, "a list row reads nothing").toEqual([]);
+    // A list row, kept or draft, reads nothing.
+    for (const [path, list, siteId] of [
+      ["/dashboard?view=list", "kept-wall", kept.siteId],
+      ["/dashboard?tab=drafts", "drafts-list", draft.siteId],
+    ] as const) {
+      await openHome(page, path);
+      await expect(page.getByTestId(list)).toHaveAttribute("data-view", "list");
+      const reads = watchReads(page);
+      await thumbnail(page, siteId).hover();
+      await page.waitForTimeout(WELL_PAST_THE_DELAY_MS);
+      await expect(card(page, siteId).getByTestId("card-preview")).toHaveCount(0);
+      expect(reads, `a ${list} row reads nothing`).toEqual([]);
+    }
   });
 
   test("a page that is not live never previews, and keeps its gradient", async ({ page, baseURL }) => {

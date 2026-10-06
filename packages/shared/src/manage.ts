@@ -323,6 +323,63 @@ export const deleteResultSchema = z.object({
 });
 
 /**
+ * The verbs `POST /api/sites/bulk` runs over many pages at once — the drafts
+ * tab's multi-select. Each is the single-page verb, applied per page: `keep` is
+ * `POST /api/sites/:id/keep`'s, `delete` is `DELETE /api/sites/:id`'s (D14:
+ * archive, never destroy). There is no bulk swap: Swap… stays a one-page flow.
+ */
+export const BULK_ACTIONS = ["keep", "delete"] as const;
+export type BulkAction = (typeof BULK_ACTIONS)[number];
+
+/**
+ * The most pages one bulk request may name. A cap on the REQUEST, not a plan
+ * limit: a bulk keep is held to the owner's free kept slots long before this,
+ * and a bulk delete takes each page off the edge (Cloudflare calls per page), so
+ * an unbounded list is an unbounded burst at the purge API.
+ */
+export const BULK_MAX_PAGES = 200;
+
+/**
+ * The body of `POST /api/sites/bulk`. `ids` are plain strings, not uuids: an id
+ * that is not a uuid is reported as that page's `not_found`, exactly like one
+ * that belongs to somebody else — a 400 for a malformed id would be a free
+ * "this one is at least well-formed" oracle (`siteIdSchema`'s rule).
+ */
+export const bulkRequestSchema = z.object({
+  action: z.enum(BULK_ACTIONS),
+  ids: z
+    .array(z.string())
+    .min(1, "Name at least one page.")
+    .max(BULK_MAX_PAGES, `Name at most ${BULK_MAX_PAGES} pages at a time.`),
+});
+
+export type BulkRequest = z.infer<typeof bulkRequestSchema>;
+
+/**
+ * One page's outcome: done, or the studio code and sentence that refused it —
+ * the same pair the single-page route would have answered with. A page another
+ * account owns is `not_found`, never a 403 (D17).
+ */
+export const bulkItemResultSchema = z.discriminatedUnion("ok", [
+  z.object({ id: z.string(), ok: z.literal(true) }),
+  z.object({ id: z.string(), ok: z.literal(false), code: studioErrorCodeEnum, message: z.string() }),
+]);
+
+export type BulkItemResult = z.infer<typeof bulkItemResultSchema>;
+
+/**
+ * What a bulk request returns (200): one result per distinct id, in the order
+ * they were sent. A refusal of the WHOLE request — a keep that would overrun
+ * the owner's free kept slots (`409 at_kept_limit`, all or nothing) — is the
+ * studio envelope instead, and nothing was written.
+ */
+export const bulkResultSchema = z.object({
+  results: z.array(bulkItemResultSchema),
+});
+
+export type BulkResult = z.infer<typeof bulkResultSchema>;
+
+/**
  * The body of `DELETE /api/account` (D16): the account's email, typed by the
  * person deleting it. The request itself carries the intent, so a stray
  * `fetch("/api/account", { method: "DELETE" })` cannot delete an account.

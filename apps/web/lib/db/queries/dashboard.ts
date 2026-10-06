@@ -62,6 +62,8 @@ export interface OwnedSite {
   purgeAfter: Date | null;
   /** Denormalised on `sites`, so a card renders a size with no join needed. */
   sizeBytes: number | null;
+  /** The page's first publish — a draft card's "Published 3 Oct". */
+  createdAt: Date;
   updatedAt: Date;
   /** When the current version's bytes were written — "updated 3 days ago". */
   versionCreatedAt: Date | null;
@@ -105,6 +107,7 @@ const OWNED_SITE_COLUMNS = {
   expiresAt: sites.expiresAt,
   purgeAfter: sites.purgeAfter,
   sizeBytes: sites.sizeBytes,
+  createdAt: sites.createdAt,
   updatedAt: sites.updatedAt,
   versionCreatedAt: siteVersions.createdAt,
 } as const;

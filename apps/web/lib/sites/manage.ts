@@ -76,7 +76,7 @@ import { removeManifest } from "../storage/manifest";
 import { pageObjectKey, r2Store } from "../storage/r2";
 
 import { managementRefusal } from "./display";
-import { keptQuotaFor, lockOwner, SiteNotFoundError } from "./keep";
+import { keptQuotaFor, lockOwner, SiteNotFoundError, type BulkSettled } from "./keep";
 import { StudioRefusal } from "./studio-refusal";
 
 /**
@@ -421,4 +421,39 @@ export async function deleteSite(
     // `isKeptCondition` exists to prevent.
     quota: await keptQuotaFor(profileId),
   };
+}
+
+/**
+ * How many pages a bulk delete takes off the edge at once. Each `deleteSite` is
+ * a pointer delete, a KV delete and a purge (plus the delayed re-purge), so a
+ * selection is never fanned out at Cloudflare in one burst — the reason
+ * `deleteAccount` goes one at a time — yet a hundred drafts do not take a
+ * hundred round trips end to end. Under the Postgres pool's `max: 5`.
+ */
+const BULK_DELETE_CONCURRENCY = 4;
+
+/**
+ * Delete many owned pages — the drafts tab's bulk Delete. Every page goes
+ * through `deleteSite`, the single DELETE's own code (edge first, then
+ * archive + `purge_after` + a chosen name's hold), so nothing about a delete is
+ * re-spelled here. Pages are independent: one that is not found or will not
+ * come off the edge is reported alone, and the rest are still deleted.
+ */
+export async function deleteSites(siteIds: readonly string[], profileId: string): Promise<BulkSettled[]> {
+  const settled: BulkSettled[] = new Array(siteIds.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (next < siteIds.length) {
+      const index = next++;
+      const id = siteIds[index]!;
+      try {
+        await deleteSite(id, profileId);
+        settled[index] = { id, ok: true };
+      } catch (error) {
+        settled[index] = { id, ok: false, error };
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(BULK_DELETE_CONCURRENCY, siteIds.length) }, worker));
+  return settled;
 }

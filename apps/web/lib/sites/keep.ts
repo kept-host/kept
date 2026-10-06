@@ -74,7 +74,7 @@ import { profiles, sites } from "../db/schema";
 import { draftClocks } from "../publish/pipeline";
 import { writeManifest } from "../storage/manifest";
 
-import { managementRefusal } from "./display";
+import { bulkKeepRefusal, managementRefusal } from "./display";
 import { StudioRefusal } from "./studio-refusal";
 
 /**
@@ -523,6 +523,62 @@ export async function keepSite(
   );
   await restoreManifest(restore);
   return { ...result, restored: restore !== null };
+}
+
+/**
+ * One page's share of a bulk verb: done, or the error that refused it (the
+ * page untouched). The route maps `error` exactly as the single-page route
+ * would (`studioFailure`), so a bulk refusal reads the same as a single one.
+ */
+export type BulkSettled = { id: string; ok: true } | { id: string; ok: false; error: unknown };
+
+/**
+ * Keep many owned drafts at once — the drafts tab's bulk Keep.
+ *
+ * ⚠️ THE CAP IS ALL OR NOTHING, DECIDED ONCE. Under `lockOwner`, before any
+ * page moves: if the owner's free kept slots cannot take every id, the whole
+ * request is refused `at_kept_limit` (`bulkKeepRefusal`'s sentence) and nothing
+ * is written — never "the first N, then a wall". Every id is counted, including
+ * one that turns out not to be keepable: the check is conservative, never
+ * generous.
+ *
+ * Then each page goes through `keepLocked` — the owner door, the very code the
+ * single keep runs — inside one SAVEPOINT apiece, so a page that is not found
+ * (another account's, past its grace), flagged, or broken is refused alone and
+ * the rest still land. The owner lock is held throughout, so the count cannot
+ * move under the loop. Late keeps write their manifests after the COMMIT, as
+ * `keepSite` does; a failed restore is reported against that page.
+ */
+export async function keepSites(siteIds: readonly string[], profileId: string): Promise<BulkSettled[]> {
+  const { settled, restores } = await db.transaction(async (tx) => {
+    const plan = await lockOwner(tx, profileId);
+    const { keptPages } = limitsFor(plan);
+    const free = Math.max(0, keptPages - (await countKept(tx, profileId)));
+    const refusal = bulkKeepRefusal(siteIds.length, free, keptPages);
+    if (refusal) throw new StudioRefusal("at_kept_limit", refusal);
+
+    const settled: BulkSettled[] = [];
+    const restores: { id: string; restore: PendingRestore }[] = [];
+    for (const id of siteIds) {
+      try {
+        const { restore } = await tx.transaction((page) => keepLocked(page, id, profileId, "owner"));
+        settled.push({ id, ok: true });
+        if (restore) restores.push({ id, restore });
+      } catch (error) {
+        settled.push({ id, ok: false, error });
+      }
+    }
+    return { settled, restores };
+  });
+
+  for (const { id, restore } of restores) {
+    try {
+      await restoreManifest(restore);
+    } catch (error) {
+      settled[settled.findIndex((item) => item.id === id)] = { id, ok: false, error };
+    }
+  }
+  return settled;
 }
 
 export interface DemoteOptions {

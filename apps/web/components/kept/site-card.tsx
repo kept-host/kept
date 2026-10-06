@@ -4,16 +4,22 @@
  * One page, as a card — E06 task 010 (PRD §8). Built here, mounted by 011/012.
  *
  * The skin is Claude Design's (`kept Page Card.dc.html` and the card markup in
- * `kept Studio Screen.dc.html`), wired to props. Three studio variants:
+ * `kept Studio Screen.dc.html`), wired to props. Four studio variants:
  *
- *   · `grid`  — the kept wall's card: thumbnail, status dot, title, address,
- *               7-day visits; actions top right on hover / focus (always on
- *               touch).
- *   · `list`  — the same facts as one row (`?view=list`). The design has no
- *               list row, so it is built from the card's own language.
- *   · `draft` — the drafts strip: thumbnail band with the countdown chip, title,
- *               address and one primary action. Last 48 h → `--warning` chip;
- *               an expired draft in grace is muted and says how long is left.
+ *   · `grid`       — the kept wall's card: thumbnail, status dot, title,
+ *                    address, 7-day visits; actions top right on hover / focus
+ *                    (always on touch).
+ *   · `list`       — the same facts as one row (`?view=list`). The design has
+ *                    no list row, so it is built from the card's own language.
+ *   · `draft`      — a draft as a card: thumbnail band with the countdown chip,
+ *                    title, address, when it was published, and its actions.
+ *                    Last `DRAFT_URGENT_HOURS` → `--warning` chip; an expired
+ *                    draft in grace is muted and says how long is left.
+ *   · `draft-list` — the same draft as one row, the drafts tab's default: many
+ *                    drafts read better as a list than as a wall of cards.
+ *
+ * A draft in the drafts tab's Select mode carries a `selector` (its checkbox)
+ * and, once ticked, `selected` — the accent ring.
  *
  * ── SHAPED FOR VARIANTS THAT DO NOT EXIST YET ────────────────────────────────
  * `variant` discriminates a union, the link target arrives as `href`, and the
@@ -68,9 +74,11 @@ import { OG_CARD_HEIGHT, OG_CARD_WIDTH, type OgCardSubject, ogCardPath } from "@
 import { ogTheme } from "@/lib/og/palette";
 import {
   expiredDraftNotice,
+  formatTimestamp,
   isDraftUrgent,
   JUST_PUBLISHED,
   pageName,
+  publishedLabel,
   visitsLabel,
 } from "@/lib/sites/display";
 import { cn } from "@/lib/utils";
@@ -85,6 +93,8 @@ export type CardArrival = "published" | "kept" | "duplicate";
 /** What a card needs from a row. Structurally satisfied by `OwnedSite`. */
 export interface SiteCardSite extends OgCardSubject {
   slug: string;
+  /** The first publish — a draft's "Published 3 Oct". */
+  createdAt: Date;
   /** Render `title ?? slug` — `pageName`. */
   title: string | null;
   status: SiteStatus;
@@ -107,6 +117,14 @@ interface SiteCardBase {
   className?: string;
 }
 
+/** A draft, which the drafts tab can select. */
+interface Selectable {
+  /** Its checkbox, in Select mode. A slot, like `actions`. */
+  selector?: ReactNode;
+  /** Ticked in Select mode: the accent ring. */
+  selected?: boolean;
+}
+
 /** A card that can show the page itself on hover. */
 interface Previewable {
   /**
@@ -127,7 +145,8 @@ export type SiteCardProps =
       variant: "list";
       visits?: number | null;
     })
-  | (SiteCardBase & Previewable & { variant: "draft" });
+  | (SiteCardBase & Previewable & Selectable & { variant: "draft" })
+  | (SiteCardBase & Selectable & { variant: "draft-list" });
 
 export function SiteCard(props: SiteCardProps) {
   switch (props.variant) {
@@ -137,6 +156,8 @@ export function SiteCard(props: SiteCardProps) {
       return <ListRow {...props} />;
     case "draft":
       return <DraftCard {...props} />;
+    case "draft-list":
+      return <DraftRow {...props} />;
   }
 }
 
@@ -253,6 +274,54 @@ function Visits({ visits, fresh }: { visits: number | null | undefined; fresh: b
 
 const CARD_SURFACE =
   "relative min-w-0 rounded-[var(--r-lg)] border border-border bg-surface shadow-[var(--shadow-sm)] hover:shadow-[var(--shadow-md)] motion-safe:hover:-translate-y-0.5 motion-safe:transition-[box-shadow,translate] motion-safe:duration-160 motion-safe:ease-[ease]";
+
+/** A ticked draft in Select mode. */
+const SELECTED = "ring-2 ring-accent";
+
+/** "Published 3 Oct", with the full stamp on hover and for machines. */
+function PublishedOn({ at }: { at: Date }) {
+  return (
+    <time dateTime={at.toISOString()} title={formatTimestamp(at)} className="whitespace-nowrap">
+      {publishedLabel(at)}
+    </time>
+  );
+}
+
+/** What a draft's clock says now: the phase, and whether the chip turns `--warning`. */
+function useDraftClock(expiresAt: Date | null) {
+  const now = new Date(useNow());
+  return {
+    now,
+    expired: expiresAt !== null && draftCountdown(expiresAt, now).phase === "expired",
+    urgent: expiresAt !== null && isDraftUrgent(expiresAt, now),
+  };
+}
+
+/** The countdown chip, `--warning`-tinted in the draft's last hours. */
+function Countdown({
+  expiresAt,
+  now,
+  urgent,
+  className,
+}: {
+  expiresAt: Date;
+  now: Date;
+  urgent: boolean;
+  className?: string;
+}) {
+  return (
+    <DraftChip
+      expiresAt={expiresAt}
+      now={now}
+      className={cn(
+        "h-6 whitespace-nowrap px-2.5 py-0 text-text shadow-none",
+        urgent &&
+          "border-[color-mix(in_srgb,var(--warning)_55%,var(--surface))] bg-[color-mix(in_srgb,var(--warning)_24%,var(--surface))]",
+        className,
+      )}
+    />
+  );
+}
 
 /** The arriving card's classes: the steady ring, and the rise unless it was already here. */
 function arrivalClasses(arrival: CardArrival | undefined): string | false {
@@ -422,14 +491,14 @@ function DraftCard({
   actions,
   arrival,
   preview,
+  selector,
+  selected,
   className,
 }: Extract<SiteCardProps, { variant: "draft" }>) {
-  const now = new Date(useNow());
   // A draft card is only ever handed a draft; a row whose clock was cleared
   // since the render (kept elsewhere) simply shows no chip.
   const expiresAt = site.expiresAt;
-  const expired = expiresAt !== null && draftCountdown(expiresAt, now).phase === "expired";
-  const urgent = expiresAt !== null && isDraftUrgent(expiresAt, now);
+  const { now, expired, urgent } = useDraftClock(expiresAt);
   const flagged = isFlagged(site.status);
   // A draft whose clock ran out on screen stops serving, so it stops previewing.
   const hover = useHoverPreview(site, expired ? undefined : preview);
@@ -438,7 +507,7 @@ function DraftCard({
     <article
       onPointerEnter={hover.onPointerEnter}
       onPointerLeave={hover.onPointerLeave}
-      className={cn(CARD_SURFACE, arrivalClasses(arrival), className)}
+      className={cn(CARD_SURFACE, arrivalClasses(arrival), selected && SELECTED, className)}
     >
       {arrival ? <RingPulse /> : null}
       {/* The band clips to the card's corners itself, so the ring pulse can
@@ -457,16 +526,9 @@ function DraftCard({
         />
         {flagged ? <FlagChip status={site.status} className="absolute left-2.5 top-2.5" /> : null}
         {arrival === "published" && !flagged ? <FreshChip className="absolute left-2.5 top-2.5" /> : null}
+        {selector ? <div className="absolute right-1.5 top-1.5">{selector}</div> : null}
         {expiresAt ? (
-          <DraftChip
-            expiresAt={expiresAt}
-            now={now}
-            className={cn(
-              "absolute bottom-2.5 left-2.5 h-6 px-2.5 py-0 text-text shadow-none",
-              urgent &&
-                "border-[color-mix(in_srgb,var(--warning)_55%,var(--surface))] bg-[color-mix(in_srgb,var(--warning)_24%,var(--surface))]",
-            )}
-          />
+          <Countdown expiresAt={expiresAt} now={now} urgent={urgent} className="absolute bottom-2.5 left-2.5" />
         ) : null}
       </div>
 
@@ -476,15 +538,80 @@ function DraftCard({
             <TitleLink name={pageName(site)} href={href} />
             <p className="truncate font-mono text-xs text-text-secondary">{host}</p>
           </div>
+          <p className="mt-1 text-[13px] text-text-secondary">
+            <PublishedOn at={site.createdAt} />
+          </p>
           {/* Not muted: how long is left to keep it is the one thing to read. */}
           {expired && expiresAt ? (
-            <p className="mt-1 text-[13px] text-text-secondary">
+            <p className="text-[13px] text-text-secondary">
               {expiredDraftNotice(expiresAt, site.purgeAfter, now)}
             </p>
           ) : null}
         </div>
         {actions ? <div className="flex shrink-0 items-center gap-1.5">{actions}</div> : null}
       </div>
+    </article>
+  );
+}
+
+/**
+ * A draft as one row — the drafts tab's list. The countdown chip sits on the
+ * meta line beside "Published …", so a phone keeps both without a second row
+ * of controls.
+ */
+function DraftRow({
+  site,
+  href,
+  host,
+  actions,
+  arrival,
+  selector,
+  selected,
+  className,
+}: Extract<SiteCardProps, { variant: "draft-list" }>) {
+  const expiresAt = site.expiresAt;
+  const { now, expired, urgent } = useDraftClock(expiresAt);
+  const flagged = isFlagged(site.status);
+
+  return (
+    <article
+      className={cn(
+        CARD_SURFACE,
+        "flex items-center gap-3 p-2 pr-3",
+        arrivalClasses(arrival),
+        selected && SELECTED,
+        className,
+      )}
+    >
+      {arrival ? <RingPulse /> : null}
+      {selector}
+      <Thumbnail
+        site={site}
+        href={href}
+        className={cn(
+          // A phone gives the row's width to the name and the two actions.
+          "aspect-[16/10] w-24 shrink-0 rounded-[var(--r-sm)] border border-border max-sm:hidden",
+          (expired || flagged) && MUTED,
+        )}
+      />
+
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <div className={cn("flex items-center gap-2", expired && MUTED)}>
+          <TitleLink name={pageName(site)} href={href} />
+          {flagged ? <FlagChip status={site.status} className="shrink-0" /> : null}
+          {arrival === "published" && !flagged ? <FreshChip className="max-md:hidden" /> : null}
+        </div>
+        <p className={cn("truncate font-mono text-xs text-text-secondary", expired && MUTED)}>{host}</p>
+        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-text-secondary">
+          {expiresAt ? <Countdown expiresAt={expiresAt} now={now} urgent={urgent} /> : null}
+          <PublishedOn at={site.createdAt} />
+        </div>
+        {expired && expiresAt ? (
+          <p className="text-[13px] text-text-secondary">{expiredDraftNotice(expiresAt, site.purgeAfter, now)}</p>
+        ) : null}
+      </div>
+
+      {actions ? <div className="flex shrink-0 items-center gap-1.5">{actions}</div> : null}
     </article>
   );
 }

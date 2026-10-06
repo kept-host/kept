@@ -24,6 +24,14 @@ import { DRAFT_NAME_NOTE, NAME_HOLD_PERIOD, namesUsed, renameWarning } from "../
 import {
   DRAFT_URGENT_HOURS,
   atLimitBanner,
+  bulkFailedToast,
+  bulkKeepRefusal,
+  deleteDraftsNote,
+  deleteDraftsTitle,
+  draftMatchesFilter,
+  draftsDeletedToast,
+  draftsKeptToast,
+  publishedLabel,
   atLimitPublishToast,
   archivedNotice,
   CHANNEL_LABEL,
@@ -303,4 +311,61 @@ test("past purge_after, or with no grace recorded, the notice promises nothing",
   const now = new Date(expiresAt.getTime() + 2 * DAY + HOUR);
   assert.equal(expiredDraftNotice(expiresAt, purgeAfter, now), "Expired 2 days ago");
   assert.equal(expiredDraftNotice(expiresAt, null, now), "Expired 2 days ago");
+});
+
+test("a draft's published date is pinned to UTC with no year; the full stamp is its tooltip", () => {
+  const at = new Date("2026-10-03T23:30:00Z");
+  assert.equal(publishedLabel(at), "Published 3 Oct");
+  // Pinned, so a reader east of UTC does not see the 4th on the server's 3rd.
+  assert.equal(publishedLabel(new Date("2026-12-31T23:59:59Z")), "Published 31 Dec");
+  assert.equal(formatTimestamp(at), "3 Oct 2026, 23:30 UTC");
+});
+
+test("the drafts filters: expiring is the warning chip's own rule, expired is a clock that has run out", () => {
+  const now = new Date("2026-10-04T12:00:00Z");
+  const at = (ms: number) => new Date(now.getTime() + ms);
+  const fresh = at(5 * DAY);
+  const urgent = at(DRAFT_URGENT_HOURS * HOUR);
+  const expired = at(-HOUR);
+
+  assert.deepEqual(
+    [fresh, urgent, expired].map((expiresAt) => draftMatchesFilter(expiresAt, "all", now)),
+    [true, true, true],
+  );
+  assert.deepEqual(
+    [fresh, urgent, expired].map((expiresAt) => draftMatchesFilter(expiresAt, "expiring", now)),
+    [false, true, false],
+    "expiring soon = isDraftUrgent: inside the last DRAFT_URGENT_HOURS, not yet expired",
+  );
+  assert.deepEqual(
+    [fresh, urgent, expired].map((expiresAt) => draftMatchesFilter(expiresAt, "expired", now)),
+    [false, false, true],
+  );
+  assert.equal(draftMatchesFilter(now, "expired", now), true, "at expires_at it has expired");
+});
+
+test("bulk keep is all or nothing within the free slots, in one sentence for the bar and the server", () => {
+  const { keptPages } = limitsFor("free");
+  assert.equal(bulkKeepRefusal(3, 3, keptPages), null);
+  assert.equal(bulkKeepRefusal(0, 0, keptPages), null);
+  assert.equal(bulkKeepRefusal(4, 3, keptPages), "You can keep 3 more — select 3 or fewer.");
+  assert.equal(
+    bulkKeepRefusal(1, 0, keptPages),
+    `You're keeping ${keptPages} of ${keptPages} — swap drafts in one at a time.`,
+  );
+});
+
+test("deleting drafts says it goes offline now, and counts in words", () => {
+  assert.equal(deleteDraftsTitle(1), "Delete this draft?");
+  assert.equal(deleteDraftsNote(1), "It goes offline now.");
+  assert.equal(deleteDraftsTitle(12), "Delete 12 drafts?");
+  assert.equal(deleteDraftsNote(12), "They go offline now.");
+  assert.equal(draftsDeletedToast(1), "Draft deleted.");
+  assert.equal(draftsDeletedToast(12), "Deleted 12 drafts.");
+  assert.equal(draftsKeptToast(1), KEPT_TOAST);
+  assert.equal(draftsKeptToast(3), "Kept 3 drafts. They're permanent now.");
+  assert.equal(
+    bulkFailedToast(2, "deleted", "kept could not take this page offline."),
+    "2 couldn't be deleted — kept could not take this page offline.",
+  );
 });

@@ -108,8 +108,10 @@ test.describe("the studio story", () => {
     expect(row!.expiresAt, "past the limit a publish is an owned draft, never an error").not.toBeNull();
     expect(await countKept(userId)).toBe(FREE.keptPages);
 
-    // Swap…: the chooser, least visited first.
-    const draftCard = page.getByTestId("drafts-strip").locator(`[data-site-id="${row!.id}"]`);
+    // Swap…: the chooser, least visited first — on the Drafts tab, which the
+    // at-limit publish opened.
+    await expect(page.getByRole("tab", { name: /^Drafts/ })).toHaveAttribute("aria-selected", "true");
+    const draftCard = page.getByTestId("drafts-list").locator(`[data-site-id="${row!.id}"]`);
     await expect(draftCard.getByTestId("keep-button")).toHaveText(/^Swap…/);
     await draftCard.getByTestId("keep-button").click();
     const dialog = page.getByTestId("swap-dialog");
@@ -126,11 +128,10 @@ test.describe("the studio story", () => {
     await expect(dialog).toBeHidden({ timeout: LIVE_STACK_TIMEOUT });
     await expect(page.getByText(SWAPPED_TOAST)).toBeVisible();
     await expect(
-      page.getByTestId("kept-wall").locator(`[data-site-id="${row!.id}"]`),
+      page.getByTestId("drafts-list").locator(`[data-site-id="${leastVisited.siteId}"]`),
     ).toBeVisible({ timeout: LIVE_STACK_TIMEOUT });
-    await expect(
-      page.getByTestId("drafts-strip").locator(`[data-site-id="${leastVisited.siteId}"]`),
-    ).toBeVisible();
+    await page.getByRole("tab", { name: /^Kept/ }).click();
+    await expect(page.getByTestId("kept-wall").locator(`[data-site-id="${row!.id}"]`)).toBeVisible();
 
     expect((await readSite(row!.id)).expiresAt, "the draft is kept").toBeNull();
     expect((await readSite(leastVisited.siteId)).expiresAt, "the least visited is a draft").not.toBeNull();

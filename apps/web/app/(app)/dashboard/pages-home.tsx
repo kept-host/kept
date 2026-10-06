@@ -8,11 +8,29 @@
  * applied: "Your pages", visits not views, Swap… not "Make room", a Grid / List
  * toggle, paste in the sheet, and none of the later epics' elements (AC10).
  *
+ * ── TWO TABS: KEPT · DRAFTS ──────────────────────────────────────────────────
+ * Drafts used to stack above the kept wall, and an account an agent publishes
+ * into had its wall pushed off the screen. Now each has a tab, with its count
+ * (over the search, so a search says where its matches are); Kept opens by
+ * default, and the tab is the URL (`?tab=drafts`) beside the view. The drafts
+ * tab is `DraftsPanel` — filters, sorts, delete and Select mode.
+ *
+ * Grid / List applies to the open tab. With no `?view=` each tab opens on its
+ * own default (`DEFAULT_VIEW`): the wall as a grid, drafts as a list — a list
+ * reads far better than a wall of cards when there are dozens of drafts. An
+ * explicit `?view=` is the reader's choice and applies to whichever tab is open.
+ *
+ * A publish switches to the tab its page will land on, so the mint card and the
+ * arrival are seen. A keep from the drafts tab stays there — someone working
+ * down a long list of drafts is not bounced to the wall after each one; the
+ * draft fades, leaves, and the Kept count moves.
+ *
  * Reads arrive as props from the server component; every mutation goes through
  * the owner client and ends in `router.refresh()` — no live updates, no store,
- * no browser storage. Search and sort are React state; the view is the URL.
+ * no browser storage. Search, sorts and the drafts filter are React state; the
+ * tab and the view are the URL.
  */
-import { useCallback, useMemo, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Search } from "lucide-react";
 
@@ -26,31 +44,51 @@ import {
 import { DRAFT_SECTION_NOTE } from "@/components/kept/draft-chip";
 import { DropTarget } from "@/components/kept/drop-target";
 import { Mascot } from "@/components/kept/mascot";
-import type { SwapPage } from "@/components/kept/swap-dialog";
 import { UtilityBar } from "@/components/kept/utility-bar";
 import { Button } from "@/components/ui/button";
-import { formatUpdatedAt, noSearchResults, pageName } from "@/lib/sites/display";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { formatUpdatedAt, type DraftFilter } from "@/lib/sites/display";
 import { cn } from "@/lib/utils";
 
 import { Wordmark } from "../wordmark";
-import { HomeCard, type HomeSite } from "./home-card";
-import { KeepAction } from "./keep-action";
+import { DraftsPanel, NO_IDS } from "./drafts-panel";
+import { HomeCard, toSwapPage, type HomeSite } from "./home-card";
 import { LimitBanner } from "./limit-banner";
 import { MintCard } from "./mint-card";
 import { PublishForm, PublishSheet } from "./publish-sheet";
-import { DEFAULT_SORT, sortSites, Toolbar, type SortKey, type View } from "./toolbar";
+import { NoSearchResults, TabEmpty } from "./tab-empty";
+import {
+  DEFAULT_DRAFT_SORT,
+  DEFAULT_SORT,
+  KEPT_SORTS,
+  sortSites,
+  Toolbar,
+  type DraftSortKey,
+  type SortKey,
+  type View,
+} from "./toolbar";
 import { useArrival } from "./use-arrival";
 import { usePublish } from "./use-publish";
 
-function toSwapPage(site: HomeSite): SwapPage {
-  return {
-    id: site.id,
-    name: pageName(site),
-    slug: site.slug,
-    liveUrl: site.liveUrl,
-    status: site.status,
-    visits: site.visits,
-  };
+type Tab = "kept" | "drafts";
+
+/** Each tab's view while the URL names none — see the header. */
+const DEFAULT_VIEW: Record<Tab, View> = { kept: "grid", drafts: "list" };
+
+/** The Kept tab's line, beside the tabs (the wall heading's note, before tabs). */
+const KEPT_NOTE = "Permanent. Drag a file onto a card to replace it.";
+
+/**
+ * Write one search param. The URL is the tab's and the view's only home (no
+ * browser storage), and Next's router picks up `history.replaceState` without a
+ * server round trip. Reads `window.location`, so it is stable for callbacks.
+ */
+function replaceParam(key: "tab" | "view", value: string | null) {
+  const params = new URLSearchParams(window.location.search);
+  if (value === null) params.delete(key);
+  else params.set(key, value);
+  const search = params.toString();
+  window.history.replaceState(null, "", search ? `?${search}` : window.location.pathname);
 }
 
 function matches(site: HomeSite, needle: string): boolean {
@@ -79,26 +117,38 @@ export function PagesHome({
   const [retrying, startRetry] = useTransition();
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortKey>(DEFAULT_SORT);
+  const [draftSort, setDraftSort] = useState<DraftSortKey>(DEFAULT_DRAFT_SORT);
+  const [draftFilter, setDraftFilter] = useState<DraftFilter>("all");
   const [sheetOpen, setSheetOpen] = useState(false);
   const [bannerDismissed, setBannerDismissed] = useState(false);
+  // Drafts the server has just deleted or kept, off the screen before the
+  // refresh lands. Held against the `drafts` they were taken from, so fresh
+  // server data always wins — a page kept now and demoted later comes back.
+  const [gone, setGone] = useState({ from: drafts, ids: NO_IDS });
   const arrivals = useArrival();
-  const closeSheet = useCallback(() => setSheetOpen(false), []);
-  const publisher = usePublish({ keptLimit: quota.limit, onSend: closeSheet, arrive: arrivals.arrive });
-
-  const view: View = searchParams.get("view") === "list" ? "list" : "grid";
+  const { current: arriving, settle } = arrivals;
   const atLimit = quota.remaining === 0;
-  const empty = kept.length === 0 && drafts.length === 0 && publisher.minting === null;
+  // The request is leaving: close the sheet and open the tab the page will
+  // land on, where its mint card stands (a draft at the kept limit).
+  const onSend = useCallback(() => {
+    setSheetOpen(false);
+    replaceParam("tab", atLimit ? "drafts" : null);
+  }, [atLimit]);
+  const publisher = usePublish({ keptLimit: quota.limit, onSend, arrive: arrivals.arrive });
+
+  const present = gone.from === drafts ? drafts.filter((site) => !gone.ids.has(site.id)) : drafts;
+  const tab: Tab = searchParams.get("tab") === "drafts" ? "drafts" : "kept";
+  const viewParam = searchParams.get("view");
+  const view: View = viewParam === "grid" || viewParam === "list" ? viewParam : DEFAULT_VIEW[tab];
+  const empty = kept.length === 0 && present.length === 0 && publisher.minting === null;
 
   const needle = query.trim().toLowerCase();
-  const shownDrafts = drafts.filter((site) => matches(site, needle));
   const shownKept = sortSites(
     kept.filter((site) => matches(site, needle)),
     sort,
   );
-  const noResults = needle !== "" && shownDrafts.length === 0 && shownKept.length === 0;
+  const matchedDrafts = present.filter((site) => matches(site, needle));
   const candidates = useMemo(() => kept.map(toSwapPage), [kept]);
-  const arrivalFor = (site: HomeSite) =>
-    arrivals.current?.id === site.id ? arrivals.current : undefined;
   const mintCard = (variant: View | "draft") =>
     publisher.minting ? (
       <MintCard
@@ -109,14 +159,34 @@ export function PagesHome({
       />
     ) : null;
 
+  // An arrival on the other tab: a publish (or the duplicate it pointed at)
+  // brings its tab forward, so the page is seen landing; a keep made from the
+  // drafts tab stays put, and its arrival on the wall is over unseen.
+  useEffect(() => {
+    if (!arriving) return;
+    const landed: Tab | null = kept.some((site) => site.id === arriving.id)
+      ? "kept"
+      : drafts.some((site) => site.id === arriving.id)
+        ? "drafts"
+        : null;
+    if (landed === null || landed === tab) return;
+    if (arriving.kind === "kept") settle(arriving.id);
+    else replaceParam("tab", landed === "kept" ? null : landed);
+  }, [arriving, kept, drafts, tab, settle]);
+
+  function hide(ids: readonly string[]) {
+    setGone((previous) => ({
+      from: drafts,
+      ids: new Set([...(previous.from === drafts ? previous.ids : []), ...ids]),
+    }));
+  }
+
+  function setTab(next: Tab) {
+    replaceParam("tab", next === "kept" ? null : next);
+  }
+
   function setView(next: View) {
-    // The URL is the view's only home (no browser storage), and Next's router
-    // picks up `history.replaceState` without a server round trip.
-    const params = new URLSearchParams(searchParams.toString());
-    if (next === "list") params.set("view", "list");
-    else params.delete("view");
-    const search = params.toString();
-    window.history.replaceState(null, "", search ? `?${search}` : window.location.pathname);
+    replaceParam("view", next === DEFAULT_VIEW[tab] ? null : next);
   }
 
   const openSheet = () => {
@@ -157,7 +227,7 @@ export function PagesHome({
                         keptLimit: quota.limit,
                         names,
                         nameQuota: limitsFor(plan).chosenNames,
-                        drafts: drafts.length,
+                        drafts: present.length,
                       }
                 }
                 onPublish={openSheet}
@@ -203,61 +273,35 @@ export function PagesHome({
                 <PublishForm publisher={publisher} zoneClassName="min-h-56" />
               </EmptyState>
             ) : (
-              <>
-                <Toolbar
-                  sort={sort}
-                  onSort={setSort}
-                  view={view}
-                  onView={setView}
-                  note={
-                    visitsAsOf
-                      ? `Visits over the last ${VISITS_RECENT_DAYS} days · as of ${formatUpdatedAt(visitsAsOf)}`
-                      : undefined
-                  }
-                />
+              <Tabs value={tab} onValueChange={(next) => setTab(next === "drafts" ? "drafts" : "kept")} className="gap-5">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                  <TabsList aria-label="Pages">
+                    <TabsTrigger value="kept" className="gap-2">
+                      Kept
+                      <span className="text-text-muted">{shownKept.length}</span>
+                    </TabsTrigger>
+                    <TabsTrigger value="drafts" className="gap-2">
+                      Drafts
+                      <span className="text-text-muted">{matchedDrafts.length}</span>
+                    </TabsTrigger>
+                  </TabsList>
+                  <p className="text-sm text-text-secondary">{tab === "kept" ? KEPT_NOTE : DRAFT_SECTION_NOTE}</p>
+                </div>
 
-                {shownDrafts.length > 0 || (publisher.minting && atLimit) ? (
-                  <section aria-label="Drafts" className="flex flex-col gap-3">
-                    <SectionHeading
-                      title="Drafts"
-                      note={DRAFT_SECTION_NOTE}
-                    />
-                    <ul
-                      data-testid="drafts-strip"
-                      // Three across at most, then the strip scrolls sideways (the
-                      // design's strip); a lone draft does not stretch the full width.
-                      // The scroller clips, so it is padded (and pulled back by as
-                      // much) for an arriving card's ring pulse to spread into.
-                      className="-m-3 grid auto-cols-[minmax(250px,calc((100%-1.5rem)/3))] grid-flow-col gap-3 overflow-x-auto p-3 pb-4"
-                    >
-                      {atLimit ? mintCard("draft") : null}
-                      {shownDrafts.map((site) => (
-                        <HomeCard
-                          key={site.id}
-                          site={site}
-                          variant="draft"
-                          plan={plan}
-                          arrival={arrivalFor(site)}
-                          onSettled={arrivals.settle}
-                          leaving={arrivals.leavingId === site.id}
-                          action={
-                            <KeepAction
-                              page={toSwapPage(site)}
-                              atLimit={atLimit}
-                              candidates={candidates}
-                              quota={quota}
-                              onKept={arrivals.keep}
-                            />
-                          }
-                        />
-                      ))}
-                    </ul>
-                  </section>
-                ) : null}
-
-                {shownKept.length > 0 || (publisher.minting && !atLimit) ? (
-                  <section aria-label="Kept pages" className="flex flex-col gap-3">
-                    <SectionHeading title="Kept" note="Permanent. Drag a file onto a card to replace it." />
+                <TabsContent value="kept" className="flex flex-col gap-4">
+                  <Toolbar
+                    sorts={KEPT_SORTS}
+                    sort={sort}
+                    onSort={setSort}
+                    view={view}
+                    onView={setView}
+                    note={
+                      visitsAsOf
+                        ? `Visits over the last ${VISITS_RECENT_DAYS} days · as of ${formatUpdatedAt(visitsAsOf)}`
+                        : undefined
+                    }
+                  />
+                  {shownKept.length > 0 || (publisher.minting && !atLimit) ? (
                     <ul
                       data-testid="kept-wall"
                       data-view={view}
@@ -274,32 +318,42 @@ export function PagesHome({
                           site={site}
                           variant={view}
                           plan={plan}
-                          arrival={arrivalFor(site)}
-                          onSettled={arrivals.settle}
+                          arrival={arriving?.id === site.id ? arriving : undefined}
+                          onSettled={settle}
                         />
                       ))}
                     </ul>
-                  </section>
-                ) : null}
+                  ) : needle ? (
+                    <NoSearchResults query={query.trim()} onClear={() => setQuery("")} />
+                  ) : (
+                    <TabEmpty
+                      testId="kept-empty"
+                      title="Nothing kept yet."
+                      note="Keep a draft and it stays at its link for good."
+                    />
+                  )}
+                </TabsContent>
 
-                {noResults ? (
-                  <div className="flex flex-col items-center gap-2 rounded-[var(--r-lg)] border border-dashed border-border px-6 py-12 text-center">
-                    <p className="font-display text-xl font-semibold tracking-[-0.02em] text-text">
-                      {noSearchResults(query.trim())}
-                    </p>
-                    <p className="text-[15px] text-text-secondary">Try another word, or clear the search.</p>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => setQuery("")}
-                      className="mt-2 font-body font-medium"
-                    >
-                      Clear search
-                    </Button>
-                  </div>
-                ) : null}
-              </>
+                <TabsContent value="drafts">
+                  <DraftsPanel
+                    drafts={matchedDrafts}
+                    query={query.trim()}
+                    onClearSearch={() => setQuery("")}
+                    sort={draftSort}
+                    onSort={setDraftSort}
+                    filter={draftFilter}
+                    onFilter={setDraftFilter}
+                    view={view}
+                    onView={setView}
+                    quota={quota}
+                    candidates={candidates}
+                    plan={plan}
+                    arrivals={arrivals}
+                    mint={atLimit ? mintCard(view === "grid" ? "draft" : "list") : null}
+                    onGone={hide}
+                  />
+                </TabsContent>
+              </Tabs>
             )}
           </main>
 
@@ -313,15 +367,6 @@ export function PagesHome({
         </>
       )}
     </DropTarget>
-  );
-}
-
-function SectionHeading({ title, note }: { title: string; note: string }) {
-  return (
-    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-      <h2 className="font-mono text-xs font-medium uppercase tracking-[0.08em] text-text">{title}</h2>
-      <span className="text-sm text-text-secondary">{note}</span>
-    </div>
   );
 }
 

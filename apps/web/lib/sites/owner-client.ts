@@ -1,6 +1,7 @@
 /**
  * The browser's client for the owner-scoped (studio) routes — publish, keep,
- * demote, swap, rename, details, replace, restore, delete, and account deletion.
+ * demote, swap, rename, details, replace, restore, delete, bulk keep / delete,
+ * and account deletion.
  * Downloads and the export are plain links (`GET`, `Content-Disposition:
  * attachment`); the one read of the download route here is `readPageHtml`, the
  * studio card's hover preview (task 016), which wants the page as text.
@@ -25,6 +26,7 @@
  */
 import {
   accountDeletionResultSchema,
+  bulkResultSchema,
   deleteResultSchema,
   demoteResultSchema,
   keepResultSchema,
@@ -38,6 +40,8 @@ import {
   swapResultSchema,
   type AccountDeletionRequest,
   type AccountDeletionResult,
+  type BulkAction,
+  type BulkItemResult,
   type DeleteResult,
   type DemoteResult,
   type KeepResult,
@@ -492,6 +496,31 @@ export async function deletePage(
     deleteResultSchema,
   );
   return sent.ok ? { ok: true, result: sent.body } : { ok: false, error: sent.error };
+}
+
+/** A bulk keep / delete: one result per page, or why nothing was done at all. */
+export type BulkOutcome =
+  | { ok: true; results: BulkItemResult[] }
+  | { ok: false; error: StudioError };
+
+/**
+ * `POST /api/sites/bulk` — keep or delete many pages in one request.
+ *
+ * ⚠️ SUCCESS IS PER PAGE. `ok: true` means the request was answered; each of
+ * `results` says whether ITS page was kept or deleted, with the single route's
+ * code and sentence when it was not. The one whole-request refusal is a keep
+ * past the free kept slots (`at_kept_limit`): nothing was kept.
+ *
+ * Delete's confirmation is the caller's, as `deletePage`'s is. Never throws,
+ * including on abort.
+ */
+export async function bulkPages(
+  action: BulkAction,
+  ids: readonly string[],
+  signal?: AbortSignal,
+): Promise<BulkOutcome> {
+  const sent = await send("/api/sites/bulk", jsonInit("POST", { action, ids }, signal), bulkResultSchema);
+  return sent.ok ? { ok: true, results: sent.body.results } : { ok: false, error: sent.error };
 }
 
 /**

@@ -337,7 +337,7 @@ test.describe("the publish moment", () => {
     expect(posts[2]).toBe(posts[1]);
   });
 
-  test("AC5: Keep fades the draft where it stands, then the page arrives on the wall, ringed", async ({
+  test("AC5: Keep fades the draft where it stands; the Drafts tab stays open, and the page is on the wall", async ({
     page,
     baseURL,
   }) => {
@@ -348,11 +348,10 @@ test.describe("the publish moment", () => {
     });
     expect(demoted.status(), await demoted.text()).toBe(200);
 
-    await page.goto("/dashboard");
+    await page.goto("/dashboard?tab=drafts");
     await waitForTokensApplied(page);
     await hydrated(page);
-    const strip = page.getByTestId("drafts-strip");
-    const leaving = strip.locator(`[data-site-id="${draft.siteId}"]`);
+    const leaving = page.getByTestId("drafts-list").locator(`[data-site-id="${draft.siteId}"]`);
 
     const refresh = await holdNext(page, isRefresh);
     await leaving.getByTestId("keep-button").click();
@@ -364,12 +363,17 @@ test.describe("the publish moment", () => {
     await refresh.reached;
     refresh.release();
 
+    // The draft leaves the list; someone working down their drafts is not
+    // bounced to the wall, so the arrival there is over unseen.
+    await expect(leaving).toHaveCount(0, { timeout: LIVE_STACK_TIMEOUT });
+    await expect(page.getByRole("tab", { name: /^Drafts/ })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("tab", { name: /^Kept/ })).toHaveText(/Kept\s*1/);
+
+    await page.getByRole("tab", { name: /^Kept/ }).click();
     const arrived = page.getByTestId("kept-wall").locator(`[data-site-id="${draft.siteId}"]`);
-    await expect(arrived).toHaveAttribute("data-arrival", "kept", { timeout: LIVE_STACK_TIMEOUT });
-    await expect(arrived).toHaveAttribute("data-highlighted", "true");
-    await expect(arrived.getByTestId("live-badge")).toBeVisible();
+    await expect(arrived).toBeVisible();
+    await expect(arrived).not.toHaveAttribute("data-highlighted", "true");
     await expect(arrived.getByText(JUST_PUBLISHED)).toHaveCount(0);
-    await expect(leaving).toHaveCount(0);
   });
 
   test("AC7: every card variant lifts on hover over the design's 160 ms — and only its shadow changes under reduced motion", async ({
@@ -398,7 +402,8 @@ test.describe("the publish moment", () => {
     for (const [view, id] of [
       ["", kept.siteId],
       ["?view=list", kept.siteId],
-      ["", draft.siteId],
+      ["?tab=drafts&view=grid", draft.siteId],
+      ["?tab=drafts", draft.siteId],
     ] as const) {
       await page.goto(`/dashboard${view}`);
       await waitForTokensApplied(page);
@@ -434,7 +439,8 @@ test.describe("the publish moment", () => {
     await waitForTokensApplied(page);
     await hydrated(page);
 
-    // At the limit, so the new page lands as a draft in the strip.
+    // At the limit, so the new page lands as a draft — on the Drafts tab, which
+    // the screen opens for it.
     const post = await holdNext(page, isPublish);
     const title = `E06-015 reduced ${crypto.randomUUID().slice(0, 8)}`;
     await drop(page, anywhere(page), { name: "reduced.html", body: titledHtml(title) });
@@ -447,7 +453,8 @@ test.describe("the publish moment", () => {
     await expect(page.getByText(atLimitPublishToast(FREE.keptPages))).toBeVisible({ timeout: LIVE_STACK_TIMEOUT });
     const row = await ownRow(userId, title);
     expect(row.expiresAt).not.toBeNull();
-    const arrived = page.getByTestId("drafts-strip").locator(`[data-site-id="${row.id}"]`);
+    await expect(page).toHaveURL(/[?&]tab=drafts\b/);
+    const arrived = page.getByTestId("drafts-list").locator(`[data-site-id="${row.id}"]`);
     await expect(arrived).toHaveAttribute("data-highlighted", "true", { timeout: LIVE_STACK_TIMEOUT });
     await expect(arrived.getByText(JUST_PUBLISHED)).toBeVisible();
     await expect(arrived.getByText(/^Draft · /)).toBeVisible();

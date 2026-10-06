@@ -247,6 +247,7 @@ test(
       [inGrace.id],
       "a draft past its grace never reaches the home — not the list, not the counts",
     );
+    assert.equal(drafts[0]?.createdAt instanceof Date, true, "a draft carries its first-publish date");
 
     // `/site/[id]` shows exactly what its Download link can still serve.
     const detail = await getOwnedSiteById(profileId, pastGrace.id);
