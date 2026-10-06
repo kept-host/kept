@@ -1,4 +1,9 @@
-import { test, expect, type Page } from "@playwright/test";
+import {
+  test,
+  expect,
+  type APIRequestContext,
+  type Page,
+} from "@playwright/test";
 import { config } from "dotenv";
 
 import { gotoWithTokensApplied } from "./tokens-applied";
@@ -121,9 +126,10 @@ test.describe("the (app) route gate", () => {
  * plus leaked through `Referer`. So the retired paths must answer an ordinary,
  * boring 404, and must not answer with a `Location`.
  *
- * The retired-path test needs no credentials — a made-up token is enough,
- * because the assertion is that the token buys nothing there. The live
- * `/api/anon/` counterpart does need them, and skips without; see `SKIP_LIVE`.
+ * The `…/reminder` probe needs no credentials — no route was ever added there,
+ * so a made-up token is enough. The two URLs E06 re-occupied (below) and the
+ * live `/api/anon/` counterpart do need them, and skip without; see `SKIP_AUTH`
+ * and `SKIP_LIVE`.
  *
  * ── ⚠️ E06 RE-OCCUPIED TWO OF THESE URLS, AND THE ASSERTION MOVED WITH IT ────
  *
@@ -137,6 +143,14 @@ test.describe("the (app) route gate", () => {
  * rather than 404, and `POST …/reminder` still 404s because no owner verb has
  * that name.
  *
+ * THAT 401 NEEDS THE AUTH SLOTS. Answering it means reading the session, and
+ * the first touch of `auth` constructs Better Auth, which throws by design with
+ * the slots empty (`lib/storage/env.ts`) — so on a secretless runner both owner
+ * verbs answer 500, exactly as every E05 cookie-gated route and the `(app)` gate
+ * above do. That is missing config failing loud, not a hole, so the owner half
+ * skips on `SKIP_AUTH` rather than accepting a 500; the `…/reminder` half needs
+ * nothing and always runs.
+ *
  * A STATUS CODE WAS NEVER THE SECURITY PROPERTY. Two things are, and both are
  * asserted below unchanged:
  *
@@ -149,30 +163,43 @@ test.describe("the (app) route gate", () => {
  *      the segment as a site id belonging to the *caller's account*, so a token
  *      in that position resolves to nothing whether or not anyone is signed in.
  *
- * Tightened rather than loosened: the old test allowed any 404, this one pins
- * the exact set and additionally requires that no response is a success.
+ * Tightened rather than loosened: the old test allowed any 404, these pin the
+ * exact status per path and additionally require that no response is a success.
  */
 test.describe("the retired anonymous API paths", () => {
   const RETIRED_TOKEN = "e05012retiredpathprobe000000000000000000";
 
-  test("the pre-D3 `/api/sites/:anonToken/*` URLs buy nothing and never redirect", async ({
-    request,
-  }) => {
-    const attempts: [string, "get" | "post" | "delete"][] = [
-      [`/api/sites/${RETIRED_TOKEN}`, "delete"],
-      [`/api/sites/${RETIRED_TOKEN}/replace`, "post"],
-      [`/api/sites/${RETIRED_TOKEN}/reminder`, "post"],
-    ];
-
-    for (const [path, method] of attempts) {
+  /** The exact answer, then the two security properties — see the header. */
+  async function expectBuysNothing(
+    request: APIRequestContext,
+    probes: [path: string, method: "post" | "delete", status: 401 | 404][],
+  ) {
+    for (const [path, method, status] of probes) {
       const response = await request[method](path, { maxRedirects: 0 });
       const where = `${method.toUpperCase()} ${path}`;
-      // 404 where no route was ever added; 401 where E06's cookie-gated owner
-      // verb now lives. Never a 2xx, and never a 3xx — see the header.
-      expect([401, 404], where).toContain(response.status());
+      expect(response.status(), where).toBe(status);
       expect(response.ok(), `${where} must never succeed`).toBe(false);
       expect(response.headers()["location"], where).toBeUndefined();
     }
+  }
+
+  test("the pre-D3 `/api/sites/:anonToken/reminder` URL no owner verb reclaimed 404s and never redirects", async ({
+    request,
+  }) => {
+    await expectBuysNothing(request, [
+      [`/api/sites/${RETIRED_TOKEN}/reminder`, "post", 404],
+    ]);
+  });
+
+  test("the pre-D3 `/api/sites/:anonToken` URLs E06's owner verbs reclaimed answer 401 signed out and never redirect", async ({
+    request,
+  }) => {
+    test.skip(!!SKIP_AUTH, SKIP_AUTH || undefined);
+
+    await expectBuysNothing(request, [
+      [`/api/sites/${RETIRED_TOKEN}`, "delete", 401],
+      [`/api/sites/${RETIRED_TOKEN}/replace`, "post", 401],
+    ]);
   });
 
   test("the `/api/anon/` namespace answers those same shapes with no session", async ({
