@@ -1,13 +1,16 @@
+import { waitlistHref } from "./routing/host-split";
+
 /**
  * The launch gate — whether kept is open to the public on this deploy.
  *
  * **Open** is the product: publish from the landing or the API, sign in, keep
  * pages. **Closed** is the waitlist: the landing still renders in full, but a
  * dropped page opens the waitlist dialog instead of publishing, and every
- * surface that publishes or signs in is gone — `decideClosedAction` in
- * `lib/routing/host-split.ts` sends its pages to the landing and 404s its APIs
- * before a route handler runs, so no page can be published and no session can
- * be minted.
+ * surface that publishes or signs in is narrowed to the admins (E06a §1) —
+ * `decideClosedAction` in `lib/routing/host-split.ts` 404s every API it does not
+ * allow before a route handler runs, the publish routes check for an access
+ * token or an admin session first (`lib/launch-access.ts`), and Better Auth
+ * refuses sign-in to anyone but an admin.
  *
  * ⚠️ IT FAILS CLOSED. Only the exact string `true` opens; unset, empty or any
  * other value is the waitlist. Prod has never been deployed and has dozens of
@@ -28,4 +31,21 @@
  */
 export function keptOpen(): boolean {
   return process.env.NEXT_PUBLIC_KEPT_OPEN?.trim() === "true";
+}
+
+/**
+ * The answer to a blocked API call on a closed deploy (E06a §1) — from the
+ * middleware, and from a publish handler whose caller is neither an access
+ * token nor an admin. A 404, so a closed deploy says no more about its routes
+ * than that kept is not open; the waitlist link is built from configuration.
+ */
+export function notOpenResponse(): Response {
+  return Response.json(
+    {
+      error: "not_open",
+      message: "kept opens in December.",
+      waitlist: waitlistHref(process.env.NEXT_PUBLIC_APP_URL),
+    },
+    { status: 404, headers: { "cache-control": "no-store" } },
+  );
 }

@@ -14,6 +14,8 @@
  */
 import { NextResponse } from "next/server";
 
+import { closedModeAccess } from "../../../lib/launch-access";
+import { notOpenResponse } from "../../../lib/launch";
 import {
   errorResponse,
   publisherFrom,
@@ -32,7 +34,12 @@ export const runtime = "nodejs";
 /** Every publish mutates four stores; nothing about it is cacheable. */
 export const dynamic = "force-dynamic";
 
-export async function POST(request: Request): Promise<NextResponse> {
+export async function POST(request: Request): Promise<Response> {
+  // E06a §1: closed, only an access token or an admin session gets past this —
+  // checked first, before anything is read or written. RETIRE with
+  // `lib/launch-access.ts`.
+  if (!(await closedModeAccess(request))) return notOpenResponse();
+
   let body: unknown;
   try {
     body = await readPageBody(request);

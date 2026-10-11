@@ -13,16 +13,18 @@ import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
  *
  *   pnpm --filter @kept/web test:e2e:closed
  *
- * which boots the server with `NEXT_PUBLIC_KEPT_OPEN=false`. The ordinary
- * `test:e2e` run is open (see `playwright.config.ts`) and skips this file.
+ * which boots the server with `NEXT_PUBLIC_KEPT_OPEN=false` and runs every
+ * `*.closed.spec.ts`. The ordinary `test:e2e` run is open (see
+ * `playwright.config.ts`) and skips this file. The API side of a closed deploy
+ * — the `not_open` 404, the access token, cron — is `closed-access.closed.spec.ts`.
  *
  * What a closed deploy promises, each asserted against the real server:
  *   - a valid page dropped, chosen or pasted opens the waitlist and sends
  *     NOTHING to `/api/publish` — counted off the wire, not intercepted;
  *   - a file that is not a page still gets the drop box's own refusal;
  *   - the nav offers the waitlist where sign-in was;
- *   - every control-plane page lands on the landing, and every API but health
- *     and the waitlist is 404 — sign-in included, with no cookie;
+ *   - the control-plane pages stay reachable (E06a §1: only admins can have a
+ *     session), and a page no rule allows lands on the landing;
  *   - joining stores one lowercased row, and joining again stores no second.
  *
  * The last one writes to the real database, so it skips without
@@ -138,35 +140,21 @@ test.describe("closed deploy — the waitlist", () => {
     await expect(page.getByTestId("waitlist-error")).toHaveText("Enter a valid email address.");
   });
 
-  test("every control-plane page lands on the landing", async ({ page }) => {
-    for (const path of ["/auth", "/auth/keep", "/dashboard", "/settings", "/keep/tok_e2e", "/p/tok_e2e"]) {
-      const response = await page.goto(path);
-      if (process.env.NEXT_PUBLIC_APP_URL) {
-        expect(new URL(page.url()).pathname, path).toBe("/");
-        await expect(page.locator("#nav-waitlist"), path).toBeVisible();
-      } else {
-        // Nowhere configured to send anyone: 404, never a redirect built from
-        // the request (`decideClosedAction`).
-        expect(response?.status(), path).toBe(404);
-      }
-    }
-  });
-
-  test("every API but health and the waitlist is 404 — sign-in included, with no cookie", async ({
-    request,
+  test("the control-plane pages stay reachable; a page no rule allows lands on the landing", async ({
+    page,
   }) => {
-    const refused = [
-      request.post("/api/publish", { headers: { "content-type": "text/html" }, data: PAGE }),
-      request.get("/api/auth/get-session"),
-      request.post("/api/auth/sign-in/magic-link", { data: { email: "ada@example.com" } }),
-      request.post("/api/sites", { data: { html: PAGE } }),
-      request.post("/api/anon/tok_e2e/keep"),
-      request.get("/api/export"),
-    ];
-    for (const response of await Promise.all(refused)) {
-      expect(response.status(), response.url()).toBe(404);
-      expect(response.headers()["set-cookie"], response.url()).toBeUndefined();
+    test.skip(!process.env.NEXT_PUBLIC_APP_URL, "NEXT_PUBLIC_APP_URL absent — nothing to route to");
+
+    // Signed out, `/auth` is the sign-in screen and the gated pages bounce to it.
+    for (const path of ["/auth", "/dashboard", "/settings"]) {
+      await page.goto(path);
+      expect(new URL(page.url()).pathname, path).toBe("/auth");
     }
+
+    const response = await page.goto("/no-such-page");
+    expect(response?.status()).toBe(200);
+    expect(new URL(page.url()).pathname).toBe("/");
+    await expect(page.locator("#nav-waitlist")).toBeVisible();
   });
 
   test.describe("joining, against the real database", () => {

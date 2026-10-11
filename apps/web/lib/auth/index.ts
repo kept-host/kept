@@ -50,6 +50,7 @@ import {
 } from "../storage/env";
 
 import { bootstrapProfile } from "./bootstrap-profile";
+import { SESSION_COOKIE_NAME } from "./cookie";
 import { fetchGithubIdentity } from "./github-identity";
 
 function createAuth() {
@@ -160,7 +161,7 @@ function createAuth() {
         session_token: {
           // Explicit and readable; bypasses `cookiePrefix` entirely. No
           // `maxAge` here — see hazard 4.
-          name: "__Host-kept.session_token",
+          name: SESSION_COOKIE_NAME,
           attributes: { secure: true, httpOnly: true, sameSite: "lax", path: "/" },
         },
       },

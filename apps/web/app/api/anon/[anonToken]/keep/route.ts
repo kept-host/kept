@@ -22,6 +22,8 @@
  */
 import { NextResponse } from "next/server";
 
+import { closedModeAccess } from "../../../../../lib/launch-access";
+import { notOpenResponse } from "../../../../../lib/launch";
 import { getSession } from "../../../../../lib/auth/session";
 import { getProfileForSession } from "../../../../../lib/db/queries/profile";
 import { errorResponse } from "../../../../../lib/publish/http";
@@ -37,7 +39,12 @@ export const dynamic = "force-dynamic";
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ anonToken: string }> },
-): Promise<NextResponse> {
+): Promise<Response> {
+  // E06a §1: closed, only an access token or an admin session gets past this —
+  // checked first, before anything is read or written. RETIRE with
+  // `lib/launch-access.ts`.
+  if (!(await closedModeAccess(request))) return notOpenResponse();
+
   // E05a D3 — THIS route takes the check and its three siblings under
   // `/api/anon/` do not, because this is the only one that consumes the session
   // cookie. The token alone cannot keep a page, so the cookie is ambient

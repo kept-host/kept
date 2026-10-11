@@ -11,6 +11,8 @@
  */
 import { NextResponse } from "next/server";
 
+import { closedModeAccess } from "../../../../lib/launch-access";
+import { notOpenResponse } from "../../../../lib/launch";
 import { deletePage } from "../../../../lib/publish/anon-manage";
 import { errorResponse } from "../../../../lib/publish/http";
 
@@ -21,9 +23,14 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function DELETE(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ anonToken: string }> },
-): Promise<NextResponse> {
+): Promise<Response> {
+  // E06a §1: closed, only an access token or an admin session gets past this —
+  // checked first, before anything is read or written. RETIRE with
+  // `lib/launch-access.ts`.
+  if (!(await closedModeAccess(request))) return notOpenResponse();
+
   const { anonToken } = await params;
   const outcome = await deletePage(anonToken);
 

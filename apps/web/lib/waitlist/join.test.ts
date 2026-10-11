@@ -5,7 +5,7 @@
  * to the same string.
  *
  * The write itself is asserted end to end against the real dev database by
- * `e2e/waitlist.spec.ts`, which skips without `DATABASE_URL`.
+ * `e2e/waitlist.closed.spec.ts`, which skips without `DATABASE_URL`.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";

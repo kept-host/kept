@@ -24,6 +24,9 @@ const GUARDED_FILES = [
   "lib/rate-limit/index.ts",
   "lib/rate-limit/client-ip.ts",
   "lib/publish/hooks.ts",
+  "lib/launch.ts",
+  "lib/launch-access.ts",
+  "lib/access-token.ts",
 ];
 
 /** `email`, `ip`, `token`, or a camelCase name ending in one of them. */

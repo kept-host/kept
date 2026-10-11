@@ -1,5 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
+import { keptOpen } from "./lib/launch";
+import { mintAccessToken } from "./lib/access-token";
+
 /**
  * Playwright e2e config for @kept/web.
  *
@@ -56,13 +59,30 @@ import { defineConfig, devices } from "@playwright/test";
  * reason that has nothing to do with what it asserts. So the harness defaults
  * it to `true` — set here, before `webServer` starts, so the server it boots
  * and the workers that read it agree. An explicit value wins: `test:e2e:closed`
- * sets `false` to run `e2e/waitlist.spec.ts` against a closed server.
+ * sets `false` to run every `e2e/*.closed.spec.ts` against a closed server.
  *
  * `NEXT_PUBLIC_` values are compiled in, so a server already listening on :3000
  * (`reuseExistingServer`) keeps whichever gate it was started with — the
- * waitlist spec checks `/api/health` before trusting it.
+ * closed specs check `/api/health` before trusting it.
  */
 process.env.NEXT_PUBLIC_KEPT_OPEN ??= "true";
+
+/**
+ * ── A CLOSED HARNESS CARRIES ONE ACCESS TOKEN OF ITS OWN ────────────────────
+ *
+ * The closed specs (`*.closed.spec.ts`) publish with an access token (E06a §2),
+ * and the server only knows a token by its digest in `KEPT_ACCESS_TOKEN_HASHES`.
+ * So a closed run mints one here, before `webServer` starts: the digest goes
+ * into the server's environment (an explicit `process.env` value beats
+ * `.env.local` in Next) and the token into `KEPT_E2E_ACCESS_TOKEN` for the
+ * specs. Workers inherit both and evaluate this file again, so the guard keeps
+ * it to one token per run. Neither is ever printed.
+ */
+if (!keptOpen() && !process.env.KEPT_E2E_ACCESS_TOKEN) {
+  const { token, hash } = await mintAccessToken();
+  process.env.KEPT_E2E_ACCESS_TOKEN = token;
+  process.env.KEPT_ACCESS_TOKEN_HASHES = hash;
+}
 
 export default defineConfig({
   testDir: "./e2e",
