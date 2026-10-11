@@ -56,6 +56,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { signIn, useSession } from "@/lib/auth/client";
 import { signInHref } from "@/lib/auth/return-path";
+import { keptOpen } from "@/lib/launch";
+import { waitlistHref } from "@/lib/routing/host-split";
 
 /**
  * How long a magic link is good for, in words. Better Auth's `magicLink`
@@ -96,6 +98,8 @@ type ErrorCopy = {
    * the idle card with all three routes on it.
    */
   retryWith: "resend" | "restart";
+  /** When set, the button is a link here instead of a retry. */
+  href?: string;
 };
 
 /**
@@ -156,6 +160,29 @@ const ERROR_COPY: Record<string, ErrorCopy> = {
     body: "The email service turned the message down. Nothing is wrong with your account, and no link was issued — give it a moment and try again.",
     retryLabel: "Try again",
     retryWith: "resend",
+  },
+  /**
+   * E06a §5: `lib/auth/closed-sign-in.ts` answered 429 — too many links for
+   * this address or this network in the hour. Same copy in both modes, and it
+   * says nothing about whether the address could sign in.
+   */
+  too_many_requests: {
+    heading: "Too many links asked for",
+    body: "Sign-in links are limited per address and per network each hour, so nobody can flood an inbox through kept. Wait a while, then try again.",
+    retryLabel: "Back to sign in",
+    retryWith: "restart",
+  },
+  /**
+   * E06a D7: a closed deploy refused the session (Better Auth's `user`/`session`
+   * `create.before` hooks, bounced here as `?error=not_open`). The way forward
+   * is the landing's waitlist, built from configuration.
+   */
+  not_open: {
+    heading: "kept isn't open yet",
+    body: "Sign-in opens to everyone when kept does, in December. Join the waitlist and we'll email you the day it opens.",
+    retryLabel: "Join the waitlist",
+    retryWith: "restart",
+    href: waitlistHref(process.env.NEXT_PUBLIC_APP_URL),
   },
   /** `signIn.social` never got as far as a redirect. */
   provider_unreachable: {
@@ -260,7 +287,11 @@ export function SignInForm({
       })
       .catch((cause: unknown) => ({ error: cause ?? new Error("unreachable") }));
     if (error) {
-      setPhase({ kind: "error", code: "send_failed" });
+      setPhase({
+        kind: "error",
+        // A transport failure (the `.catch` above) carries no status.
+        code: (error as { status?: number }).status === 429 ? "too_many_requests" : "send_failed",
+      });
       return false;
     }
     setCooldown(RESEND_COOLDOWN_SECONDS);
@@ -335,23 +366,37 @@ export function SignInForm({
                 <p className="mb-[22px] text-sm leading-[1.55] text-text-secondary">
                   {copy.body}
                 </p>
-                <Button
-                  type="button"
-                  className="h-auto w-full py-3.5 text-[0.9375rem]"
-                  onClick={() => void onRetry(copy)}
-                >
-                  {copy.retryLabel}
-                </Button>
+                {copy.href ? (
+                  <Button asChild className="h-auto w-full py-3.5 text-[0.9375rem]">
+                    <a href={copy.href}>{copy.retryLabel}</a>
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    className="h-auto w-full py-3.5 text-[0.9375rem]"
+                    onClick={() => void onRetry(copy)}
+                  >
+                    {copy.retryLabel}
+                  </Button>
+                )}
               </Panel>
             );
           })()
         ) : phase.kind === "sent" ? (
           <Panel tone="accent" icon={<Mail />} heading="Check your email">
-            <p className="mb-1.5 text-sm leading-[1.55] text-text-secondary">
-              We sent a magic link to
-              <br />
-              <b className="text-text">{phase.email}</b>
-            </p>
+            {keptOpen() ? (
+              <p className="mb-1.5 text-sm leading-[1.55] text-text-secondary">
+                We sent a magic link to
+                <br />
+                <b className="text-text">{phase.email}</b>
+              </p>
+            ) : (
+              // E06a D7: closed, an admin and anyone else read the same line —
+              // `sendMagicLink` mails only admins and answers alike for both.
+              <p className="mb-1.5 text-sm leading-[1.55] text-text-secondary">
+                If this address can sign in, a link is on its way.
+              </p>
+            )}
             <p className="mt-3.5 text-[0.8125rem] text-text-muted">
               {resending ? (
                 "Sending another…"

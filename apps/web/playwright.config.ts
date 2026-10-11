@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+
 import { defineConfig, devices } from "@playwright/test";
 
 import { keptOpen } from "./lib/launch";
@@ -82,7 +84,22 @@ if (!keptOpen() && !process.env.KEPT_E2E_ACCESS_TOKEN) {
   const { token, hash } = await mintAccessToken();
   process.env.KEPT_E2E_ACCESS_TOKEN = token;
   process.env.KEPT_ACCESS_TOKEN_HASHES = hash;
+  // …and ONE admin (E06a §2), the whole closed-mode sign-in allowlist for the
+  // run. A Resend test address with a per-run label: deliverable, so the
+  // admin's magic link is a real send, and new each run, so the per-address
+  // limit (3 an hour) never carries over from the last one.
+  process.env.KEPT_E2E_ADMIN_EMAIL = `delivered+e06a-${crypto.randomUUID().slice(0, 8)}@resend.dev`;
+  process.env.KEPT_ADMIN_EMAILS = process.env.KEPT_E2E_ADMIN_EMAIL;
 }
+
+/**
+ * `lib/rate-limit` salts its per-IP buckets with `RATE_LIMIT_SECRET`, and every
+ * magic-link request and waitlist join hits a limiter — so a server booted
+ * without one 500s on both. A local `.env.local` that predates E06a has none;
+ * the harness gives the server it boots a throwaway one (a real value already
+ * in the environment wins). Never printed.
+ */
+process.env.RATE_LIMIT_SECRET ??= randomBytes(32).toString("base64url");
 
 export default defineConfig({
   testDir: "./e2e",

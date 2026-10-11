@@ -20,7 +20,8 @@ import { after, before, test } from "node:test";
 import { config } from "dotenv";
 
 import { mintAccessToken } from "./access-token";
-import { closedModeAccess, isAdminEmail } from "./launch-access";
+import { isAdminEmail } from "./auth/closed-sign-in";
+import { closedModeAccess } from "./launch-access";
 
 config({ path: ".env.local", quiet: true });
 

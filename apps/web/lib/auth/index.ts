@@ -50,6 +50,12 @@ import {
 } from "../storage/env";
 
 import { bootstrapProfile } from "./bootstrap-profile";
+import {
+  limitMagicLink,
+  maySignIn,
+  refuseSessionUnlessMaySignIn,
+  refuseUserUnlessMaySignIn,
+} from "./closed-sign-in";
 import { SESSION_COOKIE_NAME } from "./cookie";
 import { fetchGithubIdentity } from "./github-identity";
 
@@ -197,8 +203,23 @@ function createAuth() {
     databaseHooks: {
       user: {
         create: {
+          // E06a D7: a closed deploy refuses a non-admin before the row exists,
+          // on every door. See `./closed-sign-in.ts` for how `not_open` then
+          // reaches `/auth`.
+          before: async (user) => {
+            refuseUserUnlessMaySignIn(user.email);
+          },
           after: async (user) => {
             await bootstrapProfile(user);
+          },
+        },
+      },
+      session: {
+        create: {
+          // …and refuses a session to an EXISTING non-admin, whichever door
+          // they came through. Handed a user id, not an address.
+          before: async (session) => {
+            await refuseSessionUnlessMaySignIn(session.userId);
           },
         },
       },
@@ -318,7 +339,14 @@ function createAuth() {
 
     plugins: [
       magicLink({
-        sendMagicLink: async ({ email, url }) => {
+        sendMagicLink: async ({ email, url }, ctx) => {
+          // E06a §5: the limits run first and hold in both modes, so a 429
+          // says nothing about whether the address could sign in.
+          await limitMagicLink(email, ctx?.request);
+          // E06a D7: a closed deploy mails no link to a non-admin and answers
+          // exactly as it does for an admin — `/auth` shows one neutral line
+          // either way, so the screen never confirms who is an admin.
+          if (!maySignIn(email)) return;
           const { error } = await mailer.emails.send({
             from: resend.from,
             to: email,

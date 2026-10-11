@@ -4,6 +4,7 @@ import { config } from "dotenv";
 import { eq, inArray, sql } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
+import { drillIp } from "../lib/testing/drill-ip";
 
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
 import { rawRequest } from "./raw-request";
@@ -65,9 +66,11 @@ const SKIP: string | false =
  * Resend's own always-deliverable address. A real send to a real service —
  * `example.com` is refused by Resend at request time (that refusal is what
  * `auth-screen.spec.ts` asserts the error copy for), so it cannot double as a
- * success case.
+ * success case. A per-run label (Resend delivers `delivered+…@resend.dev`
+ * alike) keeps the magic-link limit of 3 an hour per address (E06a §5) from
+ * carrying over between runs.
  */
-const DELIVERABLE = "delivered@resend.dev";
+const DELIVERABLE = `delivered+e05-012-${crypto.randomUUID().slice(0, 8)}@resend.dev`;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -292,6 +295,8 @@ test.describe("the provider boundary", () => {
   }
 
   test("a real magic link is really sent, and the screen says so", async ({ page }) => {
+    // Its own network for the per-IP limit (`lib/testing/drill-ip.ts`).
+    await page.setExtraHTTPHeaders({ "cf-connecting-ip": drillIp() });
     // THE ONE SEND THIS FILE SPENDS. It goes through `sendMagicLink` to the
     // real Resend API with the real verified domain — the leg that no unit test
     // and no mock can stand in for. `sendMagicLink` throws on a refusal, so a

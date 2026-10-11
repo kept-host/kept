@@ -22,7 +22,17 @@
 import { asc, eq } from "drizzle-orm";
 
 import { db } from "../index";
-import { account } from "../schema";
+import { account, user } from "../schema";
+
+/**
+ * The address on a `user` row, or `null` when there is no such row. Closed-mode
+ * sign-in (`lib/auth/closed-sign-in.ts`) checks a new session against it,
+ * because Better Auth's `session.create.before` hook is handed only a user id.
+ */
+export async function userEmail(userId: string): Promise<string | null> {
+  const [row] = await db.select({ email: user.email }).from(user).where(eq(user.id, userId));
+  return row?.email ?? null;
+}
 
 /**
  * One linked provider identity, as the settings screen needs it.

@@ -9,14 +9,9 @@
  * `lib/access-token.ts`, its callers' two lines, and `KEPT_ACCESS_TOKEN_HASHES`.
  */
 import { carriesAccessToken } from "./access-token";
+import { isAdminEmail } from "./auth/closed-sign-in";
 import { sessionFor } from "./auth/session";
 import { keptOpen } from "./launch";
-import { adminEmails } from "./storage/env";
-
-/** Whether `email` is in `KEPT_ADMIN_EMAILS` (compared trimmed and lowercased). */
-export function isAdminEmail(email: string): boolean {
-  return adminEmails().has(email.trim().toLowerCase());
-}
 
 /**
  * May this request create content? Always on an open deploy (D9). Closed: only

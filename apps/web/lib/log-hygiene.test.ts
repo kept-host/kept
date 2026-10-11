@@ -27,6 +27,7 @@ const GUARDED_FILES = [
   "lib/launch.ts",
   "lib/launch-access.ts",
   "lib/access-token.ts",
+  "lib/auth/closed-sign-in.ts",
 ];
 
 /** `email`, `ip`, `token`, or a camelCase name ending in one of them. */
