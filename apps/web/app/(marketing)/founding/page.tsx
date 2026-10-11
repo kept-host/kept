@@ -1,3 +1,5 @@
+import type { Metadata } from "next";
+
 import { FoundingForm } from "@/components/kept/founding-form";
 import { foundingMetadata } from "@/lib/og/preview";
 
@@ -6,7 +8,16 @@ import { foundingMetadata } from "@/lib/og/preview";
  * (E06a §4). The explainer is the PRD's text verbatim: decided facts only — no
  * duration, price, own domains or proposed-only Pro features.
  */
-export const metadata = foundingMetadata();
+/**
+ * Resolved per request: the preview's absolute image URL comes from
+ * `NEXT_PUBLIC_APP_URL`, which a build without app env (CI) does not have — a
+ * module-scope `metadata` const would read it at build time and fail it.
+ */
+export const dynamic = "force-dynamic";
+
+export function generateMetadata(): Metadata {
+  return foundingMetadata();
+}
 
 export default function FoundingPage() {
   return (
