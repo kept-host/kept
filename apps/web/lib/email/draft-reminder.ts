@@ -44,6 +44,7 @@ import {
 } from "../db/queries/reminders";
 import { appOrigin, resendConfig, servingBaseDomain } from "../storage/env";
 import { emailFooter } from "./footer";
+import { listUnsubscribeHeaders } from "./list-unsubscribe";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -122,12 +123,8 @@ export function buildDraftReminderEmail(input: {
       `If the draft does come down we hold on to it for another ` +
       `${pluralDays(DRAFT_GRACE_DAYS)}, so you can still keep it after the fact.\n\n` +
       `Don't want reminders about this page? ${input.unsubscribeUrl}\n`,
-    headers: {
-      // RFC 8058 one-click. Mail clients POST the URL themselves, so the
-      // publisher never has to trust a link in an email to stop the email.
-      "List-Unsubscribe": `<${input.unsubscribeUrl}>`,
-      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
-    },
+    // RFC 8058 one-click: the mail client POSTs the URL itself.
+    headers: listUnsubscribeHeaders(input.unsubscribeUrl),
   };
 }
 

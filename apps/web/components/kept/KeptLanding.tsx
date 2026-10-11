@@ -109,6 +109,8 @@ function bind<T extends HTMLElement>(ref: { current: T | null }) {
 
 export default function KeptLanding() {
   const [state, dispatch] = useReducer(reducer, INITIAL);
+  // Which door opened the waitlist: the nav says so; a drop is the default.
+  const [waitlistFromNav, setWaitlistFromNav] = useState(false);
 
   // Every DOM ref the engine drives. Kept in a stable object across renders.
   const refs = useRef<EngineRefs>(makeRefs()).current;
@@ -351,7 +353,10 @@ export default function KeptLanding() {
               <button
                 id="nav-waitlist"
                 type="button"
-                onClick={() => dispatch({ waitlist: true })}
+                onClick={() => {
+                  setWaitlistFromNav(true);
+                  dispatch({ waitlist: true });
+                }}
                 style={{ ...navSignIn, border: "none", cursor: "pointer" }}
               >
                 JOIN&nbsp;WAITLIST
@@ -3240,7 +3245,11 @@ export default function KeptLanding() {
 
       <WaitlistDialog
         open={state.waitlist}
-        onOpenChange={(waitlist) => dispatch({ waitlist })}
+        onOpenChange={(waitlist) => {
+          if (!waitlist) setWaitlistFromNav(false);
+          dispatch({ waitlist });
+        }}
+        source={waitlistFromNav ? "landing_nav" : "landing_drop"}
       />
     </div>
   );

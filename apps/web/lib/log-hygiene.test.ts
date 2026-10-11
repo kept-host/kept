@@ -27,6 +27,18 @@ const GUARDED_FILES = [
   "lib/launch.ts",
   "lib/launch-access.ts",
   "lib/access-token.ts",
+  "lib/waitlist/join.ts",
+  "lib/waitlist/confirm.ts",
+  "lib/waitlist/unsubscribe.ts",
+  "lib/waitlist/client.ts",
+  "lib/db/queries/waitlist.ts",
+  "lib/email/waitlist.ts",
+  "lib/email/list-unsubscribe.ts",
+  "app/api/waitlist/route.ts",
+  "app/api/waitlist/confirm/route.ts",
+  "app/api/waitlist/unsubscribe/route.ts",
+  "app/api/cron/waitlist-prune/route.ts",
+  "app/(marketing)/waitlist/unsubscribe/page.tsx",
   "lib/auth/closed-sign-in.ts",
 ];
 

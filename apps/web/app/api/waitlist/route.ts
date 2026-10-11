@@ -1,10 +1,11 @@
 /**
- * `POST /api/waitlist` — `{ email }` onto the waitlist.
+ * `POST /api/waitlist` — `{ email, source, turnstileToken, founding? }` onto
+ * the waitlist with double opt-in (E06a §3). The decisions are
+ * `lib/waitlist/join.ts`'s; this is the HTTP boundary.
  *
- * One of the two route handlers a closed deploy keeps (`decideClosedAction` in
- * `lib/routing/host-split.ts`); it answers on an open one too, it just has no
- * caller there. No session and no origin gate: it writes nothing that belongs
- * to anyone, and a second join of the same address is a no-op.
+ * Answers on open and closed deploys alike (`CLOSED_API_PATHS`). No session and
+ * no origin gate: it reads no cookie and writes a row nobody owns, and every
+ * accepted request gets the same 202 whatever the address's state.
  */
 import { NextResponse } from "next/server";
 
@@ -13,12 +14,13 @@ import {
   readJsonOnlyBody,
   UnreadableBodyError,
 } from "../../../lib/publish/http";
+import { clientIp } from "../../../lib/rate-limit";
 import { joinWaitlist } from "../../../lib/waitlist/join";
 
-/** `postgres-js` needs TCP sockets. */
+/** `postgres-js` needs TCP sockets, and Resend's SDK is a node client. */
 export const runtime = "nodejs";
 
-/** Writes a row. Never cacheable. */
+/** Writes a row and may send mail. Never cacheable. */
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request): Promise<NextResponse> {
@@ -32,7 +34,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     throw err;
   }
 
-  const outcome = await joinWaitlist(body);
+  const outcome = await joinWaitlist(body, clientIp(request));
 
   if (!outcome.ok) return errorResponse(outcome.status, outcome.body);
 

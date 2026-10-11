@@ -4,6 +4,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 import { keptOpen } from "./lib/launch";
 import { mintAccessToken } from "./lib/access-token";
+import { TURNSTILE_TEST_KEYS } from "./lib/testing/turnstile";
 
 /**
  * Playwright e2e config for @kept/web.
@@ -100,6 +101,16 @@ if (!keptOpen() && !process.env.KEPT_E2E_ACCESS_TOKEN) {
  * in the environment wins). Never printed.
  */
 process.env.RATE_LIMIT_SECRET ??= randomBytes(32).toString("base64url");
+
+/**
+ * The waitlist (E06a §3, §5): the server verifies Turnstile with Cloudflare's
+ * always-pass TEST keys, never a real widget, and signs unsubscribe links with
+ * a throwaway `KEPT_ADMIN_SECRET` the specs share by inheritance (a spec's
+ * `.env.local` load never overrides a value already set). Never printed.
+ */
+process.env.TURNSTILE_SECRET_KEY ??= TURNSTILE_TEST_KEYS.secretPass;
+process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ??= TURNSTILE_TEST_KEYS.siteKeyPass;
+process.env.KEPT_ADMIN_SECRET ??= randomBytes(32).toString("base64url");
 
 export default defineConfig({
   testDir: "./e2e",

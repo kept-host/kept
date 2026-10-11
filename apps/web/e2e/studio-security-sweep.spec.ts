@@ -78,7 +78,11 @@ const NOT_COOKIE_AUTHENTICATED: Record<string, string> = {
   "POST /api/auth/[...all]":
     "Better Auth's own handler, behind its own trustedOrigins check (auth-providers.spec)",
   "POST /api/waitlist":
-    "unauthenticated: reads no cookie and writes a row nobody owns; a repeat is a no-op (waitlist.closed.spec)",
+    "unauthenticated: reads no cookie, writes a row nobody owns, answers one 202 whatever the address's state (waitlist-opt-in.spec)",
+  "POST /api/waitlist/confirm": "unauthenticated: the emailed confirmation token is the authority (waitlist-opt-in.spec)",
+  "POST /api/waitlist/unsubscribe":
+    "unauthenticated: the HMAC-signed unsubscribe token is the authority; RFC 8058 one-click (waitlist-opt-in.spec)",
+  "POST /api/cron/waitlist-prune": "Authorization: Bearer CRON_SECRET, from GitHub Actions",
 };
 
 /** What a swept request may act on. A's real things, or things that name nothing. */

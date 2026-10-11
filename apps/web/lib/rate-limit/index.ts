@@ -72,6 +72,32 @@ export async function hit(bucket: string, rule: RateLimitRule): Promise<RateLimi
     : { allowed: false, retryAfterSeconds: row.retry_after };
 }
 
+/**
+ * Whether `bucket` is already full in the current window, WITHOUT counting a
+ * hit. For a cap that must be checked before the caller knows whether it will
+ * spend from it — the waitlist's global confirmation-mail cap is checked before
+ * the row's state is read (so the 429 says nothing about the address) and
+ * `hit` only when a mail is actually sent.
+ */
+export async function peek(bucket: string, rule: RateLimitRule): Promise<RateLimitResult> {
+  const { limit, windowSeconds } = rule;
+  const rows = await db.execute<{ count: number; retry_after: number }>(sql`
+    select
+      count,
+      greatest(
+        1,
+        ceil(extract(epoch from window_start) + ${windowSeconds} - extract(epoch from now()))
+      )::int as retry_after
+    from rate_limits
+    where bucket = ${bucket}
+      and window_start = to_timestamp(floor(extract(epoch from now()) / ${windowSeconds}) * ${windowSeconds})
+  `);
+  const row = rows[0];
+  return !row || row.count < limit
+    ? { allowed: true }
+    : { allowed: false, retryAfterSeconds: row.retry_after };
+}
+
 /** Delete buckets older than `RATE_LIMIT_RETENTION_DAYS`; returns how many. */
 export async function pruneBuckets(): Promise<number> {
   const rows = await db.execute(sql`

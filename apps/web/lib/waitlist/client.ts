@@ -1,27 +1,50 @@
 /**
- * The browser's half of `POST /api/waitlist`, for the landing's waitlist
- * dialog. Never throws: it resolves to `null` when the address is on the list,
- * or to the sentence the dialog shows.
+ * The browser's half of the waitlist API (E06a §3), for `EmailForm` and the
+ * confirm page. Never throws: every outcome is a value the UI renders.
  */
-import { publishErrorSchema } from "@kept/shared";
+import { publishErrorSchema, type WaitlistJoinRequest } from "@kept/shared";
 
-const UNREACHABLE = "kept couldn't be reached. Check your connection and try again.";
+export type JoinResult =
+  | { kind: "ok" }
+  | { kind: "invalid"; message: string }
+  | { kind: "rate_limited" }
+  | { kind: "turnstile" }
+  | { kind: "network" };
 
-export async function submitWaitlist(email: string): Promise<string | null> {
+export async function submitWaitlist(body: WaitlistJoinRequest): Promise<JoinResult> {
   let response: Response;
   try {
     response = await fetch("/api/waitlist", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email }),
+      body: JSON.stringify(body),
     });
   } catch {
-    return UNREACHABLE;
+    return { kind: "network" };
   }
-  if (response.ok) return null;
+  if (response.status === 202) return { kind: "ok" };
+  if (response.status === 429) return { kind: "rate_limited" };
 
   const parsed = publishErrorSchema.safeParse(await response.json().catch(() => null));
-  return parsed.success
-    ? parsed.data.message
-    : `That didn't go through (HTTP ${response.status}). Try again in a moment.`;
+  if (!parsed.success) return { kind: "network" };
+  if (parsed.data.error === "turnstile_failed") return { kind: "turnstile" };
+  if (parsed.data.error === "invalid_request") return { kind: "invalid", message: parsed.data.message };
+  return { kind: "network" };
+}
+
+export type ConfirmResult = "confirmed" | "expired" | "network";
+
+export async function confirmWaitlistToken(token: string): Promise<ConfirmResult> {
+  try {
+    const response = await fetch("/api/waitlist/confirm", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    if (response.ok) return "confirmed";
+    if (response.status === 410) return "expired";
+    return "network";
+  } catch {
+    return "network";
+  }
 }

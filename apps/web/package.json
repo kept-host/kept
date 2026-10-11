@@ -19,7 +19,8 @@
     "seed:canary": "tsx scripts/seed-edge-canary.ts",
     "smoke:cf": "tsx scripts/smoke-cloudflare.ts",
     "smoke:release": "tsx scripts/smoke-release.ts",
-    "visits:capture": "tsx scripts/capture-visits.ts"
+    "visits:capture": "tsx scripts/capture-visits.ts",
+    "resend:tracking": "tsx scripts/check-resend-tracking.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

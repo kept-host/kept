@@ -118,3 +118,18 @@ test("pruneBuckets deletes buckets older than the retention and keeps recent one
   assert.equal((await db.select().from(rateLimits).where(eq(rateLimits.bucket, stale))).length, 0);
   assert.equal((await db.select().from(rateLimits).where(eq(rateLimits.bucket, fresh))).length, 1);
 });
+
+test("peek reports a full bucket without counting a hit", { skip: skipLive }, async () => {
+  const { hit, peek } = await import("./index");
+  const rule = { limit: 2, windowSeconds: 3600 };
+  const bucket = drillBucket();
+
+  assert.deepEqual(await peek(bucket, rule), { allowed: true }, "an absent bucket is not full");
+  await hit(bucket, rule);
+  assert.deepEqual(await peek(bucket, rule), { allowed: true });
+  assert.deepEqual(await peek(bucket, rule), { allowed: true }, "peeking did not count");
+  await hit(bucket, rule);
+  const full = await peek(bucket, rule);
+  assert.equal(full.allowed, false);
+  if (!full.allowed) assert.ok(full.retryAfterSeconds >= 1 && full.retryAfterSeconds <= rule.windowSeconds);
+});
