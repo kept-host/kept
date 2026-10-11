@@ -23,11 +23,13 @@ export { kvStore, type KvStore } from "../../lib/storage/kv";
 import { kvStore } from "../../lib/storage/kv";
 import { r2Store } from "../../lib/storage/r2";
 
-export type StoreResult = { name: string; pass: boolean; detail: string };
+/** `warn` marks a passing check that still has something to report (e.g. dev's legal placeholders). */
+export type StoreResult = { name: string; pass: boolean; detail: string; warn?: boolean };
 
 /** Short, secret-free banner per check. */
 export function line(r: StoreResult): string {
-  return `${r.pass ? "PASS" : "FAIL"}  ${r.name.padEnd(10)} ${r.detail}`;
+  const status = !r.pass ? "FAIL" : r.warn ? "WARN" : "PASS";
+  return `${status}  ${r.name.padEnd(10)} ${r.detail}`;
 }
 
 /**

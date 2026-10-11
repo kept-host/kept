@@ -96,7 +96,13 @@ if (!keptOpen() && !process.env.KEPT_E2E_ACCESS_TOKEN) {
  * one. Workers inherit it.
  */
 process.env.KEPT_E2E_ADMIN_EMAIL ??= `delivered+e06a-${crypto.randomUUID().slice(0, 8)}@resend.dev`;
-process.env.KEPT_ADMIN_EMAILS = process.env.KEPT_E2E_ADMIN_EMAIL;
+/**
+ * A second admin for `closed-drill.closed.spec.ts` alone: it signs in, keeps a
+ * page and deletes its account afterwards, which would pull the first admin out
+ * from under `admin-sign-in.closed.spec.ts` running beside it.
+ */
+process.env.KEPT_E2E_DRILL_ADMIN_EMAIL ??= `delivered+e06a-drill-${crypto.randomUUID().slice(0, 8)}@resend.dev`;
+process.env.KEPT_ADMIN_EMAILS = `${process.env.KEPT_E2E_ADMIN_EMAIL},${process.env.KEPT_E2E_DRILL_ADMIN_EMAIL}`;
 
 /**
  * `lib/rate-limit` salts its per-IP buckets with `RATE_LIMIT_SECRET`, and every
