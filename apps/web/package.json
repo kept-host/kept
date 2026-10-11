@@ -20,7 +20,10 @@
     "smoke:cf": "tsx scripts/smoke-cloudflare.ts",
     "smoke:release": "tsx scripts/smoke-release.ts",
     "visits:capture": "tsx scripts/capture-visits.ts",
-    "resend:tracking": "tsx scripts/check-resend-tracking.ts"
+    "resend:tracking": "tsx scripts/check-resend-tracking.ts",
+    "admin:token": "tsx scripts/admin.ts token",
+    "admin:founding": "tsx scripts/admin.ts founding",
+    "admin:waitlist": "tsx scripts/admin.ts waitlist"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

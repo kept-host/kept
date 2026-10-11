@@ -82,22 +82,24 @@ const socialUrlSchema = z
   .max(2048)
   .refine((value) => /^https?:\/\//i.test(value), "expected an http(s) URL");
 
+/** A waitlist address, trimmed and lowercased: the table's dedup key. 254 is the longest SMTP carries. */
+export const waitlistEmailSchema = z.string().trim().toLowerCase().email().max(254);
+
+/** A founding application's details (the form's, and `admin:founding add`'s). */
+export const foundingDetailsSchema = z.object({
+  socialUrl: socialUrlSchema,
+  note: z.string().trim().max(FOUNDING_NOTE_MAX).optional(),
+});
+
 /**
- * The `POST /api/waitlist` body. The address is trimmed and lowercased, so the
- * stored value is the table's dedup key; 254 is the longest SMTP carries.
- * `founding` is present exactly when `source` is `founding`.
+ * The `POST /api/waitlist` body. `founding` is present exactly when `source` is `founding`.
  */
 export const waitlistJoinSchema = z
   .object({
-    email: z.string().trim().toLowerCase().email().max(254),
+    email: waitlistEmailSchema,
     source: z.enum(WAITLIST_FORM_SOURCES),
     turnstileToken: z.string().min(1).max(2048),
-    founding: z
-      .object({
-        socialUrl: socialUrlSchema,
-        note: z.string().trim().max(FOUNDING_NOTE_MAX).optional(),
-      })
-      .optional(),
+    founding: foundingDetailsSchema.optional(),
   })
   .refine((body) => (body.source === "founding") === (body.founding !== undefined), {
     message: "founding details go with source \"founding\" and only with it",

@@ -143,3 +143,81 @@ export async function pruneWaitlist(): Promise<number> {
   `);
   return rows.length;
 }
+
+/** One `admin:waitlist export` line. */
+export interface WaitlistExportRow {
+  email: string;
+  source: WaitlistSource;
+  confirmedAt: Date | null;
+  foundingStatus: FoundingStatus | null;
+  socialUrl: string | null;
+}
+
+/**
+ * The rows `admin:waitlist export` writes, oldest first. `confirmed` keeps only
+ * confirmed, still-subscribed addresses (the ones that may be mailed);
+ * `foundingStatus` keeps only that founding state.
+ */
+export async function waitlistExport(filter: {
+  confirmed: boolean;
+  foundingStatus?: FoundingStatus;
+}): Promise<WaitlistExportRow[]> {
+  const conditions = [sql`true`];
+  if (filter.confirmed) {
+    conditions.push(sql`confirmed_at is not null and unsubscribed_at is null`);
+  }
+  if (filter.foundingStatus) {
+    conditions.push(sql`founding_status = ${filter.foundingStatus}`);
+  }
+  const rows = await db.execute<{
+    email: string;
+    source: WaitlistSource;
+    confirmed_at: string | null;
+    founding_status: FoundingStatus | null;
+    social_url: string | null;
+  }>(sql`
+    select email, source, confirmed_at, founding_status, social_url
+    from waitlist
+    where ${sql.join(conditions, sql` and `)}
+    order by created_at, email
+  `);
+  return rows.map((row) => ({
+    email: row.email,
+    source: row.source,
+    confirmedAt: row.confirmed_at === null ? null : new Date(row.confirmed_at),
+    foundingStatus: row.founding_status,
+    socialUrl: row.social_url,
+  }));
+}
+
+/** Where a row stands in the double opt-in. */
+export type WaitlistState = "pending" | "confirmed" | "unsubscribed";
+
+/** `admin:waitlist stats`: row counts per source, state and founding status. */
+export async function waitlistStats(): Promise<
+  { source: WaitlistSource; state: WaitlistState; foundingStatus: FoundingStatus | null; count: number }[]
+> {
+  const rows = await db.execute<{
+    source: WaitlistSource;
+    state: WaitlistState;
+    founding_status: FoundingStatus | null;
+    count: number;
+  }>(sql`
+    select source,
+      case
+        when unsubscribed_at is not null then 'unsubscribed'
+        when confirmed_at is not null then 'confirmed'
+        else 'pending'
+      end as state,
+      founding_status,
+      count(*)::int as count
+    from waitlist
+    group by 1, 2, 3
+  `);
+  return rows.map((row) => ({
+    source: row.source,
+    state: row.state,
+    foundingStatus: row.founding_status,
+    count: row.count,
+  }));
+}

@@ -47,6 +47,8 @@ const GUARDED_FILES = [
   "lib/email/founding.ts",
   "app/api/founding/review/route.ts",
   "app/(marketing)/founding/review/page.tsx",
+  "lib/admin/cli.ts",
+  "scripts/admin.ts",
 ];
 
 /** `email`, `ip`, `token`, or a camelCase name ending in one of them. */
