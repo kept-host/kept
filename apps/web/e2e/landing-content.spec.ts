@@ -1,4 +1,3 @@
-import { KEPT_PAGE_LIMIT } from "@kept/shared";
 import { test, expect } from "@playwright/test";
 
 /**
@@ -25,13 +24,12 @@ const AGENT_PROMPT =
 
 /**
  * Free-tier checklist, in the order the Free card must render it. The kept
- * allowance is `KEPT_PAGE_LIMIT` — the landing speaks to visitors with no
- * account, so the free alias is the right number, and a typed one would rot the
- * day the limit moves.
+ * allowance carries no number — "dozens" — until the limit is decided
+ * (E06a §7, D-13 open).
  */
 const FREE_CHECKLIST = [
   "Unlimited drafts — live instantly, 7 days",
-  `${KEPT_PAGE_LIMIT} pages kept forever`,
+  "Dozens of pages kept forever",
   "Instant link, QR, live status",
   "Keep, rename slug, replace versions",
   "Dashboard for pages & drafts",
@@ -81,7 +79,7 @@ test.describe("landing content", () => {
       "7 days",
     );
     await expect(page.locator('#how [data-step="2"] p')).toContainText(
-      `${KEPT_PAGE_LIMIT} pages`,
+      "dozens of",
     );
   });
 
@@ -119,20 +117,22 @@ test.describe("landing content", () => {
         .filter({ hasText: '{ live_url, claim_url, expires_in: "7d" }' }),
     ).toHaveCount(1);
 
-    // API keys are mentioned exactly once here, as the Pro power path — never
-    // as a prerequisite for the free keyless flow.
+    // No Pro feature but the wall editor (E06a §7): the API-key power path is
+    // gone, and API keys are never a prerequisite for the free keyless flow.
     const agentsText = await agents.evaluate(
       (el) => (el as HTMLElement).innerText,
     );
-    expect(agentsText.match(/API keys/g) ?? []).toHaveLength(1);
-    await expect(
-      agents.getByText(
-        /Power path: API keys publish straight into your account .* part of Pro\./,
-      ),
-    ).toHaveCount(1);
+    expect(agentsText).not.toMatch(/API keys|Pro\b/);
 
-    // All three delivery surfaces are still flagged as unshipped.
-    await expect(agents.getByText("SOON", { exact: true })).toHaveCount(3);
+    // No SOON / COMING SOON pills (E06a §7): the hero's framing line carries
+    // the date on a closed deploy instead.
+    expect(agentsText).not.toMatch(/\bSOON\b/);
+
+    // "Get notified" is a waitlist door, not a dead regex-only form.
+    await expect(agents.locator('input[type="email"]')).toHaveCount(0);
+    await expect(
+      agents.getByRole("button", { name: "Get notified" }),
+    ).toHaveCount(1);
   });
 
   test("the copy control is keyboard-operable and copies the exact prompt", async ({
@@ -161,7 +161,7 @@ test.describe("landing content", () => {
     expect(clipboard).toBe(AGENT_PROMPT);
   });
 
-  test("pricing states the free checklist in order, the Pro extras, and who funds what", async ({
+  test("pricing states the free checklist in order and the founding card", async ({
     page,
   }) => {
     await page.goto("/");
@@ -181,18 +181,19 @@ test.describe("landing content", () => {
     });
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
 
-    // Pro extras include the region promise the data model already carries.
+    // The Pro card is the founding card (E06a §7, PRD §4 facts only): the wall
+    // editor is the one Pro feature named, and there is no price.
     await expect(
-      pricing.getByText(
-        "EU data residency — pages stored and served from the EU.",
-      ),
+      pricing.getByRole("heading", { name: "Become a founding creator" }),
     ).toHaveCount(1);
-
-    // And the microcopy states the funding model: Pro pays for free, not
-    // donations.
+    await expect(pricing.getByText(/including the wall editor/)).toHaveCount(1);
     await expect(
-      pricing.getByText("Pro is what keeps the free tier free."),
-    ).toHaveCount(1);
+      pricing.getByRole("link", { name: /Apply to be a founding creator/ }),
+    ).toHaveAttribute("href", "/founding");
+    expect(pricingText).not.toMatch(/€|\$\d|per month|\/mo\b/i);
+    expect(pricingText).not.toMatch(
+      /EU data residency|Custom domains|API keys|Password-protected|Notify me about Pro/,
+    );
   });
 
   test("free-tier limits are stated consistently across how-it-works, trust trio, and pricing", async ({
@@ -200,10 +201,9 @@ test.describe("landing content", () => {
   }) => {
     await page.goto("/");
 
-    // Wherever a section quotes the draft window or the kept-page allowance, it
-    // must quote the same figures the shared constants define (7 days,
-    // `KEPT_PAGE_LIMIT` pages). A second set of numbers anywhere is a
-    // contradiction.
+    // Wherever a section quotes the draft window it must quote the shared
+    // constant (7 days); the kept-page allowance carries no number at all
+    // (E06a §7, D-13 open).
     for (const id of ["#how", "#why", "#pricing"]) {
       const text = await page
         .locator(id)
@@ -217,22 +217,18 @@ test.describe("landing content", () => {
       );
       expect(new Set(dayFigures), `${id} day figures`).toEqual(new Set(["7"]));
 
-      const pageFigures = [...text.matchAll(/(\d+)\s+pages?\b/g)].map(
-        (m) => m[1],
+      expect(text, `${id} states a kept-page number`).not.toMatch(
+        /\d+\s+pages?\b/,
       );
-      for (const figure of pageFigures) {
-        expect(figure, `${id} page-count figure`).toBe(String(KEPT_PAGE_LIMIT));
-      }
     }
 
-    // #how and #pricing both spell the kept allowance out; #why speaks only to
-    // the draft window, so it is exempt from the page-count requirement.
+    // #how and #pricing both still speak to the kept allowance, in words.
     for (const id of ["#how", "#pricing"]) {
       const text = await page
         .locator(id)
         .evaluate((el) => (el as HTMLElement).innerText);
       expect(text, `${id} omits the kept-page allowance`).toMatch(
-        new RegExp(`\\b${KEPT_PAGE_LIMIT}\\s+pages`),
+        /dozens of\s+pages/i,
       );
     }
   });

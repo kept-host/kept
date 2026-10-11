@@ -222,12 +222,11 @@ test("the guard can see: it finds the allowlisted files at all", () => {
  * and `lib/sites/publish.ts` (they DECIDE the cap — under `lockOwner`, from the
  * owner's plan), and every signed-in surface that prints it — `/auth/callback/done`,
  * the swap chooser, `kept-quota`, `plan-panel` — which all read a `KeptQuota` or
- * `limitsFor(plan)`.
+ * `limitsFor(plan)`. The landing states no number at all (E06a §7, D-13 open).
  */
 const KEPT_PAGE_LIMIT_ALLOWED: Record<string, string> = {
   "app/keep/[anonToken]/page.tsx":
     "the keep screen a stranger sees BEFORE signing in: no account, so no plan",
-  "components/kept/KeptLanding.tsx": "the landing states the free offer to visitors with no account",
   "lib/email/draft-reminder.ts":
     "the reminder goes to an anonymous publisher: the draft has no owner, so no plan",
 };

@@ -13,11 +13,34 @@ import {
 
 import { CHECK_INBOX_TEXT, EmailForm } from "./email-form";
 
+/** The landing's three doors; `founding` has its own page. */
+export type LandingSource = Exclude<WaitlistJoinRequest["source"], "founding">;
+
+/** What the dialog says before joining, per door (E06a §7). */
+const PITCH: Record<LandingSource, { title: string; description: string }> = {
+  landing_drop: {
+    title: "kept isn’t open yet",
+    description:
+      "Your page will publish the moment kept opens in December. Get the email.",
+  },
+  landing_nav: {
+    title: "kept isn’t open yet",
+    description:
+      "kept opens in December. Leave your email and we’ll tell you the moment you can drop a page and keep it.",
+  },
+  landing_notify: {
+    title: "Get notified",
+    description:
+      "Leave your email and we’ll tell you when kept opens in December — agent publishing included.",
+  },
+};
+
 /**
- * The landing's waitlist, for a deploy that is not yet open (`lib/launch.ts`).
- * It opens where a publish would have happened — a dropped, chosen or pasted
- * page (`landing_drop`) — and from the nav (`landing_nav`), which offers it in
- * place of sign-in. The form is the shared `EmailForm` (double opt-in, E06a §3).
+ * The landing's email dialog. It opens where a publish would have happened on
+ * a deploy that is not yet open (`lib/launch.ts`) — a dropped, chosen or
+ * pasted page (`landing_drop`) — from the nav (`landing_nav`), which offers it
+ * in place of sign-in, and from the agents section's "Get notified"
+ * (`landing_notify`). The form is the shared `EmailForm` (double opt-in, E06a §3).
  *
  * `joined` outlives a close on purpose: dropping a second page after joining
  * says "check your inbox" rather than asking again.
@@ -29,7 +52,7 @@ export function WaitlistDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  source: WaitlistJoinRequest["source"];
+  source: LandingSource;
 }) {
   const [joined, setJoined] = useState(false);
 
@@ -44,12 +67,12 @@ export function WaitlistDialog({
       >
         <DialogHeader>
           <DialogTitle className="font-display text-xl font-semibold tracking-[-0.02em]">
-            {joined ? "Check your inbox." : "kept isn’t open yet"}
+            {joined ? "Check your inbox." : PITCH[source].title}
           </DialogTitle>
           <DialogDescription className="text-[15px] leading-relaxed text-text-secondary">
             {joined
               ? CHECK_INBOX_TEXT
-              : "Publishing opens soon. Leave your email and we’ll tell you the moment you can drop a page and keep it."}
+              : PITCH[source].description}
           </DialogDescription>
         </DialogHeader>
 

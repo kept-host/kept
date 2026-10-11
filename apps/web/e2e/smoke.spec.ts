@@ -1,4 +1,4 @@
-import { KEPT_PAGE_LIMIT } from "@kept/shared";
+import { SOURCE_REPO_URL } from "@kept/shared";
 import { test, expect } from "@playwright/test";
 
 import { gotoWithTokensApplied } from "./tokens-applied";
@@ -172,25 +172,21 @@ test.describe("landing smoke", () => {
     await expect(why.getByText("COSTS IN PUBLIC")).toHaveCount(1);
     await expect(why.getByText("OPEN BOOKS")).toHaveCount(0);
 
-    // Free tier: unlimited 7-day drafts + `KEPT_PAGE_LIMIT` kept forever, stated
-    // in pricing — from the constant, because the landing reads it too.
+    // Free tier: unlimited 7-day drafts + "dozens" kept forever — no number
+    // for the kept-page limit (E06a §7, D-13 open).
     const pricing = page.locator("#pricing");
     await expect(
       pricing.getByText("Unlimited drafts — live instantly, 7 days"),
     ).toHaveCount(1);
-    await expect(pricing.getByText(`${KEPT_PAGE_LIMIT} pages kept forever`)).toHaveCount(1);
+    await expect(pricing.getByText("Dozens of pages kept forever")).toHaveCount(1);
     await expect(
       pricing.getByText("Keep, rename slug, replace versions"),
     ).toHaveCount(1);
-    // Pro rows render as `<b>{title}</b> — {body}`; assert the joined string.
+    // The Pro card is the founding card (E06a §7): no Pro list, one link out.
     await expect(
-      pricing.getByText("API keys — agents publish straight to your account."),
-    ).toHaveCount(1);
-    await expect(
-      pricing.getByText(
-        `More pages kept forever — keep well beyond the free ${KEPT_PAGE_LIMIT}.`,
-      ),
-    ).toHaveCount(1);
+      pricing.getByRole("link", { name: /Apply to be a founding creator/ }),
+    ).toHaveAttribute("href", "/founding");
+    await expect(pricing.getByText(/API keys|More pages kept forever/)).toHaveCount(0);
   });
 
   test("footer links only where a route exists, and both destinations resolve", async ({
@@ -200,9 +196,10 @@ test.describe("landing smoke", () => {
     await page.goto("/");
     const footer = page.locator("footer");
 
-    // Labels without a destination render as <span>, never a dead <a>. Exactly
-    // two footer anchors exist today: Stats and The forever promise.
-    await expect(footer.locator("a")).toHaveCount(2);
+    // Labels without a destination render as <span>, never a dead <a>. The
+    // anchors: GitHub repo, Stats, License, The forever promise, and the
+    // bottom row Impressum · Privacy · GitHub (E06a §7).
+    await expect(footer.locator("a")).toHaveCount(7);
     await expect(footer.getByRole("link", { name: "Stats" })).toHaveAttribute(
       "href",
       "/stats",
@@ -211,9 +208,18 @@ test.describe("landing smoke", () => {
       footer.getByRole("link", { name: "The forever promise" }),
     ).toHaveAttribute("href", "/promise");
 
-    // Destination-less labels are still rendered, as plain text.
-    await expect(footer.getByText("GitHub repo")).toHaveCount(1);
-    await expect(footer.getByText("License · AGPL-3.0")).toHaveCount(1);
+    // The source repo backs every GitHub / AGPL link.
+    for (const name of ["GitHub repo", "License · AGPL-3.0", "GitHub"]) {
+      await expect(
+        footer.getByRole("link", { name, exact: true }),
+      ).toHaveAttribute("href", SOURCE_REPO_URL);
+    }
+    await expect(
+      footer.getByRole("link", { name: "Impressum", exact: true }),
+    ).toHaveAttribute("href", /\/legal\/impressum$/);
+    await expect(
+      footer.getByRole("link", { name: "Privacy", exact: true }),
+    ).toHaveAttribute("href", /\/legal\/privacy$/);
 
     // The two real routes actually serve.
     expect((await request.get("/stats")).status()).toBe(200);
@@ -260,7 +266,7 @@ test.describe("landing smoke", () => {
     );
     await expect(page.locator('html[data-theme="dark"]')).toHaveCount(1);
     await expect(
-      page.locator("#pricing").getByText(`${KEPT_PAGE_LIMIT} pages kept forever`),
+      page.locator("#pricing").getByText("Dozens of pages kept forever"),
     ).toHaveCount(1);
     await expect(
       page.locator("#why").getByText("COSTS IN PUBLIC"),

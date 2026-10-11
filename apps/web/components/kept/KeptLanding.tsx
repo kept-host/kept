@@ -9,8 +9,9 @@ import {
   useState,
 } from "react";
 
-import { DRAFT_TTL_DAYS, KEPT_PAGE_LIMIT } from "@kept/shared";
+import { DRAFT_TTL_DAYS, SOURCE_REPO_URL } from "@kept/shared";
 
+import { Button } from "@/components/ui/button";
 import { keptOpen } from "@/lib/launch";
 import { infraCostMonth, keptCount, uptime } from "@/lib/landing-stats";
 
@@ -20,7 +21,8 @@ import {
   type EngineState,
   type Tab,
 } from "./kept-engine";
-import { WaitlistDialog } from "./waitlist-dialog";
+import { LegalLinks } from "./legal-links";
+import { type LandingSource, WaitlistDialog } from "./waitlist-dialog";
 
 /**
  * kept Landing v2 (Claude Design) — faithful React port of the single-page
@@ -29,7 +31,11 @@ import { WaitlistDialog } from "./waitlist-dialog";
  * the traveling tile with all its layers, auth modal, toast, loader). All
  * per-frame motion is imperative and lives in `KeptEngine`, driven from a
  * single rAF loop inside the mount effect; only discrete UI state (phase,
- * notify forms, accordion tab, gauge reveal) is React state.
+ * accordion tab, gauge reveal, waitlist dialog) is React state.
+ *
+ * A closed deploy (`lib/launch.ts`) hides the zero counters (nav, loader,
+ * open-books figures) and carries one framing line under the hero; every
+ * email field is the shared waitlist dialog (E06a §7).
  */
 
 /**
@@ -82,8 +88,6 @@ type UIState = EngineState;
 const INITIAL: UIState = {
   phase: "idle",
   copied: false,
-  agentNotify: "idle",
-  proNotify: "idle",
   openTab: "mcp",
   humanPresent: false,
   gaugeRevealed: false,
@@ -109,8 +113,13 @@ function bind<T extends HTMLElement>(ref: { current: T | null }) {
 
 export default function KeptLanding() {
   const [state, dispatch] = useReducer(reducer, INITIAL);
-  // Which door opened the waitlist: the nav says so; a drop is the default.
-  const [waitlistFromNav, setWaitlistFromNav] = useState(false);
+  // Which door opened the waitlist; a drop is the default (the engine opens it).
+  const [waitlistSource, setWaitlistSource] =
+    useState<LandingSource>("landing_drop");
+  const openWaitlist = (source: LandingSource) => {
+    setWaitlistSource(source);
+    dispatch({ waitlist: true });
+  };
 
   // Every DOM ref the engine drives. Kept in a stable object across renders.
   const refs = useRef<EngineRefs>(makeRefs()).current;
@@ -289,7 +298,7 @@ export default function KeptLanding() {
               <a href="#why" style={navLink}>
                 ABOUT
               </a>
-              <a href="#why" style={navLink}>
+              <a href={SOURCE_REPO_URL} style={navLink}>
                 OPEN&nbsp;SOURCE
               </a>
               <a href="#agents" style={navLink}>
@@ -305,39 +314,42 @@ export default function KeptLanding() {
             />
             {/*
               Kept-only counter: pages kept forever, right now. Drafts are live
-              but temporary and must never be counted here.
+              but temporary and must never be counted here. A closed deploy has
+              nothing to count, so it shows none (E06a §7).
               TODO(E09): back this with a query over kept pages only.
             */}
-            <div
-              title="pages kept forever, right now"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 9,
-                fontFamily: "var(--font-mono)",
-                fontSize: 12,
-                letterSpacing: "0.06em",
-                color: "var(--text)",
-              }}
-            >
-              <span
+            {keptOpen() && (
+              <div
+                title="pages kept forever, right now"
                 style={{
-                  width: 7,
-                  height: 7,
-                  borderRadius: "50%",
-                  background: "var(--live)",
-                  animation: "keptLive 2s ease-in-out infinite",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 9,
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 12,
+                  letterSpacing: "0.06em",
+                  color: "var(--text)",
                 }}
-              />
-              <span ref={bind(refs.navCountRef)}>
-                {LIVE_COUNT.toLocaleString()}
-              </span>
-              &nbsp;
-              <span ref={bind(refs.navLabelRef)}>
-                {LIVE_COUNT === 1 ? "PAGE" : "PAGES"}
-              </span>
-              &nbsp;KEPT
-            </div>
+              >
+                <span
+                  style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: "50%",
+                    background: "var(--live)",
+                    animation: "keptLive 2s ease-in-out infinite",
+                  }}
+                />
+                <span ref={bind(refs.navCountRef)}>
+                  {LIVE_COUNT.toLocaleString()}
+                </span>
+                &nbsp;
+                <span ref={bind(refs.navLabelRef)}>
+                  {LIVE_COUNT === 1 ? "PAGE" : "PAGES"}
+                </span>
+                &nbsp;KEPT
+              </div>
+            )}
             {/* The landing's only way in to an account — see DASHBOARD_HREF
                 above for why it points at /dashboard and why it is, and must
                 remain, unconditional. Every colour is a token, so light/dark
@@ -353,10 +365,7 @@ export default function KeptLanding() {
               <button
                 id="nav-waitlist"
                 type="button"
-                onClick={() => {
-                  setWaitlistFromNav(true);
-                  dispatch({ waitlist: true });
-                }}
+                onClick={() => openWaitlist("landing_nav")}
                 style={{ ...navSignIn, border: "none", cursor: "pointer" }}
               >
                 JOIN&nbsp;WAITLIST
@@ -623,6 +632,17 @@ export default function KeptLanding() {
                     or let your agent do it &rarr;
                   </a>
                 </div>
+                {/* The closed landing's one framing line (E06a §7): everything
+                    on the page is true from opening day; no per-item pills. */}
+                {!keptOpen() && (
+                  <p
+                    data-testid="launch-framing"
+                    className="mt-4 font-mono text-xs tracking-[0.06em] text-text-secondary"
+                  >
+                    kept opens in December &mdash; everything on this page works
+                    from that day.
+                  </p>
+                )}
                 <div
                   ref={bind(refs.mobileSlotRef)}
                   id="hero-mobile-slot"
@@ -1050,8 +1070,8 @@ export default function KeptLanding() {
                     </svg>
                     <h3 style={howTitle}>Keep</h3>
                     <p style={howBody}>
-                      Sign in once and keep it &mdash; free, up to{" "}
-                      {KEPT_PAGE_LIMIT} pages, forever.
+                      Sign in once and keep it &mdash; free, for dozens of
+                      pages, forever.
                     </p>
                   </div>
                 </div>
@@ -1142,19 +1162,6 @@ export default function KeptLanding() {
                       }}
                     >
                       Built for the AI era
-                    </span>
-                    <span
-                      style={{
-                        fontFamily: "var(--font-mono)",
-                        fontSize: 10,
-                        letterSpacing: "0.08em",
-                        color: "var(--accent)",
-                        background: "var(--accent-soft)",
-                        padding: "4px 10px",
-                        borderRadius: "var(--r-pill)",
-                      }}
-                    >
-                      COMING SOON
                     </span>
                   </div>
                   <h2
@@ -1303,112 +1310,27 @@ export default function KeptLanding() {
                       </span>
                     </div>
                   </div>
-                  <p
-                    data-reveal
-                    style={{
-                      fontSize: 13,
-                      lineHeight: 1.6,
-                      color: "var(--text-muted)",
-                      margin: "0 0 24px",
-                      maxWidth: "52ch",
-                    }}
-                  >
-                    Power path: API keys publish straight into your account
-                    &mdash; part of Pro.
-                  </p>
-                  <div data-reveal style={{ maxWidth: 460 }}>
-                    {state.agentNotify !== "success" ? (
-                      <>
-                        <div
-                          style={{
-                            display: "flex",
-                            gap: 10,
-                            flexWrap: "wrap",
-                            alignItems: "center",
-                          }}
-                        >
-                          <input
-                            ref={bind(refs.agentEmailRef)}
-                            type="email"
-                            placeholder="you@example.com"
-                            style={{
-                              flex: 1,
-                              minWidth: 200,
-                              fontFamily: "var(--font-body)",
-                              fontSize: 15,
-                              background: "var(--surface)",
-                              border: "1px solid var(--border)",
-                              borderRadius: "var(--r-md)",
-                              padding: "13px 15px",
-                              color: "var(--text)",
-                              outline: "none",
-                            }}
-                          />
-                          <button
-                            onClick={() => e()?.notifyAgent()}
-                            style={{
-                              fontFamily: "var(--font-display)",
-                              fontWeight: 600,
-                              fontSize: 15,
-                              background: "var(--accent)",
-                              color: "#fff",
-                              border: "none",
-                              borderRadius: "var(--r-md)",
-                              padding: "13px 22px",
-                              cursor: "pointer",
-                              whiteSpace: "nowrap",
-                            }}
-                          >
-                            Get notified
-                          </button>
-                        </div>
-                        {state.agentNotify === "error" && (
-                          <p style={notifyError}>
-                            <svg
-                              width="14"
-                              height="14"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              strokeWidth="2"
-                            >
-                              <circle cx="12" cy="12" r="9" />
-                              <path d="M12 8v4M12 16h.01" />
-                            </svg>
-                            Enter a valid email and we&rsquo;ll try again.
-                          </p>
-                        )}
-                      </>
-                    ) : (
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 11,
-                          background:
-                            "color-mix(in srgb,var(--live) 12%,var(--surface))",
-                          border:
-                            "1px solid color-mix(in srgb,var(--live) 30%,var(--border))",
-                          borderRadius: "var(--r-md)",
-                          padding: "14px 16px",
-                        }}
-                      >
-                        <svg
-                          width="18"
-                          height="18"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="var(--live)"
-                          strokeWidth="2.4"
-                        >
-                          <path d="M20 6 9 17l-5-5" />
-                        </svg>
-                        <span style={{ fontSize: 15, color: "var(--text)" }}>
-                          You&rsquo;re on the list — we&rsquo;ll email you when MCP
-                          lands.
-                        </span>
-                      </div>
-                    )}
+                  {/* The shared waitlist form, in the dialog — Turnstile loads
+                      on open, never with the landing (E06a §7, AC21). */}
+                  <div data-reveal>
+                    <button
+                      type="button"
+                      onClick={() => openWaitlist("landing_notify")}
+                      style={{
+                        fontFamily: "var(--font-display)",
+                        fontWeight: 600,
+                        fontSize: 15,
+                        background: "var(--accent)",
+                        color: "#fff",
+                        border: "none",
+                        borderRadius: "var(--r-md)",
+                        padding: "13px 22px",
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      Get notified
+                    </button>
                   </div>
                 </div>
                 <div
@@ -1564,7 +1486,6 @@ export default function KeptLanding() {
                         <span data-hide-mobile="1" style={accDesc}>
                           let an agent publish
                         </span>
-                        <span style={accSoon}>SOON</span>
                         <svg
                           width="15"
                           height="15"
@@ -1665,7 +1586,6 @@ export default function KeptLanding() {
                         <span data-hide-mobile="1" style={accDesc}>
                           publish from scripts &amp; CI
                         </span>
-                        <span style={accSoon}>SOON</span>
                         <svg
                           width="15"
                           height="15"
@@ -1716,7 +1636,6 @@ export default function KeptLanding() {
                         <span data-hide-mobile="1" style={accDesc}>
                           drop-in SKILL.md
                         </span>
-                        <span style={accSoon}>SOON</span>
                         <svg
                           width="15"
                           height="15"
@@ -1874,17 +1793,22 @@ export default function KeptLanding() {
                 >
                   Open books
                 </div>
-                <div
-                  style={{
-                    fontFamily: "var(--font-display)",
-                    fontWeight: 700,
-                    fontSize: "clamp(40px,5vw,68px)",
-                    letterSpacing: "-0.03em",
-                    lineHeight: 1,
-                  }}
-                >
-                  <span ref={bind(refs.gaugeNumRef)}>0</span>
-                </div>
+                {/* The figures are zero until kept opens; a closed deploy
+                    hides them rather than report zero (E06a §7). E17 owns
+                    the live gauge. */}
+                {keptOpen() && (
+                  <div
+                    style={{
+                      fontFamily: "var(--font-display)",
+                      fontWeight: 700,
+                      fontSize: "clamp(40px,5vw,68px)",
+                      letterSpacing: "-0.03em",
+                      lineHeight: 1,
+                    }}
+                  >
+                    <span ref={bind(refs.gaugeNumRef)}>0</span>
+                  </div>
+                )}
                 <p
                   style={{
                     fontSize: 16,
@@ -1894,27 +1818,29 @@ export default function KeptLanding() {
                     maxWidth: "38ch",
                   }}
                 >
-                  Every dot is a page kept online right now. Pro pages fund the
-                  free ones — and the books are public.
+                  Every dot is a page kept online right now. Pro will fund the
+                  free pages — and the books are public.
                 </p>
-                <div
-                  style={{
-                    display: "flex",
-                    flexWrap: "wrap",
-                    gap: "8px 24px",
-                    fontFamily: "var(--font-mono)",
-                    fontSize: 12,
-                    color: "#A8A096",
-                    margin: "0 0 28px",
-                  }}
-                >
-                  <span>
-                    infra cost this month · &euro;{infraCostMonth.toFixed(2)}
-                  </span>
-                  <span>
-                    uptime · {uptime === null ? "not yet measured" : `${uptime}%`}
-                  </span>
-                </div>
+                {keptOpen() && (
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: "8px 24px",
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 12,
+                      color: "#A8A096",
+                      margin: "0 0 28px",
+                    }}
+                  >
+                    <span>
+                      infra cost this month · &euro;{infraCostMonth.toFixed(2)}
+                    </span>
+                    <span>
+                      uptime · {uptime === null ? "not yet measured" : `${uptime}%`}
+                    </span>
+                  </div>
+                )}
                 <a
                   href="/stats"
                   style={{
@@ -2062,20 +1988,26 @@ export default function KeptLanding() {
               </p>
             </div>
             <div data-reveal data-delay="90">
-              <div style={whyKicker}>OPEN SOURCE · AGPL</div>
+              <a
+                href={SOURCE_REPO_URL}
+                style={{ ...whyKicker, display: "block", textDecoration: "none" }}
+              >
+                OPEN SOURCE · AGPL
+              </a>
               <h3 style={whyTitle}>Nothing to lock you in</h3>
               <p style={whyBody}>
-                The whole platform is open. Self-host it, fork it, audit it. Your
-                pages aren&rsquo;t hostage to one company staying in business.
+                The whole platform is open: fork it, audit it. AGPL &mdash; you
+                can run it yourself. Your pages aren&rsquo;t hostage to one
+                company staying in business.
               </p>
             </div>
             <div data-reveal data-delay="180">
               <div style={whyKicker}>COSTS IN PUBLIC</div>
               <h3 style={whyTitle}>Math you can check</h3>
               <p style={whyBody}>
-                Infra costs and uptime are public. Pro subscriptions fund the
-                free tier. When we say &ldquo;free forever,&rdquo; you can check
-                the math.
+                Infra costs and uptime are public. Pro subscriptions will fund
+                the free tier. When we say &ldquo;free forever,&rdquo; you can
+                check the math.
               </p>
             </div>
           </div>
@@ -2147,7 +2079,7 @@ export default function KeptLanding() {
               <div style={{ display: "grid", gap: 14 }}>
                 {[
                   `Unlimited drafts — live instantly, ${DRAFT_TTL_DAYS} days`,
-                  `${KEPT_PAGE_LIMIT} pages kept forever`,
+                  "Dozens of pages kept forever",
                   "Instant link, QR, live status",
                   "Keep, rename slug, replace versions",
                   "Dashboard for pages & drafts",
@@ -2233,158 +2165,23 @@ export default function KeptLanding() {
                 flexDirection: "column",
               }}
             >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  marginBottom: 8,
-                }}
-              >
-                <h3
-                  style={{
-                    fontFamily: "var(--font-display)",
-                    fontWeight: 600,
-                    fontSize: 26,
-                    letterSpacing: "-0.02em",
-                    margin: 0,
-                    color: "var(--text-secondary)",
-                  }}
-                >
-                  Pro
-                </h3>
-                <span
-                  style={{
-                    fontFamily: "var(--font-mono)",
-                    fontSize: 11,
-                    letterSpacing: "0.06em",
-                    color: "var(--text-muted)",
-                    border: "1px solid var(--border)",
-                    padding: "4px 10px",
-                    borderRadius: "var(--r-pill)",
-                  }}
-                >
-                  COMING
-                </span>
-              </div>
-              <p
-                style={{
-                  fontSize: 15,
-                  color: "var(--text-muted)",
-                  margin: "0 0 24px",
-                  lineHeight: 1.55,
-                }}
-              >
-                For when a page needs a little more. Free stays free — these are
-                extras, never a lock on the open-source core.
+              {/* The founding card (E06a §7, PRD §4 facts only): no price,
+                  and no Pro feature but the wall editor. */}
+              <h3 className="m-0 mb-2 font-display text-[26px] font-semibold tracking-[-0.02em] text-text">
+                Become a founding creator
+              </h3>
+              <p className="m-0 mb-4 text-[15px] leading-[1.55] text-text-secondary">
+                Founding creators get kept Pro free when kept opens in December
+                &mdash; including the wall editor, so your page wall looks the
+                way you want.
               </p>
-              <div style={{ display: "grid", gap: 13 }}>
-                {PRO_FEATURES.map((f) => (
-                  <div key={f.title} style={proFeature}>
-                    {f.icon}
-                    <span>
-                      <b style={{ color: "var(--text)" }}>{f.title}</b> — {f.body}
-                    </span>
-                  </div>
-                ))}
-              </div>
-              <div
-                style={{
-                  marginTop: 28,
-                  paddingTop: 24,
-                  borderTop: "1px solid var(--border)",
-                }}
-              >
-                {state.proNotify !== "success" ? (
-                  <>
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                      <input
-                        ref={bind(refs.proEmailRef)}
-                        type="email"
-                        placeholder="you@example.com"
-                        style={{
-                          flex: 1,
-                          minWidth: 160,
-                          fontFamily: "var(--font-body)",
-                          fontSize: 14,
-                          background: "var(--surface)",
-                          border: "1px solid var(--border)",
-                          borderRadius: "var(--r-md)",
-                          padding: "11px 13px",
-                          color: "var(--text)",
-                          outline: "none",
-                        }}
-                      />
-                      <button
-                        onClick={() => e()?.notifyPro()}
-                        style={{
-                          fontFamily: "var(--font-display)",
-                          fontWeight: 600,
-                          fontSize: 14,
-                          background: "var(--surface)",
-                          color: "var(--text)",
-                          border: "1px solid var(--border)",
-                          borderRadius: "var(--r-md)",
-                          padding: "11px 18px",
-                          cursor: "pointer",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        Notify me about Pro
-                      </button>
-                    </div>
-                    {state.proNotify === "error" && (
-                      <p style={{ ...notifyError, fontSize: 12 }}>
-                        <svg
-                          width="13"
-                          height="13"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                        >
-                          <circle cx="12" cy="12" r="9" />
-                          <path d="M12 8v4M12 16h.01" />
-                        </svg>
-                        Enter a valid email and we&rsquo;ll try again.
-                      </p>
-                    )}
-                  </>
-                ) : (
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 10,
-                      fontSize: 14,
-                      color: "var(--text)",
-                    }}
-                  >
-                    <svg
-                      width="16"
-                      height="16"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="var(--live)"
-                      strokeWidth="2.4"
-                    >
-                      <path d="M20 6 9 17l-5-5" />
-                    </svg>
-                    We&rsquo;ll let you know when Pro is ready.
-                  </div>
-                )}
-                <p
-                  style={{
-                    fontFamily: "var(--font-mono)",
-                    fontSize: 12,
-                    letterSpacing: "0.03em",
-                    color: "var(--text-muted)",
-                    margin: "16px 0 0",
-                  }}
-                >
-                  Pro is what keeps the free tier free.
-                </p>
-              </div>
+              <p className="m-0 mb-7 text-[15px] leading-[1.55] text-text-muted">
+                Hand-picked: Arun looks at every application. No posting
+                obligation.
+              </p>
+              <Button asChild className="mt-auto self-start">
+                <a href="/founding">Apply to be a founding creator &rarr;</a>
+              </Button>
             </div>
           </div>
         </section>
@@ -2517,17 +2314,9 @@ export default function KeptLanding() {
               <FooterCol
                 heading="PROJECT"
                 links={[
-                  { label: "GitHub repo" },
+                  { label: "GitHub repo", href: SOURCE_REPO_URL },
                   { label: "Stats", href: "/stats" },
-                  { label: "License · AGPL-3.0" },
-                ]}
-              />
-              <FooterCol
-                heading="DEVELOPERS"
-                links={[
-                  { label: "MCP server · soon" },
-                  { label: "CLI · soon" },
-                  { label: "Docs" },
+                  { label: "License · AGPL-3.0", href: SOURCE_REPO_URL },
                 ]}
               />
               <FooterCol
@@ -2536,10 +2325,19 @@ export default function KeptLanding() {
                   { label: "The forever promise", href: "/promise" },
                   { label: "Report a page" },
                   { label: "Acceptable use" },
-                  { label: "Privacy" },
                 ]}
               />
             </div>
+          </div>
+          {/* Impressum · Privacy · GitHub (E06a §7) — the shared legal pair. */}
+          <div className="flex flex-wrap items-center gap-4 pt-10">
+            <LegalLinks />
+            <a
+              href={SOURCE_REPO_URL}
+              className="mono-label text-xs text-text-muted hover:text-accent hover:underline"
+            >
+              GitHub
+            </a>
           </div>
         </div>
       </footer>
@@ -3239,17 +3037,24 @@ export default function KeptLanding() {
             color: "var(--text-muted)",
           }}
         >
-          PREFETCHING&nbsp;<span ref={bind(refs.loadCountRef)}>0</span>&nbsp;KEPT&nbsp;PAGES
+          {/* No zero counter on a closed deploy (E06a §7). */}
+          PREFETCHING&nbsp;
+          {keptOpen() && (
+            <>
+              <span ref={bind(refs.loadCountRef)}>0</span>&nbsp;
+            </>
+          )}
+          KEPT&nbsp;PAGES
         </div>
       </div>
 
       <WaitlistDialog
         open={state.waitlist}
         onOpenChange={(waitlist) => {
-          if (!waitlist) setWaitlistFromNav(false);
+          if (!waitlist) setWaitlistSource("landing_drop");
           dispatch({ waitlist });
         }}
-        source={waitlistFromNav ? "landing_nav" : "landing_drop"}
+        source={waitlistSource}
       />
     </div>
   );
@@ -3334,8 +3139,6 @@ function makeRefs(): EngineRefs {
     footSlotRef: r(),
     footPlaceholderRef: r(),
     darkIdleRef: r(),
-    agentEmailRef: r<HTMLInputElement>(),
-    proEmailRef: r<HTMLInputElement>(),
     mobileSlotRef: r(),
   };
 }
@@ -3448,16 +3251,6 @@ const accDot: React.CSSProperties = {
   background: "var(--text-muted)",
   flexShrink: 0,
 };
-const accSoon: React.CSSProperties = {
-  marginLeft: "auto",
-  fontFamily: "var(--font-mono)",
-  fontSize: 9.5,
-  letterSpacing: "0.07em",
-  color: "var(--accent)",
-  background: "var(--accent-soft)",
-  padding: "3px 8px",
-  borderRadius: "var(--r-pill)",
-};
 const accBody: React.CSSProperties = {
   overflow: "hidden",
   maxHeight: 0,
@@ -3502,13 +3295,6 @@ const freeFeature: React.CSSProperties = {
   gap: 12,
   fontSize: 15,
 };
-const proFeature: React.CSSProperties = {
-  display: "flex",
-  alignItems: "flex-start",
-  gap: 12,
-  fontSize: 15,
-  color: "var(--text-secondary)",
-};
 const slugChip: React.CSSProperties = {
   fontFamily: "var(--font-mono)",
   fontSize: 11,
@@ -3517,115 +3303,7 @@ const slugChip: React.CSSProperties = {
   padding: "5px 10px",
   borderRadius: 999,
 };
-const notifyError: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 7,
-  fontSize: 13,
-  color: "var(--danger)",
-  margin: "12px 0 0",
-};
-const proIcon = (children: React.ReactNode) => (
-  <svg
-    width="16"
-    height="16"
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="var(--text-muted)"
-    strokeWidth="2"
-    style={{ marginTop: 2, flex: "none" }}
-  >
-    {children}
-  </svg>
-);
 
-const PRO_FEATURES = [
-  {
-    title: "More pages kept forever",
-    body: `keep well beyond the free ${KEPT_PAGE_LIMIT}.`,
-    icon: proIcon(
-      <>
-        <rect x="7" y="3" width="14" height="15" rx="2" />
-        <path d="M3 7v12a2 2 0 0 0 2 2h11" />
-      </>,
-    ),
-  },
-  {
-    title: "API keys",
-    body: "agents publish straight to your account.",
-    icon: proIcon(
-      <>
-        <circle cx="7.5" cy="15.5" r="4.5" />
-        <path d="M10.7 12.3 21 2M17 6l3 3" />
-      </>,
-    ),
-  },
-  {
-    title: "Higher agent/MCP volume",
-    body: "room for agents that publish often.",
-    icon: proIcon(
-      <>
-        <path d="M3 20h18" />
-        <path d="M6 20v-6M11 20V8M16 20v-9M21 20V4" />
-      </>,
-    ),
-  },
-  {
-    title: "Password-protected pages",
-    body: "gate a page behind a password.",
-    icon: proIcon(
-      <>
-        <rect x="5" y="11" width="14" height="10" rx="2" />
-        <path d="M8 11V7a4 4 0 0 1 8 0v4" />
-      </>,
-    ),
-  },
-  {
-    title: "Custom domains",
-    body: "serve a page on your own domain.",
-    icon: proIcon(
-      <>
-        <path d="M2 12h20M12 2a15 15 0 0 1 0 20M12 2a15 15 0 0 0 0 20" />
-        <circle cx="12" cy="12" r="10" />
-      </>,
-    ),
-  },
-  {
-    title: "Private analytics",
-    body: "views & referrers, privacy-respecting.",
-    icon: proIcon(
-      <>
-        <path d="M3 3v18h18" />
-        <path d="M7 14l4-4 3 3 5-6" />
-      </>,
-    ),
-  },
-  {
-    title: "Remove the kept badge",
-    body: "unbranded pages.",
-    icon: proIcon(
-      <>
-        <circle cx="12" cy="12" r="9" />
-        <path d="M8 12l3 3 5-6" />
-      </>,
-    ),
-  },
-  {
-    title: "Version history & rollback",
-    body: "restore a previous version.",
-    icon: proIcon(<path d="M3 7l9-4 9 4-9 4-9-4zM3 12l9 4 9-4M3 17l9 4 9-4" />),
-  },
-  {
-    title: "EU data residency",
-    body: "pages stored and served from the EU.",
-    icon: proIcon(
-      <>
-        <circle cx="12" cy="12" r="9" />
-        <path d="M12 3a14 14 0 0 0 0 18M3.5 9h17M3.5 15h17" />
-      </>,
-    ),
-  },
-] as const;
 
 function FooterCol({
   heading,
