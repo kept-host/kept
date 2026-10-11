@@ -1,16 +1,12 @@
-import type { Metadata } from "next";
-
 import { FoundingForm } from "@/components/kept/founding-form";
+import { foundingMetadata } from "@/lib/og/preview";
 
 /**
  * `/founding` (apex) — the founding-creator offer and its application form
  * (E06a §4). The explainer is the PRD's text verbatim: decided facts only — no
  * duration, price, own domains or proposed-only Pro features.
  */
-export const metadata: Metadata = {
-  title: "Become a founding creator",
-  description: "Founding creators get kept Pro free when kept opens in December.",
-};
+export const metadata = foundingMetadata();
 
 export default function FoundingPage() {
   return (

@@ -1,4 +1,5 @@
 import KeptLanding from "@/components/kept/KeptLanding";
+import { landingMetadata } from "@/lib/og/preview";
 
 /**
  * kept landing — Claude Design v2 ("drop-box choreography").
@@ -9,6 +10,8 @@ import KeptLanding from "@/components/kept/KeptLanding";
  * gauge dot grid, and the drop/mint/live flow. The engine (KeptEngine) runs a
  * rAF loop entirely on the client; no publish/auth/live-data wiring yet.
  */
+export const metadata = landingMetadata();
+
 export default function MarketingHome() {
   return <KeptLanding />;
 }
