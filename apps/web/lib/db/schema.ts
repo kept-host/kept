@@ -14,6 +14,8 @@
  * created here — they arrive via their own epic's migration.
  */
 import {
+  FOUNDING_NOTE_MAX,
+  FOUNDING_STATUSES,
   NAME_HOLD_REASONS,
   NAME_KINDS,
   PLANS,
@@ -21,6 +23,7 @@ import {
   REGIONS,
   SITE_STATUSES,
   TITLE_SOURCES,
+  WAITLIST_SOURCES,
 } from "@kept/shared";
 import { relations, sql } from "drizzle-orm";
 import {
@@ -476,14 +479,60 @@ export const jobRuns = pgTable("job_runs", {
 
 // ── waitlist ─────────────────────────────────────────────────────────────────
 // Addresses left on the landing while kept is closed (`lib/launch.ts`). Stored
-// lowercased, so the primary key is the dedup and joining twice is a no-op.
-// Nothing sends to them yet.
-export const waitlist = pgTable("waitlist", {
-  email: text("email").primaryKey(),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+// lowercased, so the primary key is the dedup. 0007 (E06a) adds double opt-in
+// (only the confirm token's SHA-256 is stored), unsubscribe suppression and the
+// founding application. Every added column is nullable or defaulted, so a 0006
+// row is a valid `legacy` row that never confirmed.
+export const waitlist = pgTable(
+  "waitlist",
+  {
+    email: text("email").primaryKey(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    source: text("source", { enum: WAITLIST_SOURCES }).notNull().default("legacy"),
+    confirmTokenHash: text("confirm_token_hash"),
+    confirmSentAt: timestamp("confirm_sent_at", { withTimezone: true }),
+    /** Sends on the UTC day of `confirm_sent_at`; reset when that day changes. */
+    confirmSendCount: integer("confirm_send_count").notNull().default(0),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+    unsubscribedAt: timestamp("unsubscribed_at", { withTimezone: true }),
+    foundingStatus: text("founding_status", { enum: FOUNDING_STATUSES }),
+    socialUrl: text("social_url"),
+    note: text("note"),
+    foundingDecidedAt: timestamp("founding_decided_at", { withTimezone: true }),
+  },
+  (table) => [
+    check(
+      "waitlist_source_check",
+      sql`${table.source} in (${sql.raw(WAITLIST_SOURCES.map((s) => `'${s}'`).join(", "))})`,
+    ),
+    check(
+      "waitlist_founding_status_check",
+      sql`${table.foundingStatus} in (${sql.raw(FOUNDING_STATUSES.map((s) => `'${s}'`).join(", "))})`,
+    ),
+    check(
+      "waitlist_note_length_check",
+      sql`char_length(${table.note}) <= ${sql.raw(String(FOUNDING_NOTE_MAX))}`,
+    ),
+    // The confirm page looks a row up by the digest of the token in its link.
+    uniqueIndex("waitlist_confirm_token_hash_key").on(table.confirmTokenHash),
+  ],
+);
+
+// ── rate_limits ──────────────────────────────────────────────────────────────
+// `lib/rate-limit`'s fixed-window counters (E06a D4; E07 reuses them). `bucket`
+// is `route:sha256(...)` — never a raw IP or address. One row per bucket per
+// window; rows older than `RATE_LIMIT_RETENTION_DAYS` are pruned.
+export const rateLimits = pgTable(
+  "rate_limits",
+  {
+    bucket: text("bucket").notNull(),
+    windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
+    count: integer("count").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.bucket, table.windowStart] })],
+);
 
 // ── relations ────────────────────────────────────────────────────────────────
 export const userRelations = relations(user, ({ one, many }) => ({

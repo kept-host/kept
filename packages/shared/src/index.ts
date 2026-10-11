@@ -15,3 +15,4 @@ export * from "./publish";
 export * from "./keep";
 export * from "./manage";
 export * from "./plans";
+export * from "./waitlist";

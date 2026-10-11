@@ -103,12 +103,21 @@ export async function readJsonOnlyBody(request: Request): Promise<unknown> {
  * counting two different populations.
  */
 export function publisherFrom(request: Request): PublisherContext {
-  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  const real = request.headers.get("x-real-ip")?.trim();
   return {
-    ip: forwarded || real || "unknown",
+    ip: forwardedIp(request),
     userAgent: request.headers.get("user-agent") ?? "",
   };
+}
+
+/**
+ * The client address the origin's proxy forwards: the first `x-forwarded-for`
+ * entry, then `x-real-ip`, else `"unknown"`. `lib/rate-limit/client-ip.ts`
+ * prefers Cloudflare's `CF-Connecting-IP` and falls back to this.
+ */
+export function forwardedIp(request: Request): string {
+  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  const real = request.headers.get("x-real-ip")?.trim();
+  return forwarded || real || "unknown";
 }
 
 /**

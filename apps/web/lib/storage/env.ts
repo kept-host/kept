@@ -303,3 +303,80 @@ export function cronSecret(): string {
 export function publisherHashSalt(): string {
   return read({ PUBLISHER_HASH_SALT: nonEmpty }).PUBLISHER_HASH_SALT;
 }
+
+/** 32+ random bytes, as every other signing secret in this module asks for. */
+const signingSecret = blankAsAbsent(
+  z
+    .string()
+    .trim()
+    .min(32, "expected 32+ random bytes — generate one with `openssl rand -base64 32`"),
+);
+
+/** A comma-separated list; blank entries (a trailing comma) are dropped. */
+function commaList(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
+/**
+ * `KEPT_ADMIN_EMAILS` (E06a §2): the whole closed-mode sign-in allowlist and
+ * the recipients of founding-application mail. Trimmed and lowercased, so a
+ * membership test against a lowercased address is exact. Unset is a valid,
+ * empty allowlist — a closed deploy then lets nobody sign in.
+ */
+export function adminEmails(): Set<string> {
+  const env = read({ KEPT_ADMIN_EMAILS: z.string().optional() });
+  return new Set(commaList(env.KEPT_ADMIN_EMAILS).map((email) => email.toLowerCase()));
+}
+
+/**
+ * `KEPT_ACCESS_TOKEN_HASHES` (E06a §2): SHA-256 hex digests of the
+ * `kpt_access_…` tokens allowed to publish while kept is closed. Only digests
+ * live in the environment. Unset means no token is accepted; a malformed entry
+ * throws rather than silently matching nothing.
+ */
+export function accessTokenHashes(): string[] {
+  const env = read({
+    KEPT_ACCESS_TOKEN_HASHES: z
+      .string()
+      .optional()
+      .refine(
+        (value) => commaList(value).every((hash) => /^[0-9a-f]{64}$/.test(hash)),
+        "expected comma-separated 64-character lowercase hex SHA-256 digests",
+      ),
+  });
+  return commaList(env.KEPT_ACCESS_TOKEN_HASHES);
+}
+
+/**
+ * `KEPT_ADMIN_SECRET` (E06a §4): the HMAC key that signs founding review links
+ * and waitlist unsubscribe links. Required at call time — an unsigned review
+ * link would let anyone approve themselves.
+ */
+export function adminSecret(): string {
+  return read({ KEPT_ADMIN_SECRET: signingSecret }).KEPT_ADMIN_SECRET;
+}
+
+/**
+ * `RATE_LIMIT_SECRET` (E06a §5): keys the daily salt of `lib/rate-limit`'s
+ * per-IP buckets, so a bucket cannot be linked to an address or across days.
+ */
+export function rateLimitSecret(): string {
+  return read({ RATE_LIMIT_SECRET: signingSecret }).RATE_LIMIT_SECRET;
+}
+
+/**
+ * Cloudflare Turnstile (E06a §5). The secret verifies tokens server-side
+ * (`verifyTurnstile`); the site key is public and is handed to the widget by a
+ * server component. Both are per-track; local and CI use Cloudflare's test keys
+ * (documented in `.env.example`).
+ */
+export function turnstileConfig(): { secretKey: string; siteKey: string } {
+  const env = read({
+    TURNSTILE_SECRET_KEY: blankAsAbsent(nonEmpty),
+    NEXT_PUBLIC_TURNSTILE_SITE_KEY: blankAsAbsent(nonEmpty),
+  });
+  return { secretKey: env.TURNSTILE_SECRET_KEY, siteKey: env.NEXT_PUBLIC_TURNSTILE_SITE_KEY };
+}

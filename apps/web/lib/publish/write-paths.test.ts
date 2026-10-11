@@ -26,7 +26,12 @@ import { after, test } from "node:test";
 
 import { config } from "dotenv";
 
+import { setTurnstileTestKeys } from "../testing/turnstile";
+
 config({ path: ".env.local", quiet: true });
+// The landing publish below carries a Turnstile token, which is now verified for
+// real (E06a): point siteverify at Cloudflare's always-pass test secret.
+setTurnstileTestKeys("pass");
 
 const LIVE_VARS = [
   "DATABASE_URL",
