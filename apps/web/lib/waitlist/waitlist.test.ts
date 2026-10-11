@@ -163,7 +163,7 @@ test("confirm: GET-free, one use, 7-day TTL, unknown and malformed refused", { s
   assert.equal(await confirmWaitlist(null), null, "no body");
 
   const confirmed = await confirmWaitlist({ token });
-  assert.deepEqual(confirmed, { email, foundingStatus: null });
+  assert.deepEqual(confirmed, { email, foundingStatus: null, socialUrl: null, note: null });
   const current = await row(email);
   assert.ok(current?.confirmedAt);
   assert.equal(current?.confirmTokenHash, null, "the digest is cleared");

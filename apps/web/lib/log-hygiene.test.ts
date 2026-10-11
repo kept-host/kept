@@ -40,6 +40,13 @@ const GUARDED_FILES = [
   "app/api/cron/waitlist-prune/route.ts",
   "app/(marketing)/waitlist/unsubscribe/page.tsx",
   "lib/auth/closed-sign-in.ts",
+  "lib/founding/apply.ts",
+  "lib/founding/review.ts",
+  "lib/founding/review-token.ts",
+  "lib/db/queries/founding.ts",
+  "lib/email/founding.ts",
+  "app/api/founding/review/route.ts",
+  "app/(marketing)/founding/review/page.tsx",
 ];
 
 /** `email`, `ip`, `token`, or a camelCase name ending in one of them. */

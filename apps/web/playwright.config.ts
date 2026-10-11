@@ -85,13 +85,18 @@ if (!keptOpen() && !process.env.KEPT_E2E_ACCESS_TOKEN) {
   const { token, hash } = await mintAccessToken();
   process.env.KEPT_E2E_ACCESS_TOKEN = token;
   process.env.KEPT_ACCESS_TOKEN_HASHES = hash;
-  // …and ONE admin (E06a §2), the whole closed-mode sign-in allowlist for the
-  // run. A Resend test address with a per-run label: deliverable, so the
-  // admin's magic link is a real send, and new each run, so the per-address
-  // limit (3 an hour) never carries over from the last one.
-  process.env.KEPT_E2E_ADMIN_EMAIL = `delivered+e06a-${crypto.randomUUID().slice(0, 8)}@resend.dev`;
-  process.env.KEPT_ADMIN_EMAILS = process.env.KEPT_E2E_ADMIN_EMAIL;
 }
+
+/**
+ * ONE admin per run, open or closed (E06a §2, §4): the whole closed-mode
+ * sign-in allowlist, and the only recipient of founding-application mail — so
+ * no spec ever mails a real admin inbox. A Resend test address with a per-run
+ * label: deliverable, so the admin's magic link is a real send, and new each
+ * run, so the per-address limit (3 an hour) never carries over from the last
+ * one. Workers inherit it.
+ */
+process.env.KEPT_E2E_ADMIN_EMAIL ??= `delivered+e06a-${crypto.randomUUID().slice(0, 8)}@resend.dev`;
+process.env.KEPT_ADMIN_EMAILS = process.env.KEPT_E2E_ADMIN_EMAIL;
 
 /**
  * `lib/rate-limit` salts its per-IP buckets with `RATE_LIMIT_SECRET`, and every

@@ -35,7 +35,8 @@ const utcDay = (expression: SQL) => sql`(${expression} at time zone 'UTC')::date
  *
  * `confirm_send_count` counts sends on the UTC day of `confirm_sent_at` and
  * restarts at 1 on a new day. A resend replaces the token, so only the newest
- * mail's link confirms. Founding columns are not touched (task 006).
+ * mail's link confirms. Founding columns are not touched here: an application
+ * is recorded first, by `upsertFoundingApplication` (`queries/founding.ts`).
  */
 export async function upsertWaitlistJoin(input: {
   email: string;
@@ -74,10 +75,12 @@ export async function upsertWaitlistJoin(input: {
   return rows.length > 0;
 }
 
-/** What a confirmation changed: the address and its founding state (task 006). */
+/** What a confirmation changed: the address and its founding application, if any. */
 export interface ConfirmedRow {
   email: string;
   foundingStatus: FoundingStatus | null;
+  socialUrl: string | null;
+  note: string | null;
 }
 
 /**
@@ -86,15 +89,27 @@ export interface ConfirmedRow {
  * expired (older than `WAITLIST_CONFIRM_TTL_DAYS` since it was sent) token.
  */
 export async function confirmWaitlistByTokenHash(tokenHash: string): Promise<ConfirmedRow | null> {
-  const rows = await db.execute<{ email: string; founding_status: FoundingStatus | null }>(sql`
+  const rows = await db.execute<{
+    email: string;
+    founding_status: FoundingStatus | null;
+    social_url: string | null;
+    note: string | null;
+  }>(sql`
     update waitlist
     set confirmed_at = now(), confirm_token_hash = null
     where confirm_token_hash = ${tokenHash}
       and confirm_sent_at > now() - make_interval(days => ${WAITLIST_CONFIRM_TTL_DAYS})
-    returning email, founding_status
+    returning email, founding_status, social_url, note
   `);
   const row = rows[0];
-  return row ? { email: row.email, foundingStatus: row.founding_status } : null;
+  return row
+    ? {
+        email: row.email,
+        foundingStatus: row.founding_status,
+        socialUrl: row.social_url,
+        note: row.note,
+      }
+    : null;
 }
 
 /**

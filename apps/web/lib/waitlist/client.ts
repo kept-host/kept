@@ -32,7 +32,8 @@ export async function submitWaitlist(body: WaitlistJoinRequest): Promise<JoinRes
   return { kind: "network" };
 }
 
-export type ConfirmResult = "confirmed" | "expired" | "network";
+/** `confirmed_founding`: the address confirmed and its founding application went to Arun. */
+export type ConfirmResult = "confirmed" | "confirmed_founding" | "expired" | "network";
 
 export async function confirmWaitlistToken(token: string): Promise<ConfirmResult> {
   try {
@@ -41,7 +42,10 @@ export async function confirmWaitlistToken(token: string): Promise<ConfirmResult
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ token }),
     });
-    if (response.ok) return "confirmed";
+    if (response.ok) {
+      const body = (await response.json().catch(() => null)) as { founding?: unknown } | null;
+      return body?.founding === true ? "confirmed_founding" : "confirmed";
+    }
     if (response.status === 410) return "expired";
     return "network";
   } catch {

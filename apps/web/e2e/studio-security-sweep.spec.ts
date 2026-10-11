@@ -83,6 +83,8 @@ const NOT_COOKIE_AUTHENTICATED: Record<string, string> = {
   "POST /api/waitlist/unsubscribe":
     "unauthenticated: the HMAC-signed unsubscribe token is the authority; RFC 8058 one-click (waitlist-opt-in.spec)",
   "POST /api/cron/waitlist-prune": "Authorization: Bearer CRON_SECRET, from GitHub Actions",
+  "POST /api/founding/review":
+    "unauthenticated: the HMAC-signed, 14-day review link `t` (KEPT_ADMIN_SECRET) is the authority; idempotent (founding.spec)",
 };
 
 /** What a swept request may act on. A's real things, or things that name nothing. */

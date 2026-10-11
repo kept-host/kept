@@ -7,11 +7,12 @@ import { confirmWaitlistToken } from "@/lib/waitlist/client";
 
 import { EmailForm } from "./email-form";
 
-type State = "ready" | "confirming" | "confirmed" | "expired" | "network";
+type State = "ready" | "confirming" | "confirmed" | "confirmed_founding" | "expired" | "network";
 
 /**
  * The `/waitlist/confirm` states (E06a §3, "UI states"): ready → confirming →
- * confirmed, or expired with the rejoin form. Rendering this changes nothing;
+ * confirmed (with the founding line after a founding application, §4), or
+ * expired with the rejoin form. Rendering this changes nothing;
  * only the button's POST confirms (D1). Without a token it starts expired.
  */
 export function WaitlistConfirm({ token }: { token: string | null }) {
@@ -23,10 +24,12 @@ export function WaitlistConfirm({ token }: { token: string | null }) {
     setState(await confirmWaitlistToken(token));
   }
 
-  if (state === "confirmed") {
+  if (state === "confirmed" || state === "confirmed_founding") {
     return (
       <p role="status" data-testid="confirm-done" className="text-lg text-text">
-        You’re on the list. We’ll email you when kept opens.
+        {state === "confirmed_founding"
+          ? "You’re on the list, and your founding application is with Arun. You’ll hear back by email."
+          : "You’re on the list. We’ll email you when kept opens."}
       </p>
     );
   }

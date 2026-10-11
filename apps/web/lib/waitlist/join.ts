@@ -18,7 +18,11 @@
  * the next try after the 10-minute cooldown sends again; the failure is logged
  * without the address or the token (AC24).
  *
- * `founding` is accepted by the schema and ignored here; task 006 adds it.
+ * A founding application (`source: founding` + `founding`, §4, AC12) records
+ * its details first (`upsertFoundingApplication`). If Arun already decided,
+ * that is all: no mail of any kind. Otherwise double opt-in runs as above, and
+ * an address that was ALREADY confirmed goes straight to Arun — the confirm
+ * path (`confirm.ts`) is what tells him about everyone else.
  */
 import {
   RATE_LIMITS,
@@ -27,8 +31,10 @@ import {
   waitlistJoinSchema,
 } from "@kept/shared";
 
+import { upsertFoundingApplication } from "../db/queries/founding";
 import { upsertWaitlistJoin } from "../db/queries/waitlist";
 import { sendConfirmationEmail } from "../email/waitlist";
+import { notifyFoundingApplication } from "../founding/apply";
 import { verifyTurnstile } from "../publish/hooks";
 import type { PublishFailure } from "../publish/pipeline";
 import { hit, ipKey, peek } from "../rate-limit";
@@ -60,13 +66,17 @@ export async function joinWaitlist(raw: unknown, clientIp: string): Promise<Wait
 
   const parsed = waitlistJoinSchema.safeParse(raw);
   if (!parsed.success) {
-    const emailBad = parsed.error.issues.some((issue) => issue.path[0] === "email");
+    const field = (name: string) => parsed.error.issues.some((issue) => issue.path[0] === name);
     return {
       ok: false,
       status: 400,
       body: {
         error: "invalid_request",
-        message: emailBad ? "Enter a valid email address." : "That request wasn't valid.",
+        message: field("email")
+          ? "Enter a valid email address."
+          : field("founding")
+            ? "Enter your profile’s full address, starting with https://."
+            : "That request wasn't valid.",
       },
     };
   }
@@ -83,9 +93,17 @@ export async function joinWaitlist(raw: unknown, clientIp: string): Promise<Wait
   const global = await peek(CONFIRMATION_MAILS_BUCKET, RATE_LIMITS.confirmationMailsGlobal);
   if (!global.allowed) return tooMany(global.retryAfterSeconds);
 
+  const { email, founding } = parsed.data;
+  if (founding) {
+    const application = { email, socialUrl: founding.socialUrl, note: founding.note || null };
+    const recorded = await upsertFoundingApplication(application);
+    if (recorded.foundingStatus !== "pending") return { ok: true, status: 202, body: CHECK_INBOX };
+    if (recorded.confirmed) await notifyFoundingApplication(application);
+  }
+
   const token = generateAnonToken();
   const send = await upsertWaitlistJoin({
-    email: parsed.data.email,
+    email,
     source: parsed.data.source,
     tokenHash: await hashToken(token),
   });
@@ -93,7 +111,7 @@ export async function joinWaitlist(raw: unknown, clientIp: string): Promise<Wait
   if (send) {
     await hit(CONFIRMATION_MAILS_BUCKET, RATE_LIMITS.confirmationMailsGlobal);
     try {
-      await sendConfirmationEmail(parsed.data.email, token);
+      await sendConfirmationEmail(email, token);
     } catch (err) {
       console.error(
         `[kept] waitlist: confirmation mail failed — ${err instanceof Error ? err.message : String(err)}`,
