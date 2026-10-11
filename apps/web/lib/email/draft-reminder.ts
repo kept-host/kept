@@ -43,6 +43,7 @@ import {
   type DueReminder,
 } from "../db/queries/reminders";
 import { appOrigin, resendConfig, servingBaseDomain } from "../storage/env";
+import { emailFooter } from "./footer";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -213,7 +214,7 @@ async function sendOne(
       from,
       to: draft.reminderEmail,
       subject: message.subject,
-      text: message.text,
+      text: `${message.text}\n${emailFooter({ from, origin }).text}`,
       headers: message.headers,
     });
     if (error) throw new Error(`${error.name} — ${error.message}`);

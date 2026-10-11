@@ -40,7 +40,14 @@ import { magicLink } from "better-auth/plugins";
 import { Resend } from "resend";
 
 import { db, schema } from "../db";
-import { authConfig, githubOAuth, googleOAuth, resendConfig } from "../storage/env";
+import { emailFooter } from "../email/footer";
+import {
+  appOrigin,
+  authConfig,
+  githubOAuth,
+  googleOAuth,
+  resendConfig,
+} from "../storage/env";
 
 import { bootstrapProfile } from "./bootstrap-profile";
 import { fetchGithubIdentity } from "./github-identity";
@@ -318,7 +325,8 @@ function createAuth() {
             text:
               `Open this link to sign in to kept:\n\n${url}\n\n` +
               `It works once and expires in 5 minutes. ` +
-              `If you did not ask to sign in, ignore this email.`,
+              `If you did not ask to sign in, ignore this email.\n\n` +
+              emailFooter({ from: resend.from, origin: appOrigin() }).text,
           });
           // REJECT, don't swallow. A magic link that silently fails to send is
           // indistinguishable from a broken product, and tasks 004/005 surface
