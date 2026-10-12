@@ -78,10 +78,14 @@ jobs:
       - name: Install Playwright browsers
         run: pnpm --filter @kept/web exec playwright install --with-deps chromium
 
+      # Same env as ci.yml's Test step. NEXT_PUBLIC_APP_URL is the LOCAL
+      # origin Playwright's own `next dev` serves; without it the host-split
+      # tripwire (`e2e/host-split.spec.ts`) skips wholesale. See ci.yml.
       - name: Test
         run: pnpm test
         env:
           CI: "true"
+          NEXT_PUBLIC_APP_URL: "https://localhost:3000"
 
   # ---------------------------------------------------------------------------
   # 2. migrate — forward-only Drizzle migrations against the persistent dev Neon
