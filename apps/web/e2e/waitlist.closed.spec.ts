@@ -10,7 +10,7 @@ import { drillIp } from "../lib/testing/drill-ip";
 import { TURNSTILE_TEST_KEYS } from "../lib/testing/turnstile";
 import { unsubscribeToken } from "../lib/waitlist/unsubscribe";
 
-import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
+import { LIVE_STACK_TIMEOUT, skipAuth, warmDb } from "./live-stack";
 
 /**
  * A CLOSED deploy — the waitlist (`lib/launch.ts`). Run with
@@ -154,6 +154,8 @@ test.describe("closed deploy — the waitlist", () => {
   });
 
   test("an address the server refuses is said so in the dialog", async ({ page }) => {
+    // The route rate-limits in Postgres before it validates the address.
+    test.skip(!!SKIP_DB, String(SKIP_DB));
     await asClient(page);
     await openLanding(page);
     await page.locator("#nav-waitlist").click();
@@ -171,6 +173,9 @@ test.describe("closed deploy — the waitlist", () => {
     page,
   }) => {
     test.skip(!process.env.NEXT_PUBLIC_APP_URL, "NEXT_PUBLIC_APP_URL absent — nothing to route to");
+    // The gate reads the session through Better Auth.
+    const skip = skipAuth();
+    test.skip(!!skip, skip || undefined);
 
     // Signed out, `/auth` is the sign-in screen and the gated pages bounce to it.
     for (const path of ["/auth", "/dashboard", "/settings"]) {

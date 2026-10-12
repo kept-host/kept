@@ -9,7 +9,7 @@ import { mintAccessToken } from "../lib/access-token";
 import { waitlistHref } from "../lib/routing/host-split";
 
 import { pageHtml, publishViaApi, SKIP_LIVE_PUBLISH } from "./live-publish";
-import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
+import { LIVE_STACK_TIMEOUT, skipAuth, warmDb } from "./live-stack";
 
 /**
  * A CLOSED deploy's API — E06a task 002 (PRD §1, §2). Run with
@@ -71,6 +71,8 @@ test.describe("closed deploy — who may publish", () => {
   });
 
   test("AC1: sign-in's API is reachable and mints no session", async ({ request }) => {
+    const skip = skipAuth();
+    test.skip(!!skip, skip || undefined);
     const response = await request.get("/api/auth/get-session");
     expect(response.status()).toBe(200);
     expect(await response.json()).toBeNull();

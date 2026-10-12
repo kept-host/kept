@@ -8,7 +8,7 @@ import { waitlistHref } from "../lib/routing/host-split";
 import { drillIp } from "../lib/testing/drill-ip";
 
 import { pageHtml, publishViaApi, SKIP_LIVE_PUBLISH } from "./live-publish";
-import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
+import { LIVE_STACK_TIMEOUT, skipAuth, warmDb } from "./live-stack";
 import { cleanup, newScope } from "./owner-fixtures";
 
 /**
@@ -39,19 +39,7 @@ import { cleanup, newScope } from "./owner-fixtures";
 
 config({ path: ".env.local", quiet: true });
 
-const AUTH_VARS = [
-  "DATABASE_URL",
-  "BETTER_AUTH_SECRET",
-  "GITHUB_CLIENT_ID",
-  "GITHUB_CLIENT_SECRET",
-  "GOOGLE_CLIENT_ID",
-  "GOOGLE_CLIENT_SECRET",
-  "RESEND_API_KEY",
-  "EMAIL_FROM",
-] as const;
-const missingAuth = AUTH_VARS.filter((name) => !process.env[name]?.trim());
-const SKIP_AUTH: string | false =
-  missingAuth.length > 0 ? `auth credentials absent (${missingAuth.join(", ")})` : false;
+const SKIP_AUTH = skipAuth();
 
 const NEUTRAL = "If this address can sign in, a link is on its way.";
 
