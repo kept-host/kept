@@ -115,7 +115,7 @@ concluding anything. Prod does not run Serverless, so a 502 there is real.
 
 ### Where the two branches actually are
 
-`drizzle/` holds **six** migrations, and the two Neon branches are **not** at
+`drizzle/` holds **eight** migrations (`0000`–`0007`), and the two Neon branches are **not** at
 the same point:
 
 | Migration | Adds | dev | prod |
@@ -126,10 +126,12 @@ the same point:
 | `0003_reminder_sent_at_and_keep_token` | `reminder_sent_at`, `reminder_keep_token_hash` | ✅ | ❌ |
 | `0004_page_title` | `sites.title` (nullable text, E06) | ✅ | ❌ |
 | `0005_creator_studio` | name/title/channel columns, partial `sites_slug_key`, `name_holds`, `name_events`, `page_views_daily`, `job_runs` (E06 creator studio) | ✅ | ❌ |
+| `0006_waitlist` | `waitlist`, `rate_limits` (E06a) | ✅ | ❌ |
+| `0007_waitlist_double_opt_in` | waitlist double opt-in columns (E06a) | ❌ until `dev-v0.7.0` | ❌ |
 
 **Prod has never been migrated and has never been deployed** — the `prod`
 GitHub Environment holds no secrets and `release.yml` has never run. So the
-first prod release applies all six in one go, and the pre-release backup
+first prod release applies all eight in one go, and the pre-release backup
 branch below is the only unwind for that.
 
 **`0004` backfills nothing, deliberately.** Rows published before it read

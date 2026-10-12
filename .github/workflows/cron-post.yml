@@ -1,0 +1,89 @@
+name: Cron — POST an authenticated route
+
+# The one job every cron workflow runs, once per track. Callers (cron-*.yml)
+# own the schedule and the per-track on/off switch; this file owns the call.
+# The substrate and its reasoning are `cron-draft-reminder.yml`'s header: a
+# scheduled GitHub Actions workflow calling an authenticated control-plane
+# route, never a Worker `[triggers]` cron.
+#
+# TRACKS — the caller passes the GitHub Environment that holds the track's
+# `CRON_SECRET` (secret) and `SMOKE_WEB_URL` (variable, the `app.` origin):
+#   * `dev`       — the dev deploy environment, as before.
+#   * `prod-cron` — NOT `prod`. `prod` carries the required-reviewer rule that
+#     gates `release.yml`; a scheduled job entering it would sit waiting for a
+#     human every day. `prod-cron` holds only what a cron call needs (no deploy
+#     credential), limited to the `main` branch, with no reviewer.
+#
+# No checkout and no toolchain: one authenticated HTTP call. Batching, caps and
+# idempotency live in the application, where they are typechecked and tested.
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "GitHub Environment holding CRON_SECRET and SMOKE_WEB_URL (`dev` or `prod-cron`)."
+        required: true
+        type: string
+      route:
+        description: "Route path, e.g. /api/cron/draft-reminder."
+        required: true
+        type: string
+      days:
+        description: "Optional `days` query (whole number); the route enforces its range."
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  post:
+    name: POST ${{ inputs.route }} (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    # Never two runs of one job on one track at once. The routes are
+    # idempotent, but overlapping runs make the reported counts unreadable.
+    concurrency:
+      group: cron-${{ inputs.route }}-${{ inputs.environment }}
+      cancel-in-progress: false
+    steps:
+      - name: POST ${{ inputs.route }}
+        env:
+          # The deployed control plane's `app.` origin for this track. Same
+          # variable the release smoke probes, not a second name for it.
+          APP_URL: ${{ vars.SMOKE_WEB_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          TRACK: ${{ inputs.environment }}
+          ROUTE: ${{ inputs.route }}
+          # Through env, never interpolated into the script: on a dispatch it
+          # is text a person typed.
+          DAYS: ${{ inputs.days }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${APP_URL}" ] || [ -z "${CRON_SECRET}" ]; then
+            echo "::error::SMOKE_WEB_URL (variable) and CRON_SECRET (secret) must both be set on the '${TRACK}' environment."
+            exit 1
+          fi
+
+          url="${APP_URL%/}${ROUTE}"
+          if [ -n "${DAYS}" ]; then
+            case "${DAYS}" in
+              *[!0-9]*)
+                echo "::error::days must be a whole number, got '${DAYS}'."
+                exit 1
+                ;;
+            esac
+            url="${url}?days=${DAYS}"
+          fi
+
+          # `--fail-with-body` so a non-2xx fails the step and prints what the
+          # endpoint said. Every cron route answers counts only — never an
+          # address or a token — so the body is safe in a public build log.
+          curl --fail-with-body --silent --show-error \
+            --max-time 300 \
+            --request POST \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            --header "Content-Length: 0" \
+            "${url}"

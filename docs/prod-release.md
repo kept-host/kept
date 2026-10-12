@@ -23,7 +23,9 @@ Neon restore, tags, canary) and [`edge-purge-contract.md`](./edge-purge-contract
   `workflow_dispatch`.
 - **Pipeline order:** `guard → validate → backup → migrate → edge → web → smoke → release`.
   `backup` is the first job bound to the `prod` environment, so the run pauses
-  there for the required reviewer.
+  there for the required reviewer. GitHub applies that rule **per job**: `backup`,
+  `migrate`, `edge`, `web` and `smoke` each wait for their own approval, so a
+  release takes **five approvals**.
 - **Closed first.** If `NEXT_PUBLIC_KEPT_OPEN` is anything other than `true`
   (unset included), the build is closed:
   - the landing renders and dropping a page opens the waitlist;
@@ -35,10 +37,9 @@ Neon restore, tags, canary) and [`edge-purge-contract.md`](./edge-purge-contract
 - **Opening later:** set `NEXT_PUBLIC_KEPT_OPEN=true` on the Railway prod
   service. It is compiled in, so the change only takes effect after a rebuild.
   Railway redeploys on any variable change. See §9.
-- **Before any of this:** E06a (`epic/E06a-prelaunch-hardening`) must be merged
-  to `develop` and verified on dev (`dev-v0.7.0`). At the time of writing this
-  branch is 11 commits ahead of `develop`, and `develop` is about 190 commits
-  ahead of `main`.
+- **Before any of this:** E06a is merged to `develop` (PR #26). It must be
+  verified on dev (`dev-v0.7.0`) before promotion. `develop` is about 190
+  commits ahead of `main`; a prod tag only ever deploys what is on `main` (§7.2).
 
 ---
 
@@ -102,13 +103,15 @@ From `apps/edge/wrangler.toml` `[env.prod]`:
 |---|---|---|
 | Worker name | `kept-edge-prod` | created by the first `wrangler deploy --env prod` |
 | Route | `*.kept.host/*` (zone `kept.host`) | created by the deploy |
-| R2 bucket (`KEPT_R2`) | `auto-kept-sites` | **unverified**: create it if missing |
+| R2 bucket (`KEPT_R2`) | `auto-kept-sites` | provisioned in E02 task 002 (no `-prod` suffix); confirm before tagging |
 | KV namespace (`KEPT_KV`) | id `9a7b60ede13646079c3750276f4864be` (`kept-manifest`) | the id is committed; **unverified** that it exists in the prod account |
 | Vars | `KEPT_BASE_DOMAIN=kept.host`, `KEPT_APEX_ORIGIN=https://kept.host` | in `wrangler.toml` |
 | Worker secrets | **none** | Worker reads R2 + KV only |
 
 - [ ] `wrangler r2 bucket list` / `wrangler kv namespace list` (Node 22, prod token) and confirm both.
-  - The old docs also say `auto-kept-sites-prod`; `wrangler.toml` binds `auto-kept-sites`.
+  - **The prod bucket is `auto-kept-sites`.** Only dev carries a suffix
+    (`auto-kept-sites-dev`). E02 task 002 provisioned the prod resources unsuffixed;
+    the `auto-kept-sites-prod` in the E02 PRD was a guess that never existed.
   - The bucket the Worker binds and `R2_BUCKET_AUTO` on Railway/GitHub **must be the same**.
 - [ ] Optional: create `eu-kept-sites` (unbound until EU residency; the app never reads `R2_BUCKET_EU`).
 - [ ] R2 S3 API token: **Object Read & Write** on the prod bucket(s) only. This gives `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`.
@@ -229,7 +232,10 @@ Not set on Railway: `MIGRATION_DATABASE_URL` (CI only), `R2_BUCKET_EU` (unread).
 | `RAILWAY_SERVICE_ID` | `web` | prod service ID | ❌ |
 | `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | `smoke` | R2 S3 token | ❌ / ❌ |
 | `DATABASE_URL` | `smoke` | root branch, **pooled** | ❌ |
-| `CRON_SECRET` | prod cron workflows (do not exist yet, §8) | same value as Railway | ❌ |
+
+`CRON_SECRET` does **not** go here. The prod crons use their own environment,
+`prod-cron` (§4.5), because a cron job bound to `prod` would wait for the
+required reviewer every day.
 
 ```bash
 gh secret set NEON_API_KEY --env prod      # paste on stdin; never as an argument
@@ -248,17 +254,49 @@ gh secret set NEON_API_KEY --env prod      # paste on stdin; never as an argumen
 `SMOKE_LEGAL_PLACEHOLDERS` is **not** a variable. `release.yml` hard-codes
 `fail`; `deploy-dev.yml` hard-codes `warn`.
 
-### 4.4 GitHub repository variables (shared by every track)
+### 4.4 GitHub repository variables: cron switches
 
-| Name | Value | Present |
-|---|---|---|
-| `WAITLIST_PRUNE_ENABLED` | `true` after the Resend tracking check (§5) | ❌ |
-| `VISITS_SYNC_ENABLED` | `true` once the token has Analytics Read | ❌ |
+Each cron workflow has one job per track, and each track's **scheduled** run
+has its own switch. They are repository variables because a job-level `if:` is
+decided before the job enters an environment, so it cannot read environment
+variables. A switched-off schedule is skipped (grey), not red. A manual
+dispatch (`target: dev | prod`) always runs the chosen track.
 
-These are repo-wide. Today they gate only the **dev** cron jobs; scheduled runs
-fire only from the default branch (`main`).
+| Name | Track | Turns on | Set to `true` when | Present |
+|---|---|---|---|---|
+| `VISITS_SYNC_ENABLED` | dev | `cron-visits-sync.yml` | dev token has Zone → Analytics → Read | ❌ |
+| `WAITLIST_PRUNE_ENABLED` | dev | `cron-waitlist-prune.yml` | dev Resend tracking is off | ❌ |
+| `PROD_DRAFT_REMINDER_ENABLED` | prod | `cron-draft-reminder.yml` | prod is deployed and `prod-cron` is set (§4.5) | ❌ |
+| `PROD_VISITS_SYNC_ENABLED` | prod | `cron-visits-sync.yml` | prod token has Analytics Read | ❌ |
+| `PROD_WAITLIST_PRUNE_ENABLED` | prod | `cron-waitlist-prune.yml` | prod Resend tracking check passed (§5) | ❌ |
 
-### 4.5 Worker (`apps/edge`)
+The dev draft reminder has no switch; it runs daily, as since E05. Scheduled
+runs fire only from the default branch (`main`), so no cron runs on schedule
+before the first promotion.
+
+```bash
+gh variable set PROD_WAITLIST_PRUNE_ENABLED --body true   # repo-level, not --env
+```
+
+### 4.5 GitHub `prod-cron` environment
+
+Every cron workflow calls `.github/workflows/cron-post.yml`, which binds the
+track's environment: `dev`, or `prod-cron` for prod. `prod-cron` holds only what
+a cron call needs, with **no** required reviewer.
+
+- [ ] Create it (Settings → Environments → New), or let the first prod cron run
+  create it. Either way, set **Deployment branches and tags → Selected → `main`**
+  so no other branch can reach the prod `CRON_SECRET`.
+
+| Name | Kind | Value | Present |
+|---|---|---|---|
+| `CRON_SECRET` | secret | same value as Railway prod `CRON_SECRET` | ❌ (environment does not exist yet) |
+| `SMOKE_WEB_URL` | variable | `https://app.kept.host` | ❌ |
+
+Then dispatch each workflow once with `target: prod` (visits with `days=30`)
+before turning on its `PROD_*` switch.
+
+### 4.6 Worker (`apps/edge`)
 
 No secrets. The vars `KEPT_BASE_DOMAIN` and `KEPT_APEX_ORIGIN` are committed in
 `wrangler.toml`. Nothing to set.
@@ -300,7 +338,6 @@ No secrets. The vars `KEPT_BASE_DOMAIN` and `KEPT_APEX_ORIGIN` are committed in
 - Then `migrate` runs `pnpm --filter @kept/web db:migrate` (`drizzle-kit migrate`, forward-only) against `MIGRATION_DATABASE_URL`.
 - **First run:** applies `0000`–`0007` (journal has 8 entries) to the root branch. All 8 were verified to apply from empty on 2026-10-11.
 - Prod may hold `0000` from E00. `drizzle-kit` skips what its journal table already records.
-- The table in `rollback-and-release.md` §5 lists only six migrations; `0006_waitlist` and `0007_waitlist_double_opt_in` also apply.
 
 - [ ] Before tagging, take a manual snapshot as well: `neonctl branches create --name pre-first-release --project-id <id>`. It counts against the 10-branch cap.
 - [ ] Retention raised to 7 days.
@@ -335,9 +372,11 @@ No secrets. The vars `KEPT_BASE_DOMAIN` and `KEPT_APEX_ORIGIN` are committed in
 ### 7.2 Cut the release
 
 1. [ ] E06a merged to `develop`, `dev-v0.7.0` deployed and green; legal placeholders committed (§5).
-2. [ ] Open the PR `develop → main`:
+2. [ ] **Promote `develop` → `main`.** Open the PR:
    `gh pr create --base main --head develop --title "release: prod-v0.1.0"`.
-   CI must pass. Merge with **"Create a merge commit"**, not squash, so `main` keeps `develop`'s history.
+   CI must pass. Merge with **"Create a merge commit"**, not squash, so `main`
+   keeps `develop`'s history (and the next promotion has a merge base). Never
+   tag `develop`: `guard` fails any `prod-v*` tag not reachable from `origin/main`.
 3. [ ] Tag the merge commit on `main`:
    ```bash
    git fetch origin
@@ -352,7 +391,7 @@ No secrets. The vars `KEPT_BASE_DOMAIN` and `KEPT_APEX_ORIGIN` are committed in
    |---|---|
    | `guard` | tag reachable from `origin/main` |
    | `validate` | typecheck, lint, build, unit + e2e (auth/live specs skip with no secrets) |
-   | `backup` | **pauses for reviewer approval** (`prod` env). Approve, then `prerelease-prod-v0.1.0` is created |
+   | `backup` | **pauses for reviewer approval** (`prod` env). Approve, then `prerelease-prod-v0.1.0` is created. `migrate`, `edge`, `web` and `smoke` each pause for approval too |
    | `migrate` | `0000`–`0007` applied to the root branch |
    | `edge` | `wrangler deploy --env prod` creates `kept-edge-prod` + route `*.kept.host/*` |
    | `web` | `railway up` to the prod service, polled to SUCCESS (≤ 20 min) |
@@ -395,10 +434,11 @@ No secrets. The vars `KEPT_BASE_DOMAIN` and `KEPT_APEX_ORIGIN` are committed in
 - [ ] **Legal:** `/legal/impressum`, `/legal/privacy`, and `/impressum` (308). No DRAFT banner.
 - [ ] **Previews:** `/og.png`, `/founding/og.png`, `/favicon.ico`, `/icon.svg`, `/apple-touch-icon.png` → 200. Paste `https://kept.host` into a link-preview debugger.
 - [ ] **Serve independence (optional):** with the control plane stopped, the canary still serves (`rollback-and-release.md` §8; dev drill only, so do not stop prod casually).
-- [ ] **Crons: not yet possible for prod.**
-  - `cron-draft-reminder.yml`, `cron-visits-sync.yml` and `cron-waitlist-prune.yml` all hard-code `environment: dev` and say "PROD IS DEFERRED".
-  - Before the waitlist matters, add prod copies (`environment: prod`, distinct concurrency group), set `CRON_SECRET` in the `prod` environment, and dispatch each once by hand.
-  - `WAITLIST_PRUNE_ENABLED` / `VISITS_SYNC_ENABLED` are repo-wide, so one flag enables both tracks unless the prod copies use their own flag.
+- [ ] **Crons (prod track).** Set up `prod-cron` (§4.5), then dispatch each by hand with `target: prod`:
+  - `cron-draft-reminder.yml` → HTTP 200 with counts;
+  - `cron-waitlist-prune.yml` → `{ deleted }`, after the Resend tracking check (§5);
+  - `cron-visits-sync.yml` with `days=30`, once the prod token has Analytics Read.
+  - Green by hand → set that job's `PROD_*_ENABLED` switch (§4.4).
 
 ---
 
@@ -407,7 +447,7 @@ No secrets. The vars `KEPT_BASE_DOMAIN` and `KEPT_APEX_ORIGIN` are committed in
 - [ ] Cloudflare on **Workers Paid** (KV quota).
 - [ ] Resend plan can carry launch volume.
 - [ ] E07 shipped: abuse pipeline, expiry/purge crons, PSL filed. Launch requires E06–E14.
-- [ ] Prod cron workflows exist and are green (§8).
+- [ ] Prod cron jobs dispatched green and their `PROD_*_ENABLED` switches on (§8).
 - [ ] Set `NEXT_PUBLIC_KEPT_OPEN=true` on the Railway prod service. Railway rebuilds.
   - A variable flip is not a tag. It bypasses `release.yml`, so run the smoke by hand afterwards:
     `SMOKE_WEB_URL=https://app.kept.host SMOKE_EDGE_URL=https://smoke.kept.host pnpm --filter @kept/web smoke:release`
@@ -432,13 +472,11 @@ automatically.
 
 Not verifiable from the repo or from public DNS on 2026-10-11:
 
-- **R2 bucket and KV namespace existence** in the prod Cloudflare account. `wrangler` needs a token not available here. The bucket name is also inconsistent (`auto-kept-sites` vs `auto-kept-sites-prod` in older docs).
+- **R2 bucket and KV namespace existence** in the prod Cloudflare account. `wrangler` needs a token not available here. E02 task 002 records both as provisioned (`auto-kept-sites`, `kept-manifest`); not re-checked since.
 - **Whether prod and dev share a Cloudflare account**, and with it the KV free quota.
 - **Railway prod service / environment state.** It is unknown whether the `prod` environment or a service exists; the root-domain SSL mode needs copying from dev.
 - **Neon root branch state**: its name, whether `0000` was ever applied, and the current branch count against the cap of 10.
 - **Resend:** whether dev and prod share the `kept.host` domain and account; tracking flags unknown. The root MX (`inbound-smtp.eu-west-1.amazonaws.com`) looks like Resend inbound; confirm it is intended.
-- **Prod cron workflows do not exist** (§8). This is code work before the waitlist prune matters on prod.
 - **The canary seed's dotenv fallback** to `.env.local` can silently mix dev values into a prod run. Mitigated only by procedure (§7.1).
 - **Turnstile subdomain coverage:** list `app.kept.host` explicitly rather than rely on parent-hostname matching.
-- **`rollback-and-release.md` §5 is stale.** It lists 6 migrations, not 8.
 - **Dev Neon password rotation** is still pending from before E06a.

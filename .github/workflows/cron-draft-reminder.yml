@@ -1,4 +1,4 @@
-name: Cron — draft reminder (dev)
+name: Cron — draft reminder
 
 # THE REPO'S SCHEDULER SUBSTRATE (E05 task 011). There was none before this
 # file — no Vercel `crons`, no Railway cron service, no Worker `[triggers]`, no
@@ -44,10 +44,17 @@ name: Cron — draft reminder (dev)
 # neither would be acceptable for a job with a tight SLA. If E07 ever needs one,
 # that is the moment to revisit, not before.
 #
-# PROD IS DEFERRED. Prod has never been deployed: `release.yml` has never run
-# and the `prod` GitHub Environment holds zero secrets, so there is no prod
-# variant of this workflow to write yet. It is a copy of this file with
-# `environment: prod` once prod exists.
+# TRACKS — one job per track, each switched on independently, both calling
+# `cron-post.yml`:
+#   * dev  — scheduled runs always, as since E05.
+#   * prod — scheduled runs only when the repository variable
+#     `PROD_DRAFT_REMINDER_ENABLED` is `true`, so the schedule stays grey (not
+#     red) until prod is deployed and its `prod-cron` environment holds
+#     `CRON_SECRET` and `SMOKE_WEB_URL`. A repository variable, because a
+#     job-level `if:` is decided before the job enters an environment and
+#     cannot read environment variables.
+# A manual dispatch runs the one track picked in `target`, enabled or not:
+# asking for a run by hand is asking to see whether it works.
 
 on:
   schedule:
@@ -56,47 +63,32 @@ on:
     # still comfortably inside it.
     - cron: "0 9 * * *"
   workflow_dispatch:
-
-# Never two sweeps at once. The endpoint is idempotent — the second run would
-# claim nothing and send nothing — but overlapping runs make the reported counts
-# impossible to read, and the whole point of the counts is diagnosability.
-concurrency:
-  group: cron-draft-reminder-dev
-  cancel-in-progress: false
+    inputs:
+      target:
+        description: "Track to run"
+        required: true
+        default: dev
+        type: choice
+        options: [dev, prod]
 
 permissions:
   contents: read
 
 jobs:
-  send:
+  dev:
     name: Send draft reminders (dev)
-    runs-on: ubuntu-latest
-    environment: dev
-    steps:
-      # No checkout and no toolchain: this is one authenticated HTTP call. The
-      # batch size, the ordering, the cap and the idempotency all live in the
-      # application, where they are typechecked and unit-tested — not in YAML.
-      - name: POST /api/cron/draft-reminder
-        env:
-          # The deployed control plane's origin for this environment. Same
-          # value the release smoke probes, deliberately not a second copy of
-          # the same string under a second name.
-          APP_URL: ${{ vars.SMOKE_WEB_URL }}
-          CRON_SECRET: ${{ secrets.CRON_SECRET }}
-        run: |
-          set -euo pipefail
+    if: ${{ github.event_name == 'schedule' || inputs.target == 'dev' }}
+    uses: ./.github/workflows/cron-post.yml
+    with:
+      environment: dev
+      route: /api/cron/draft-reminder
+    secrets: inherit
 
-          if [ -z "${APP_URL}" ] || [ -z "${CRON_SECRET}" ]; then
-            echo "::error::SMOKE_WEB_URL (variable) and CRON_SECRET (secret) must both be set on the dev environment."
-            exit 1
-          fi
-
-          # `--fail-with-body` so a non-2xx both fails the step and prints what
-          # the endpoint said. The body is counts only — it never contains an
-          # email address or a token — so it is safe in a public build log.
-          curl --fail-with-body --silent --show-error \
-            --max-time 300 \
-            --request POST \
-            --header "Authorization: Bearer ${CRON_SECRET}" \
-            --header "Content-Length: 0" \
-            "${APP_URL%/}/api/cron/draft-reminder"
+  prod:
+    name: Send draft reminders (prod)
+    if: ${{ (github.event_name == 'schedule' && vars.PROD_DRAFT_REMINDER_ENABLED == 'true') || inputs.target == 'prod' }}
+    uses: ./.github/workflows/cron-post.yml
+    with:
+      environment: prod-cron
+      route: /api/cron/draft-reminder
+    secrets: inherit

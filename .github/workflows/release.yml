@@ -99,16 +99,23 @@ jobs:
       - name: Install Playwright browsers
         run: pnpm --filter @kept/web exec playwright install --with-deps chromium
 
+      # Same env as ci.yml's Test step. NEXT_PUBLIC_APP_URL is the LOCAL
+      # origin Playwright's own `next dev` serves; without it the host-split
+      # tripwire (`e2e/host-split.spec.ts`) skips wholesale. See ci.yml.
       - name: Test
         run: pnpm test
         env:
           CI: "true"
+          NEXT_PUBLIC_APP_URL: "https://localhost:3000"
 
   # ---------------------------------------------------------------------------
   # 3. backup — the first job bound to `environment: prod`, so this is where the
-  # run visibly PAUSES for the environment's required reviewer. That reviewer
+  # run first PAUSES for the environment's required reviewer. That reviewer
   # rule IS the manual approval gate; there is deliberately no hand-rolled
-  # "wait for approval" step anywhere in this file.
+  # "wait for approval" step anywhere in this file. GitHub applies the rule
+  # per JOB, not per run: backup, migrate, edge, web and smoke each wait for
+  # their own approval as they come up — five approvals per release. Approve
+  # each only after reading the job before it.
   #
   # Neon branches are instant and copy-on-write, so a pre-migrate branch off the
   # project's default (root) branch costs effectively nothing. It is the

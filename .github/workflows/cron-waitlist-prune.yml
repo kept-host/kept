@@ -1,55 +1,49 @@
-name: Cron — waitlist prune (dev)
+name: Cron — waitlist prune
 
 # E06a §3. Deletes waitlist rows that never confirmed (30 days after their last
 # confirmation mail, unless the founding application is approved), legacy 0006
 # rows that never confirmed, and expired rate-limit buckets. The substrate and
-# its reasoning are `cron-draft-reminder.yml`'s; this is the same one-call job.
+# its reasoning are `cron-draft-reminder.yml`'s; the call is `cron-post.yml`.
 #
-# OFF UNTIL SWITCHED ON. The schedule runs only when the repository variable
-# `WAITLIST_PRUNE_ENABLED` is `true` (like `VISITS_SYNC_ENABLED`), so merging
-# this file deletes nothing until someone decides it should. `workflow_dispatch`
-# always runs.
-#
-# PROD IS DEFERRED for the same reason as the draft reminder: a copy of this file
-# with `environment: prod` once prod exists.
+# OFF UNTIL SWITCHED ON, PER TRACK. A track's schedule runs only when its
+# repository variable is `true` (like the visits sync), so merging this file
+# deletes nothing until someone decides it should:
+#   * dev  — `WAITLIST_PRUNE_ENABLED`
+#   * prod — `PROD_WAITLIST_PRUNE_ENABLED` (environment `prod-cron`), set after
+#     the prod Resend tracking check (docs/prod-release.md §5)
+# A manual dispatch runs the track picked in `target`, enabled or not.
 
 on:
   schedule:
     # 04:41 UTC daily — off the hour, away from the other two jobs.
     - cron: "41 4 * * *"
   workflow_dispatch:
-
-concurrency:
-  group: cron-waitlist-prune-dev
-  cancel-in-progress: false
+    inputs:
+      target:
+        description: "Track to run"
+        required: true
+        default: dev
+        type: choice
+        options: [dev, prod]
 
 permissions:
   contents: read
 
 jobs:
-  prune:
+  dev:
     name: Prune the waitlist (dev)
-    if: ${{ github.event_name == 'workflow_dispatch' || vars.WAITLIST_PRUNE_ENABLED == 'true' }}
-    runs-on: ubuntu-latest
-    environment: dev
-    steps:
-      - name: POST /api/cron/waitlist-prune
-        env:
-          APP_URL: ${{ vars.SMOKE_WEB_URL }}
-          CRON_SECRET: ${{ secrets.CRON_SECRET }}
-        run: |
-          set -euo pipefail
+    if: ${{ (github.event_name == 'schedule' && vars.WAITLIST_PRUNE_ENABLED == 'true') || inputs.target == 'dev' }}
+    uses: ./.github/workflows/cron-post.yml
+    with:
+      environment: dev
+      route: /api/cron/waitlist-prune
+    secrets: inherit
 
-          if [ -z "${APP_URL}" ] || [ -z "${CRON_SECRET}" ]; then
-            echo "::error::SMOKE_WEB_URL (variable) and CRON_SECRET (secret) must both be set on the dev environment."
-            exit 1
-          fi
-
-          # The body is `{ deleted }` counts only — never an address — so it is
-          # safe in a public build log.
-          curl --fail-with-body --silent --show-error \
-            --max-time 300 \
-            --request POST \
-            --header "Authorization: Bearer ${CRON_SECRET}" \
-            --header "Content-Length: 0" \
-            "${APP_URL%/}/api/cron/waitlist-prune"
+  prod:
+    name: Prune the waitlist (prod)
+    if: ${{ (github.event_name == 'schedule' && vars.PROD_WAITLIST_PRUNE_ENABLED == 'true') || inputs.target == 'prod' }}
+    uses: ./.github/workflows/cron-post.yml
+    with:
+      environment: prod-cron
+      route: /api/cron/waitlist-prune
+    secrets: inherit
