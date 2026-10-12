@@ -9,8 +9,8 @@
  * computePricing / computeFooter) chain to decide the tile's pose as the user
  * scrolls the `#kept-root` container, docking it into each section.
  *
- * Discrete React state (phase, copied, agentNotify, proNotify,
- * openTab, humanPresent, gaugeRevealed, waitlist) is owned by the React component and
+ * Discrete React state (phase, copied, openTab, humanPresent,
+ * gaugeRevealed, waitlist) is owned by the React component and
  * mirrored here via `getState` / `setState`; everything per-frame is written
  * straight to the DOM through refs (never React state) to stay at 60fps.
  */
@@ -38,13 +38,10 @@ type Ref<T extends HTMLElement = HTMLElement> = { current: T | null };
  */
 export type Phase = "idle" | "dragover" | "minting" | "live" | "error";
 export type Tab = "human" | "mcp" | "cli" | "skill" | null;
-export type NotifyState = "idle" | "success" | "error";
 
 export interface EngineState {
   phase: Phase;
   copied: boolean;
-  agentNotify: NotifyState;
-  proNotify: NotifyState;
   openTab: Tab;
   humanPresent: boolean;
   gaugeRevealed: boolean;
@@ -138,8 +135,6 @@ export interface EngineRefs {
   footSlotRef: Ref;
   footPlaceholderRef: Ref;
   darkIdleRef: Ref;
-  agentEmailRef: Ref<HTMLInputElement>;
-  proEmailRef: Ref<HTMLInputElement>;
   mobileSlotRef: Ref;
 }
 
@@ -837,8 +832,6 @@ export class KeptEngine {
     clearTimeout(this.copyTimer);
     this.copyTimer = setTimeout(() => this.setState({ copied: false }), 1700);
   };
-  notifyAgent = () => this.doNotify("agent");
-  notifyPro = () => this.doNotify("pro");
   toggleHuman = () => this.setTab("human");
   toggleMcp = () => this.setTab("mcp");
   toggleCli = () => this.setTab("cli");
@@ -898,14 +891,6 @@ export class KeptEngine {
     } catch {
       /* noop */
     }
-  }
-  doNotify(kind: "agent" | "pro") {
-    const ref = kind === "agent" ? this.refs.agentEmailRef : this.refs.proEmailRef;
-    const val = ref.current ? ref.current.value.trim() : "";
-    const ok = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(val);
-    this.setState({
-      [kind === "agent" ? "agentNotify" : "proNotify"]: ok ? "success" : "error",
-    } as Partial<EngineState>);
   }
 
   // ---------- loader ----------

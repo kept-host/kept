@@ -44,6 +44,11 @@ import { refuseUntrustedOrigin } from "./origin";
 
 config({ path: ".env.local", quiet: true });
 
+// Every drill here is the OPEN deploy's origin gate. A closed one answers the
+// publish routes' callers with `not_open` before this gate runs
+// (`lib/launch-access.test.ts`), and the unit env inherits whatever the gate is.
+process.env.NEXT_PUBLIC_KEPT_OPEN = "true";
+
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /** The pinned control-plane origin the decision table is asserted against. */

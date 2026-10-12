@@ -52,6 +52,11 @@ import { config } from "dotenv";
 
 config({ path: ".env.local", quiet: true });
 
+// These drills sign people in on an OPEN deploy. A closed one refuses every
+// non-admin session (`lib/auth/closed-sign-in.test.ts`), and the unit env
+// inherits whatever the gate is.
+process.env.NEXT_PUBLIC_KEPT_OPEN = "true";
+
 /**
  * Fill only what is MISSING, exactly as `../auth/session-lifecycle.test.ts`
  * does: a real value in `.env.local` always wins, so this can never hide a

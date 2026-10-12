@@ -21,7 +21,7 @@ import { middleware } from "../../middleware";
 
 import { keptOpen } from "../launch";
 
-import { decideClosedAction, decideHostAction } from "./host-split";
+import { decideClosedAction, decideHostAction, waitlistHref } from "./host-split";
 
 const APP_URL = "https://app.kept-dev.xyz";
 const APP_HOST = "app.kept-dev.xyz";
@@ -214,10 +214,15 @@ function withEnv<T>(name: string, value: string | undefined, run: () => T): T {
  * by default: every case above the closed block is the split rule on an open
  * deploy, and the launch gate fails closed when its variable is unset.
  */
-function runMiddleware(url: string, appUrl: string | undefined, open = true) {
+function runMiddleware(
+  url: string,
+  appUrl: string | undefined,
+  open = true,
+  headers: Record<string, string> = {},
+) {
   return withEnv("NEXT_PUBLIC_APP_URL", appUrl, () =>
     withEnv("NEXT_PUBLIC_KEPT_OPEN", open ? "true" : undefined, () =>
-      middleware(new NextRequest(new Request(url))),
+      middleware(new NextRequest(new Request(url, { headers }))),
     ),
   );
 }
@@ -261,9 +266,9 @@ test("with NEXT_PUBLIC_APP_URL unset, an apex /api/auth request is not blocked",
 });
 
 // ── the closed rule (`lib/launch.ts`) ──────────────────────────────────────
-// A closed deploy is the waitlist: the landing renders, nothing publishes and
-// nobody signs in. Fail-closed is the property everything else rests on, so it
-// is asserted first.
+// A closed deploy is the waitlist: the landing renders, and only an admin or an
+// access token publishes or signs in (E06a §1). Fail-closed is the property
+// everything else rests on, so it is asserted first.
 
 test("the launch gate opens on exactly `true` and nothing else", () => {
   for (const value of ["true", " true ", "true\n"]) {
@@ -274,128 +279,296 @@ test("the launch gate opens on exactly `true` and nothing else", () => {
   }
 });
 
-function decideClosed(host: string, pathname: string, search = "", appUrl: string | undefined = APP_URL) {
-  return decideClosedAction({ host, pathname, search, appUrl });
+function decideClosed(
+  host: string,
+  pathname: string,
+  search = "",
+  appUrl: string | undefined = APP_URL,
+  credentialed = false,
+) {
+  return decideClosedAction({ host, pathname, search, appUrl, credentialed });
 }
 
-/** Every route handler that publishes, signs in, or needs a session to matter. */
-const CLOSED_API_PATHS = [
-  "/api",
+const NOT_OPEN = { kind: "not-open" } as const;
+
+/** Served closed on every host: they carry no session, or their own secret. */
+const CLOSED_OPEN_APIS = [
+  "/api/health",
+  "/api/waitlist",
+  "/api/waitlist/",
+  "/api/waitlist/confirm",
+  "/api/waitlist/unsubscribe",
+  "/api/founding/review",
+  "/api/cron/draft-reminder",
+  "/api/cron/visits-sync",
+  "/api/cron/waitlist-prune",
+];
+/** Publish routes: through with a credential, `not-open` without one. */
+const CREDENTIAL_APIS = [
   "/api/publish",
   "/api/anon/tok_abc123",
   "/api/anon/tok_abc123/keep",
   "/api/anon/tok_abc123/replace",
+  "/api/anon/tok_abc123/reminder",
+];
+/** The control plane's session-gated API: served on `app.` only. */
+const APP_APIS = [
+  "/api/auth",
+  "/api/auth/get-session",
+  "/api/auth/sign-in/magic-link",
+  "/api/auth/callback/google",
   "/api/sites",
   "/api/sites/swap",
-  "/api/cron/draft-reminder",
-  "/api/og/123",
+  "/api/sites/bulk",
+  "/api/sites/0b0c1d2e-0000-4000-8000-000000000000/keep",
   "/api/export",
-  ...APEX_NOT_FOUND_PATHS,
+  "/api/names/check",
+  "/api/og/123",
+  "/api/account",
 ];
-/** The control plane's pages — sign-in, the studio, the keep and manage screens. */
-const CLOSED_PAGES = [
-  ...APEX_REDIRECT_PATHS,
+/** Allowed by no rule: `not-open` on every host. */
+const CLOSED_APIS = ["/api", "/api/unknown", "/api/cronx", "/api/publishx", "/api/accounts"];
+/** The control plane's pages: the split rule's, on any host, closed or not. */
+const APP_PAGES = [
+  "/auth",
   "/auth/keep",
   "/auth/callback",
+  "/auth/callback/done",
+  "/dashboard",
   "/settings",
   "/site/0b0c1d2e-0000-4000-8000-000000000000",
+  "/keep/tok_abc123",
+  "/p/tok_abc123",
   "/unsubscribe/tok_abc123",
 ];
+/** Apex pages added by E06a §1, beside the landing, `/promise` and `/stats`. */
+const NEW_APEX_PAGES = [
+  "/legal/impressum",
+  "/legal/privacy",
+  "/impressum",
+  "/founding",
+  "/founding/review",
+  "/waitlist/confirm",
+  "/waitlist/unsubscribe",
+];
+/** Pages no rule allows: 307 to the landing's `/`. */
+const OTHER_PAGES = ["/legal", "/keep", "/sites", "/authx", "/founding/other"];
 
-test("closed: every API path but health and the waitlist is 404, on every host", () => {
+test("closed: health, the waitlist, founding review and /api/cron/* pass on every host", () => {
   for (const host of [APEX_HOST, APP_HOST]) {
-    for (const pathname of CLOSED_API_PATHS) {
-      assert.deepEqual(decideClosed(host, pathname), { kind: "not-found" }, `${host}${pathname}`);
-    }
-    for (const pathname of ["/api/health", "/api/waitlist", "/api/waitlist/"]) {
+    for (const pathname of CLOSED_OPEN_APIS) {
       assert.equal(decideClosed(host, pathname), undefined, `${host}${pathname}`);
     }
   }
 });
 
-test("closed: on the apex, the marketing pages and assets are the split rule's", () => {
-  for (const pathname of ["/", ...MARKETING_PATHS, "/promise/", "/_next/static/chunks/main.js"]) {
+test("closed: /api/publish and /api/anon/* pass only with a credential, on every host", () => {
+  for (const host of [APEX_HOST, APP_HOST]) {
+    for (const pathname of CREDENTIAL_APIS) {
+      assert.deepEqual(decideClosed(host, pathname), NOT_OPEN, `${host}${pathname} bare`);
+      assert.equal(
+        decideClosed(host, pathname, "", APP_URL, true),
+        undefined,
+        `${host}${pathname} credentialed`,
+      );
+    }
+  }
+});
+
+test("closed: the studio and auth APIs pass on the app host and are not-open on the apex", () => {
+  for (const pathname of APP_APIS) {
+    assert.equal(decideClosed(APP_HOST, pathname), undefined, `app ${pathname}`);
+    assert.deepEqual(decideClosed(APEX_HOST, pathname), NOT_OPEN, `apex ${pathname}`);
+    // A credential is no key to these: they have their own session gate.
+    assert.deepEqual(decideClosed(APEX_HOST, pathname, "", APP_URL, true), NOT_OPEN, pathname);
+  }
+});
+
+test("closed: every other API is not-open on every host, credential or not", () => {
+  for (const host of [APEX_HOST, APP_HOST]) {
+    for (const pathname of CLOSED_APIS) {
+      assert.deepEqual(decideClosed(host, pathname), NOT_OPEN, `${host}${pathname}`);
+      assert.deepEqual(decideClosed(host, pathname, "", APP_URL, true), NOT_OPEN, pathname);
+    }
+  }
+});
+
+test("closed: on the apex, its pages and assets are the split rule's", () => {
+  for (const pathname of [
+    "/",
+    ...MARKETING_PATHS,
+    ...NEW_APEX_PAGES,
+    "/promise/",
+    "/_next/static/chunks/main.js",
+  ]) {
     assert.equal(decideClosed(APEX_HOST, pathname, "?utm=x"), undefined, pathname);
   }
 });
 
-test("closed: on the apex, every control-plane page 307s to the landing", () => {
-  for (const pathname of CLOSED_PAGES) {
-    assert.deepEqual(
-      decideClosed(APEX_HOST, pathname, "?next=%2Fdashboard"),
-      { kind: "redirect", location: `${APEX_URL}/` },
-      pathname,
-    );
+test("closed: the control-plane pages are the split rule's, on either host", () => {
+  for (const host of [APEX_HOST, APP_HOST]) {
+    for (const pathname of APP_PAGES) {
+      const action = decideClosed(host, pathname, "?next=%2Fdashboard");
+      assert.equal(action, undefined, `${host}${pathname}`);
+    }
   }
 });
 
-test("closed: the `app.` host sends everything to the apex, its root included", () => {
-  // The split rule would send `/` to `/dashboard`, which is closed — one hop to
-  // the landing instead of two.
+test("closed: any other page 307s to the landing's `/`, on either host", () => {
+  for (const host of [APEX_HOST, APP_HOST]) {
+    for (const pathname of OTHER_PAGES) {
+      assert.deepEqual(
+        decideClosed(host, pathname, "?x=1"),
+        { kind: "redirect", location: `${APEX_URL}/` },
+        `${host}${pathname}`,
+      );
+    }
+  }
+});
+
+test("closed: the `app.` host sends the apex pages to the apex, its root included", () => {
+  // The split rule would send `/` to `/dashboard` — one hop to the landing
+  // instead of two for somebody who typed the bare `app.` host.
   assert.deepEqual(decideClosed(APP_HOST, "/", "?utm=x"), {
     kind: "redirect",
     location: `${APEX_URL}/?utm=x`,
   });
-  for (const pathname of MARKETING_PATHS) {
+  for (const pathname of [...MARKETING_PATHS, ...NEW_APEX_PAGES]) {
     assert.deepEqual(decideClosed(APP_HOST, pathname, "?utm=x"), {
       kind: "redirect",
       location: `${APEX_URL}${pathname}?utm=x`,
     });
   }
-  for (const pathname of CLOSED_PAGES) {
-    assert.deepEqual(
-      decideClosed(APP_HOST, pathname),
-      { kind: "redirect", location: `${APEX_URL}/` },
-      pathname,
-    );
-  }
 });
 
-test("closed: with one origin, the landing is that origin", () => {
+test("closed: with one origin, the landing and the control plane are that origin", () => {
   const local = "https://localhost:3000";
-  for (const pathname of ["/", ...MARKETING_PATHS]) {
-    assert.equal(decideClosed("localhost:3000", pathname, "", local), undefined, pathname);
+  const host = "localhost:3000";
+  for (const pathname of ["/", ...MARKETING_PATHS, ...NEW_APEX_PAGES, ...APP_PAGES, ...APP_APIS]) {
+    assert.equal(decideClosed(host, pathname, "", local), undefined, pathname);
   }
-  for (const pathname of CLOSED_PAGES) {
+  for (const pathname of OTHER_PAGES) {
     assert.deepEqual(
-      decideClosed("localhost:3000", pathname, "", local),
+      decideClosed(host, pathname, "", local),
       { kind: "redirect", location: `${local}/` },
       pathname,
     );
   }
 });
 
-test("closed: without a usable NEXT_PUBLIC_APP_URL the closed pages 404 rather than redirect", () => {
+test("closed: without a usable NEXT_PUBLIC_APP_URL the closed pages 404 and the app APIs are not-open", () => {
   for (const appUrl of [undefined, "", "kept-dev.xyz"]) {
-    for (const pathname of ["/", ...MARKETING_PATHS]) {
-      assert.equal(decideClosedAction({ host: APEX_HOST, pathname, appUrl }), undefined);
+    // Not `decideClosed`: its default parameter would turn `undefined` back into APP_URL.
+    const unconfigured = (pathname: string) =>
+      decideClosedAction({ host: APEX_HOST, pathname, appUrl, credentialed: false });
+    for (const pathname of ["/", ...MARKETING_PATHS, ...NEW_APEX_PAGES, ...CLOSED_OPEN_APIS]) {
+      assert.equal(unconfigured(pathname), undefined, pathname);
     }
-    for (const pathname of [...CLOSED_PAGES, ...CLOSED_API_PATHS]) {
+    for (const pathname of [...APP_PAGES, ...OTHER_PAGES]) {
       assert.deepEqual(
-        decideClosedAction({ host: APEX_HOST, pathname, appUrl }),
+        unconfigured(pathname),
         { kind: "not-found" },
         `${pathname} with NEXT_PUBLIC_APP_URL ${JSON.stringify(appUrl)}`,
       );
     }
+    for (const pathname of [...APP_APIS, ...CLOSED_APIS, ...CREDENTIAL_APIS]) {
+      assert.deepEqual(unconfigured(pathname), NOT_OPEN, pathname);
+    }
   }
 });
 
-test("closed middleware: a publish is 404 before the route handler runs", () => {
-  for (const host of [APEX_HOST, APP_HOST]) {
-    const response = runMiddleware(`https://${host}/api/publish`, APP_URL, false);
-    assert.equal(response.status, 404);
-    assert.equal(response.headers.get("location"), null);
+test("open: the apex owns the E06a pages — the app host sends them there", () => {
+  for (const pathname of NEW_APEX_PAGES) {
+    assert.deepEqual(decide(APEX_HOST, pathname), { kind: "pass", stampPathname: true }, pathname);
+    assert.deepEqual(decide(APP_HOST, pathname, "?x=1"), {
+      kind: "redirect",
+      location: `${APEX_URL}${pathname}?x=1`,
+    });
+  }
+  // The reminder mail links the `app.` origin; one-click unsubscribe meets no redirect.
+  assert.deepEqual(decide(APP_HOST, "/unsubscribe/tok_abc123"), {
+    kind: "pass",
+    stampPathname: true,
+  });
+});
+
+test("the waitlist link is the landing's, from configuration", () => {
+  assert.equal(waitlistHref(APP_URL), `${APEX_URL}/#waitlist`);
+  assert.equal(waitlistHref("https://app.kept.host"), "https://kept.host/#waitlist");
+  assert.equal(waitlistHref("https://localhost:3000"), "https://localhost:3000/#waitlist");
+  assert.equal(waitlistHref(undefined), "/#waitlist");
+});
+
+/** The JSON a blocked API call answers with — PRD §1, with the dev apex. */
+const NOT_OPEN_BODY = {
+  error: "not_open",
+  message: "kept opens in December.",
+  waitlist: `${APEX_URL}/#waitlist`,
+};
+
+test("closed middleware: a bare publish is the JSON not_open 404 before the route handler runs", async () => {
+  for (const url of [
+    `https://${APEX_HOST}/api/publish`,
+    `https://${APP_HOST}/api/publish`,
+    `https://${APP_HOST}/api/anon/tok_abc123/keep`,
+    `https://${APEX_HOST}/api/unknown`,
+  ]) {
+    const response = runMiddleware(url, APP_URL, false);
+    assert.equal(response.status, 404, url);
+    assert.equal(response.headers.get("location"), null, url);
+    assert.equal(response.headers.get("x-middleware-next"), null, url);
+    assert.deepEqual(await response.json(), NOT_OPEN_BODY, url);
   }
 });
 
-test("closed middleware: sign-in is gone — its API 404s with no Set-Cookie on the app host too", () => {
-  const response = runMiddleware(`https://${APP_HOST}/api/auth/sign-in/magic-link`, APP_URL, false);
-  assert.equal(response.status, 404);
-  assert.equal(response.headers.getSetCookie().length, 0);
+test("closed middleware: a Bearer header or the session cookie lets a publish reach its handler", () => {
+  const credentials: Record<string, string>[] = [
+    { authorization: "Bearer kpt_access_anything" },
+    { cookie: "__Host-kept.session_token=present" },
+  ];
+  for (const headers of credentials) {
+    const response = runMiddleware(`https://${APEX_HOST}/api/publish`, APP_URL, false, headers);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-middleware-next"), "1");
+  }
+  // Presence of something that is not a credential is not enough.
+  const notCredentials: Record<string, string>[] = [
+    { authorization: "Basic abc" },
+    { cookie: "other=1" },
+    { authorization: "Bearer " },
+  ];
+  for (const headers of notCredentials) {
+    const response = runMiddleware(`https://${APEX_HOST}/api/publish`, APP_URL, false, headers);
+    assert.equal(response.status, 404, JSON.stringify(headers));
+  }
+});
+
+test("closed middleware: sign-in is reachable on the app host and refused on the apex with no Set-Cookie", () => {
+  const app = runMiddleware(`https://${APP_HOST}/api/auth/sign-in/magic-link`, APP_URL, false);
+  assert.equal(app.status, 200);
+  assert.equal(app.headers.get("x-middleware-next"), "1");
+
+  const apex = runMiddleware(`https://${APEX_HOST}/api/auth/sign-in/magic-link`, APP_URL, false);
+  assert.equal(apex.status, 404);
+  assert.equal(apex.headers.getSetCookie().length, 0);
 
   const page = runMiddleware(`https://${APP_HOST}/auth?next=%2Fdashboard`, APP_URL, false);
-  assert.equal(page.status, 307);
-  assert.equal(page.headers.get("location"), `${APEX_URL}/`);
+  assert.equal(page.status, 200);
+  assert.equal(page.headers.get("x-middleware-request-x-kept-pathname"), "/auth?next=%2Fdashboard");
+});
+
+test("closed middleware: the cron routes reach their own secret check", () => {
+  for (const pathname of ["/api/cron/draft-reminder", "/api/cron/visits-sync"]) {
+    const response = runMiddleware(`https://${APEX_HOST}${pathname}`, APP_URL, false);
+    assert.equal(response.status, 200, pathname);
+    assert.equal(response.headers.get("x-middleware-next"), "1", pathname);
+  }
+});
+
+test("closed middleware: a page no rule allows keeps its redirect, not the JSON body", () => {
+  const response = runMiddleware(`https://${APEX_HOST}/sites`, APP_URL, false);
+  assert.equal(response.status, 307);
+  assert.equal(response.headers.get("location"), `${APEX_URL}/`);
 });
 
 test("closed middleware: the landing and the waitlist still answer", () => {

@@ -1,4 +1,10 @@
+import { randomBytes } from "node:crypto";
+
 import { defineConfig, devices } from "@playwright/test";
+
+import { keptOpen } from "./lib/launch";
+import { mintAccessToken } from "./lib/access-token";
+import { TURNSTILE_TEST_KEYS } from "./lib/testing/turnstile";
 
 /**
  * Playwright e2e config for @kept/web.
@@ -56,13 +62,66 @@ import { defineConfig, devices } from "@playwright/test";
  * reason that has nothing to do with what it asserts. So the harness defaults
  * it to `true` — set here, before `webServer` starts, so the server it boots
  * and the workers that read it agree. An explicit value wins: `test:e2e:closed`
- * sets `false` to run `e2e/waitlist.spec.ts` against a closed server.
+ * sets `false` to run every `e2e/*.closed.spec.ts` against a closed server.
  *
  * `NEXT_PUBLIC_` values are compiled in, so a server already listening on :3000
  * (`reuseExistingServer`) keeps whichever gate it was started with — the
- * waitlist spec checks `/api/health` before trusting it.
+ * closed specs check `/api/health` before trusting it.
  */
 process.env.NEXT_PUBLIC_KEPT_OPEN ??= "true";
+
+/**
+ * ── A CLOSED HARNESS CARRIES ONE ACCESS TOKEN OF ITS OWN ────────────────────
+ *
+ * The closed specs (`*.closed.spec.ts`) publish with an access token (E06a §2),
+ * and the server only knows a token by its digest in `KEPT_ACCESS_TOKEN_HASHES`.
+ * So a closed run mints one here, before `webServer` starts: the digest goes
+ * into the server's environment (an explicit `process.env` value beats
+ * `.env.local` in Next) and the token into `KEPT_E2E_ACCESS_TOKEN` for the
+ * specs. Workers inherit both and evaluate this file again, so the guard keeps
+ * it to one token per run. Neither is ever printed.
+ */
+if (!keptOpen() && !process.env.KEPT_E2E_ACCESS_TOKEN) {
+  const { token, hash } = await mintAccessToken();
+  process.env.KEPT_E2E_ACCESS_TOKEN = token;
+  process.env.KEPT_ACCESS_TOKEN_HASHES = hash;
+}
+
+/**
+ * ONE admin per run, open or closed (E06a §2, §4): the whole closed-mode
+ * sign-in allowlist, and the only recipient of founding-application mail — so
+ * no spec ever mails a real admin inbox. A Resend test address with a per-run
+ * label: deliverable, so the admin's magic link is a real send, and new each
+ * run, so the per-address limit (3 an hour) never carries over from the last
+ * one. Workers inherit it.
+ */
+process.env.KEPT_E2E_ADMIN_EMAIL ??= `delivered+e06a-${crypto.randomUUID().slice(0, 8)}@resend.dev`;
+/**
+ * A second admin for `closed-drill.closed.spec.ts` alone: it signs in, keeps a
+ * page and deletes its account afterwards, which would pull the first admin out
+ * from under `admin-sign-in.closed.spec.ts` running beside it.
+ */
+process.env.KEPT_E2E_DRILL_ADMIN_EMAIL ??= `delivered+e06a-drill-${crypto.randomUUID().slice(0, 8)}@resend.dev`;
+process.env.KEPT_ADMIN_EMAILS = `${process.env.KEPT_E2E_ADMIN_EMAIL},${process.env.KEPT_E2E_DRILL_ADMIN_EMAIL}`;
+
+/**
+ * `lib/rate-limit` salts its per-IP buckets with `RATE_LIMIT_SECRET`, and every
+ * magic-link request and waitlist join hits a limiter — so a server booted
+ * without one 500s on both. A local `.env.local` that predates E06a has none;
+ * the harness gives the server it boots a throwaway one (a real value already
+ * in the environment wins). Never printed.
+ */
+process.env.RATE_LIMIT_SECRET ??= randomBytes(32).toString("base64url");
+
+/**
+ * The waitlist (E06a §3, §5): the server verifies Turnstile with Cloudflare's
+ * always-pass TEST keys, never a real widget, and signs unsubscribe links with
+ * a throwaway `KEPT_ADMIN_SECRET` the specs share by inheritance (a spec's
+ * `.env.local` load never overrides a value already set). Never printed.
+ */
+process.env.TURNSTILE_SECRET_KEY ??= TURNSTILE_TEST_KEYS.secretPass;
+process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ??= TURNSTILE_TEST_KEYS.siteKeyPass;
+process.env.KEPT_ADMIN_SECRET ??= randomBytes(32).toString("base64url");
 
 export default defineConfig({
   testDir: "./e2e",

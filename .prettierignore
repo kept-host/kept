@@ -4,3 +4,6 @@ dist
 .turbo
 .wrangler
 pnpm-lock.yaml
+
+# Verbatim legal texts (E06a D8): never reformatted.
+apps/web/content/legal

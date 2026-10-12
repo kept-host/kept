@@ -65,3 +65,26 @@ export const LIVE_STACK_TIMEOUT = 120_000;
 export async function warmDb(): Promise<void> {
   await db.execute(sql`select 1`);
 }
+
+/** The seven variables `createAuth()` validates, plus the database it writes. */
+const AUTH_VARS = [
+  "DATABASE_URL",
+  "BETTER_AUTH_SECRET",
+  "GITHUB_CLIENT_ID",
+  "GITHUB_CLIENT_SECRET",
+  "GOOGLE_CLIENT_ID",
+  "GOOGLE_CLIENT_SECRET",
+  "RESEND_API_KEY",
+  "EMAIL_FROM",
+] as const;
+
+/**
+ * Why a test that needs the real auth stack must skip, or `false` when it can
+ * run. A function, not a constant: imports evaluate before a spec's own
+ * `config({ path: ".env.local" })`, so a module-scope read here would always
+ * see the variables absent.
+ */
+export function skipAuth(): string | false {
+  const missing = AUTH_VARS.filter((name) => !process.env[name]?.trim());
+  return missing.length > 0 ? `auth credentials absent (${missing.join(", ")})` : false;
+}

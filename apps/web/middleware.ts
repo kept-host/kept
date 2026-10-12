@@ -8,7 +8,7 @@
  *    `lib/routing/host-split.ts`, kept pure so its cases are unit-testable
  *    without a request scope; this file is the wrapper that applies it. On a
  *    deploy that is not yet open (`lib/launch.ts`), `decideClosedAction` runs
- *    first and takes publishing and sign-in away.
+ *    first and narrows publishing and sign-in to the admins (E06a §1).
  * 2. **Stamping the requested path** onto the request headers, for the `(app)`
  *    gate. Next.js gives a server component no way to learn the path it is
  *    rendering for: `headers()` on a document request carries `host` and the
@@ -37,8 +37,9 @@
  */
 import { NextResponse, type NextRequest } from "next/server";
 
+import { SESSION_COOKIE_NAME } from "@/lib/auth/cookie";
 import { PATHNAME_HEADER } from "@/lib/auth/return-path";
-import { keptOpen } from "@/lib/launch";
+import { keptOpen, notOpenResponse } from "@/lib/launch";
 import { decideClosedAction, decideHostAction } from "@/lib/routing/host-split";
 
 /**
@@ -74,6 +75,19 @@ function requestHost(request: NextRequest): string {
   return claimed.length > 0 ? claimed : request.nextUrl.host;
 }
 
+/**
+ * Whether a closed deploy's publish routes may reach their handler: an
+ * `Authorization: Bearer …` header or the session cookie, by PRESENCE only. The
+ * handler verifies it (`closedModeAccess`) — the edge bundle cannot read the
+ * server-only token hashes or the session store (E06a D6).
+ */
+function carriesCredential(request: NextRequest): boolean {
+  return (
+    /^Bearer\s+\S/i.test(request.headers.get("authorization") ?? "") ||
+    request.cookies.has(SESSION_COOKIE_NAME)
+  );
+}
+
 export function middleware(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
   const facts = {
@@ -86,8 +100,11 @@ export function middleware(request: NextRequest) {
   };
   // A closed deploy (`lib/launch.ts`) answers its own cases first; whatever it
   // leaves alone gets the same split rule an open deploy applies.
-  const action =
-    (keptOpen() ? undefined : decideClosedAction(facts)) ?? decideHostAction(facts);
+  const closed = keptOpen()
+    ? undefined
+    : decideClosedAction({ ...facts, credentialed: carriesCredential(request) });
+  if (closed?.kind === "not-open") return notOpenResponse();
+  const action = closed ?? decideHostAction(facts);
 
   // 404 rather than a redirect, and constructed here so the route handler never
   // runs: an apex `/api/auth/*` must emit no `Set-Cookie` at all (D6).
@@ -119,8 +136,8 @@ export const config = {
    * `/api/health` stay reachable on every origin (the landing hero posts to a
    * relative `/api/publish` from the apex, and the bearer-only `/api/anon/*`
    * routes are E08's keyless agent path). The closed rule needs ALL of it: a
-   * closed deploy 404s every API path it does not allow, and a route the
-   * matcher skipped would be a route the gate never saw.
+   * closed deploy 404s every API path it does not allow (the JSON `not_open`
+   * body), and a route the matcher skipped would be a route the gate never saw.
    *
    * The cost of seeing every API request: Next buffers a request body through
    * middleware up to `middlewareClientMaxBodySize` (10 MB by default). That is

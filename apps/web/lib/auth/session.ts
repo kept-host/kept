@@ -51,7 +51,15 @@ export async function getSession(): Promise<AppSession | null> {
   // it would construct the instance — and validate all eight auth variables —
   // while `next build` is still collecting page data, turning a missing secret
   // into a failed build instead of a dynamic route.
-  const requestHeaders = await headers();
+  return sessionFor(await headers());
+}
+
+/**
+ * The same answer for an explicit set of request headers — for code that holds
+ * the `Request` and may run outside a Next request scope (the closed-mode
+ * access check, `lib/launch-access.ts`, and its tests).
+ */
+export function sessionFor(requestHeaders: Headers): Promise<AppSession | null> {
   return auth.api.getSession({ headers: requestHeaders });
 }
 

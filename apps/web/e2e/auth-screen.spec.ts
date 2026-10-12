@@ -1,6 +1,8 @@
 import { test, expect, type Page } from "@playwright/test";
 import { config } from "dotenv";
 
+import { drillIp } from "../lib/testing/drill-ip";
+
 import { gotoWithTokensApplied } from "./tokens-applied";
 
 /**
@@ -69,6 +71,14 @@ const SKIP_AUTH: string | false =
 
 const SIGN_IN_HEADING = "Sign in to kept";
 
+/**
+ * A new `example.com` address per send. The magic-link limit is 3 an hour per
+ * address (E06a §5), so one fixed address would be refused 429 from the second
+ * run of the hour on — a different failure from the Resend refusal asserted
+ * below. `example.com` itself is what Resend refuses, so any local part works.
+ */
+const someone = () => `someone-${crypto.randomUUID().slice(0, 8)}@example.com`;
+
 function trackConsoleErrors(page: Page): string[] {
   const errors: string[] = [];
   page.on("console", (msg) => {
@@ -93,6 +103,10 @@ async function slowRequest(page: Page, urlPart: string, ms: number) {
 }
 
 test.describe("/auth sign-in screen", () => {
+  // A network of its own per test: the per-IP magic-link limit (5 an hour) is
+  // otherwise shared by every send from this machine (`lib/testing/drill-ip.ts`).
+  test.beforeEach(({ page }) => page.setExtraHTTPHeaders({ "cf-connecting-ip": drillIp() }));
+
   test("idle offers three routes in the imported order, with the placeholder gone", async ({
     page,
   }) => {
@@ -218,7 +232,7 @@ test.describe("/auth sign-in screen", () => {
     await slowRequest(page, "/sign-in/magic-link", 700);
     await page.goto("/auth");
 
-    await page.getByLabel("Email").fill("someone@example.com");
+    await page.getByLabel("Email").fill(someone());
     await page.getByRole("button", { name: "Email me a magic link" }).click();
 
     await expect(
@@ -240,7 +254,7 @@ test.describe("/auth sign-in screen", () => {
     const safe = page.waitForRequest(
       (req) => req.url().includes("/sign-in/magic-link") && req.method() === "POST",
     );
-    await page.getByLabel("Email").fill("someone@example.com");
+    await page.getByLabel("Email").fill(someone());
     await page.getByRole("button", { name: "Email me a magic link" }).click();
     expect(JSON.parse((await safe).postData() ?? "{}").callbackURL).toBe(
       "/dashboard?tab=drafts",
@@ -252,7 +266,7 @@ test.describe("/auth sign-in screen", () => {
     const guarded = page.waitForRequest(
       (req) => req.url().includes("/sign-in/magic-link") && req.method() === "POST",
     );
-    await page.getByLabel("Email").fill("someone@example.com");
+    await page.getByLabel("Email").fill(someone());
     await page.getByRole("button", { name: "Email me a magic link" }).click();
     expect(JSON.parse((await guarded).postData() ?? "{}").callbackURL).toBe(
       "/dashboard",

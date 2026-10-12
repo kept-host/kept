@@ -40,9 +40,23 @@ import { magicLink } from "better-auth/plugins";
 import { Resend } from "resend";
 
 import { db, schema } from "../db";
-import { authConfig, githubOAuth, googleOAuth, resendConfig } from "../storage/env";
+import { emailFooter } from "../email/footer";
+import {
+  appOrigin,
+  authConfig,
+  githubOAuth,
+  googleOAuth,
+  resendConfig,
+} from "../storage/env";
 
 import { bootstrapProfile } from "./bootstrap-profile";
+import {
+  limitMagicLink,
+  maySignIn,
+  refuseSessionUnlessMaySignIn,
+  refuseUserUnlessMaySignIn,
+} from "./closed-sign-in";
+import { SESSION_COOKIE_NAME } from "./cookie";
 import { fetchGithubIdentity } from "./github-identity";
 
 function createAuth() {
@@ -153,7 +167,7 @@ function createAuth() {
         session_token: {
           // Explicit and readable; bypasses `cookiePrefix` entirely. No
           // `maxAge` here — see hazard 4.
-          name: "__Host-kept.session_token",
+          name: SESSION_COOKIE_NAME,
           attributes: { secure: true, httpOnly: true, sameSite: "lax", path: "/" },
         },
       },
@@ -189,8 +203,23 @@ function createAuth() {
     databaseHooks: {
       user: {
         create: {
+          // E06a D7: a closed deploy refuses a non-admin before the row exists,
+          // on every door. See `./closed-sign-in.ts` for how `not_open` then
+          // reaches `/auth`.
+          before: async (user) => {
+            refuseUserUnlessMaySignIn(user.email);
+          },
           after: async (user) => {
             await bootstrapProfile(user);
+          },
+        },
+      },
+      session: {
+        create: {
+          // …and refuses a session to an EXISTING non-admin, whichever door
+          // they came through. Handed a user id, not an address.
+          before: async (session) => {
+            await refuseSessionUnlessMaySignIn(session.userId);
           },
         },
       },
@@ -310,7 +339,14 @@ function createAuth() {
 
     plugins: [
       magicLink({
-        sendMagicLink: async ({ email, url }) => {
+        sendMagicLink: async ({ email, url }, ctx) => {
+          // E06a §5: the limits run first and hold in both modes, so a 429
+          // says nothing about whether the address could sign in.
+          await limitMagicLink(email, ctx?.request);
+          // E06a D7: a closed deploy mails no link to a non-admin and answers
+          // exactly as it does for an admin — `/auth` shows one neutral line
+          // either way, so the screen never confirms who is an admin.
+          if (!maySignIn(email)) return;
           const { error } = await mailer.emails.send({
             from: resend.from,
             to: email,
@@ -318,7 +354,8 @@ function createAuth() {
             text:
               `Open this link to sign in to kept:\n\n${url}\n\n` +
               `It works once and expires in 5 minutes. ` +
-              `If you did not ask to sign in, ignore this email.`,
+              `If you did not ask to sign in, ignore this email.\n\n` +
+              emailFooter({ from: resend.from, origin: appOrigin() }).text,
           });
           // REJECT, don't swallow. A magic link that silently fails to send is
           // indistinguishable from a broken product, and tasks 004/005 surface

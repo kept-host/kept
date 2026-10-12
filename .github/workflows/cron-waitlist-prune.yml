@@ -1,0 +1,55 @@
+name: Cron — waitlist prune (dev)
+
+# E06a §3. Deletes waitlist rows that never confirmed (30 days after their last
+# confirmation mail, unless the founding application is approved), legacy 0006
+# rows that never confirmed, and expired rate-limit buckets. The substrate and
+# its reasoning are `cron-draft-reminder.yml`'s; this is the same one-call job.
+#
+# OFF UNTIL SWITCHED ON. The schedule runs only when the repository variable
+# `WAITLIST_PRUNE_ENABLED` is `true` (like `VISITS_SYNC_ENABLED`), so merging
+# this file deletes nothing until someone decides it should. `workflow_dispatch`
+# always runs.
+#
+# PROD IS DEFERRED for the same reason as the draft reminder: a copy of this file
+# with `environment: prod` once prod exists.
+
+on:
+  schedule:
+    # 04:41 UTC daily — off the hour, away from the other two jobs.
+    - cron: "41 4 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: cron-waitlist-prune-dev
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prune:
+    name: Prune the waitlist (dev)
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.WAITLIST_PRUNE_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - name: POST /api/cron/waitlist-prune
+        env:
+          APP_URL: ${{ vars.SMOKE_WEB_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${APP_URL}" ] || [ -z "${CRON_SECRET}" ]; then
+            echo "::error::SMOKE_WEB_URL (variable) and CRON_SECRET (secret) must both be set on the dev environment."
+            exit 1
+          fi
+
+          # The body is `{ deleted }` counts only — never an address — so it is
+          # safe in a public build log.
+          curl --fail-with-body --silent --show-error \
+            --max-time 300 \
+            --request POST \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            --header "Content-Length: 0" \
+            "${APP_URL%/}/api/cron/waitlist-prune"

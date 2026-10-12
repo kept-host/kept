@@ -1,20 +1,21 @@
 /**
- * The four E07 seams the publish pipeline calls — SIGNATURES ARE FINAL, BODIES
- * ARE NOT.
+ * The publish pipeline's abuse seams — SIGNATURES ARE FINAL.
  *
- * E07 (abuse and moderation) owns Turnstile verification, per-publisher rate
- * limiting, the heuristic content check and scan enqueue. None of them exist
- * yet. They are declared here, as named functions with the shapes E07 will
- * return, rather than as `// TODO` comments in the route, for one reason: E07
- * must be able to fill these bodies WITHOUT editing `app/api/publish/route.ts`
- * or `lib/publish/pipeline.ts`. If E07 finds itself back in either file, the
- * seam below was cut in the wrong place.
+ * Turnstile verification is REAL (E06a task 001: the waitlist forms need it, and
+ * the publish paths already called it whenever a token was present). The other
+ * three — per-publisher rate limiting, the heuristic content check and scan
+ * enqueue — are still E07's stubs. They are declared here, as named functions
+ * with the shapes E07 will return, rather than as `// TODO` comments in the
+ * route, for one reason: E07 must be able to fill these bodies WITHOUT editing
+ * `app/api/publish/route.ts` or `lib/publish/pipeline.ts`. If E07 finds itself
+ * back in either file, the seam below was cut in the wrong place.
  *
- * Each stub is deliberately PERMISSIVE — allow, allow, allow, no-op — so the
- * epic ships a working keyless publish while the governors are still absent.
- * The permissive default is safe only because the draft TTL is the real
- * backstop in the interim: nothing published here survives `DRAFT_TTL_DAYS`
- * unless a human signs in and keeps it.
+ * Each remaining stub is deliberately PERMISSIVE — allow, allow, no-op — so the
+ * keyless publish works while the governors are still absent. The permissive
+ * default is safe only because the draft TTL is the real backstop in the
+ * interim: nothing published here survives `DRAFT_TTL_DAYS` unless a human
+ * signs in and keeps it. (`checkRateLimit` stays E07's; E06a's generic limiter
+ * is `lib/rate-limit`, which E07 may build it on.)
  *
  * The RESULT SHAPES are the part that is load-bearing today. Agents are the
  * primary caller of this API, and an error an agent cannot parse is an infinite
@@ -23,6 +24,7 @@
  * `Retry-After` header. E07 changes when that branch is taken, never what it
  * looks like.
  */
+import { turnstileConfig } from "../storage/env";
 
 /** Allowed, or refused with a reason a caller can act on. */
 export type TurnstileResult = { ok: true } | { ok: false; reason: string };
@@ -35,6 +37,11 @@ export type HeuristicDecision =
   | { allowed: true }
   | { allowed: false; reason: string };
 
+const TURNSTILE_SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+
+/** Siteverify normally answers in well under a second; never hang a request on it. */
+const TURNSTILE_TIMEOUT_MS = 5_000;
+
 /**
  * Verify a Cloudflare Turnstile token against the siteverify endpoint.
  *
@@ -43,14 +50,45 @@ export type HeuristicDecision =
  * solve a CAPTCHA, and the epic's locked decision is that they publish anyway.
  * A missing token is therefore never a failure; the web client is the only
  * caller that sends one, and only that caller is held to it. Rate limits, the
- * draft TTL and scanning are the governors for everyone else.
+ * draft TTL and scanning are the governors for everyone else. (The waitlist
+ * forms are different: `waitlistJoinSchema` requires a token.)
+ *
+ * Any failure — `success: false`, a non-2xx, a network error or timeout, a
+ * missing `TURNSTILE_SECRET_KEY` — is `{ ok: false, reason }`; it never throws.
+ * `ip` is passed as `remoteip` when known; it is not logged.
  */
-export async function verifyTurnstile(token: string): Promise<TurnstileResult> {
-  // E07: POST to https://challenges.cloudflare.com/turnstile/v0/siteverify with
-  // the secret key and the remote IP, and map `success: false` to `ok: false`.
-  void token;
-  return { ok: true };
+export async function verifyTurnstile(token: string, ip?: string): Promise<TurnstileResult> {
+  let secretKey: string;
+  try {
+    secretKey = turnstileConfig().secretKey;
+  } catch {
+    // Fails CLOSED: a deploy without the secret must refuse every token rather
+    // than wave them through. The variable's name is in the thrown error; the
+    // caller only needs to know verification could not run.
+    return { ok: false, reason: "verification unavailable" };
+  }
+
+  const body = new URLSearchParams({ secret: secretKey, response: token });
+  if (ip && ip !== "unknown") body.set("remoteip", ip);
+
+  let outcome: { success?: boolean; "error-codes"?: string[] };
+  try {
+    const response = await fetch(TURNSTILE_SITEVERIFY_URL, {
+      method: "POST",
+      body,
+      signal: AbortSignal.timeout(TURNSTILE_TIMEOUT_MS),
+    });
+    if (!response.ok) return { ok: false, reason: `siteverify answered ${response.status}` };
+    outcome = (await response.json()) as typeof outcome;
+  } catch {
+    return { ok: false, reason: "verification unreachable" };
+  }
+
+  if (outcome.success === true) return { ok: true };
+  const codes = outcome["error-codes"]?.join(", ");
+  return { ok: false, reason: codes ? `rejected: ${codes}` : "rejected" };
 }
+
 
 /**
  * Per-publisher rate limiting and the volume governors.

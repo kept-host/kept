@@ -48,6 +48,9 @@ export const VISITS_SYNC_JOB = "visits-sync" as const;
  */
 export const ABUSE_CONTACT_EMAIL = "abuse@kept.host" as const;
 
+/** kept's public source repository (AGPL-3.0) — every "open source" / "AGPL" / "GitHub" link. */
+export const SOURCE_REPO_URL = "https://github.com/kept-host/kept" as const;
+
 /**
  * `cacheTtl` the Worker asks for on its KV manifest read, in seconds. **60 is
  * Cloudflare's minimum accepted value** and cannot be lowered.

@@ -37,9 +37,19 @@
  * purge — proven against the deployment that was just released, on every deploy.
  * It leaves nothing behind: a smoke that accumulates pages stops being runnable.
  *
- * A CLOSED deploy (`lib/launch.ts`, reported by `/api/health`) has no publish
- * path, so there `smokeClosed` replaces it and asserts the opposite: publish
- * and sign-in both answer the closed rule's 404.
+ * A CLOSED deploy (`lib/launch.ts`, reported by `/api/health`) publishes only
+ * with an access token or an admin session (E06a §1), so there `smokeClosed`
+ * replaces it and asserts the gate (PRD §10): publish with no token and with a
+ * well-formed unknown token → 404 `not_open` and no site row; `get-session`
+ * with no cookie → no session and no `Set-Cookie`; the draft-reminder cron
+ * without its secret → 401 (the gate passes `/api/cron/*`).
+ *
+ * THE LEGAL PAGES (E06a AC19), on every deploy, open or closed: `/legal/impressum`
+ * and `/legal/privacy` must answer 200, and while either still carries a `[[`
+ * placeholder the run FAILS or WARNS per `--legal-placeholders` /
+ * `SMOKE_LEGAL_PLACEHOLDERS` (`fail` | `warn`, default `fail`). The workflow
+ * hands the value in — `release.yml` `fail`, `deploy-dev.yml` `warn` — so the
+ * track is never guessed from the host and a forgotten setting fails safe.
  *
  * There is deliberately NO hostname literal in either half. The canary's slug is
  * derived from `--edge-url`; the published page's host comes back in the API
@@ -48,12 +58,15 @@
  */
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { publishResponseSchema } from "@kept/shared";
+import { hashContent, publishResponseSchema } from "@kept/shared";
 import { config } from "dotenv";
 import postgres from "postgres";
 
+import { mintAccessToken } from "../lib/access-token";
+import { hasLegalPlaceholders } from "../lib/legal";
+import { LEGAL_DOCS } from "../lib/legal/links";
 import { KV_REPURGE_DELAY_MS } from "../lib/storage/manifest";
-import { requireEnv, requireUrl } from "./lib/cli-args";
+import { readOption, requireEnv, requireUrl } from "./lib/cli-args";
 import {
   canaryHtml,
   canarySlug,
@@ -102,6 +115,19 @@ const PUBLISH_GONE_INTERVAL_MS = 3_000;
  */
 const WARM_RETRY_STATUSES = new Set([502, 503, 504]);
 const WARM_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 15_000];
+
+/** What a `[[` placeholder in a legal page does to this run (AC19). */
+const LEGAL_PLACEHOLDER_POLICIES = ["fail", "warn"] as const;
+type LegalPlaceholderPolicy = (typeof LEGAL_PLACEHOLDER_POLICIES)[number];
+
+function legalPlaceholderPolicy(): LegalPlaceholderPolicy {
+  const raw = readOption("legal-placeholders", "SMOKE_LEGAL_PLACEHOLDERS") ?? "fail";
+  const policy = LEGAL_PLACEHOLDER_POLICIES.find((p) => p === raw);
+  if (!policy) {
+    throw new Error(`--legal-placeholders/SMOKE_LEGAL_PLACEHOLDERS must be "fail" or "warn": "${raw}"`);
+  }
+  return policy;
+}
 
 function fail(name: string, detail: string): StoreResult {
   return { name, pass: false, detail };
@@ -528,43 +554,128 @@ async function smokePublish(webUrl: string, deadline: number): Promise<StoreResu
 }
 
 /**
- * The publish check on a CLOSED deploy (`lib/launch.ts`): the gate must hold.
- * Nothing can be published and nobody can sign in, so both doors are probed
- * and both must answer 404 — the closed rule's answer, given before any route
- * handler runs.
+ * The publish check on a CLOSED deploy (`lib/launch.ts`, E06a PRD §10).
  *
- * The publish probe sends an EMPTY body on purpose. Were the gate down, the
- * route would refuse it 400 `empty_page` and write nothing — so this check can
- * fail, but it can never leave a page behind on a deploy that should have none.
+ * Every probe is one that cannot leave anything behind on a deploy whose gate
+ * holds: the no-token publish sends an EMPTY body (were the gate down it would be
+ * refused 400 `empty_page`), and the unknown-token publish sends unique canary
+ * bytes whose content hash is then looked up in `sites` — the "no site row"
+ * half of the PRD. Should that publish ever answer 201, the page is deleted
+ * through its own anon token before this fails.
  */
 async function smokeClosed(webUrl: string, deadline: number): Promise<StoreResult> {
-  const name = "publish";
-  const probes = [
-    { method: "POST", path: "/api/publish", headers: { "content-type": "text/html" }, body: "" },
-    { method: "GET", path: "/api/auth/get-session" },
-  ];
+  const name = "closed";
+  const publishUrl = new URL("/api/publish", webUrl).toString();
+  const html = publishCanaryHtml(crypto.randomUUID().slice(0, 8));
+  // Well-formed and freshly minted, so it is in no deploy's KEPT_ACCESS_TOKEN_HASHES.
+  const { token: unknownToken } = await mintAccessToken();
 
-  for (const { path, ...init } of probes) {
-    const url = new URL(path, webUrl).toString();
+  const publishProbes: { label: string; headers: Record<string, string>; body: string }[] = [
+    { label: "no token", headers: { "content-type": "text/html" }, body: "" },
+    {
+      label: "unknown token",
+      headers: { "content-type": "text/html", authorization: `Bearer ${unknownToken}` },
+      body: html,
+    },
+  ];
+  for (const { label, ...init } of publishProbes) {
     let res: Response;
     try {
-      res = await send(url, deadline, init);
+      res = await send(publishUrl, deadline, { method: "POST", ...init });
     } catch (err) {
-      return fail(name, `${init.method} ${url} — no HTTP response (${errText(err)})`);
+      return fail(name, `POST ${publishUrl} (${label}) — no HTTP response (${errText(err)})`);
     }
-    await drain(res);
-    if (res.status !== 404) {
+    const body = (await res.json().catch(() => null)) as { error?: unknown; anonToken?: unknown } | null;
+    if (res.status === 201 && typeof body?.anonToken === "string") {
+      const del = await send(new URL(`/api/anon/${body.anonToken}`, webUrl).toString(), deadline, {
+        method: "DELETE",
+      }).catch(() => null);
+      if (del) await drain(del);
+    }
+    if (res.status !== 404 || body?.error !== "not_open") {
       return fail(
         name,
-        `${init.method} ${url} → HTTP ${res.status} on a closed deploy (expected 404) — the launch gate is not holding`,
+        `POST ${publishUrl} (${label}) → HTTP ${res.status} on a closed deploy (expected 404 not_open) — the launch gate is not holding`,
       );
     }
   }
 
+  const rows = await withSql((sql) =>
+    hashContent(html).then((hash) => sql<{ n: number }[]>`select count(*)::int as n from sites where content_hash = ${hash}`),
+  ).catch((err: unknown) => err);
+  if (!Array.isArray(rows)) {
+    return fail(name, `could not check for a site row after the unknown-token publish — ${errText(rows)}`);
+  }
+  if (rows[0]?.n !== 0) {
+    return fail(name, `the unknown-token publish answered 404 but left ${rows[0]?.n} site row(s)`);
+  }
+
+  const sessionUrl = new URL("/api/auth/get-session", webUrl).toString();
+  let session: Response;
+  try {
+    session = await send(sessionUrl, deadline);
+  } catch (err) {
+    return fail(name, `GET ${sessionUrl} — no HTTP response (${errText(err)})`);
+  }
+  const cookies = session.headers.getSetCookie().length;
+  const sessionBody: unknown = await session.json().catch(() => undefined);
+  if (!session.ok || sessionBody !== null || cookies > 0) {
+    return fail(
+      name,
+      `GET ${sessionUrl} with no cookie → HTTP ${session.status}, ${sessionBody === null ? "no session" : "a non-null body"}, ${cookies} Set-Cookie (expected 200, null, none)`,
+    );
+  }
+
+  const cronUrl = new URL("/api/cron/draft-reminder", webUrl).toString();
+  let cron: Response;
+  try {
+    cron = await send(cronUrl, deadline, { method: "POST" });
+  } catch (err) {
+    return fail(name, `POST ${cronUrl} — no HTTP response (${errText(err)})`);
+  }
+  await drain(cron);
+  if (cron.status !== 401) {
+    return fail(name, `POST ${cronUrl} without the secret → HTTP ${cron.status} (expected 401 — the gate must pass /api/cron/*)`);
+  }
+
   return pass(
     name,
-    "closed (waitlist): POST /api/publish and GET /api/auth/get-session → 404, nothing published",
+    "closed (waitlist): publish with no token and an unknown token → 404 not_open, no site row; get-session → null, no Set-Cookie; cron → 401",
   );
+}
+
+/**
+ * The legal pages (AC19): both must answer 200, and a `[[` placeholder fails a
+ * `fail` run and only warns a `warn` one (dev keeps its DRAFT banner). Follows
+ * redirects, so `--web-url` on `app.` reaches the apex pages.
+ */
+async function smokeLegal(
+  webUrl: string,
+  deadline: number,
+  policy: LegalPlaceholderPolicy,
+): Promise<StoreResult> {
+  const name = "legal";
+  const withPlaceholders: string[] = [];
+  for (const doc of LEGAL_DOCS) {
+    const url = new URL(`/legal/${doc}`, webUrl).toString();
+    let res: Response;
+    try {
+      res = await get(url, deadline);
+    } catch (err) {
+      return fail(name, `GET ${url} — no HTTP response (${errText(err)})`);
+    }
+    if (res.status !== 200) {
+      await drain(res);
+      return fail(name, `GET ${url} → HTTP ${res.status} (expected 200)`);
+    }
+    if (hasLegalPlaceholders(await res.text())) withPlaceholders.push(`/legal/${doc}`);
+  }
+
+  if (withPlaceholders.length === 0) {
+    return pass(name, "/legal/impressum and /legal/privacy → 200, no [[ placeholders");
+  }
+  const detail = `${withPlaceholders.join(" and ")} still contain [[ placeholders — fill content/legal/*.md (and the sha256 pins in lib/legal/legal.test.ts)`;
+  return policy === "fail" ? fail(name, detail) : { ...pass(name, `${detail} (warn on this track)`), warn: true };
 }
 
 /**
@@ -574,41 +685,47 @@ async function smokeClosed(webUrl: string, deadline: number): Promise<StoreResul
  * reachable post-migrate. The connection is closed explicitly in `finally` so
  * the probe cannot leave the process hanging.
  */
-async function smokeNeon(): Promise<StoreResult> {
-  const name = "neon";
-  const connectionString = requireEnv("DATABASE_URL");
-  const host = new URL(connectionString).hostname;
-  const endpoint = host.includes("-pooler.") ? "pooled" : "direct(!)";
-
-  const sql = postgres(connectionString, {
+async function withSql<T>(run: (sql: postgres.Sql) => Promise<T>): Promise<T> {
+  const sql = postgres(requireEnv("DATABASE_URL"), {
     prepare: false, // PgBouncer transaction mode — same as the runtime client.
     max: 1,
     idle_timeout: 5,
     connect_timeout: 10,
     onnotice: () => undefined,
   });
+  try {
+    return await run(sql);
+  } finally {
+    await sql.end({ timeout: 5 }).catch(() => undefined);
+  }
+}
+
+async function smokeNeon(): Promise<StoreResult> {
+  const name = "neon";
+  const host = new URL(requireEnv("DATABASE_URL")).hostname;
+  const endpoint = host.includes("-pooler.") ? "pooled" : "direct(!)";
 
   try {
-    const rows = await sql<{ ok: number }[]>`select 1 as ok`;
+    const rows = await withSql((sql) => sql<{ ok: number }[]>`select 1 as ok`);
     if (rows[0]?.ok !== 1) {
       return fail(name, `SELECT 1 returned an unexpected row on ${endpoint} endpoint`);
     }
     return pass(name, `SELECT 1 OK on ${endpoint} endpoint (${host.slice(0, 10)}…)`);
   } catch (err) {
     return fail(name, `SELECT 1 failed on ${endpoint} endpoint — ${errText(err)}`);
-  } finally {
-    await sql.end({ timeout: 5 }).catch(() => undefined);
   }
 }
 
 async function main(): Promise<void> {
   const webUrl = requireUrl("web-url", "SMOKE_WEB_URL");
   const edgeUrl = requireUrl("edge-url", "SMOKE_EDGE_URL");
+  const legalPolicy = legalPlaceholderPolicy();
   const deadline = Date.now() + OVERALL_DEADLINE_MS;
 
   console.log("kept · release smoke test\n");
   console.log(`      web:  ${webUrl}`);
-  console.log(`      edge: ${edgeUrl}\n`);
+  console.log(`      edge: ${edgeUrl}`);
+  console.log(`      legal placeholders: ${legalPolicy}\n`);
 
   const [web, ...stores] = await Promise.all([
     smokeWeb(webUrl, deadline),
@@ -616,6 +733,7 @@ async function main(): Promise<void> {
     smokeR2(),
     smokeKv(),
     smokeNeon(),
+    smokeLegal(webUrl, deadline, legalPolicy),
   ]);
   const results: StoreResult[] = [web, ...stores];
 
@@ -643,7 +761,7 @@ async function main(): Promise<void> {
   );
   console.log(
     closed
-      ? "      and the publish check proves this closed deploy publishes nothing and signs nobody in."
+      ? "      and the closed check proves this deploy publishes nothing without a token and signs nobody in."
       : "      and the publish check writes a page through the API, serves it and deletes it.",
   );
   process.exit(0);

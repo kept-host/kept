@@ -58,7 +58,32 @@
  * Owning them cuts both ways — the apex serves these itself, and the `app.` host
  * sends them back here rather than serving a second copy.
  */
-const APEX_PATHS = new Set(["/", "/promise", "/stats"]);
+const APEX_PATHS: PathSet = {
+  exact: new Set([
+    "/",
+    "/promise",
+    "/stats",
+    // E06a §1. `/impressum` is a 308 in `next.config.ts`, which runs before
+    // middleware; listed so a host mismatch never decides it first.
+    "/impressum",
+    "/founding",
+    "/founding/review",
+    "/waitlist/confirm",
+    "/waitlist/unsubscribe",
+  ]),
+  prefixes: ["/legal/"],
+};
+
+/** An exact-path set plus path prefixes (each ending in `/`). */
+interface PathSet {
+  exact: ReadonlySet<string>;
+  prefixes: readonly string[];
+}
+
+/** Whether a NORMALIZED path is in `set`. */
+function inPathSet(path: string, set: PathSet): boolean {
+  return set.exact.has(path) || set.prefixes.some((prefix) => path.startsWith(prefix));
+}
 
 /**
  * What the `app.` host puts at its own root instead of the landing. Gated, so a
@@ -80,11 +105,56 @@ const API_PREFIX = "/api/";
 const AUTH_API_PREFIX = "/api/auth/";
 
 /**
- * The only route handlers that answer while kept is closed (`lib/launch.ts`):
- * the release smoke's probe, and the waitlist the landing posts to. An allow
- * list, so a route added later is closed until someone decides otherwise.
+ * Route handlers that answer while kept is closed (E06a §1), on any host: the
+ * release smoke's probe, the waitlist and founding forms, and the cron routes —
+ * which carry their own secret check (`lib/cron/authorize.ts`). An allow list,
+ * so a route added later is closed until someone decides otherwise.
  */
-const CLOSED_API_PATHS = new Set(["/api/health", "/api/waitlist"]);
+const CLOSED_API_PATHS: PathSet = {
+  exact: new Set([
+    "/api/health",
+    "/api/waitlist",
+    "/api/waitlist/confirm",
+    "/api/waitlist/unsubscribe",
+    "/api/founding/review",
+  ]),
+  prefixes: ["/api/cron/"],
+};
+
+/**
+ * The routes that create content without a session of their own. Closed, the
+ * middleware passes them only when the request carries SOMETHING that could
+ * authorise it — an `Authorization: Bearer` header or the session cookie — and
+ * the handler's first action decides whether it does (`lib/launch-access.ts`).
+ * A presence check only: the edge bundle cannot verify either (D6).
+ */
+const CREDENTIAL_API_PATHS: PathSet = {
+  exact: new Set(["/api/publish"]),
+  prefixes: ["/api/anon/"],
+};
+
+/**
+ * The control plane's session-gated API, served closed on the `app.` host
+ * only. Sign-in is Better Auth's to refuse (admin emails only, §2), and every
+ * other route here already answers 401 without a session — which only an admin
+ * can have.
+ */
+const APP_API_PATHS: PathSet = {
+  exact: new Set(["/api/auth", "/api/sites", "/api/export", "/api/names/check", "/api/account"]),
+  prefixes: ["/api/auth/", "/api/sites/", "/api/og/"],
+};
+
+/**
+ * The control plane's pages, served closed exactly as when open: the split rule
+ * routes them to the `app.` host, and the `(app)` gate and the screens' own
+ * session checks do the rest. `/unsubscribe/*` is here, not in `APEX_PATHS`:
+ * the reminder mail links it on the `app.` origin, and a one-click
+ * `List-Unsubscribe` POST must not meet a redirect.
+ */
+const APP_PAGE_PATHS: PathSet = {
+  exact: new Set(["/auth", "/dashboard", "/settings"]),
+  prefixes: ["/auth/", "/site/", "/keep/", "/p/", "/unsubscribe/"],
+};
 
 /** What `middleware()` should do with this request. */
 export type HostAction =
@@ -94,6 +164,12 @@ export type HostAction =
   | { kind: "not-found" }
   /** Answer 307 (method- and body-preserving) to this absolute URL. */
   | { kind: "redirect"; location: string };
+
+/**
+ * What the closed rule decides: a `HostAction`, or the JSON `not_open` 404 for
+ * a blocked API call (`notOpenResponse` in `lib/launch.ts`).
+ */
+export type ClosedAction = HostAction | { kind: "not-open" };
 
 /**
  * The `app.` origin, or `undefined` when the value is absent or unusable.
@@ -183,58 +259,98 @@ export function farewellHref(appUrl: string | undefined): string {
 }
 
 /**
- * The closed rule — what a deploy that is not yet open (`lib/launch.ts`) does
- * before the split rule runs. `undefined` means "not mine": the request is the
- * split rule's to decide, exactly as on an open deploy.
+ * The landing's origin: the apex paired with `app.`, or the one origin when
+ * there is no second hostname (local development). `undefined` without a
+ * usable `NEXT_PUBLIC_APP_URL`.
+ */
+function landingOriginFor(appUrl: string | undefined): URL | undefined {
+  const appOrigin = parseAppOrigin(appUrl);
+  return appOrigin ? (apexOriginFor(appOrigin) ?? appOrigin) : undefined;
+}
+
+/**
+ * The waitlist on the landing — `https://kept.host/#waitlist` on prod — for the
+ * closed deploy's `not_open` body. From configuration, never the request;
+ * relative when nothing is configured.
+ */
+export function waitlistHref(appUrl: string | undefined): string {
+  const landing = landingOriginFor(appUrl);
+  return `${landing ? landing.origin : ""}/#waitlist`;
+}
+
+/**
+ * The closed rule (E06a §1) — what a deploy that is not yet open
+ * (`lib/launch.ts`) does before the split rule runs. `undefined` means "not
+ * mine": the request is the split rule's to decide, exactly as on an open
+ * deploy.
  *
- *   /api/health, /api/waitlist        → not mine
- *   every other /api/*                → 404, so no route handler runs — no
- *                                       publish, and no `Set-Cookie` from auth
- *   _next/*                           → not mine
- *   a `(marketing)` path on the host
- *   that serves the landing           → not mine (the split rule passes it)
- *   a `(marketing)` path elsewhere    → 307 to the same path on the landing's
- *                                       host (`app.`'s `/` included, which the
- *                                       split rule would send to the closed
- *                                       `/dashboard`)
- *   everything else                   → 307 to the landing's `/`
+ *   CLOSED_API_PATHS (health, waitlist,
+ *   founding review, /api/cron/*)        → not mine
+ *   /api/publish, /api/anon/*            → not mine with a Bearer header or the
+ *                                          session cookie; else `not-open`
+ *   APP_API_PATHS (auth, studio)         → not mine on the `app.` host; else
+ *                                          `not-open`
+ *   every other /api/*                   → `not-open`: the JSON 404, and no
+ *                                          route handler runs
+ *   _next/*                              → not mine
+ *   an apex path on the landing's host   → not mine (the split rule passes it)
+ *   an apex path elsewhere               → 307 to the same path on the landing's
+ *                                          host (`app.`'s `/` included, which
+ *                                          the split rule would send to
+ *                                          `/dashboard`)
+ *   APP_PAGE_PATHS (sign-in, studio,
+ *   keep, manage, unsubscribe)           → not mine (the split rule sends them
+ *                                          to the `app.` host)
+ *   everything else                      → 307 to the landing's `/`
  *
- * "The host that serves the landing" is the apex paired with `app.`, or the
- * one origin when there is no second hostname (local development). Without a
- * usable `NEXT_PUBLIC_APP_URL` there is nowhere configured to send anyone, so
- * the closed pages 404 instead — never a redirect built from the request.
+ * Without a usable `NEXT_PUBLIC_APP_URL` there is no `app.` host to serve the
+ * control plane on and nowhere configured to send anyone, so everything but the
+ * open APIs and the apex paths is refused — never a redirect built from the
+ * request.
  *
- * Not an auth gate either: like the split rule it reads no session. It does not
- * need one. With `/api/auth/*` gone nobody can sign in, and the routes that
- * write without a session (`/api/publish`, `/api/anon/*`) are gone too.
+ * Not an auth gate: it reads no session. `credentialed` is presence only, and
+ * the handlers behind it check the token or the admin session first
+ * (`closedModeAccess`). Sign-in is refused inside Better Auth (§2).
  */
 export function decideClosedAction({
   host,
   pathname,
   search = "",
   appUrl,
+  credentialed,
 }: {
   host: string;
   pathname: string;
   search?: string;
   appUrl: string | undefined;
-}): HostAction | undefined {
+  /** The request carries `Authorization: Bearer …` or the session cookie. */
+  credentialed: boolean;
+}): ClosedAction | undefined {
+  const path = normalizePath(pathname);
+  const appOrigin = parseAppOrigin(appUrl);
+
   if (pathname === "/api" || pathname.startsWith(API_PREFIX)) {
-    return CLOSED_API_PATHS.has(normalizePath(pathname)) ? undefined : { kind: "not-found" };
+    if (inPathSet(path, CLOSED_API_PATHS)) return undefined;
+    if (inPathSet(path, CREDENTIAL_API_PATHS)) {
+      return credentialed ? undefined : { kind: "not-open" };
+    }
+    const onAppHost = !!appOrigin && host.toLowerCase() === appOrigin.host.toLowerCase();
+    if (onAppHost && inPathSet(path, APP_API_PATHS)) return undefined;
+    return { kind: "not-open" };
   }
   if (pathname.startsWith(FRAMEWORK_PREFIX)) return undefined;
 
-  const appOrigin = parseAppOrigin(appUrl);
-  const landing = appOrigin ? (apexOriginFor(appOrigin) ?? appOrigin) : undefined;
-  const marketing = APEX_PATHS.has(normalizePath(pathname));
+  const landing = landingOriginFor(appUrl);
+  const apex = inPathSet(path, APEX_PATHS);
 
-  if (marketing && (!landing || host.toLowerCase() === landing.host.toLowerCase())) {
+  if (apex && (!landing || host.toLowerCase() === landing.host.toLowerCase())) {
     return undefined;
   }
   if (!landing) return { kind: "not-found" };
+  if (inPathSet(path, APP_PAGE_PATHS)) return undefined;
   return {
     kind: "redirect",
-    location: `${landing.origin}${marketing ? `${pathname}${search}` : "/"}`,
+    location: `${landing.origin}${apex ? `${pathname}${search}` : "/"}`,
   };
 }
 
@@ -276,7 +392,7 @@ export function decideHostAction({
       return { kind: "redirect", location: `${appOrigin.origin}${APP_ROOT_PATH}${search}` };
     }
     // One canonical URL per marketing page, and it is the apex's.
-    if (APEX_PATHS.has(path)) {
+    if (inPathSet(path, APEX_PATHS)) {
       return { kind: "redirect", location: `${apexOrigin.origin}${pathname}${search}` };
     }
     return pass;
@@ -289,7 +405,7 @@ export function decideHostAction({
       : pass;
   }
   if (pathname.startsWith(FRAMEWORK_PREFIX)) return pass;
-  if (APEX_PATHS.has(normalizePath(pathname))) return pass;
+  if (inPathSet(normalizePath(pathname), APEX_PATHS)) return pass;
 
   return { kind: "redirect", location: `${appOrigin.origin}${pathname}${search}` };
 }
