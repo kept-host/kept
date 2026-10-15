@@ -193,6 +193,11 @@ export const SPIKE_DAILY_CAP = 50 as const;
 
 /** More failed scans than this in 24 h → one admin mail per day. */
 export const SCAN_FAILURE_ALERT_THRESHOLD = 20 as const;
+/** …throttled to that one mail per day. */
+export const SCAN_FAILURE_ALERT_DAY = { limit: 1, windowSeconds: DAY_SECONDS } as const satisfies RateLimitRule;
+
+/** Scans `scan-retry` runs per run, per kind (due retries, unscanned versions). */
+export const SCAN_RETRY_BATCH_SIZE = 50 as const;
 
 /** A current version older than this with no scan row is picked up by `scan-retry`. */
 export const UNSCANNED_GRACE_MINUTES = 10 as const;

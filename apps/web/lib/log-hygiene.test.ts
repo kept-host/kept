@@ -83,6 +83,11 @@ const GUARDED_FILES = [
   "lib/storage/repurge.ts",
   "lib/db/queries/manifest-sync.ts",
   "app/api/cron/repurge/route.ts",
+  // E07 task 007: the scan runtime, its queries and the scan-retry job.
+  "lib/scan/run.ts",
+  "lib/db/queries/scans.ts",
+  "app/api/cron/scan-retry/route.ts",
+  "app/api/health/route.ts",
   // E07 task 004: the moderation module, its mail and the appeal routes.
   "lib/moderation/status.ts",
   "lib/moderation/appeals.ts",

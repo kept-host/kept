@@ -24,6 +24,7 @@
     "admin:token": "tsx scripts/admin.ts token",
     "admin:founding": "tsx scripts/admin.ts founding",
     "admin:waitlist": "tsx scripts/admin.ts waitlist",
+    "admin:scan": "tsx scripts/admin.ts scan",
     "eval:scanner": "tsx scripts/eval-scanner.ts"
   },
   "dependencies": {

@@ -160,6 +160,7 @@ const NOT_A_LIMIT: Record<string, { occurrences: number; reason: string }> = {
     reason: "1000 ms per second: inside DAY_MS, and ms ↔ s for the token's Unix-seconds expiry",
   },
   "lib/publish/pipeline.ts": { occurrences: 1, reason: "1000 ms per second, inside MS_PER_DAY" },
+  "lib/scan/run.ts": { occurrences: 1, reason: "1000 ms per second (MS_PER_SECOND)" },
   "lib/sites/display.ts": { occurrences: 1, reason: "1000 ms per second, inside MS_PER_HOUR" },
   "lib/storage/manifest.ts": { occurrences: 1, reason: "s → ms for the KV re-purge delay" },
   "lib/testing/names-drill.ts": { occurrences: 1, reason: "1000 ms per second, inside MS_PER_DAY" },

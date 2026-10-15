@@ -6,7 +6,7 @@
  *   checkRateLimit      anonymous publish, AFTER the dedup probe — new pages only
  *   checkReplaceLimit   anonymous replace, per site
  *   enqueueScan         every path that stores or re-serves bytes, after the
- *                       stores agree; fire and forget
+ *                       stores agree; fire and forget into `lib/scan/run.ts`
  *
  * NOTHING HERE JUDGES CONTENT SYNCHRONOUSLY. E04 reserved a heuristic check
  * that answered 422; D2 deleted it and its error code. A page is live the moment its
@@ -22,9 +22,11 @@
  * `retry_after_seconds` and a `Retry-After` header.
  */
 import { PUBLISH_RATE_LIMITS, type ScanTrigger } from "@kept/shared";
+import { after } from "next/server";
 
 import { sendAdminAlert } from "../email/admin-alert";
 import { hit, type RateLimitResult } from "../rate-limit";
+import { runScan } from "../scan/run";
 import { turnstileConfig } from "../storage/env";
 
 /** Allowed, or refused with a reason a caller can act on. */
@@ -186,14 +188,22 @@ export async function checkReplaceLimit(siteId: string): Promise<RateLimitDecisi
  * agree, and it must never fail a publish or delay the response. The page is
  * live before the scan starts; a bad verdict moves it to `under_review`.
  * `trigger` is what the `scans` row records.
+ *
+ * Inside a request it is handed to Next's `after()`, which runs it once the
+ * response is sent. Outside one (`after()` throws: a script, a test) it is a
+ * floating promise on the long-lived process (Risk 9). `runScan` never
+ * rejects; the `.catch` is the last line all the same. The cron job and the
+ * admin CLI do not come through here — they await `runScan` directly.
  */
-export async function enqueueScan(
-  siteId: string,
-  versionId: string,
-  trigger: ScanTrigger,
-): Promise<void> {
-  // E07 task 007: the scan runtime (scans row → reuse → classify → policy).
-  void siteId;
-  void versionId;
-  void trigger;
+export function enqueueScan(siteId: string, versionId: string, trigger: ScanTrigger): void {
+  const scan = () => runScan(siteId, versionId, trigger);
+  try {
+    after(scan);
+  } catch {
+    scan().catch((err: unknown) =>
+      console.error(
+        `[kept] scan of site ${siteId} version ${versionId} was lost — ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
+  }
 }
