@@ -23,7 +23,8 @@
     "resend:tracking": "tsx scripts/check-resend-tracking.ts",
     "admin:token": "tsx scripts/admin.ts token",
     "admin:founding": "tsx scripts/admin.ts founding",
-    "admin:waitlist": "tsx scripts/admin.ts waitlist"
+    "admin:waitlist": "tsx scripts/admin.ts waitlist",
+    "eval:scanner": "tsx scripts/eval-scanner.ts"
   },
   "dependencies": {
     "@babel/parser": "7.29.9",

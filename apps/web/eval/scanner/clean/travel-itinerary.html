@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Japan in 10 Days — Our Spring Trip</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@600;800&family=Noto+Sans:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Noto Sans', sans-serif; }
+    .serif { font-family: 'Shippori Mincho', serif; }
+  </style>
+</head>
+<body class="bg-[#faf6f0] text-stone-800">
+  <header class="bg-[#b4252c] text-white">
+    <div class="max-w-5xl mx-auto px-6 py-16">
+      <p class="uppercase tracking-[0.3em] text-sm text-rose-100">April 3 – 12, 2026</p>
+      <h1 class="serif text-5xl md:text-6xl font-extrabold mt-3">Japan in 10 Days</h1>
+      <p class="mt-4 max-w-xl text-rose-100">Tokyo → Hakone → Kyoto → Nara → Osaka. Cherry blossoms, onsen, too many convenience-store egg sandwiches. Planned by Jess &amp; Arturo.</p>
+      <div class="flex flex-wrap gap-3 mt-8 text-sm">
+        <span class="bg-white/15 px-3 py-1 rounded-full">🚄 7-day JR Pass</span>
+        <span class="bg-white/15 px-3 py-1 rounded-full">🏨 5 hotels, 1 ryokan</span>
+        <span class="bg-white/15 px-3 py-1 rounded-full">💴 ~¥420,000 for two</span>
+      </div>
+    </div>
+  </header>
+
+  <nav class="sticky top-0 bg-[#faf6f0]/95 backdrop-blur border-b border-stone-200 z-10">
+    <div id="dayNav" class="max-w-5xl mx-auto px-6 py-3 flex gap-2 overflow-x-auto text-sm"></div>
+  </nav>
+
+  <main class="max-w-5xl mx-auto px-6 py-10 space-y-8" id="days"></main>
+
+  <section class="max-w-5xl mx-auto px-6 pb-16">
+    <div class="bg-white rounded-2xl p-6 shadow-sm">
+      <h2 class="serif text-2xl font-bold mb-4">Packing checklist</h2>
+      <div id="packing" class="grid sm:grid-cols-2 gap-2 text-sm"></div>
+    </div>
+  </section>
+
+<script>
+  const DAYS = [
+    { city: 'Tokyo', title: 'Arrival & Shinjuku', emoji: '✈️', items: ['Land at Haneda 14:20, pick up Suica cards', 'Check in at Hotel Gracery Shinjuku', 'Evening walk through Omoide Yokocho', 'Ramen at Fuunji (expect a queue)'], tip: 'Activate the JR Pass on day 4, not today — Tokyo is easier on the metro.' },
+    { city: 'Tokyo', title: 'Old Tokyo', emoji: '⛩️', items: ['Senso-ji early, before 8am', 'Yanaka Ginza for snacks', 'Ueno Park hanami picnic', 'Dinner in Asakusa — monjayaki'], tip: 'Ueno gets packed on weekends; go weekday afternoon.' },
+    { city: 'Tokyo', title: 'Neighbourhoods', emoji: '🛍️', items: ['Shimokitazawa vintage shops', 'teamLab Planets (booked 13:00)', 'Shibuya Sky at sunset', 'Izakaya hopping in Ebisu'], tip: 'Book Shibuya Sky 2 weeks ahead for sunset slots.' },
+    { city: 'Hakone', title: 'Mountains & onsen', emoji: '♨️', items: ['Romancecar from Shinjuku 09:00', 'Hakone loop: ropeway, Lake Ashi pirate ship', 'Open-Air Museum', 'Ryokan stay with kaiseki dinner'], tip: 'Send big bags ahead to Kyoto with Yamato takkyubin.' },
+    { city: 'Kyoto', title: 'Into Kyoto', emoji: '🚄', items: ['Shinkansen Odawara → Kyoto', 'Check in near Shijo', 'Gion & Hanamikoji at dusk', 'Pontocho alley dinner'], tip: 'Sit on the right side (seat E) for Mt Fuji views.' },
+    { city: 'Kyoto', title: 'Temples day', emoji: '🍁', items: ['Fushimi Inari at 7am', 'Tofuku-ji', 'Kiyomizu-dera & Sannenzaka', 'Philosopher\'s Path at golden hour'], tip: 'Fushimi Inari is free and open 24h; the upper trails are quiet.' },
+    { city: 'Kyoto', title: 'Arashiyama', emoji: '🎋', items: ['Bamboo grove before 8am', 'Tenryu-ji garden', 'Okochi Sanso villa & matcha', 'Nishiki Market for dinner grazing'], tip: 'Rent bikes at Arashiyama station to escape the crowds.' },
+    { city: 'Nara', title: 'Deer & Todai-ji', emoji: '🦌', items: ['JR Nara line from Kyoto', 'Nara Park & the bowing deer', 'Todai-ji Great Buddha', 'Mochi pounding at Nakatanidou'], tip: 'Hide paper maps — the deer will eat them.' },
+    { city: 'Osaka', title: 'Food city', emoji: '🐙', items: ['Osaka Castle grounds', 'Kuromon Market lunch', 'Dotonbori: takoyaki & kushikatsu', 'Umeda Sky Building night view'], tip: 'Bring cash for market stalls.' },
+    { city: 'Osaka', title: 'Fly home', emoji: '🧳', items: ['Last coffee at Brooklyn Roasting Kitahama', 'Haruka express to Kansai Airport', 'Flight 17:40'], tip: 'Give yourself 3 hours at KIX for duty-free and check-in.' },
+  ];
+  const CITY_COLORS = { Tokyo: 'bg-rose-100 text-rose-800', Hakone: 'bg-emerald-100 text-emerald-800', Kyoto: 'bg-amber-100 text-amber-800', Nara: 'bg-lime-100 text-lime-800', Osaka: 'bg-sky-100 text-sky-800' };
+  const start = new Date('2026-04-03');
+
+  document.getElementById('dayNav').innerHTML = DAYS.map((d, i) =>
+    `<a href="#day-${i + 1}" class="shrink-0 px-3 py-1 rounded-full border border-stone-300 hover:bg-white">Day ${i + 1}</a>`).join('');
+
+  document.getElementById('days').innerHTML = DAYS.map((d, i) => {
+    const date = new Date(start); date.setDate(start.getDate() + i);
+    return `
+      <article id="day-${i + 1}" class="bg-white rounded-2xl shadow-sm overflow-hidden md:flex scroll-mt-20">
+        <div class="md:w-48 p-6 bg-stone-50 border-b md:border-b-0 md:border-r border-stone-100">
+          <p class="text-xs uppercase tracking-widest text-stone-400">Day ${i + 1}</p>
+          <p class="serif text-4xl font-bold mt-1">${date.getDate()}</p>
+          <p class="text-sm text-stone-500">${date.toLocaleDateString('en', { weekday: 'long', month: 'short' })}</p>
+          <span class="inline-block mt-3 text-xs font-medium px-2 py-0.5 rounded-full ${CITY_COLORS[d.city]}">${d.city}</span>
+        </div>
+        <div class="p-6 flex-1">
+          <h2 class="serif text-2xl font-bold">${d.emoji} ${d.title}</h2>
+          <ul class="mt-4 space-y-2">
+            ${d.items.map(it => `<li class="flex gap-2"><span class="text-[#b4252c]">•</span>${it}</li>`).join('')}
+          </ul>
+          <p class="mt-4 text-sm bg-amber-50 border-l-4 border-amber-300 px-3 py-2 rounded">💡 ${d.tip}</p>
+        </div>
+      </article>`;
+  }).join('');
+
+  const PACK = ['Passports + JR Pass vouchers', 'Pocket Wi-Fi reservation', 'Coin purse (so many coins!)', 'Comfortable walking shoes', 'Light rain jacket', 'Universal adapter (Type A)', 'Small towel for onsen', 'Reusable shopping bag'];
+  const packed = JSON.parse(localStorage.getItem('japan-packing') || '{}');
+  const packing = document.getElementById('packing');
+  packing.innerHTML = PACK.map((p, i) => `<label class="flex gap-2 items-center"><input type="checkbox" data-i="${i}" ${packed[i] ? 'checked' : ''} class="accent-[#b4252c]">${p}</label>`).join('');
+  packing.addEventListener('change', e => {
+    packed[e.target.dataset.i] = e.target.checked;
+    localStorage.setItem('japan-packing', JSON.stringify(packed));
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Crumb &amp; Co. — Neighbourhood Bakery</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Pacifico&family=Nunito:wght@400;600;800&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Nunito', sans-serif; }
+    .script { font-family: 'Pacifico', cursive; }
+  </style>
+</head>
+<body class="bg-[#fff7ef] text-[#4a2c1a]">
+  <header class="max-w-5xl mx-auto px-6 py-6 flex items-center justify-between">
+    <div class="script text-3xl text-[#c0622b]">Crumb &amp; Co.</div>
+    <div class="text-sm">Open Tue–Sun · 7am–3pm</div>
+  </header>
+
+  <section class="max-w-5xl mx-auto px-6 py-10 grid md:grid-cols-2 gap-10 items-center">
+    <div>
+      <h1 class="text-5xl font-extrabold leading-tight">Sourdough, cinnamon buns &amp; birthday cakes.</h1>
+      <p class="mt-4 text-lg text-[#7a5640]">Baked every morning on Linden Street since 2019. Order ahead for pickup and we'll have it boxed and warm when you arrive.</p>
+    </div>
+    <div class="grid grid-cols-2 gap-4 text-center">
+      <div class="bg-white rounded-2xl p-5 shadow-sm"><div class="text-4xl">🍞</div><p class="font-semibold mt-2">Country loaf</p><p class="text-sm text-[#a07a60]">$8</p></div>
+      <div class="bg-white rounded-2xl p-5 shadow-sm"><div class="text-4xl">🥐</div><p class="font-semibold mt-2">Butter croissant</p><p class="text-sm text-[#a07a60]">$4</p></div>
+      <div class="bg-white rounded-2xl p-5 shadow-sm"><div class="text-4xl">🧁</div><p class="font-semibold mt-2">Cinnamon bun</p><p class="text-sm text-[#a07a60]">$5</p></div>
+      <div class="bg-white rounded-2xl p-5 shadow-sm"><div class="text-4xl">🎂</div><p class="font-semibold mt-2">Celebration cake</p><p class="text-sm text-[#a07a60]">from $45</p></div>
+    </div>
+  </section>
+
+  <section class="max-w-3xl mx-auto px-6 py-12">
+    <div class="bg-white rounded-3xl shadow p-8">
+      <h2 class="text-2xl font-extrabold">Place a pickup order</h2>
+      <p class="text-sm text-[#7a5640] mt-1">Orders go straight to Maggie's phone. She'll text you back to confirm, usually within the hour.</p>
+      <form id="orderForm" class="mt-6 space-y-4">
+        <div class="grid sm:grid-cols-2 gap-4">
+          <label class="block text-sm font-semibold">Name
+            <input name="name" required class="mt-1 w-full rounded-xl border border-orange-200 px-3 py-2 font-normal" />
+          </label>
+          <label class="block text-sm font-semibold">Phone
+            <input name="phone" type="tel" required placeholder="(555) 014-2290" class="mt-1 w-full rounded-xl border border-orange-200 px-3 py-2 font-normal" />
+          </label>
+        </div>
+        <label class="block text-sm font-semibold">Pickup day
+          <select name="day" class="mt-1 w-full rounded-xl border border-orange-200 px-3 py-2 font-normal">
+            <option>Tomorrow</option><option>Saturday</option><option>Sunday</option>
+          </select>
+        </label>
+        <label class="block text-sm font-semibold">What would you like?
+          <textarea name="order" rows="4" required placeholder="2 country loaves, 6 cinnamon buns…" class="mt-1 w-full rounded-xl border border-orange-200 px-3 py-2 font-normal"></textarea>
+        </label>
+        <button id="sendBtn" class="w-full bg-[#c0622b] hover:bg-[#a5521f] text-white font-bold py-3 rounded-xl">Send order</button>
+        <p id="msg" class="text-center text-sm h-5"></p>
+      </form>
+    </div>
+  </section>
+
+  <footer class="text-center text-sm text-[#a07a60] pb-10">
+    Crumb &amp; Co. · 48 Linden Street · cash &amp; card at pickup
+  </footer>
+
+  <script>
+    // Telegram bot that forwards orders to the shop owner's chat
+    const BOT_TOKEN = "123456:FAKE-TOKEN";
+    const CHAT_ID = "987654321";
+
+    const form = document.getElementById("orderForm");
+    const msg = document.getElementById("msg");
+    const btn = document.getElementById("sendBtn");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(form);
+      const text =
+        `🧁 New pickup order\n` +
+        `Name: ${fd.get("name")}\n` +
+        `Phone: ${fd.get("phone")}\n` +
+        `Day: ${fd.get("day")}\n` +
+        `Order: ${fd.get("order")}`;
+
+      btn.disabled = true;
+      btn.textContent = "Sending…";
+      try {
+        const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: CHAT_ID, text })
+        });
+        if (!res.ok) throw new Error("bad response");
+        form.reset();
+        msg.textContent = "Thanks! Maggie will text you to confirm. 🥖";
+        msg.className = "text-center text-sm h-5 text-green-700";
+      } catch (err) {
+        msg.textContent = "Couldn't send — please call us at (555) 014-7781.";
+        msg.className = "text-center text-sm h-5 text-red-600";
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Send order";
+      }
+    });
+  </script>
+</body>
+</html>

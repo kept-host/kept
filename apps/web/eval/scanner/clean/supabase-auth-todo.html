@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tickly — tiny todos</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body class="bg-stone-100 min-h-screen flex items-start justify-center py-16 px-4 font-sans">
+  <div class="w-full max-w-md">
+    <h1 class="text-4xl font-black text-stone-800 tracking-tight">tickly<span class="text-amber-500">.</span></h1>
+    <p class="text-stone-500 mt-1 mb-8">A tiny todo list that syncs across your devices.</p>
+
+    <!-- Auth -->
+    <section id="authView" class="bg-white rounded-2xl shadow-sm p-6 hidden">
+      <div class="flex gap-2 mb-5 text-sm">
+        <button data-mode="in" class="mode flex-1 py-2 rounded-lg bg-stone-800 text-white">Sign in</button>
+        <button data-mode="up" class="mode flex-1 py-2 rounded-lg bg-stone-100 text-stone-600">Create account</button>
+      </div>
+      <form id="authForm" class="space-y-3">
+        <input id="email" type="email" required placeholder="Email" class="w-full border border-stone-200 rounded-lg px-3 py-2" />
+        <input id="password" type="password" required minlength="6" placeholder="Password (6+ characters)" class="w-full border border-stone-200 rounded-lg px-3 py-2" />
+        <button class="w-full py-2.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-semibold" id="authBtn">Sign in</button>
+      </form>
+      <p id="authMsg" class="text-sm mt-3 text-stone-500"></p>
+    </section>
+
+    <!-- Todos -->
+    <section id="appView" class="hidden">
+      <div class="flex justify-between items-center mb-3 text-sm text-stone-500">
+        <span id="who"></span>
+        <button id="signOut" class="underline">Sign out</button>
+      </div>
+      <form id="addForm" class="flex gap-2 mb-4">
+        <input id="newTodo" placeholder="What needs doing?" class="flex-1 border border-stone-200 rounded-lg px-3 py-2 bg-white" />
+        <button class="px-4 rounded-lg bg-stone-800 text-white">Add</button>
+      </form>
+      <ul id="list" class="bg-white rounded-2xl shadow-sm divide-y divide-stone-100"></ul>
+      <p id="empty" class="text-center text-stone-400 py-8 hidden">Nothing to do. Enjoy it. ☕</p>
+    </section>
+
+    <p class="text-xs text-stone-400 mt-10 text-center">Built by Ines Barros · data stored in Supabase</p>
+  </div>
+
+  <script>
+    // Public anon key — row level security restricts each user to their own rows.
+    const SUPABASE_URL = "https://abcdefghijkl.supabase.co";
+    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFiY2RlZmdoaWprbCIsInJvbGUiOiJhbm9uIn0.xyzabc123fakeSignatureForTickly";
+    const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    const $ = (id) => document.getElementById(id);
+    let mode = "in";
+    let user = null;
+
+    document.querySelectorAll(".mode").forEach((b) =>
+      b.addEventListener("click", () => {
+        mode = b.dataset.mode;
+        document.querySelectorAll(".mode").forEach((x) => {
+          const on = x === b;
+          x.classList.toggle("bg-stone-800", on);
+          x.classList.toggle("text-white", on);
+          x.classList.toggle("bg-stone-100", !on);
+          x.classList.toggle("text-stone-600", !on);
+        });
+        $("authBtn").textContent = mode === "in" ? "Sign in" : "Create account";
+      })
+    );
+
+    $("authForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const email = $("email").value.trim();
+      const password = $("password").value;
+      $("authMsg").textContent = "Working…";
+      const { data, error } =
+        mode === "in"
+          ? await sb.auth.signInWithPassword({ email, password })
+          : await sb.auth.signUp({ email, password });
+      if (error) return ($("authMsg").textContent = error.message);
+      if (mode === "up" && !data.session) {
+        $("authMsg").textContent = "Check your inbox to confirm your email, then sign in.";
+      }
+    });
+
+    $("signOut").onclick = () => sb.auth.signOut();
+
+    async function loadTodos() {
+      const { data, error } = await sb.from("todos").select("*").order("created_at", { ascending: true });
+      if (error) return console.error(error);
+      render(data);
+    }
+
+    function render(todos) {
+      $("empty").classList.toggle("hidden", todos.length > 0);
+      $("list").innerHTML = "";
+      todos.forEach((t) => {
+        const li = document.createElement("li");
+        li.className = "flex items-center gap-3 px-4 py-3";
+        li.innerHTML = `
+          <input type="checkbox" ${t.done ? "checked" : ""} class="w-4 h-4 accent-amber-500" />
+          <span class="flex-1 ${t.done ? "line-through text-stone-400" : ""}"></span>
+          <button class="text-stone-300 hover:text-red-500">✕</button>`;
+        li.querySelector("span").textContent = t.title;
+        li.querySelector("input").onchange = async (e) => {
+          await sb.from("todos").update({ done: e.target.checked }).eq("id", t.id);
+          loadTodos();
+        };
+        li.querySelector("button").onclick = async () => {
+          await sb.from("todos").delete().eq("id", t.id);
+          loadTodos();
+        };
+        $("list").appendChild(li);
+      });
+    }
+
+    $("addForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const title = $("newTodo").value.trim();
+      if (!title) return;
+      $("newTodo").value = "";
+      await sb.from("todos").insert({ title, user_id: user.id });
+      loadTodos();
+    });
+
+    sb.auth.onAuthStateChange((_event, session) => {
+      user = session?.user ?? null;
+      $("authView").classList.toggle("hidden", !!user);
+      $("appView").classList.toggle("hidden", !user);
+      if (user) {
+        $("who").textContent = user.email;
+        loadTodos();
+      }
+    });
+  </script>
+</body>
+</html>

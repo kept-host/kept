@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Osteria Lucciola — Menu</title>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;700&family=Work+Sans:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    body { margin: 0; background: #1d1a16; color: #efe6d6; font-family: 'Work Sans', sans-serif; }
+    .wrap { max-width: 780px; margin: 0 auto; padding: 48px 22px 64px; }
+    header { text-align: center; border-bottom: 1px solid #4a4237; padding-bottom: 28px; }
+    header h1 { font-family: 'Cormorant Garamond', serif; font-size: 3.2rem; margin: 0; letter-spacing: 2px; color: #e7c27d; }
+    header p { margin: 6px 0 0; color: #b5a78f; font-style: italic; }
+    nav { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin: 28px 0; }
+    nav button { background: transparent; border: 1px solid #6b5f4e; color: #efe6d6; padding: 6px 16px; border-radius: 999px; cursor: pointer; font-family: inherit; }
+    nav button.active { background: #e7c27d; color: #1d1a16; border-color: #e7c27d; }
+    .filters { text-align: center; font-size: .85rem; color: #b5a78f; margin-bottom: 20px; }
+    .filters label { margin: 0 8px; cursor: pointer; }
+    h2 { font-family: 'Cormorant Garamond', serif; font-size: 2rem; color: #e7c27d; margin: 36px 0 12px; }
+    .item { display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; padding: 14px 0; border-bottom: 1px dotted #4a4237; }
+    .item .name { font-weight: 500; font-size: 1.05rem; }
+    .item .price { color: #e7c27d; font-weight: 500; }
+    .item .desc { grid-column: 1 / -1; color: #b5a78f; font-size: .9rem; }
+    .tag { display: inline-block; font-size: .65rem; padding: 2px 6px; border-radius: 4px; margin-left: 6px; vertical-align: middle; font-weight: 600; }
+    .tag.v { background: #3f5f36; } .tag.vg { background: #2e5a4c; } .tag.gf { background: #6a4d26; } .tag.n { background: #6a2f2f; }
+    .info { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 48px; padding-top: 28px; border-top: 1px solid #4a4237; }
+    .info h3 { font-family: 'Cormorant Garamond', serif; color: #e7c27d; font-size: 1.4rem; margin: 0 0 8px; }
+    .info table { font-size: .9rem; color: #d4c8b3; }
+    .info td { padding: 2px 12px 2px 0; }
+    .open-now { display: inline-block; margin-top: 8px; font-size: .8rem; padding: 3px 10px; border-radius: 999px; }
+    a { color: #e7c27d; }
+    @media (max-width: 600px) { .info { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Osteria Lucciola</h1>
+    <p>Seasonal Ligurian cooking · Since 2011</p>
+  </header>
+
+  <nav id="tabs"></nav>
+  <div class="filters">
+    <label><input type="checkbox" data-filter="v"> Vegetarian</label>
+    <label><input type="checkbox" data-filter="vg"> Vegan</label>
+    <label><input type="checkbox" data-filter="gf"> Gluten-free</label>
+  </div>
+  <div id="menu"></div>
+
+  <section class="info">
+    <div>
+      <h3>Opening hours</h3>
+      <table id="hours"></table>
+      <span id="openNow" class="open-now"></span>
+    </div>
+    <div>
+      <h3>Find us</h3>
+      <p>Via delle Lucciole 14<br>16123 Genova, Italy</p>
+      <p><a href="https://www.openstreetmap.org/?mlat=44.4072&mlon=8.9339#map=18/44.4072/8.9339" target="_blank" rel="noopener">Open in map ↗</a></p>
+      <p>Bookings: +39 010 555 0142</p>
+    </div>
+  </section>
+</div>
+
+<script>
+  const MENU = {
+    'Antipasti': [
+      { name: 'Focaccia di Recco', price: 9, desc: 'Paper-thin focaccia filled with stracchino cheese', tags: ['v'] },
+      { name: 'Acciughe ripiene', price: 12, desc: 'Fried Ligurian anchovies stuffed with herbs and parmesan', tags: [] },
+      { name: 'Farinata', price: 7, desc: 'Chickpea flatbread baked in a wood oven, rosemary, black pepper', tags: ['vg', 'gf'] },
+    ],
+    'Primi': [
+      { name: 'Trofie al pesto', price: 15, desc: 'Hand-rolled trofie, basil pesto, potato and green beans', tags: ['v', 'n'] },
+      { name: 'Pansoti in salsa di noci', price: 16, desc: 'Herb-filled ravioli with walnut sauce', tags: ['v', 'n'] },
+      { name: 'Risotto ai funghi', price: 17, desc: 'Carnaroli rice, porcini, thyme, aged parmesan', tags: ['v', 'gf'] },
+    ],
+    'Secondi': [
+      { name: 'Branzino al forno', price: 26, desc: 'Whole sea bass baked with Taggiasca olives, potatoes and pine nuts', tags: ['gf', 'n'] },
+      { name: 'Coniglio alla ligure', price: 22, desc: 'Rabbit braised with white wine, olives and rosemary', tags: ['gf'] },
+      { name: 'Melanzane ripiene', price: 18, desc: 'Stuffed aubergines, tomato, oregano and breadcrumbs', tags: ['vg'] },
+    ],
+    'Dolci': [
+      { name: 'Pandolce genovese', price: 7, desc: 'Traditional sweet bread with candied orange, raisins and fennel seed', tags: ['v', 'n'] },
+      { name: 'Panna cotta al basilico', price: 8, desc: 'Basil panna cotta with macerated strawberries', tags: ['v', 'gf'] },
+    ],
+  };
+  const TAG_LABEL = { v: 'V', vg: 'VG', gf: 'GF', n: 'NUTS' };
+  const HOURS = [
+    ['Monday', null], ['Tuesday', [12, 15, 19, 23]], ['Wednesday', [12, 15, 19, 23]], ['Thursday', [12, 15, 19, 23]],
+    ['Friday', [12, 15, 19, 24]], ['Saturday', [12, 16, 19, 24]], ['Sunday', [12, 16, null, null]],
+  ];
+
+  let activeCat = 'All';
+  const activeFilters = new Set();
+
+  function renderTabs() {
+    const tabs = document.getElementById('tabs');
+    tabs.innerHTML = '';
+    ['All', ...Object.keys(MENU)].forEach(cat => {
+      const b = document.createElement('button');
+      b.textContent = cat;
+      b.className = cat === activeCat ? 'active' : '';
+      b.onclick = () => { activeCat = cat; renderTabs(); renderMenu(); };
+      tabs.appendChild(b);
+    });
+  }
+
+  function renderMenu() {
+    const root = document.getElementById('menu');
+    root.innerHTML = '';
+    Object.entries(MENU).forEach(([cat, items]) => {
+      if (activeCat !== 'All' && activeCat !== cat) return;
+      const visible = items.filter(i => [...activeFilters].every(f => i.tags.includes(f)));
+      if (!visible.length) return;
+      root.insertAdjacentHTML('beforeend', `<h2>${cat}</h2>`);
+      visible.forEach(i => {
+        const tags = i.tags.map(t => `<span class="tag ${t}">${TAG_LABEL[t]}</span>`).join('');
+        root.insertAdjacentHTML('beforeend',
+          `<div class="item"><span class="name">${i.name}${tags}</span><span class="price">€${i.price}</span><span class="desc">${i.desc}</span></div>`);
+      });
+    });
+  }
+
+  function renderHours() {
+    const fmt = h => `${String(h % 24).padStart(2, '0')}:00`;
+    document.getElementById('hours').innerHTML = HOURS.map(([day, h]) => {
+      if (!h) return `<tr><td>${day}</td><td>Closed</td></tr>`;
+      const dinner = h[2] ? ` · ${fmt(h[2])}–${fmt(h[3])}` : '';
+      return `<tr><td>${day}</td><td>${fmt(h[0])}–${fmt(h[1])}${dinner}</td></tr>`;
+    }).join('');
+
+    const now = new Date();
+    const today = HOURS[(now.getDay() + 6) % 7][1];
+    const hr = now.getHours();
+    const open = today && ((hr >= today[0] && hr < today[1]) || (today[2] && hr >= today[2] && hr < today[3]));
+    const badge = document.getElementById('openNow');
+    badge.textContent = open ? '● Open now' : '● Closed now';
+    badge.style.background = open ? '#3f5f36' : '#6a2f2f';
+  }
+
+  document.querySelectorAll('[data-filter]').forEach(cb => cb.addEventListener('change', () => {
+    cb.checked ? activeFilters.add(cb.dataset.filter) : activeFilters.delete(cb.dataset.filter);
+    renderMenu();
+  }));
+
+  renderTabs();
+  renderMenu();
+  renderHours();
+</script>
+</body>
+</html>

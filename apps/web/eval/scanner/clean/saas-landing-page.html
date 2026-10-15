@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Driftwood Analytics — Product analytics that respects your users</title>
+  <meta name="description" content="Privacy-first product analytics for small teams. Funnels, retention and session insights without the cookie banner.">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;700;800&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: { extend: { fontFamily: { sans: ['Plus Jakarta Sans', 'sans-serif'] }, colors: { drift: { 50: '#f4f8f7', 500: '#2f7d6d', 600: '#24675a', 900: '#12302a' } } } }
+    }
+  </script>
+</head>
+<body class="font-sans text-slate-700 antialiased">
+  <nav class="sticky top-0 z-20 bg-white/80 backdrop-blur border-b border-slate-100">
+    <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+      <a href="/" class="flex items-center gap-2 font-extrabold text-drift-900 text-lg"><span class="w-7 h-7 rounded-lg bg-drift-500 inline-block"></span>Driftwood</a>
+      <div class="hidden md:flex gap-8 text-sm">
+        <a href="#features" class="hover:text-drift-600">Features</a>
+        <a href="#pricing" class="hover:text-drift-600">Pricing</a>
+        <a href="#faq" class="hover:text-drift-600">FAQ</a>
+        <a href="/docs" class="hover:text-drift-600">Docs</a>
+      </div>
+      <div class="flex items-center gap-3 text-sm">
+        <a href="/login" class="hidden sm:inline hover:text-drift-600">Log in</a>
+        <a href="/signup" class="bg-drift-500 hover:bg-drift-600 text-white font-semibold px-4 py-2 rounded-lg">Start free trial</a>
+      </div>
+    </div>
+  </nav>
+
+  <header class="bg-gradient-to-b from-drift-50 to-white">
+    <div class="max-w-6xl mx-auto px-6 py-24 text-center">
+      <span class="inline-block bg-drift-500/10 text-drift-600 text-xs font-bold px-3 py-1 rounded-full mb-6">NEW · Retention cohorts are here</span>
+      <h1 class="text-4xl md:text-6xl font-extrabold text-drift-900 tracking-tight leading-tight">Understand your product.<br class="hidden md:block"> Not your users' private lives.</h1>
+      <p class="mt-6 text-lg max-w-2xl mx-auto text-slate-500">Driftwood gives small teams funnels, retention and feature adoption in one lightweight script — no cookies, no fingerprinting, fully GDPR-friendly.</p>
+      <div class="mt-10 flex flex-col sm:flex-row justify-center gap-4">
+        <a href="/signup" class="bg-drift-500 hover:bg-drift-600 text-white font-semibold px-8 py-3.5 rounded-xl shadow-lg shadow-drift-500/30">Start free trial</a>
+        <a href="/demo" class="bg-white border border-slate-200 hover:border-drift-500 font-semibold px-8 py-3.5 rounded-xl">See a live demo →</a>
+      </div>
+      <p class="mt-4 text-xs text-slate-400">14 days free · No credit card required</p>
+    </div>
+  </header>
+
+  <section id="features" class="max-w-6xl mx-auto px-6 py-20">
+    <h2 class="text-3xl font-extrabold text-drift-900 text-center">Everything you need, nothing you don't</h2>
+    <div class="grid md:grid-cols-3 gap-8 mt-14">
+      <div class="p-6 rounded-2xl border border-slate-100 hover:shadow-lg transition">
+        <div class="text-3xl mb-4">📈</div>
+        <h3 class="font-bold text-drift-900 mb-2">Funnels in seconds</h3>
+        <p class="text-sm text-slate-500">Pick the steps, see where people drop off. Break down by plan, country or referrer with one click.</p>
+      </div>
+      <div class="p-6 rounded-2xl border border-slate-100 hover:shadow-lg transition">
+        <div class="text-3xl mb-4">🔁</div>
+        <h3 class="font-bold text-drift-900 mb-2">Retention cohorts</h3>
+        <p class="text-sm text-slate-500">Weekly and monthly cohorts that show whether this release actually made people come back.</p>
+      </div>
+      <div class="p-6 rounded-2xl border border-slate-100 hover:shadow-lg transition">
+        <div class="text-3xl mb-4">🪶</div>
+        <h3 class="font-bold text-drift-900 mb-2">A 2 KB script</h3>
+        <p class="text-sm text-slate-500">Loads async, never blocks rendering, and won't touch your Lighthouse score.</p>
+      </div>
+      <div class="p-6 rounded-2xl border border-slate-100 hover:shadow-lg transition">
+        <div class="text-3xl mb-4">🛡️</div>
+        <h3 class="font-bold text-drift-900 mb-2">Privacy by default</h3>
+        <p class="text-sm text-slate-500">No cookies, IPs discarded at the edge, data hosted in Frankfurt. Skip the consent banner.</p>
+      </div>
+      <div class="p-6 rounded-2xl border border-slate-100 hover:shadow-lg transition">
+        <div class="text-3xl mb-4">🔌</div>
+        <h3 class="font-bold text-drift-900 mb-2">Integrations</h3>
+        <p class="text-sm text-slate-500">Send weekly digests to Slack, export to BigQuery, or pull anything via our REST API.</p>
+      </div>
+      <div class="p-6 rounded-2xl border border-slate-100 hover:shadow-lg transition">
+        <div class="text-3xl mb-4">👥</div>
+        <h3 class="font-bold text-drift-900 mb-2">Built for teams</h3>
+        <p class="text-sm text-slate-500">Shared dashboards, annotations for launches, and unlimited seats on every plan.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="pricing" class="bg-drift-50 py-20">
+    <div class="max-w-6xl mx-auto px-6">
+      <h2 class="text-3xl font-extrabold text-drift-900 text-center">Simple pricing that scales with you</h2>
+      <p class="text-center text-slate-500 mt-3">Billed monthly. Change or cancel anytime.</p>
+      <div class="grid md:grid-cols-3 gap-6 mt-12">
+        <div class="bg-white rounded-2xl p-8 border border-slate-100">
+          <h3 class="font-bold text-drift-900">Hobby</h3>
+          <p class="mt-4"><span class="text-4xl font-extrabold text-drift-900">$9</span>/mo</p>
+          <p class="text-sm text-slate-500 mt-2">Up to 20k monthly events</p>
+          <ul class="mt-6 space-y-2 text-sm"><li>✓ 1 project</li><li>✓ Funnels &amp; retention</li><li>✓ 1 year data retention</li></ul>
+          <a href="/signup?plan=hobby" class="block mt-8 text-center border border-drift-500 text-drift-600 font-semibold py-2.5 rounded-lg hover:bg-drift-50">Start free trial</a>
+        </div>
+        <div class="bg-drift-900 text-white rounded-2xl p-8 ring-4 ring-drift-500/40 relative">
+          <span class="absolute -top-3 left-1/2 -translate-x-1/2 bg-amber-400 text-drift-900 text-xs font-bold px-3 py-1 rounded-full">Most popular</span>
+          <h3 class="font-bold">Startup</h3>
+          <p class="mt-4"><span class="text-4xl font-extrabold">$39</span>/mo</p>
+          <p class="text-sm text-drift-50/70 mt-2">Up to 500k monthly events</p>
+          <ul class="mt-6 space-y-2 text-sm"><li>✓ 10 projects</li><li>✓ Cohorts &amp; breakdowns</li><li>✓ Slack digests</li><li>✓ 3 years data retention</li></ul>
+          <a href="/signup?plan=startup" class="block mt-8 text-center bg-drift-500 hover:bg-drift-600 font-semibold py-2.5 rounded-lg">Start free trial</a>
+        </div>
+        <div class="bg-white rounded-2xl p-8 border border-slate-100">
+          <h3 class="font-bold text-drift-900">Scale</h3>
+          <p class="mt-4"><span class="text-4xl font-extrabold text-drift-900">$149</span>/mo</p>
+          <p class="text-sm text-slate-500 mt-2">Up to 5M monthly events</p>
+          <ul class="mt-6 space-y-2 text-sm"><li>✓ Unlimited projects</li><li>✓ BigQuery export</li><li>✓ SSO &amp; audit log</li><li>✓ Priority support</li></ul>
+          <a href="/signup?plan=scale" class="block mt-8 text-center border border-drift-500 text-drift-600 font-semibold py-2.5 rounded-lg hover:bg-drift-50">Start free trial</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="faq" class="max-w-3xl mx-auto px-6 py-20">
+    <h2 class="text-3xl font-extrabold text-drift-900 text-center mb-10">Frequently asked questions</h2>
+    <div class="space-y-3" id="faqList">
+      <details class="group border border-slate-200 rounded-xl p-5"><summary class="font-semibold cursor-pointer text-drift-900">Do I need a cookie banner?</summary><p class="mt-3 text-sm text-slate-500">No. Driftwood doesn't set cookies or store personal data, so most teams in the EU don't need consent for it. Check with your own counsel if you're unsure.</p></details>
+      <details class="group border border-slate-200 rounded-xl p-5"><summary class="font-semibold cursor-pointer text-drift-900">What happens if I go over my event limit?</summary><p class="mt-3 text-sm text-slate-500">We keep collecting. You'll get an email and can upgrade within 30 days — we never drop your data.</p></details>
+      <details class="group border border-slate-200 rounded-xl p-5"><summary class="font-semibold cursor-pointer text-drift-900">Can I import data from Google Analytics?</summary><p class="mt-3 text-sm text-slate-500">Yes, we import up to 24 months of GA4 history on Startup and Scale plans.</p></details>
+      <details class="group border border-slate-200 rounded-xl p-5"><summary class="font-semibold cursor-pointer text-drift-900">Is there a free plan?</summary><p class="mt-3 text-sm text-slate-500">Every plan starts with a 14-day free trial. Open-source projects and non-profits can apply for a free Startup plan.</p></details>
+    </div>
+  </section>
+
+  <section class="bg-drift-900 text-white text-center py-16 px-6">
+    <h2 class="text-3xl font-extrabold">Ready to see what your users actually do?</h2>
+    <a href="/signup" class="inline-block mt-8 bg-amber-400 hover:bg-amber-300 text-drift-900 font-bold px-8 py-3.5 rounded-xl">Start free trial</a>
+  </section>
+
+  <footer class="text-center text-xs text-slate-400 py-8">© 2026 Driftwood Analytics Ltd. · <a href="/privacy" class="underline">Privacy</a> · <a href="/terms" class="underline">Terms</a></footer>
+</body>
+</html>

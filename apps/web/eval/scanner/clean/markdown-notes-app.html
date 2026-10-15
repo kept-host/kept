@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quill Notes</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+  <style>
+    :root {
+      --bg: #f7f7f5;
+      --panel: #ffffff;
+      --border: #e7e5e4;
+      --text: #1c1917;
+      --muted: #78716c;
+      --accent: #7c3aed;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: grid; grid-template-columns: 260px 1fr 1fr; }
+    aside { border-right: 1px solid var(--border); background: var(--panel); display: flex; flex-direction: column; }
+    aside header { padding: 16px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); }
+    aside h1 { font-size: 16px; margin: 0; }
+    aside button { background: var(--accent); color: white; border: none; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 13px; }
+    #search { margin: 12px 16px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
+    #list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+    #list li { padding: 10px 16px; cursor: pointer; border-bottom: 1px solid #f5f5f4; }
+    #list li.active { background: #f3e8ff; }
+    #list li .title { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #list li .date { font-size: 11px; color: var(--muted); }
+    textarea { border: none; resize: none; padding: 24px; font: 14px/1.6 ui-monospace, Menlo, monospace; background: var(--bg); color: var(--text); outline: none; border-right: 1px solid var(--border); }
+    #preview { padding: 24px 32px; overflow-y: auto; background: var(--panel); line-height: 1.65; }
+    #preview code { background: #f5f5f4; padding: 2px 5px; border-radius: 4px; }
+    #preview pre { background: #1c1917; color: #fafaf9; padding: 14px; border-radius: 8px; overflow-x: auto; }
+    #preview pre code { background: none; padding: 0; }
+    #preview blockquote { border-left: 3px solid var(--accent); margin: 0; padding-left: 14px; color: var(--muted); }
+    .toolbar { position: fixed; bottom: 12px; right: 16px; font-size: 12px; color: var(--muted); }
+    .delete { background: none !important; color: #dc2626 !important; padding: 0 !important; }
+    @media (max-width: 800px) { body { grid-template-columns: 1fr; } aside { max-height: 35vh; } #preview { display: none; } }
+  </style>
+</head>
+<body>
+  <aside>
+    <header>
+      <h1>📝 Quill Notes</h1>
+      <button id="new">+ New</button>
+    </header>
+    <input id="search" placeholder="Search notes…">
+    <ul id="list"></ul>
+  </aside>
+  <textarea id="editor" spellcheck="false" placeholder="Start writing in Markdown…"></textarea>
+  <article id="preview"></article>
+  <div class="toolbar"><span id="saved">Saved</span> · <button class="delete" id="delete">Delete note</button></div>
+
+<script>
+  const STORAGE_KEY = 'quill-notes-v1';
+  const welcome = `# Welcome to Quill Notes
+
+A tiny, private notes app. Everything is saved **in your browser** — nothing leaves your device.
+
+## Tips
+- Write in *Markdown* on the left, see it rendered on the right
+- Notes are sorted by last edited
+- Use the search box to filter by title or content
+
+\`\`\`js
+console.log('Code blocks work too');
+\`\`\`
+
+> "The palest ink is better than the best memory."
+`;
+
+  let notes = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null') || [
+    { id: crypto.randomUUID(), body: welcome, updated: Date.now() }
+  ];
+  let currentId = notes[0].id;
+  let saveTimer;
+
+  const editor = document.getElementById('editor');
+  const preview = document.getElementById('preview');
+  const list = document.getElementById('list');
+  const search = document.getElementById('search');
+
+  marked.setOptions({ breaks: true, gfm: true });
+
+  function titleOf(note) {
+    const first = note.body.split('\n').find(l => l.trim()) || 'Untitled';
+    return first.replace(/^#+\s*/, '').slice(0, 60);
+  }
+
+  function persist() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));
+    document.getElementById('saved').textContent = 'Saved';
+  }
+
+  function renderList() {
+    const q = search.value.toLowerCase();
+    list.innerHTML = '';
+    notes
+      .slice()
+      .sort((a, b) => b.updated - a.updated)
+      .filter(n => n.body.toLowerCase().includes(q))
+      .forEach(n => {
+        const li = document.createElement('li');
+        li.className = n.id === currentId ? 'active' : '';
+        li.innerHTML = `<div class="title"></div><div class="date">${new Date(n.updated).toLocaleString()}</div>`;
+        li.querySelector('.title').textContent = titleOf(n);
+        li.onclick = () => open(n.id);
+        list.appendChild(li);
+      });
+  }
+
+  function open(id) {
+    currentId = id;
+    const note = notes.find(n => n.id === id);
+    editor.value = note.body;
+    preview.innerHTML = marked.parse(note.body);
+    renderList();
+  }
+
+  editor.addEventListener('input', () => {
+    const note = notes.find(n => n.id === currentId);
+    note.body = editor.value;
+    note.updated = Date.now();
+    preview.innerHTML = marked.parse(note.body);
+    document.getElementById('saved').textContent = 'Saving…';
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => { persist(); renderList(); }, 400);
+  });
+
+  document.getElementById('new').onclick = () => {
+    const note = { id: crypto.randomUUID(), body: '# New note\n\n', updated: Date.now() };
+    notes.push(note);
+    persist();
+    open(note.id);
+    editor.focus();
+  };
+
+  document.getElementById('delete').onclick = () => {
+    if (notes.length === 1) return alert('You need at least one note.');
+    if (!confirm('Delete this note?')) return;
+    notes = notes.filter(n => n.id !== currentId);
+    persist();
+    open(notes[0].id);
+  };
+
+  search.addEventListener('input', renderList);
+  open(currentId);
+</script>
+</body>
+</html>

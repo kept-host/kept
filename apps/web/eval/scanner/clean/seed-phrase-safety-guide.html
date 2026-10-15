@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Your seed phrase: what it is and why you must never share it</title>
+  <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@400;600&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    :root { --ink: #1c1917; --muted: #57534e; --paper: #fffdf8; --line: #e7e5e4; --warn: #b91c1c; --ok: #15803d; }
+    body { margin: 0; background: var(--paper); color: var(--ink); font: 18px/1.7 "Source Serif 4", Georgia, serif; }
+    article { max-width: 700px; margin: 0 auto; padding: 56px 22px 80px; }
+    .kicker { font: 600 13px/1 Inter, sans-serif; letter-spacing: .1em; text-transform: uppercase; color: #a16207; }
+    h1 { font-size: 2.3rem; line-height: 1.2; margin: 14px 0 10px; }
+    .byline { font: 14px Inter, sans-serif; color: var(--muted); margin-bottom: 36px; }
+    h2 { font-size: 1.45rem; margin-top: 2.4em; }
+    .callout { border-left: 4px solid var(--warn); background: #fef2f2; padding: 16px 20px; margin: 28px 0; font-family: Inter, sans-serif; font-size: 16px; }
+    .callout strong { color: var(--warn); }
+    .words { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; font: 14px/1 "Courier New", monospace; margin: 20px 0; }
+    .words span { border: 1px dashed var(--line); padding: 10px; border-radius: 6px; color: #a8a29e; }
+    ul.check { list-style: none; padding: 0; font-family: Inter, sans-serif; font-size: 16px; }
+    ul.check li { padding: 10px 0 10px 34px; border-bottom: 1px solid var(--line); position: relative; }
+    ul.check li::before { content: "☐"; position: absolute; left: 4px; font-size: 20px; top: 6px; }
+    ul.check li.done::before { content: "☑"; color: var(--ok); }
+    table { width: 100%; border-collapse: collapse; font: 15px Inter, sans-serif; }
+    th, td { text-align: left; padding: 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { background: #f5f5f4; }
+    footer { font: 13px Inter, sans-serif; color: var(--muted); margin-top: 60px; border-top: 1px solid var(--line); padding-top: 20px; }
+  </style>
+</head>
+<body>
+<article>
+  <div class="kicker">Crypto basics · Part 2</div>
+  <h1>Your seed phrase: what it is and why you must never share it</h1>
+  <div class="byline">By Tomasz Wilk · 8 min read · Updated October 2026</div>
+
+  <p>If you've just set up your first crypto wallet, you were probably shown a list of 12 or 24 ordinary English words and told to write them down. That list is your <em>seed phrase</em> (also called a recovery phrase or mnemonic). It is the single most important thing you own in crypto — more important than your password, your phone, or the wallet app itself.</p>
+
+  <div class="words">
+    <span>1. ••••••</span><span>2. ••••••</span><span>3. ••••••</span><span>4. ••••••</span>
+    <span>5. ••••••</span><span>6. ••••••</span><span>7. ••••••</span><span>8. ••••••</span>
+    <span>9. ••••••</span><span>10. ••••••</span><span>11. ••••••</span><span>12. ••••••</span>
+  </div>
+
+  <h2>What the words actually do</h2>
+  <p>A wallet doesn't "store" your coins — they live on the blockchain. What the wallet stores is a private key that proves you're allowed to move them. Your seed phrase is a human-readable backup from which every one of your private keys can be regenerated. Type those words into <em>any</em> compatible wallet, anywhere in the world, and you get full control of the funds.</p>
+  <p>That's the point: if your phone falls in a lake, the words get you back in. But it also means that anyone else who sees the words gets in too — and there is no bank, no chargeback, and no "forgot my password" link to undo it.</p>
+
+  <div class="callout">
+    <strong>The one rule:</strong> No legitimate person or company will ever ask for your seed phrase. Not wallet support, not an exchange, not a "validator", not an airdrop, not a friend who's "just helping". If a website, form, chat or email asks you to type it in, it is a scam. Close it.
+  </div>
+
+  <h2>How people actually lose their funds</h2>
+  <table>
+    <tr><th>The trick</th><th>What it looks like</th></tr>
+    <tr><td>Fake support</td><td>You post a question publicly and get a DM from "Wallet Support" offering to help you "sync" or "validate" your wallet.</td></tr>
+    <tr><td>Look-alike sites</td><td>An ad or search result that looks exactly like your wallet's site, with a "restore wallet" form.</td></tr>
+    <tr><td>Airdrops & giveaways</td><td>"Claim your free tokens — just verify your wallet by entering your recovery phrase."</td></tr>
+    <tr><td>Cloud backups</td><td>Taking a screenshot of the words that silently syncs to a photo library, which is later compromised.</td></tr>
+  </table>
+
+  <h2>A safe-storage checklist</h2>
+  <p>Tick these off as you go (it's just for you — nothing here is saved):</p>
+  <ul class="check" id="checklist">
+    <li>I wrote my seed phrase on paper (or stamped it in metal), not in a notes app.</li>
+    <li>I have never photographed or screenshotted it.</li>
+    <li>I keep it somewhere safe from fire and water, and not labelled "crypto".</li>
+    <li>I considered a second copy in a separate location.</li>
+    <li>I understand that anyone asking for it — for any reason — is trying to steal from me.</li>
+    <li>I know that connecting a wallet to a site only ever requires approving a request in my wallet app, never typing words.</li>
+  </ul>
+
+  <h2>"But what if I really need help?"</h2>
+  <p>Go directly to your wallet's official website by typing the address yourself, and use their documented help centre. Real support staff can troubleshoot without ever seeing your words. If someone insists they need them, that tells you everything.</p>
+
+  <footer>
+    Written for the Beginner's Ledger newsletter. Share it with someone who just bought their first coin.
+  </footer>
+</article>
+<script>
+  // purely visual tick boxes
+  document.querySelectorAll("#checklist li").forEach(li =>
+    li.addEventListener("click", () => li.classList.toggle("done")));
+</script>
+</body>
+</html>

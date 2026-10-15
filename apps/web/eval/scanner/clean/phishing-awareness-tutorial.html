@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>How to spot a phishing page — Halyard Security Blog</title>
+  <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    body { margin: 0; background: #fff; color: #1d2433; font-family: 'Source Serif 4', Georgia, serif; font-size: 19px; line-height: 1.7; }
+    .top { font-family: 'Inter', sans-serif; border-bottom: 1px solid #e5e8ee; padding: 16px 24px; display: flex; justify-content: space-between; font-size: 14px; }
+    .top b { color: #0f5fd8; }
+    article { max-width: 720px; margin: 0 auto; padding: 48px 24px 80px; }
+    .kicker { font-family: 'Inter', sans-serif; font-size: 13px; text-transform: uppercase; letter-spacing: 1.5px; color: #0f5fd8; font-weight: 600; }
+    h1 { font-size: 44px; line-height: 1.15; margin: 10px 0 14px; }
+    .byline { font-family: 'Inter', sans-serif; font-size: 14px; color: #6a7387; margin-bottom: 36px; }
+    h2 { font-size: 28px; margin-top: 48px; }
+    .callout { background: #f3f7ff; border-left: 4px solid #0f5fd8; padding: 18px 22px; border-radius: 6px; font-size: 17px; margin: 28px 0; }
+    .callout.warn { background: #fff6ec; border-color: #e07b00; }
+    code { font-family: ui-monospace, Menlo, monospace; font-size: 16px; background: #f1f3f7; padding: 2px 6px; border-radius: 4px; }
+    .checklist { list-style: none; padding: 0; }
+    .checklist li { padding: 10px 0 10px 36px; position: relative; border-bottom: 1px dashed #e5e8ee; }
+    .checklist li::before { content: "⚑"; position: absolute; left: 6px; color: #d23c3c; }
+    table { width: 100%; border-collapse: collapse; font-family: 'Inter', sans-serif; font-size: 15px; margin: 24px 0; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #e5e8ee; vertical-align: top; }
+    th { background: #f7f8fa; }
+    footer { font-family: 'Inter', sans-serif; font-size: 13px; color: #6a7387; border-top: 1px solid #e5e8ee; padding: 24px; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="top"><b>Halyard · Security Awareness</b><span>Internal blog · Issue 14</span></div>
+
+  <article>
+    <div class="kicker">Security awareness</div>
+    <h1>How to spot a phishing page</h1>
+    <div class="byline">By Ruth Adeyemi, Security Team · 7 min read</div>
+
+    <p>Last quarter, 38 people across Halyard reported suspicious emails to the security inbox. That's great. But four people also typed their credentials into a page that wasn't what it claimed to be. This post walks through what those pages looked like, and the habits that would have caught them.</p>
+
+    <div class="callout">
+      <strong>The one rule:</strong> never sign in from a link in an email. Open a new tab, type the address you already know, or use your bookmark. If the request was real, it will be waiting for you there.
+    </div>
+
+    <h2>1. The fake login page</h2>
+    <p>The most common attack is a copy of a sign-in page you use every day — your email, your payroll portal, a file-sharing service. Attackers download the real page's HTML and images, so it can look pixel-perfect. The only thing they can't copy is the <em>address</em>.</p>
+    <p>Before typing a password, look at the domain in the address bar, reading from the right. The part just before the first single slash is what matters. A page at an address ending in something like "secure-login dot example-payroll dot xyz" is not your payroll provider, no matter what the logo says.</p>
+
+    <h2>2. Look-alike domains</h2>
+    <p>Attackers register names that are one character off from the real thing, betting that you'll skim. Some patterns we have seen in reports:</p>
+    <table>
+      <tr><th>Trick</th><th>What it looks like (written out)</th></tr>
+      <tr><td>Digit for letter</td><td>"paypa1 dot com" — a number one instead of a lowercase L</td></tr>
+      <tr><td>Letter pairs</td><td>"rn" standing in for "m", as in "rnicrosoft dot com"</td></tr>
+      <tr><td>Extra words</td><td>the real brand name followed by "-account-verify" on an unrelated domain</td></tr>
+      <tr><td>Wrong ending</td><td>the right brand name, but ending in an unusual country code or a new top-level domain</td></tr>
+      <tr><td>Subdomain disguise</td><td>the brand name at the <em>start</em> of a long address whose real domain is at the end</td></tr>
+    </table>
+
+    <h2>3. Manufactured urgency</h2>
+    <p>Phishing works best when you're rushed. Watch for messages that say your account <em>will be closed today</em>, that a payment <em>failed</em>, that a package <em>can't be delivered</em>, or that your CEO needs gift cards <em>before the meeting</em>. Real organisations rarely give you a 30-minute deadline.</p>
+
+    <div class="callout warn">
+      <strong>Note on padlocks:</strong> the padlock icon only means the connection is encrypted. Phishing sites get free certificates too. A padlock tells you nothing about who runs the page.
+    </div>
+
+    <h2>4. Things the page asks for</h2>
+    <p>Be suspicious of any page that asks for more than it should: a login form that also wants your phone number and date of birth, a "verification" step that asks for your full card number and PIN, or a prompt to approve a sign-in request you didn't start. Our IT team will never ask for your password, your MFA code, or a recovery phrase.</p>
+
+    <h2>Red flags checklist</h2>
+    <ul class="checklist">
+      <li>You arrived from a link in an email, text, or chat message.</li>
+      <li>The domain is not exactly the one you know, or it has extra words, digits, or hyphens.</li>
+      <li>The message pushes a deadline, a threat, or a reward.</li>
+      <li>The greeting is generic ("Dear user") or the sender address doesn't match the company.</li>
+      <li>The page asks for information the real service already has.</li>
+      <li>Your password manager doesn't offer to autofill — it matches on the real domain, so silence is a warning.</li>
+      <li>Something feels slightly off: a blurry logo, odd spacing, a mismatched footer year.</li>
+    </ul>
+
+    <h2>What to do if you clicked</h2>
+    <p>It happens to careful people. If you entered a password, change it immediately from the real site, then tell us in <code>#security-help</code> or call the service desk on extension 4400. The sooner we know, the smaller the problem. Nobody gets in trouble for reporting.</p>
+  </article>
+
+  <footer>Halyard Security Team · Questions? Ask in #security-help · Next issue: password managers, demystified</footer>
+</body>
+</html>

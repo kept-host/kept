@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tomato — Pomodoro Timer</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .ring { transition: stroke-dashoffset 1s linear; }
+  </style>
+</head>
+<body id="body" class="min-h-screen bg-rose-50 transition-colors duration-500 flex items-center justify-center p-6">
+  <main class="w-full max-w-md bg-white rounded-3xl shadow-xl p-8 text-center">
+    <h1 class="text-xl font-semibold text-slate-700">🍅 Tomato</h1>
+    <p class="text-sm text-slate-400 mb-6">Focus in short bursts. Rest on purpose.</p>
+
+    <div class="flex justify-center gap-2 mb-8" id="modes">
+      <button data-mode="focus" class="mode px-4 py-1.5 rounded-full text-sm font-medium">Focus</button>
+      <button data-mode="short" class="mode px-4 py-1.5 rounded-full text-sm font-medium">Short break</button>
+      <button data-mode="long" class="mode px-4 py-1.5 rounded-full text-sm font-medium">Long break</button>
+    </div>
+
+    <div class="relative w-64 h-64 mx-auto mb-8">
+      <svg class="w-full h-full -rotate-90" viewBox="0 0 120 120">
+        <circle cx="60" cy="60" r="54" fill="none" stroke="#f1f5f9" stroke-width="8" />
+        <circle id="progress" class="ring" cx="60" cy="60" r="54" fill="none" stroke="#f43f5e" stroke-width="8" stroke-linecap="round" stroke-dasharray="339.292" stroke-dashoffset="0" />
+      </svg>
+      <div class="absolute inset-0 flex flex-col items-center justify-center">
+        <span id="time" class="text-5xl font-bold text-slate-800 tabular-nums">25:00</span>
+        <span id="label" class="text-sm text-slate-400 mt-1">Time to focus</span>
+      </div>
+    </div>
+
+    <div class="flex justify-center gap-3 mb-6">
+      <button id="toggle" class="bg-rose-500 hover:bg-rose-600 text-white font-semibold px-8 py-3 rounded-xl">Start</button>
+      <button id="reset" class="bg-slate-100 hover:bg-slate-200 text-slate-600 font-semibold px-5 py-3 rounded-xl">Reset</button>
+    </div>
+
+    <div class="flex items-center justify-between text-sm text-slate-500 border-t pt-4">
+      <span>Sessions today: <strong id="sessions" class="text-slate-800">0</strong></span>
+      <label class="flex items-center gap-2 cursor-pointer">
+        <input type="checkbox" id="sound" checked class="accent-rose-500"> Sound
+      </label>
+    </div>
+    <div id="dots" class="flex justify-center gap-1.5 mt-4"></div>
+  </main>
+
+<script>
+  const DURATIONS = { focus: 25 * 60, short: 5 * 60, long: 15 * 60 };
+  const THEMES = {
+    focus: { bg: 'bg-rose-50', stroke: '#f43f5e', label: 'Time to focus' },
+    short: { bg: 'bg-emerald-50', stroke: '#10b981', label: 'Take a breather' },
+    long:  { bg: 'bg-sky-50', stroke: '#0ea5e9', label: 'Stretch your legs' },
+  };
+  const CIRC = 2 * Math.PI * 54;
+
+  let mode = 'focus';
+  let remaining = DURATIONS.focus;
+  let timer = null;
+  let sessions = Number(localStorage.getItem('tomato.sessions.' + new Date().toDateString()) || 0);
+
+  const $ = id => document.getElementById(id);
+
+  function beep() {
+    if (!$('sound').checked) return;
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    [0, 0.25, 0.5].forEach(t => {
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.2, ac.currentTime + t);
+      gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + t + 0.2);
+      osc.connect(gain).connect(ac.destination);
+      osc.start(ac.currentTime + t);
+      osc.stop(ac.currentTime + t + 0.2);
+    });
+    setTimeout(() => ac.close(), 1000);
+  }
+
+  function render() {
+    const m = String(Math.floor(remaining / 60)).padStart(2, '0');
+    const s = String(remaining % 60).padStart(2, '0');
+    $('time').textContent = `${m}:${s}`;
+    document.title = `${m}:${s} · Tomato`;
+    $('progress').style.strokeDashoffset = CIRC * (1 - remaining / DURATIONS[mode]);
+    $('sessions').textContent = sessions;
+    $('dots').innerHTML = Array.from({ length: 4 }, (_, i) =>
+      `<span class="w-2.5 h-2.5 rounded-full ${i < sessions % 4 ? 'bg-rose-500' : 'bg-slate-200'}"></span>`).join('');
+  }
+
+  function setMode(next) {
+    mode = next;
+    remaining = DURATIONS[mode];
+    stop();
+    const body = $('body');
+    body.classList.remove('bg-rose-50', 'bg-emerald-50', 'bg-sky-50');
+    body.classList.add(THEMES[mode].bg);
+    $('progress').setAttribute('stroke', THEMES[mode].stroke);
+    $('label').textContent = THEMES[mode].label;
+    document.querySelectorAll('.mode').forEach(b => {
+      const active = b.dataset.mode === mode;
+      b.className = `mode px-4 py-1.5 rounded-full text-sm font-medium ${active ? 'bg-slate-800 text-white' : 'text-slate-500 hover:bg-slate-100'}`;
+    });
+    render();
+  }
+
+  function stop() {
+    clearInterval(timer);
+    timer = null;
+    $('toggle').textContent = 'Start';
+  }
+
+  function finish() {
+    stop();
+    beep();
+    if (mode === 'focus') {
+      sessions++;
+      localStorage.setItem('tomato.sessions.' + new Date().toDateString(), sessions);
+      setMode(sessions % 4 === 0 ? 'long' : 'short');
+    } else {
+      setMode('focus');
+    }
+  }
+
+  $('toggle').addEventListener('click', () => {
+    if (timer) return stop();
+    $('toggle').textContent = 'Pause';
+    timer = setInterval(() => {
+      remaining--;
+      render();
+      if (remaining <= 0) finish();
+    }, 1000);
+  });
+
+  $('reset').addEventListener('click', () => setMode(mode));
+  document.querySelectorAll('.mode').forEach(b => b.addEventListener('click', () => setMode(b.dataset.mode)));
+
+  setMode('focus');
+</script>
+</body>
+</html>

@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Streaks · Habit Tracker</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+  <style>
+    :root { --bg: #fdfcf9; --ink: #222; --muted: #8a8a8a; --cell: #ecebe6; --on: #2f9e6b; }
+    body { margin: 0; font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--ink); }
+    .wrap { max-width: 920px; margin: 0 auto; padding: 40px 20px; }
+    h1 { margin: 0; font-size: 28px; }
+    .sub { color: var(--muted); margin: 4px 0 28px; }
+    .nav { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+    .nav button { border: 1px solid #ddd; background: white; border-radius: 8px; padding: 4px 10px; cursor: pointer; }
+    .nav strong { min-width: 160px; text-align: center; }
+    .grid { overflow-x: auto; }
+    table { border-collapse: separate; border-spacing: 4px; }
+    th { font-size: 11px; color: var(--muted); font-weight: 500; width: 22px; }
+    th.today { color: var(--on); font-weight: 700; }
+    td.name { padding-right: 12px; white-space: nowrap; font-weight: 500; }
+    td.name .emoji { margin-right: 6px; }
+    td.cell { width: 22px; height: 22px; background: var(--cell); border-radius: 5px; cursor: pointer; transition: transform .1s; }
+    td.cell:hover { transform: scale(1.15); }
+    td.cell.on { background: var(--hue, var(--on)); }
+    td.cell.future { opacity: .35; cursor: default; }
+    td.streak { padding-left: 12px; font-size: 13px; color: var(--muted); white-space: nowrap; }
+    td.streak b { color: var(--ink); }
+    td.remove button { border: none; background: none; color: #bbb; cursor: pointer; }
+    form { display: flex; gap: 8px; margin-top: 24px; }
+    form input { flex: 1; max-width: 280px; padding: 10px 12px; border: 1px solid #ddd; border-radius: 10px; font: inherit; }
+    form select, form button { padding: 10px 12px; border-radius: 10px; border: 1px solid #ddd; font: inherit; }
+    form button { background: var(--ink); color: white; border: none; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Streaks</h1>
+    <p class="sub">Small things, every day. Click a square to tick off a day.</p>
+    <div class="nav">
+      <button id="prev">←</button><strong id="monthLabel"></strong><button id="next">→</button>
+    </div>
+    <div class="grid"><table id="table"></table></div>
+    <form id="add">
+      <input id="habitName" placeholder="New habit, e.g. Read 20 pages" required>
+      <select id="habitEmoji"><option>📚</option><option>🏃</option><option>💧</option><option>🧘</option><option>🎸</option><option>🥦</option><option>✍️</option></select>
+      <button>Add habit</button>
+    </form>
+  </div>
+
+<script>
+  const KEY = 'streaks.data.v1';
+  const HUES = ['#2f9e6b', '#3b82f6', '#e5793b', '#a855f7', '#e11d48', '#0891b2', '#ca8a04'];
+  let data = JSON.parse(localStorage.getItem(KEY) || 'null') || {
+    habits: [
+      { id: 1, name: 'Morning walk', emoji: '🏃', done: {} },
+      { id: 2, name: 'Drink 2L water', emoji: '💧', done: {} },
+      { id: 3, name: 'Practice guitar', emoji: '🎸', done: {} },
+    ],
+  };
+  let view = new Date();
+  view.setDate(1);
+
+  const iso = d => d.toISOString().slice(0, 10);
+  const todayIso = iso(new Date());
+  const save = () => localStorage.setItem(KEY, JSON.stringify(data));
+
+  function currentStreak(habit) {
+    let n = 0;
+    const d = new Date();
+    if (!habit.done[iso(d)]) d.setDate(d.getDate() - 1);
+    while (habit.done[iso(d)]) { n++; d.setDate(d.getDate() - 1); }
+    return n;
+  }
+
+  function bestStreak(habit) {
+    const days = Object.keys(habit.done).filter(k => habit.done[k]).sort();
+    let best = 0, run = 0, prev = null;
+    days.forEach(k => {
+      const d = new Date(k);
+      run = prev && (d - prev) === 864e5 ? run + 1 : 1;
+      best = Math.max(best, run);
+      prev = d;
+    });
+    return best;
+  }
+
+  function render() {
+    const y = view.getFullYear(), m = view.getMonth();
+    const daysInMonth = new Date(y, m + 1, 0).getDate();
+    document.getElementById('monthLabel').textContent = view.toLocaleDateString('en', { month: 'long', year: 'numeric' });
+
+    let html = '<tr><th></th>';
+    for (let d = 1; d <= daysInMonth; d++) {
+      const k = iso(new Date(Date.UTC(y, m, d)));
+      html += `<th class="${k === todayIso ? 'today' : ''}">${d}</th>`;
+    }
+    html += '<th></th><th></th></tr>';
+
+    data.habits.forEach((h, i) => {
+      html += `<tr><td class="name"><span class="emoji">${h.emoji}</span>${h.name}</td>`;
+      for (let d = 1; d <= daysInMonth; d++) {
+        const k = iso(new Date(Date.UTC(y, m, d)));
+        const future = k > todayIso;
+        html += `<td class="cell ${h.done[k] ? 'on' : ''} ${future ? 'future' : ''}" style="--hue:${HUES[i % HUES.length]}" data-h="${h.id}" data-k="${k}" title="${k}"></td>`;
+      }
+      html += `<td class="streak">🔥 <b>${currentStreak(h)}</b> now · best ${bestStreak(h)}</td>`;
+      html += `<td class="remove"><button data-remove="${h.id}" title="Remove habit">✕</button></td></tr>`;
+    });
+
+    const table = document.getElementById('table');
+    table.innerHTML = html;
+    table.querySelectorAll('.cell:not(.future)').forEach(c => c.onclick = () => {
+      const habit = data.habits.find(h => h.id === +c.dataset.h);
+      habit.done[c.dataset.k] = !habit.done[c.dataset.k];
+      save(); render();
+    });
+    table.querySelectorAll('[data-remove]').forEach(b => b.onclick = () => {
+      if (!confirm('Remove this habit and its history?')) return;
+      data.habits = data.habits.filter(h => h.id !== +b.dataset.remove);
+      save(); render();
+    });
+  }
+
+  document.getElementById('prev').onclick = () => { view.setMonth(view.getMonth() - 1); render(); };
+  document.getElementById('next').onclick = () => { view.setMonth(view.getMonth() + 1); render(); };
+  document.getElementById('add').addEventListener('submit', e => {
+    e.preventDefault();
+    data.habits.push({ id: Date.now(), name: document.getElementById('habitName').value.trim(), emoji: document.getElementById('habitEmoji').value, done: {} });
+    e.target.reset();
+    save(); render();
+  });
+
+  render();
+</script>
+</body>
+</html>

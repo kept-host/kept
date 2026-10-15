@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Track your order · Little Kiln Pottery</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;700&family=Work+Sans:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    body { font-family: "Work Sans", sans-serif; }
+    .serif { font-family: Fraunces, serif; }
+  </style>
+</head>
+<body class="bg-[#f6efe6] text-[#3b2f2a] min-h-screen">
+  <header class="text-center pt-12">
+    <a href="/" class="serif text-3xl font-bold">Little Kiln</a>
+    <p class="text-sm text-[#8a6f5f] mt-1">Handmade stoneware from a garden studio in Asheville</p>
+  </header>
+
+  <main class="max-w-xl mx-auto px-6 py-10">
+    <div class="bg-white rounded-3xl shadow-sm p-8">
+      <h1 class="serif text-2xl font-bold">Where's my order?</h1>
+      <p class="text-sm text-[#8a6f5f] mt-2">Your order number is in your confirmation email and starts with <b>LK-</b>.</p>
+
+      <form id="trackForm" class="mt-6 space-y-4">
+        <div>
+          <label for="order" class="text-sm font-medium">Order number</label>
+          <input id="order" required placeholder="LK-10482" class="mt-1 w-full border border-[#e4d6c7] rounded-xl px-4 py-3 uppercase focus:outline-none focus:ring-2 focus:ring-[#c07a4f]" />
+        </div>
+        <div>
+          <label for="email" class="text-sm font-medium">Email used at checkout</label>
+          <input id="email" type="email" required class="mt-1 w-full border border-[#e4d6c7] rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-[#c07a4f]" />
+        </div>
+        <button class="w-full bg-[#c07a4f] hover:bg-[#a5653f] text-white font-medium py-3 rounded-xl">Track order</button>
+        <p id="formError" class="text-sm text-red-700 hidden"></p>
+      </form>
+    </div>
+
+    <div id="result" class="hidden bg-white rounded-3xl shadow-sm p-8 mt-6">
+      <div class="flex justify-between items-start">
+        <div>
+          <div class="text-xs uppercase tracking-wider text-[#8a6f5f]">Order</div>
+          <div id="rOrder" class="serif text-xl font-bold"></div>
+        </div>
+        <span id="rBadge" class="text-xs px-3 py-1 rounded-full bg-[#e7f1e8] text-[#2f6b3a]"></span>
+      </div>
+      <p id="rItems" class="text-sm text-[#8a6f5f] mt-2"></p>
+      <ol id="timeline" class="mt-8 relative border-l-2 border-[#e4d6c7] ml-2 space-y-6"></ol>
+      <p class="text-xs text-[#8a6f5f] mt-8">Every piece is wrapped in recycled paper and shipped with USPS Priority. Questions? Email <a class="underline" href="mailto:hello@littlekiln.shop">hello@littlekiln.shop</a> — Hannah reads every one.</p>
+    </div>
+  </main>
+
+  <script>
+    // Demo orders until the shop backend endpoint is ready
+    const ORDERS = {
+      "LK-10482": { email: "demo@example.com", items: "2 × Speckled mug (oat), 1 × Small bud vase", step: 3 },
+      "LK-10477": { email: "demo@example.com", items: "1 × Serving bowl (tide blue)", step: 5 },
+      "LK-10490": { email: "demo@example.com", items: "4 × Ramen bowl set", step: 1 },
+    };
+    const STEPS = [
+      ["Order received", "Thanks! We've got your order."],
+      ["Being made", "Your pieces are being thrown and trimmed on the wheel."],
+      ["In the kiln", "Glaze firing to cone 6 — about 24 hours including cooling."],
+      ["Packed", "Wrapped with care and labelled."],
+      ["Shipped", "Handed to USPS. Tracking: 9400 1118 9922 3344 5566 77"],
+      ["Delivered", "Enjoy! We'd love to see a photo of it in its new home."],
+    ];
+
+    document.getElementById("trackForm").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const id = document.getElementById("order").value.trim().toUpperCase();
+      const err = document.getElementById("formError");
+      const order = ORDERS[id];
+      if (!order) {
+        err.textContent = "We couldn't find that order. Double-check the number, or email us and we'll look it up.";
+        err.classList.remove("hidden");
+        document.getElementById("result").classList.add("hidden");
+        return;
+      }
+      err.classList.add("hidden");
+      document.getElementById("rOrder").textContent = id;
+      document.getElementById("rItems").textContent = order.items;
+      document.getElementById("rBadge").textContent = STEPS[order.step][0];
+      document.getElementById("timeline").innerHTML = STEPS.map(([title, desc], i) => `
+        <li class="ml-6">
+          <span class="absolute -left-[9px] w-4 h-4 rounded-full ${i <= order.step ? "bg-[#c07a4f]" : "bg-[#e4d6c7]"}"></span>
+          <div class="font-medium ${i <= order.step ? "" : "text-[#b9a597]"}">${title}</div>
+          ${i <= order.step ? `<div class="text-sm text-[#8a6f5f]">${desc}</div>` : ""}
+        </li>`).join("");
+      document.getElementById("result").classList.remove("hidden");
+    });
+  </script>
+</body>
+</html>

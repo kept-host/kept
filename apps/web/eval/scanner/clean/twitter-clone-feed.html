@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>X / Twitter Feed Clone (React)</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    body { margin: 0; background: #000; color: #e7e9ea; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .layout { display: grid; grid-template-columns: 260px 600px 320px; justify-content: center; min-height: 100vh; }
+    .nav { padding: 12px 20px; position: sticky; top: 0; height: 100vh; }
+    .nav .logo { font-size: 30px; font-weight: 800; padding: 8px 12px; }
+    .nav a { display: block; padding: 12px; font-size: 20px; border-radius: 999px; color: inherit; text-decoration: none; }
+    .nav a:hover { background: #181818; }
+    .nav .post-btn { margin-top: 16px; width: 90%; padding: 15px; border: 0; border-radius: 999px; background: #1d9bf0; color: #fff; font-weight: 700; font-size: 17px; }
+    .feed { border-left: 1px solid #2f3336; border-right: 1px solid #2f3336; }
+    .feed h1 { font-size: 20px; padding: 16px; margin: 0; border-bottom: 1px solid #2f3336; position: sticky; top: 0; background: rgba(0,0,0,.75); backdrop-filter: blur(8px); }
+    .compose { display: flex; gap: 12px; padding: 16px; border-bottom: 1px solid #2f3336; }
+    .avatar { width: 40px; height: 40px; border-radius: 50%; flex-shrink: 0; display: grid; place-items: center; font-weight: 700; }
+    .compose textarea { width: 100%; background: transparent; border: 0; color: inherit; font-size: 20px; resize: none; outline: none; font-family: inherit; }
+    .compose .row { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
+    .compose .count { color: #71767b; font-size: 13px; }
+    .compose button { padding: 8px 18px; border: 0; border-radius: 999px; background: #1d9bf0; color: #fff; font-weight: 700; }
+    .compose button:disabled { opacity: .5; }
+    .tweet { display: flex; gap: 12px; padding: 14px 16px; border-bottom: 1px solid #2f3336; }
+    .tweet:hover { background: #080808; }
+    .tweet .name { font-weight: 700; }
+    .tweet .handle { color: #71767b; }
+    .tweet p { margin: 4px 0 10px; line-height: 1.4; white-space: pre-wrap; }
+    .actions { display: flex; justify-content: space-between; max-width: 420px; color: #71767b; font-size: 13px; }
+    .actions button { background: none; border: 0; color: inherit; cursor: pointer; font-size: 13px; }
+    .actions button.liked { color: #f91880; }
+    .actions button.rt { color: #00ba7c; }
+    .side { padding: 12px 24px; }
+    .side .box { background: #16181c; border-radius: 16px; padding: 12px 16px; margin-bottom: 16px; }
+    .side .box h2 { font-size: 20px; margin: 4px 0 12px; }
+    .side .trend { padding: 8px 0; }
+    .side .trend small { color: #71767b; display: block; }
+    .note { font-size: 12px; color: #71767b; }
+    @media (max-width: 1200px) { .layout { grid-template-columns: 80px 600px; } .side { display: none; } .nav a span { display: none; } }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState } = React;
+
+    const seed = [
+      { id: 3, name: "Ana Lucero", handle: "analucero", color: "#7856ff", text: "Shipped dark mode for our side project tonight. The trick was moving every color to CSS variables first — the toggle itself took 10 minutes.", likes: 42, rts: 6, replies: 4, liked: false, rted: false, mins: 12 },
+      { id: 2, name: "Devon Park", handle: "devonbuilds", color: "#ff7a00", text: "Hot take: most dashboards would be better as a single well-written paragraph.", likes: 318, rts: 51, replies: 87, liked: false, rted: false, mins: 47 },
+      { id: 1, name: "Rue Okonkwo", handle: "rue_codes", color: "#00ba7c", text: "Day 30 of #100DaysOfCode ✅\n\nBuilt a Twitter feed clone in React with zero build step. Babel standalone is a cheat code for prototypes.", likes: 97, rts: 12, replies: 9, liked: true, rted: false, mins: 125 },
+    ];
+
+    const ago = (m) => (m < 60 ? `${m}m` : `${Math.floor(m / 60)}h`);
+
+    function Compose({ onPost }) {
+      const [text, setText] = useState("");
+      const left = 280 - text.length;
+      return (
+        <div className="compose">
+          <div className="avatar" style={{ background: "#1d9bf0" }}>Y</div>
+          <div style={{ flex: 1 }}>
+            <textarea rows="2" placeholder="What is happening?!" value={text} maxLength={280} onChange={(e) => setText(e.target.value)} />
+            <div className="row">
+              <span className="count">{left}</span>
+              <button disabled={!text.trim()} onClick={() => { onPost(text.trim()); setText(""); }}>Post</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function Tweet({ t, onLike, onRt }) {
+      return (
+        <article className="tweet">
+          <div className="avatar" style={{ background: t.color }}>{t.name[0]}</div>
+          <div style={{ flex: 1 }}>
+            <div><span className="name">{t.name}</span> <span className="handle">@{t.handle} · {ago(t.mins)}</span></div>
+            <p>{t.text}</p>
+            <div className="actions">
+              <button>💬 {t.replies}</button>
+              <button className={t.rted ? "rt" : ""} onClick={() => onRt(t.id)}>🔁 {t.rts}</button>
+              <button className={t.liked ? "liked" : ""} onClick={() => onLike(t.id)}>{t.liked ? "♥" : "♡"} {t.likes}</button>
+              <button>📊 {t.likes * 37}</button>
+            </div>
+          </div>
+        </article>
+      );
+    }
+
+    function App() {
+      const [tweets, setTweets] = useState(seed);
+
+      const post = (text) => setTweets((ts) => [{ id: Date.now(), name: "You", handle: "you", color: "#1d9bf0", text, likes: 0, rts: 0, replies: 0, liked: false, rted: false, mins: 0 }, ...ts]);
+      const like = (id) => setTweets((ts) => ts.map((t) => (t.id === id ? { ...t, liked: !t.liked, likes: t.likes + (t.liked ? -1 : 1) } : t)));
+      const rt = (id) => setTweets((ts) => ts.map((t) => (t.id === id ? { ...t, rted: !t.rted, rts: t.rts + (t.rted ? -1 : 1) } : t)));
+
+      return (
+        <div className="layout">
+          <nav className="nav">
+            <div className="logo">𝕏</div>
+            <a href="#">🏠 <span>Home</span></a>
+            <a href="#">🔍 <span>Explore</span></a>
+            <a href="#">🔔 <span>Notifications</span></a>
+            <a href="#">✉️ <span>Messages</span></a>
+            <a href="#">👤 <span>Profile</span></a>
+            <button className="post-btn">Post</button>
+          </nav>
+          <main className="feed">
+            <h1>For you</h1>
+            <Compose onPost={post} />
+            {tweets.map((t) => <Tweet key={t.id} t={t} onLike={like} onRt={rt} />)}
+          </main>
+          <aside className="side">
+            <div className="box">
+              <h2>What's happening</h2>
+              <div className="trend"><small>Technology · Trending</small><b>#ReactConf</b></div>
+              <div className="trend"><small>Programming</small><b>Babel standalone</b></div>
+              <div className="trend"><small>Trending</small><b>#100DaysOfCode</b></div>
+            </div>
+            <p className="note">UI clone for learning React state. Not affiliated with X Corp. Posts live only in memory and vanish on refresh.</p>
+          </aside>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>

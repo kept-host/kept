@@ -1,0 +1,16 @@
+{
+  "answers": {
+    "harm": {
+      "type": "choice",
+      "choice": "none",
+      "confidence": 0.9,
+      "probabilities": { "none": 0.94, "credential_phishing": 0.04, "payment_harvest": 0, "wallet_drainer": 0, "malware_download": 0, "scam": 0.02, "sexual_content_minors": 0 }
+    },
+    "impersonates": { "type": "noul", "noul": 0.05 },
+    "asks_for_secrets": { "type": "noul", "noul": 0.96 }
+  },
+  "id": "gen-dec-1789738314-X5e5eKGQdvR9rblyX250",
+  "model": "typesafe/jev-1.13-20260917",
+  "provider": "TypeSafe",
+  "usage": { "cost": 0.000019992, "input_tokens": 476, "output_tokens": 70 }
+}

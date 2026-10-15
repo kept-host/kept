@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Changelog — Tallyboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-white text-gray-800">
+  <div class="max-w-3xl mx-auto px-6 py-16">
+    <a href="/" class="text-sm text-indigo-600 font-medium">← Back to Tallyboard</a>
+    <h1 class="text-4xl font-bold mt-4">Changelog</h1>
+    <p class="text-gray-500 mt-2">New features, improvements and fixes. Follow along as we build.</p>
+
+    <div class="flex flex-wrap gap-2 mt-8" id="filters">
+      <button data-tag="all" class="filter px-3 py-1 rounded-full text-sm border">All</button>
+      <button data-tag="new" class="filter px-3 py-1 rounded-full text-sm border">New</button>
+      <button data-tag="improved" class="filter px-3 py-1 rounded-full text-sm border">Improved</button>
+      <button data-tag="fixed" class="filter px-3 py-1 rounded-full text-sm border">Fixed</button>
+    </div>
+
+    <div id="entries" class="mt-10 space-y-14"></div>
+
+    <div class="mt-16 border-t pt-8 text-sm text-gray-500">
+      Want updates in your inbox? Subscribe from <strong>Settings → Notifications</strong> in the app, or grab the <a href="/changelog.rss" class="text-indigo-600 underline">RSS feed</a>.
+    </div>
+  </div>
+
+<script>
+  const RELEASES = [
+    {
+      version: '3.4.0', date: '2026-09-30', title: 'Recurring invoices',
+      summary: 'Set any invoice to repeat weekly, monthly or yearly and Tallyboard will send it for you.',
+      changes: [
+        ['new', 'Recurring invoice schedules with automatic reminders'],
+        ['new', 'Pause and resume a schedule without losing history'],
+        ['improved', 'Invoice PDFs now embed your brand font'],
+        ['fixed', 'Due dates no longer shift by a day for customers in UTC−10 and beyond'],
+      ],
+    },
+    {
+      version: '3.3.2', date: '2026-09-12', title: 'Small fixes',
+      changes: [
+        ['fixed', 'CSV export now escapes commas in client names'],
+        ['fixed', 'Dashboard total could double-count partially refunded payments'],
+        ['improved', 'Faster loading of the clients list for accounts with 5,000+ clients'],
+      ],
+    },
+    {
+      version: '3.3.0', date: '2026-08-28', title: 'Multi-currency reports',
+      summary: 'Reports now convert everything into your home currency using daily ECB rates.',
+      changes: [
+        ['new', 'Home currency setting with historical conversion'],
+        ['new', 'Profit & loss report broken down by currency'],
+        ['improved', 'Report filters remember your last selection'],
+      ],
+    },
+    {
+      version: '3.2.1', date: '2026-08-04', title: 'Keyboard shortcuts',
+      changes: [
+        ['new', 'Press ? anywhere to see every shortcut'],
+        ['new', 'N creates a new invoice, C a new client'],
+        ['fixed', 'Escape now closes nested dialogs one at a time'],
+      ],
+    },
+    {
+      version: '3.2.0', date: '2026-07-15', title: 'Dark mode',
+      summary: 'Finally. Follows your system setting or pick one in Preferences.',
+      changes: [
+        ['new', 'Dark theme across the app and invoice previews'],
+        ['improved', 'Higher contrast on status badges'],
+      ],
+    },
+  ];
+
+  const TAG_STYLE = {
+    new: 'bg-emerald-100 text-emerald-700',
+    improved: 'bg-sky-100 text-sky-700',
+    fixed: 'bg-amber-100 text-amber-700',
+  };
+
+  let current = 'all';
+
+  function render() {
+    document.querySelectorAll('.filter').forEach(b => {
+      b.className = `filter px-3 py-1 rounded-full text-sm border ${b.dataset.tag === current ? 'bg-gray-900 text-white border-gray-900' : 'border-gray-200 hover:border-gray-400'}`;
+    });
+
+    const html = RELEASES.map(r => {
+      const changes = r.changes.filter(([tag]) => current === 'all' || tag === current);
+      if (!changes.length) return '';
+      const date = new Date(r.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+      return `
+        <article class="grid md:grid-cols-[140px_1fr] gap-4">
+          <div class="text-sm text-gray-400">
+            <p>${date}</p>
+            <p class="font-mono text-gray-600 mt-1">v${r.version}</p>
+          </div>
+          <div>
+            <h2 class="text-2xl font-semibold">${r.title}</h2>
+            ${r.summary ? `<p class="text-gray-600 mt-2">${r.summary}</p>` : ''}
+            <ul class="mt-4 space-y-2">
+              ${changes.map(([tag, text]) => `
+                <li class="flex gap-3 items-start">
+                  <span class="text-xs font-semibold uppercase px-2 py-0.5 rounded ${TAG_STYLE[tag]} mt-0.5">${tag}</span>
+                  <span>${text}</span>
+                </li>`).join('')}
+            </ul>
+          </div>
+        </article>`;
+    }).join('');
+
+    document.getElementById('entries').innerHTML = html || '<p class="text-gray-500">Nothing here yet.</p>';
+  }
+
+  document.querySelectorAll('.filter').forEach(b => b.addEventListener('click', () => { current = b.dataset.tag; render(); }));
+  render();
+</script>
+</body>
+</html>

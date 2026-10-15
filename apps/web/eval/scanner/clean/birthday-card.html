@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Happy Birthday, Grandma Rose!</title>
+  <link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@600;700&family=Nunito:wght@400;600&display=swap" rel="stylesheet" />
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; }
+    body {
+      font-family: 'Nunito', sans-serif;
+      background: radial-gradient(circle at 30% 20%, #ffe3ec, #f7c6d9 45%, #e8a0bf);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    canvas#confetti { position: fixed; inset: 0; pointer-events: none; }
+    .card {
+      position: relative;
+      width: min(92vw, 460px);
+      background: #fffdf8;
+      border-radius: 20px;
+      padding: 48px 36px 36px;
+      text-align: center;
+      box-shadow: 0 20px 60px rgba(120, 40, 80, .25);
+      transform: scale(.85) rotate(-2deg);
+      opacity: 0;
+      animation: pop 900ms cubic-bezier(.2, 1.4, .4, 1) forwards 200ms;
+    }
+    @keyframes pop { to { transform: scale(1) rotate(0); opacity: 1; } }
+    .roses { font-size: 2.4rem; letter-spacing: 6px; }
+    h1 {
+      font-family: 'Dancing Script', cursive;
+      font-size: 3rem;
+      color: #b0306a;
+      margin: 12px 0 4px;
+    }
+    .age { font-size: 1rem; color: #8a5a6e; text-transform: uppercase; letter-spacing: 3px; }
+    p.message { font-size: 1.1rem; line-height: 1.7; color: #4b3540; margin: 24px 0; }
+    .signature { font-family: 'Dancing Script', cursive; font-size: 1.6rem; color: #b0306a; }
+    button {
+      margin-top: 24px;
+      background: #b0306a;
+      color: white;
+      border: none;
+      border-radius: 999px;
+      padding: 12px 28px;
+      font-size: 1rem;
+      cursor: pointer;
+      box-shadow: 0 6px 18px rgba(176, 48, 106, .35);
+    }
+    button:hover { background: #962658; }
+    .candles { display: flex; justify-content: center; gap: 10px; margin-top: 18px; }
+    .candle { width: 8px; height: 30px; background: repeating-linear-gradient(45deg, #ffd1e1, #ffd1e1 4px, #fff 4px, #fff 8px); border-radius: 2px; position: relative; }
+    .candle::after {
+      content: '';
+      position: absolute;
+      top: -14px; left: -2px;
+      width: 12px; height: 14px;
+      background: radial-gradient(circle at 50% 70%, #fff6a0, #ffb300 60%, transparent 70%);
+      border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%;
+      animation: flicker 140ms infinite alternate;
+    }
+    .candles.out .candle::after { display: none; }
+    @keyframes flicker { from { transform: scale(1) translateY(0); } to { transform: scale(.9, 1.1) translateY(-1px); } }
+  </style>
+</head>
+<body>
+  <canvas id="confetti"></canvas>
+
+  <div class="card">
+    <div class="roses">🌹🌷🌹</div>
+    <h1>Happy Birthday, Grandma Rose!</h1>
+    <div class="age">90 wonderful years</div>
+    <div class="candles" id="candles">
+      <div class="candle"></div><div class="candle"></div><div class="candle"></div>
+      <div class="candle"></div><div class="candle"></div><div class="candle"></div>
+      <div class="candle"></div><div class="candle"></div><div class="candle"></div>
+    </div>
+    <p class="message">
+      Thank you for the Sunday pancakes, the garden lessons, the endless card games
+      and for always saving us the last slice of lemon cake. We love you more than
+      all the roses in your garden.
+    </p>
+    <div class="signature">— Ellie, Sam, Noah &amp; the whole family</div>
+    <button id="blow">Blow out the candles 🎂</button>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('confetti');
+    const ctx = canvas.getContext('2d');
+    const colors = ['#f9a8c9', '#b0306a', '#ffd166', '#8ecae6', '#ffffff', '#c1e1a6'];
+    let pieces = [];
+
+    function resize() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    function burst(count) {
+      for (let i = 0; i < count; i++) {
+        pieces.push({
+          x: Math.random() * canvas.width,
+          y: -20 - Math.random() * canvas.height * 0.5,
+          w: 6 + Math.random() * 6,
+          h: 8 + Math.random() * 8,
+          color: colors[Math.floor(Math.random() * colors.length)],
+          vy: 2 + Math.random() * 3,
+          vx: -1 + Math.random() * 2,
+          rot: Math.random() * Math.PI,
+          vr: -0.1 + Math.random() * 0.2,
+        });
+      }
+    }
+
+    function tick() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      pieces.forEach(p => {
+        p.x += p.vx + Math.sin(p.y / 40) * 0.5;
+        p.y += p.vy;
+        p.rot += p.vr;
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.rot);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+        ctx.restore();
+      });
+      pieces = pieces.filter(p => p.y < canvas.height + 30);
+      requestAnimationFrame(tick);
+    }
+
+    burst(180);
+    tick();
+
+    document.getElementById('blow').addEventListener('click', (e) => {
+      document.getElementById('candles').classList.add('out');
+      e.target.textContent = 'Make a wish! ✨';
+      burst(250);
+    });
+  </script>
+</body>
+</html>

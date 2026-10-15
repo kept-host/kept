@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Airbnb Clone — Listings (React practice)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+</head>
+<body class="bg-white text-neutral-800">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useMemo } = React;
+
+    const LISTINGS = [
+      { id: 1, title: "Cliffside cabin with hot tub", place: "Big Sur, California", price: 312, rating: 4.96, type: "Cabins", emoji: "🏔️", color: "from-amber-200 to-orange-300" },
+      { id: 2, title: "Bright loft near the canals", place: "Amsterdam, Netherlands", price: 189, rating: 4.88, type: "City", emoji: "🌷", color: "from-rose-200 to-pink-300" },
+      { id: 3, title: "Beach bungalow, steps to sand", place: "Tulum, Mexico", price: 145, rating: 4.91, type: "Beach", emoji: "🏝️", color: "from-cyan-200 to-sky-300" },
+      { id: 4, title: "Treehouse in the redwoods", place: "Mendocino, California", price: 228, rating: 4.99, type: "Treehouses", emoji: "🌲", color: "from-lime-200 to-emerald-300" },
+      { id: 5, title: "Stone farmhouse with olive grove", place: "Puglia, Italy", price: 176, rating: 4.85, type: "Countryside", emoji: "🫒", color: "from-yellow-100 to-lime-200" },
+      { id: 6, title: "A-frame by the lake", place: "Lake Tahoe, Nevada", price: 254, rating: 4.93, type: "Cabins", emoji: "🛶", color: "from-indigo-200 to-blue-300" },
+      { id: 7, title: "Minimalist studio in Shibuya", place: "Tokyo, Japan", price: 132, rating: 4.79, type: "City", emoji: "🗼", color: "from-fuchsia-200 to-purple-300" },
+      { id: 8, title: "Surf shack with ocean view", place: "Ericeira, Portugal", price: 98, rating: 4.87, type: "Beach", emoji: "🏄", color: "from-teal-200 to-cyan-300" },
+    ];
+
+    const CATEGORIES = ["All", "Cabins", "Beach", "City", "Treehouses", "Countryside"];
+
+    function Header({ query, setQuery }) {
+      return (
+        <header className="border-b sticky top-0 bg-white z-10">
+          <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between gap-6">
+            <div className="text-rose-500 font-extrabold text-2xl tracking-tight">airbnb<span className="text-xs text-neutral-400 font-normal ml-1">clone</span></div>
+            <div className="flex-1 max-w-xl flex items-center border rounded-full shadow-sm hover:shadow-md transition px-5 py-2.5">
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search destinations"
+                className="flex-1 outline-none text-sm"
+              />
+              <span className="bg-rose-500 text-white rounded-full w-8 h-8 grid place-items-center text-sm">🔍</span>
+            </div>
+            <div className="text-sm font-medium hidden md:block">Become a host</div>
+          </div>
+        </header>
+      );
+    }
+
+    function CategoryBar({ active, setActive }) {
+      return (
+        <div className="max-w-7xl mx-auto px-6 flex gap-8 overflow-x-auto py-4">
+          {CATEGORIES.map((c) => (
+            <button
+              key={c}
+              onClick={() => setActive(c)}
+              className={`text-sm pb-2 border-b-2 whitespace-nowrap ${active === c ? "border-neutral-900 text-neutral-900" : "border-transparent text-neutral-500 hover:text-neutral-800"}`}
+            >
+              {c}
+            </button>
+          ))}
+        </div>
+      );
+    }
+
+    function ListingCard({ listing, saved, onSave }) {
+      return (
+        <div className="group cursor-pointer">
+          <div className={`relative aspect-square rounded-xl bg-gradient-to-br ${listing.color} grid place-items-center text-7xl`}>
+            {listing.emoji}
+            <button
+              onClick={() => onSave(listing.id)}
+              className="absolute top-3 right-3 text-2xl drop-shadow"
+              aria-label="Save"
+            >
+              {saved ? "❤️" : "🤍"}
+            </button>
+          </div>
+          <div className="mt-3 flex justify-between">
+            <h3 className="font-semibold text-sm">{listing.place}</h3>
+            <span className="text-sm">★ {listing.rating}</span>
+          </div>
+          <p className="text-sm text-neutral-500">{listing.title}</p>
+          <p className="text-sm mt-1"><span className="font-semibold">${listing.price}</span> night</p>
+        </div>
+      );
+    }
+
+    function App() {
+      const [query, setQuery] = useState("");
+      const [active, setActive] = useState("All");
+      const [saved, setSaved] = useState(new Set());
+
+      const filtered = useMemo(() => {
+        const q = query.trim().toLowerCase();
+        return LISTINGS.filter((l) =>
+          (active === "All" || l.type === active) &&
+          (!q || l.place.toLowerCase().includes(q) || l.title.toLowerCase().includes(q))
+        );
+      }, [query, active]);
+
+      const toggleSave = (id) => {
+        setSaved((prev) => {
+          const next = new Set(prev);
+          next.has(id) ? next.delete(id) : next.add(id);
+          return next;
+        });
+      };
+
+      return (
+        <>
+          <Header query={query} setQuery={setQuery} />
+          <CategoryBar active={active} setActive={setActive} />
+          <main className="max-w-7xl mx-auto px-6 pb-16">
+            {filtered.length === 0 ? (
+              <p className="text-neutral-500 py-20 text-center">No stays match "{query}".</p>
+            ) : (
+              <div className="grid gap-6 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
+                {filtered.map((l) => (
+                  <ListingCard key={l.id} listing={l} saved={saved.has(l.id)} onSave={toggleSave} />
+                ))}
+              </div>
+            )}
+          </main>
+          <footer className="border-t text-xs text-neutral-500 py-6 text-center">
+            Airbnb-style UI clone for React practice by Sam Ortega. Not affiliated with Airbnb, Inc. Listings are made up.
+          </footer>
+        </>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>

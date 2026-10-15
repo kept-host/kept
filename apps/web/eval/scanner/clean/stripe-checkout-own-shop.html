@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ember &amp; Wick — small-batch soy candles</title>
+<script src="https://js.stripe.com/v3/"></script>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;700&family=Work+Sans:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root { --cream: #fbf6ee; --ink: #2b2420; --clay: #b5653a; --sand: #e9dcc8; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--cream); color: var(--ink); font-family: 'Work Sans', sans-serif; }
+  header { text-align: center; padding: 56px 20px 24px; }
+  header h1 { font-family: 'Playfair Display', serif; font-size: 52px; margin: 0; }
+  header p { color: #7b6d63; max-width: 520px; margin: 12px auto 0; line-height: 1.6; }
+  .banner { background: var(--ink); color: var(--cream); text-align: center; font-size: 13px; padding: 8px; letter-spacing: 1px; }
+  .products { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 26px; max-width: 1040px; margin: 30px auto 60px; padding: 0 20px; }
+  .card { background: #fff; border-radius: 18px; overflow: hidden; box-shadow: 0 2px 10px rgba(43,36,32,.06); display: flex; flex-direction: column; }
+  .art { height: 220px; display: grid; place-items: center; font-size: 72px; }
+  .body { padding: 18px 20px 22px; display: flex; flex-direction: column; flex: 1; }
+  .body h3 { font-family: 'Playfair Display', serif; margin: 0; font-size: 22px; }
+  .notes { font-size: 14px; color: #7b6d63; margin: 6px 0 16px; flex: 1; }
+  .row { display: flex; justify-content: space-between; align-items: center; }
+  .price { font-weight: 500; font-size: 18px; }
+  .buy { background: var(--clay); color: #fff; border: 0; padding: 10px 20px; border-radius: 999px; font: inherit; font-weight: 500; cursor: pointer; }
+  .buy:hover { background: #9a5330; }
+  .buy:disabled { opacity: .6; cursor: progress; }
+  .about { max-width: 680px; margin: 0 auto 60px; padding: 0 20px; text-align: center; line-height: 1.7; color: #5d514a; }
+  #err { text-align: center; color: #a33; min-height: 20px; }
+  footer { border-top: 1px solid var(--sand); text-align: center; padding: 26px; font-size: 13px; color: #7b6d63; }
+</style>
+</head>
+<body>
+  <div class="banner">FREE SHIPPING ON ORDERS OVER $50 · HAND-POURED IN ASHEVILLE</div>
+  <header>
+    <h1>Ember &amp; Wick</h1>
+    <p>Small-batch soy candles poured in my kitchen, one tin at a time. Cotton wicks, phthalate-free oils, about 40 hours of burn.</p>
+  </header>
+
+  <section class="products" id="products"></section>
+  <p id="err"></p>
+
+  <section class="about">
+    <h2 style="font-family:'Playfair Display',serif">Why I started</h2>
+    <p>I'm Hana. I started pouring candles during a long winter in 2022 and haven't stopped. Every scent is named after a place I love. Checkout is handled securely by Stripe — I never see your card details.</p>
+  </section>
+
+  <footer>© 2026 Ember &amp; Wick · hello@emberandwick.shop · Returns within 30 days</footer>
+
+<script>
+  const stripe = Stripe("pk_test_51FakeKeyEmberWickXyzabc123DoNotUse000000000000");
+
+  const PRODUCTS = [
+    { name: "Blue Ridge Morning", notes: "Cedar, fresh rain, a little black pepper.", price: 24, price_id: "price_1FakeBlueRidge000aa", emoji: "🌲", bg: "#e4ece3" },
+    { name: "Grandma's Porch", notes: "Peach cobbler, honeysuckle, warm wood.", price: 24, price_id: "price_1FakeGrandmaPorch00bb", emoji: "🍑", bg: "#f6e3d6" },
+    { name: "Coastal Fog", notes: "Sea salt, driftwood, sage.", price: 26, price_id: "price_1FakeCoastalFog0000cc", emoji: "🌊", bg: "#dfe8ef" },
+    { name: "Fireside Reading", notes: "Tobacco leaf, vanilla, old paper.", price: 28, price_id: "price_1FakeFiresideRead00dd", emoji: "📚", bg: "#eadfcf" },
+  ];
+
+  const grid = document.getElementById("products");
+  grid.innerHTML = PRODUCTS.map((p, i) => `
+    <article class="card">
+      <div class="art" style="background:${p.bg}">${p.emoji}</div>
+      <div class="body">
+        <h3>${p.name}</h3>
+        <p class="notes">${p.notes}</p>
+        <div class="row">
+          <span class="price">$${p.price}</span>
+          <button class="buy" data-i="${i}">Buy</button>
+        </div>
+      </div>
+    </article>`).join("");
+
+  grid.addEventListener("click", async (e) => {
+    const btn = e.target.closest(".buy");
+    if (!btn) return;
+    const product = PRODUCTS[btn.dataset.i];
+    btn.disabled = true;
+    btn.textContent = "Redirecting…";
+    const { error } = await stripe.redirectToCheckout({
+      lineItems: [{ price: product.price_id, quantity: 1 }],
+      mode: "payment",
+      successUrl: window.location.origin + "/thanks.html?session_id={CHECKOUT_SESSION_ID}",
+      cancelUrl: window.location.href,
+      shippingAddressCollection: { allowedCountries: ["US", "CA"] },
+    });
+    if (error) {
+      document.getElementById("err").textContent = error.message;
+      btn.disabled = false;
+      btn.textContent = "Buy";
+    }
+  });
+</script>
+</body>
+</html>

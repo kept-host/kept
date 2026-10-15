@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gmail UI Clone — Frontend Course Project</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+</head>
+<body class="bg-slate-50">
+  <div class="bg-amber-100 text-amber-900 text-xs text-center py-1.5">
+    Gmail UI clone — built for Week 6 of the "React From Scratch" course. Not affiliated with Google. No real accounts, all emails are fake.
+  </div>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useMemo } = React;
+
+    const SEED = [
+      { id: 1, from: "Lena from Course Team", subject: "Week 6: component composition", body: "Hi! This week we're building an inbox layout. Focus on lifting state up and keeping the list and reader in sync.", time: "9:14 AM", read: false, starred: true, folder: "inbox" },
+      { id: 2, from: "Rafael Costa", subject: "Pairing session tomorrow?", body: "Want to pair on the compose modal tomorrow at 4? I still can't get the focus trap right.", time: "8:02 AM", read: false, starred: false, folder: "inbox" },
+      { id: 3, from: "Bookshop Weekly", subject: "Five new releases we loved", body: "This week's picks include a slow-burn mystery set on a Norwegian ferry and a cookbook of soups.", time: "Yesterday", read: true, starred: false, folder: "inbox" },
+      { id: 4, from: "Grandma Ruth", subject: "Photos from the garden", body: "The tomatoes finally came in! I'll bring some on Sunday. Love, Grandma.", time: "Mon", read: true, starred: true, folder: "inbox" },
+      { id: 5, from: "Me", subject: "Notes for the demo", body: "Remember to show keyboard navigation and the empty state.", time: "Sun", read: true, starred: false, folder: "sent" },
+    ];
+
+    const FOLDERS = [
+      { key: "inbox", label: "Inbox", icon: "📥" },
+      { key: "starred", label: "Starred", icon: "⭐" },
+      { key: "sent", label: "Sent", icon: "📤" },
+      { key: "trash", label: "Trash", icon: "🗑️" },
+    ];
+
+    function Sidebar({ folder, setFolder, onCompose, counts }) {
+      return (
+        <aside className="w-56 shrink-0 p-3 hidden md:block">
+          <button onClick={onCompose} className="flex items-center gap-3 bg-sky-100 hover:shadow rounded-2xl px-5 py-4 font-medium mb-4">
+            ✏️ Compose
+          </button>
+          {FOLDERS.map(f => (
+            <button key={f.key} onClick={() => setFolder(f.key)}
+              className={`w-full flex justify-between items-center px-4 py-1.5 rounded-r-full text-sm ${folder === f.key ? "bg-sky-200 font-semibold" : "hover:bg-slate-200"}`}>
+              <span>{f.icon} {f.label}</span>
+              {counts[f.key] > 0 && <span className="text-xs">{counts[f.key]}</span>}
+            </button>
+          ))}
+        </aside>
+      );
+    }
+
+    function MailRow({ mail, onOpen, onStar }) {
+      return (
+        <div onClick={() => onOpen(mail.id)}
+          className={`flex items-center gap-3 px-4 py-2 border-b cursor-pointer hover:shadow-sm ${mail.read ? "bg-slate-50" : "bg-white font-semibold"}`}>
+          <button onClick={e => { e.stopPropagation(); onStar(mail.id); }}>{mail.starred ? "⭐" : "☆"}</button>
+          <span className="w-44 truncate">{mail.from}</span>
+          <span className="flex-1 truncate">{mail.subject} <span className="font-normal text-slate-500">— {mail.body}</span></span>
+          <span className="text-xs text-slate-500">{mail.time}</span>
+        </div>
+      );
+    }
+
+    function Compose({ onClose, onSend }) {
+      const [to, setTo] = useState("");
+      const [subject, setSubject] = useState("");
+      const [body, setBody] = useState("");
+      return (
+        <div className="fixed bottom-0 right-6 w-[28rem] bg-white rounded-t-xl shadow-2xl border">
+          <div className="flex justify-between bg-slate-800 text-white text-sm px-4 py-2 rounded-t-xl">
+            <span>New message</span><button onClick={onClose}>✕</button>
+          </div>
+          <input value={to} onChange={e => setTo(e.target.value)} placeholder="To" className="w-full border-b px-4 py-2 text-sm outline-none" />
+          <input value={subject} onChange={e => setSubject(e.target.value)} placeholder="Subject" className="w-full border-b px-4 py-2 text-sm outline-none" />
+          <textarea value={body} onChange={e => setBody(e.target.value)} rows="8" className="w-full px-4 py-2 text-sm outline-none resize-none" />
+          <div className="p-3">
+            <button onClick={() => onSend({ to, subject, body })} className="bg-sky-600 text-white px-5 py-2 rounded-full text-sm">Send</button>
+          </div>
+        </div>
+      );
+    }
+
+    function App() {
+      const [mails, setMails] = useState(SEED);
+      const [folder, setFolder] = useState("inbox");
+      const [openId, setOpenId] = useState(null);
+      const [composing, setComposing] = useState(false);
+      const [query, setQuery] = useState("");
+
+      const visible = useMemo(() => mails
+        .filter(m => folder === "starred" ? m.starred && m.folder !== "trash" : m.folder === folder)
+        .filter(m => (m.from + m.subject + m.body).toLowerCase().includes(query.toLowerCase())), [mails, folder, query]);
+
+      const counts = { inbox: mails.filter(m => m.folder === "inbox" && !m.read).length };
+      const open = mails.find(m => m.id === openId);
+
+      const update = (id, patch) => setMails(ms => ms.map(m => m.id === id ? { ...m, ...patch } : m));
+
+      return (
+        <div className="h-[calc(100vh-28px)] flex flex-col">
+          <header className="flex items-center gap-4 px-4 py-2">
+            <span className="text-xl text-slate-600 font-medium w-52">✉️ Mailbox</span>
+            <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search mail"
+              className="flex-1 max-w-2xl bg-slate-200 rounded-full px-5 py-2.5 outline-none focus:bg-white focus:shadow" />
+          </header>
+          <div className="flex flex-1 overflow-hidden">
+            <Sidebar folder={folder} setFolder={f => { setFolder(f); setOpenId(null); }} onCompose={() => setComposing(true)} counts={counts} />
+            <section className="flex-1 bg-white rounded-2xl mr-4 mb-4 overflow-auto">
+              {open ? (
+                <div className="p-6">
+                  <button onClick={() => setOpenId(null)} className="text-sm text-slate-500 mb-4">← Back</button>
+                  <h2 className="text-2xl mb-2">{open.subject}</h2>
+                  <p className="text-sm text-slate-500 mb-6">{open.from} · {open.time}</p>
+                  <p className="leading-relaxed">{open.body}</p>
+                  <button onClick={() => { update(open.id, { folder: "trash" }); setOpenId(null); }} className="mt-8 text-sm text-red-600">Move to trash</button>
+                </div>
+              ) : visible.length ? visible.map(m => (
+                <MailRow key={m.id} mail={m} onOpen={id => { update(id, { read: true }); setOpenId(id); }} onStar={id => update(id, { starred: !mails.find(x => x.id === id).starred })} />
+              )) : <p className="p-10 text-center text-slate-400">Nothing here.</p>}
+            </section>
+          </div>
+          {composing && <Compose onClose={() => setComposing(false)} onSend={({ to, subject, body }) => {
+            setMails(ms => [{ id: Date.now(), from: "Me", subject: subject || "(no subject)", body: `To ${to}: ${body}`, time: "now", read: true, starred: false, folder: "sent" }, ...ms]);
+            setComposing(false);
+          }} />}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>

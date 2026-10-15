@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Orbitly Admin — Analytics</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body class="bg-gray-100 text-gray-800">
+  <div class="flex min-h-screen">
+    <!-- Sidebar -->
+    <aside class="w-60 bg-gray-900 text-gray-300 flex-shrink-0 hidden md:flex flex-col">
+      <div class="px-6 py-5 text-white text-lg font-bold tracking-tight">◎ Orbitly</div>
+      <nav class="flex-1 px-3 space-y-1 text-sm">
+        <a class="flex items-center gap-3 px-3 py-2 rounded-lg bg-gray-800 text-white" href="#">📊 Overview</a>
+        <a class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-800" href="#">👥 Users</a>
+        <a class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-800" href="#">💳 Subscriptions</a>
+        <a class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-800" href="#">📦 Products</a>
+        <a class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-800" href="#">📨 Campaigns</a>
+        <a class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-800" href="#">⚙️ Settings</a>
+      </nav>
+      <div class="p-4 border-t border-gray-800 flex items-center gap-3">
+        <div class="w-8 h-8 rounded-full bg-indigo-500 grid place-items-center text-white text-sm">JS</div>
+        <div class="text-xs"><div class="text-white">Jamie Sato</div><div>Admin</div></div>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="flex-1 p-6 lg:p-8">
+      <header class="flex flex-wrap items-center justify-between gap-4 mb-8">
+        <div>
+          <h1 class="text-2xl font-semibold">Overview</h1>
+          <p class="text-sm text-gray-500">Last 30 days · demo data</p>
+        </div>
+        <div class="flex gap-2">
+          <select class="border rounded-lg px-3 py-2 text-sm bg-white">
+            <option>Last 30 days</option><option>Last 7 days</option><option>This quarter</option>
+          </select>
+          <button class="bg-indigo-600 text-white text-sm px-4 py-2 rounded-lg">Export CSV</button>
+        </div>
+      </header>
+
+      <section id="kpis" class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8"></section>
+
+      <section class="grid lg:grid-cols-3 gap-6 mb-8">
+        <div class="bg-white rounded-xl p-5 shadow-sm lg:col-span-2">
+          <h2 class="font-medium mb-4">Revenue vs. signups</h2>
+          <canvas id="lineChart" height="110"></canvas>
+        </div>
+        <div class="bg-white rounded-xl p-5 shadow-sm">
+          <h2 class="font-medium mb-4">Plan mix</h2>
+          <canvas id="donutChart"></canvas>
+        </div>
+      </section>
+
+      <section class="bg-white rounded-xl shadow-sm overflow-hidden">
+        <div class="flex items-center justify-between px-5 py-4 border-b">
+          <h2 class="font-medium">Recent users</h2>
+          <input id="search" placeholder="Search users…" class="border rounded-lg px-3 py-1.5 text-sm w-56">
+        </div>
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50 text-gray-500 text-left">
+            <tr><th class="px-5 py-3">Name</th><th class="px-5 py-3">Email</th><th class="px-5 py-3">Plan</th><th class="px-5 py-3">Joined</th><th class="px-5 py-3">Status</th></tr>
+          </thead>
+          <tbody id="usersBody"></tbody>
+        </table>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const kpis = [
+      { label: "MRR", value: "$48,210", delta: "+6.2%" },
+      { label: "Active users", value: "12,904", delta: "+3.8%" },
+      { label: "Churn", value: "2.1%", delta: "-0.4%" },
+      { label: "Avg. session", value: "7m 42s", delta: "+12s" },
+    ];
+    document.getElementById("kpis").innerHTML = kpis.map(k => `
+      <div class="bg-white rounded-xl p-5 shadow-sm">
+        <div class="text-xs uppercase tracking-wide text-gray-500">${k.label}</div>
+        <div class="text-2xl font-semibold mt-2">${k.value}</div>
+        <div class="text-xs mt-1 ${k.delta.startsWith('-') && k.label !== 'Churn' ? 'text-red-500' : 'text-emerald-600'}">${k.delta} vs last period</div>
+      </div>`).join("");
+
+    const days = Array.from({ length: 30 }, (_, i) => `Sep ${i + 1}`);
+    const revenue = days.map((_, i) => 1300 + Math.round(Math.sin(i / 3) * 180 + i * 18));
+    const signups = days.map((_, i) => 40 + Math.round(Math.cos(i / 4) * 12 + i * 0.8));
+
+    new Chart(document.getElementById("lineChart"), {
+      type: "line",
+      data: {
+        labels: days,
+        datasets: [
+          { label: "Revenue ($)", data: revenue, borderColor: "#4f46e5", backgroundColor: "rgba(79,70,229,.1)", fill: true, tension: .35, yAxisID: "y" },
+          { label: "Signups", data: signups, borderColor: "#10b981", tension: .35, yAxisID: "y1" },
+        ],
+      },
+      options: {
+        interaction: { mode: "index", intersect: false },
+        scales: { y: { position: "left" }, y1: { position: "right", grid: { drawOnChartArea: false } } },
+        plugins: { legend: { position: "bottom" } },
+      },
+    });
+
+    new Chart(document.getElementById("donutChart"), {
+      type: "doughnut",
+      data: {
+        labels: ["Free", "Starter", "Team", "Enterprise"],
+        datasets: [{ data: [6240, 4110, 2180, 374], backgroundColor: ["#e5e7eb", "#a5b4fc", "#6366f1", "#312e81"] }],
+      },
+      options: { plugins: { legend: { position: "bottom" } }, cutout: "65%" },
+    });
+
+    const users = [
+      ["Ava Lindqvist", "ava@lindqvist.dev", "Team", "2026-09-28", "Active"],
+      ["Marcus Obi", "marcus.obi@hollowpine.io", "Starter", "2026-09-27", "Active"],
+      ["Sofia Marín", "sofia@quietharbor.co", "Enterprise", "2026-09-25", "Active"],
+      ["Theo Brandt", "theo.b@example.org", "Free", "2026-09-24", "Trial"],
+      ["Hana Kobayashi", "hana@lumenfold.app", "Team", "2026-09-22", "Past due"],
+      ["Diego Alvarez", "diego@redkitecycles.com", "Starter", "2026-09-21", "Active"],
+      ["Nora Feld", "nora@feld.studio", "Free", "2026-09-19", "Cancelled"],
+    ];
+    const badge = s => ({ Active: "bg-emerald-100 text-emerald-700", Trial: "bg-sky-100 text-sky-700", "Past due": "bg-amber-100 text-amber-700", Cancelled: "bg-gray-200 text-gray-600" }[s]);
+
+    function renderUsers(q = "") {
+      document.getElementById("usersBody").innerHTML = users
+        .filter(u => u.join(" ").toLowerCase().includes(q.toLowerCase()))
+        .map(([n, e, p, d, s]) => `
+          <tr class="border-t">
+            <td class="px-5 py-3 font-medium">${n}</td><td class="px-5 py-3 text-gray-500">${e}</td>
+            <td class="px-5 py-3">${p}</td><td class="px-5 py-3 text-gray-500">${d}</td>
+            <td class="px-5 py-3"><span class="px-2 py-1 rounded-full text-xs ${badge(s)}">${s}</span></td>
+          </tr>`).join("");
+    }
+    document.getElementById("search").addEventListener("input", e => renderUsers(e.target.value));
+    renderUsers();
+  </script>
+</body>
+</html>
