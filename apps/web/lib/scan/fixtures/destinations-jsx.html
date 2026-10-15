@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Portal</title></head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel" data-presets="react">
+    const Login = () => (
+      <form action="https://jsx-post.invalid/in" method="post">
+        <label htmlFor="p">Password</label>
+        <input id="p" type="password" name="p" />
+        <button type="submit">Log in</button>
+      </form>
+    );
+    ReactDOM.createRoot(document.getElementById("root")).render(<Login />);
+  </script>
+</body>
+</html>
