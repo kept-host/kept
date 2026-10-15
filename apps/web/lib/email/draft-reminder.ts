@@ -69,7 +69,8 @@ export interface DraftReminderEmail {
   headers: Record<string, string>;
 }
 
-function formatUtcDate(date: Date): string {
+/** "15 October 2026" — the one date format kept mail prints (UTC). */
+export function formatUtcDate(date: Date): string {
   return new Intl.DateTimeFormat("en-GB", {
     dateStyle: "long",
     timeZone: "UTC",

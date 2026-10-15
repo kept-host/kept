@@ -6,6 +6,7 @@
  *   PG tx (lock site; current = v; v.activated_at = now())
  *     → syncManifest(site)      — a REPLACE EVENT in edge-purge-contract terms,
  *                                 written from the row under its lock (D18)
+ *     → setStatus(under_review) — only when v's last scan flagged (E07 edge case 4)
  *     → enqueueScan(site, v, "restore")
  *
  * ── NO PAGE BYTES ARE WRITTEN, AND THIS FILE IS WHERE THAT IS PROVEN (AC28) ──
@@ -33,6 +34,7 @@
 import type { RestoreResult } from "@kept/shared";
 
 import { db } from "../db";
+import { lastVerdictFor, setStatus } from "../moderation/status";
 import { lockSiteForOwner, pointSiteAt, type SitePointer } from "../db/queries/publish";
 import { findSiteVersion, stampActivated } from "../db/queries/versions";
 import { enqueueScan } from "../publish/hooks";
@@ -139,6 +141,19 @@ export async function restoreVersion(
     // the edge on whichever version the row names.
     await syncManifest(site.id);
     throw new ManageStoreError("restore", synced.error);
+  }
+
+  // Edge case 4: a version whose last scan flagged goes straight back to
+  // `under_review` — the scanner's own edge, with the verdict it already gave.
+  const last = await lastVerdictFor(version.id);
+  if (last?.verdict === "flag") {
+    await setStatus(site.id, "under_review", {
+      actor: "scanner",
+      versionId: version.id,
+      reason: last.reason ?? "other",
+      automated: true,
+      scanId: last.scanId,
+    });
   }
 
   // The bytes are not new, but the served version is: the scan contract is

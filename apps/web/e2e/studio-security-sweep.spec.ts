@@ -73,6 +73,7 @@ const NOT_COOKIE_AUTHENTICATED: Record<string, string> = {
   "DELETE /api/anon/[anonToken]": "bearer: the anon token in the path",
   "POST /api/anon/[anonToken]/replace": "bearer: the anon token in the path",
   "POST /api/anon/[anonToken]/reminder": "bearer: the anon token in the path",
+  "POST /api/anon/[anonToken]/appeal": "bearer: the anon token in the path (E07 §6.10)",
   "POST /api/cron/draft-reminder": "Authorization: Bearer CRON_SECRET, from GitHub Actions",
   "POST /api/cron/visits-sync": "Authorization: Bearer CRON_SECRET, from GitHub Actions",
   "POST /api/auth/[...all]":
@@ -83,6 +84,7 @@ const NOT_COOKIE_AUTHENTICATED: Record<string, string> = {
   "POST /api/waitlist/unsubscribe":
     "unauthenticated: the HMAC-signed unsubscribe token is the authority; RFC 8058 one-click (waitlist-opt-in.spec)",
   "POST /api/cron/waitlist-prune": "Authorization: Bearer CRON_SECRET, from GitHub Actions",
+  "POST /api/cron/repurge": "Authorization: Bearer CRON_SECRET, from GitHub Actions",
   "POST /api/founding/review":
     "unauthenticated: the HMAC-signed, 14-day review link `t` (KEPT_ADMIN_SECRET) is the authority; idempotent (founding.spec)",
 };
@@ -165,6 +167,16 @@ const SWEPT: Record<string, SweptRoute> = {
   },
   "POST /api/sites/[id]/keep": {
     send: (ctx, base, t, headers) => ctx.post(`${base}/api/sites/${t.draftId}/keep`, { headers }),
+    stranger: true,
+  },
+  // E07 §6.10: a live page answers `409 not_restricted` to its owner, so the
+  // gate's 403 and the stranger's 404 are the only answers this sweep sees.
+  "POST /api/sites/[id]/appeal": {
+    send: (ctx, base, t, headers) =>
+      ctx.post(`${base}/api/sites/${t.siteId}/appeal`, {
+        headers,
+        data: { message: `${sweepName()} — please take another look at this page.` },
+      }),
     stranger: true,
   },
   "POST /api/sites/[id]/demote": {

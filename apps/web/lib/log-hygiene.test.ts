@@ -83,6 +83,14 @@ const GUARDED_FILES = [
   "lib/storage/repurge.ts",
   "lib/db/queries/manifest-sync.ts",
   "app/api/cron/repurge/route.ts",
+  // E07 task 004: the moderation module, its mail and the appeal routes.
+  "lib/moderation/status.ts",
+  "lib/moderation/appeals.ts",
+  "lib/moderation/appeal-http.ts",
+  "lib/db/queries/moderation.ts",
+  "lib/email/moderation.ts",
+  "app/api/sites/[id]/appeal/route.ts",
+  "app/api/anon/[anonToken]/appeal/route.ts",
 ];
 
 /** `email`, `ip`, `token`, or a camelCase name ending in one of them. */

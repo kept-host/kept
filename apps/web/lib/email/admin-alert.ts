@@ -27,6 +27,8 @@ import { emailFooter } from "./footer";
 
 export type AdminAlert = {
   subject: string;
+  /** Child sexual abuse material: the mail's subject STARTS with `PRIORITY` (§6.8). */
+  priority?: boolean;
   /** The body, one paragraph per line. No email, IP or token. */
   lines: string[];
 } & (
@@ -41,20 +43,25 @@ export interface AdminAlertEmail {
   text: string;
 }
 
-/** Pure: the subject carries a fixed prefix so the alerts filter as one stream. */
+/**
+ * Pure: the subject carries a fixed prefix so the alerts filter as one stream;
+ * a priority alert puts `PRIORITY` before it, so it starts the subject line.
+ */
 export function buildAdminAlertEmail({
   subject,
+  priority = false,
   lines,
   from,
   origin,
 }: {
   subject: string;
+  priority?: boolean;
   lines: string[];
   from: string;
   origin: string;
 }): AdminAlertEmail {
   return {
-    subject: `[kept alert] ${subject}`,
+    subject: `${priority ? "PRIORITY " : ""}[kept alert] ${subject}`,
     text: `${lines.join("\n\n")}\n\n${emailFooter({ from, origin }).text}`,
   };
 }
@@ -80,6 +87,7 @@ export async function sendAdminAlert(alert: AdminAlert): Promise<AdminAlertOutco
     const { apiKey, from } = resendConfig();
     const message = buildAdminAlertEmail({
       subject: alert.subject,
+      priority: alert.priority,
       lines: alert.lines,
       from,
       origin: appOrigin(),

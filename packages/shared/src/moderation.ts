@@ -233,3 +233,45 @@ export const PUBLISH_RATE_LIMITS = {
   /** The "global cap tripped" admin mail, at most once per hour. */
   globalCapAlertHour: { limit: 1, windowSeconds: HOUR_SECONDS },
 } as const satisfies Record<string, RateLimitRule>;
+
+/**
+ * `POST /api/sites/:id/appeal` and `POST /api/anon/:token/appeal` (§6.10): the
+ * owner's or token holder's words, trimmed, `APPEAL_MESSAGE_MIN`–`_MAX` chars.
+ */
+export const appealRequestSchema = z.object({
+  message: z.string().trim().min(APPEAL_MESSAGE_MIN).max(APPEAL_MESSAGE_MAX),
+});
+export type AppealRequest = z.infer<typeof appealRequestSchema>;
+
+/**
+ * Every code the two appeal routes refuse with. ONE envelope for both — the
+ * restricted banner (studio and `/p`) is one component with one parser. The
+ * studio route's 401 and E05a's origin 403 keep their own bodies: they run
+ * before any appeal code.
+ */
+export const APPEAL_ERROR_CODES = [
+  "invalid",
+  "not_found",
+  "not_restricted",
+  "appeal_open",
+  "rate_limited",
+] as const;
+export const appealErrorCodeEnum = /*#__PURE__*/ z.enum(APPEAL_ERROR_CODES);
+export type AppealErrorCode = (typeof APPEAL_ERROR_CODES)[number];
+
+/** `{ error: { code, message } }`, plus `retry_after_seconds` on `rate_limited`. */
+export const appealErrorSchema = z.object({
+  error: z.object({ code: appealErrorCodeEnum, message: z.string() }),
+  retry_after_seconds: z.number().int().positive().optional(),
+});
+export type AppealError = z.infer<typeof appealErrorSchema>;
+
+/** The `201` body: the appeal as it now stands. */
+export const appealResultSchema = z.object({
+  appeal: z.object({
+    id: z.string().uuid(),
+    status: z.literal("open"),
+    createdAt: z.string().datetime(),
+  }),
+});
+export type AppealResult = z.infer<typeof appealResultSchema>;
