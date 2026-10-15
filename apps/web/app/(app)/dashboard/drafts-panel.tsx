@@ -9,7 +9,10 @@
  *     draft never reaches this screen, `isPastGrace`).
  *   · Sorts: `DRAFT_SORTS`, newest published first (`DEFAULT_DRAFT_SORT`).
  *   · Each draft: Keep (Swap… at the limit, `KeepAction`) and Delete, behind a
- *     small confirm.
+ *     small confirm. A restricted draft — under review, hidden or removed
+ *     (`isManagementRestricted`) — has no Delete and no checkbox: E07 refuses
+ *     every delete of one (Arun 2026-10-15, decision 2), and its Keep is
+ *     disabled with the reason.
  *   · Select mode: a checkbox per draft, Select all (N shown) / Clear,
  *     shift-click for a range, Esc to leave; a sticky bar keeps or deletes the
  *     selection in one `POST /api/sites/bulk`. Keep is all or nothing within the
@@ -41,6 +44,7 @@ import {
   draftMatchesFilter,
   draftsDeletedToast,
   draftsKeptToast,
+  isManagementRestricted,
   pageName,
   type DraftFilter,
 } from "@/lib/sites/display";
@@ -144,7 +148,9 @@ export function DraftsPanel({
     drafts.filter((site) => inFilter(site, filter)),
     sort,
   );
-  const chosen = shown.filter((site) => selected.has(site.id));
+  // A restricted draft can be neither deleted nor kept, so Select never offers it.
+  const selectable = shown.filter((site) => !isManagementRestricted(site.status));
+  const chosen = selectable.filter((site) => selected.has(site.id));
   const keepRefusal = bulkKeepRefusal(chosen.length, quota.remaining, quota.limit);
   const atLimit = quota.remaining === 0;
 
@@ -181,7 +187,7 @@ export function DraftsPanel({
 
   /** Tick or untick one draft; with Shift, every draft between it and the last one clicked. */
   function toggle(id: string, range: boolean) {
-    const ids = shown.map((site) => site.id);
+    const ids = selectable.map((site) => site.id);
     const from = range && anchor.current ? ids.indexOf(anchor.current) : -1;
     const to = ids.indexOf(id);
     const span = from === -1 ? [id] : ids.slice(Math.min(from, to), Math.max(from, to) + 1);
@@ -296,7 +302,7 @@ export function DraftsPanel({
     <button
       type="button"
       data-testid="select-drafts"
-      disabled={shown.length === 0}
+      disabled={selectable.length === 0}
       onClick={() => setSelecting(true)}
       className={cn(
         SEGMENT,
@@ -309,7 +315,7 @@ export function DraftsPanel({
   );
 
   function selector(site: HomeSite) {
-    if (!selecting) return undefined;
+    if (!selecting || isManagementRestricted(site.status)) return undefined;
     return (
       <label
         className={cn(
@@ -388,18 +394,20 @@ export function DraftsPanel({
                     quota={quota}
                     onKept={arrivals.keep}
                   />
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    data-testid="delete-draft"
-                    aria-label={`Delete draft ${name}`}
-                    title="Delete draft"
-                    onClick={() => ask([site.id], host)}
-                    className="size-9 px-0"
-                  >
-                    <Trash2 aria-hidden="true" strokeWidth={1.5} />
-                  </Button>
+                  {isManagementRestricted(site.status) ? null : (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      data-testid="delete-draft"
+                      aria-label={`Delete draft ${name}`}
+                      title="Delete draft"
+                      onClick={() => ask([site.id], host)}
+                      className="size-9 px-0"
+                    >
+                      <Trash2 aria-hidden="true" strokeWidth={1.5} />
+                    </Button>
+                  )}
                 </>
               }
             />
@@ -433,11 +441,11 @@ export function DraftsPanel({
             type="button"
             variant="ghost"
             size="sm"
-            disabled={pending || chosen.length === shown.length}
-            onClick={() => setSelected(new Set(shown.map((site) => site.id)))}
+            disabled={pending || chosen.length === selectable.length}
+            onClick={() => setSelected(new Set(selectable.map((site) => site.id)))}
             className="font-body font-medium"
           >
-            Select all ({shown.length} shown)
+            Select all ({selectable.length} shown)
           </Button>
           <Button
             type="button"

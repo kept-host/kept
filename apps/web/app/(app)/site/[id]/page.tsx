@@ -12,10 +12,10 @@
  * `getOwnedSiteById(profileId, id)` puts `owner_id` in the WHERE clause. An id
  * that belongs to somebody else returns `null`, byte-identical to one that
  * never existed, and both land on the same `notFound()` — as does an id that is
- * not a UUID (a 404, never a 500), a `removed` page and one past `purge_after`:
- * whatever the owner's Download link can no longer serve, this screen does not
- * show (`isDownloadable`). There is no "you don't own this" on this route —
- * that sentence is an existence oracle, and this screen previews the bytes.
+ * not a UUID (a 404, never a 500) and any page past its `purge_after`, which
+ * is the purge job's, not the owner's. There is no "you don't own this" on this
+ * route — that sentence is an existence oracle, and this screen previews the
+ * bytes.
  *
  * ── READS ONLY ───────────────────────────────────────────────────────────────
  * Every read is here, concurrently: the account's kept pages, quota and names
@@ -25,9 +25,14 @@
  * `servingBaseDomain()` / `appOrigin()` — configuration, never the request.
  *
  * An `archived` page renders the reduced view: when it was deleted, until when
- * it can be downloaded, and the download.
+ * it can be downloaded, and the download. A `removed` page (E07 D13) renders
+ * the same reduced view with the restricted banner instead — the reason,
+ * "Download until {date}" and "Ask for a review" — and no keep, demote,
+ * replace, rename, versions or delete. Under review and hidden pages get the
+ * full screen with the same banner. A page restricted for child sexual abuse
+ * material is never previewed or downloadable here (`withholdsBytes`).
  */
-import { cache } from "react";
+import { cache, type ReactNode } from "react";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { Download } from "lucide-react";
@@ -37,16 +42,19 @@ import { limitsFor, VISITS_HISTORY_DAYS } from "@kept/shared";
 import { QrCode } from "@/components/kept/qr";
 import { Button } from "@/components/ui/button";
 import { getSession } from "@/lib/auth/session";
+import { RestrictedBanner } from "@/components/kept/restricted-banner";
 import { getDashboardSites, getOwnedSiteById } from "@/lib/db/queries/dashboard";
 import { getProfileForSession } from "@/lib/db/queries/profile";
 import { listVersions } from "@/lib/db/queries/versions";
 import { dailyVisits, lastVisitsSync } from "@/lib/db/queries/visits";
+import { isRestrictedSite, readRestriction, withholdsBytes } from "@/lib/moderation/restriction";
 import { ogCardPath } from "@/lib/og/card-url";
 import { liveUrl } from "@/lib/publish/pipeline";
 import { previewFits, readPreviewHtml } from "@/lib/publish/preview";
 import { qrSvg } from "@/lib/qr/qr-code";
 import { archivedNotice, pageDownloadHref, pageName } from "@/lib/sites/display";
 import { isDownloadable } from "@/lib/sites/export";
+import { isPastGrace } from "@/lib/sites/keep";
 import { siteIdSchema } from "@/lib/sites/owner-routes";
 import { visitsView, type VisitsView } from "@/lib/sites/visits-view";
 import { appOrigin, servingBaseDomain } from "@/lib/storage/env";
@@ -68,7 +76,7 @@ const subject = cache(async (id: string) => {
   const profile = await getProfileForSession(await getSession());
   if (!profile) return null;
   const site = await getOwnedSiteById(profile.id, id);
-  return site && isDownloadable(site, new Date()) ? { profile, site } : null;
+  return site && !isPastGrace(site, new Date()) ? { profile, site } : null;
 });
 
 export async function generateMetadata({
@@ -126,30 +134,39 @@ export default async function SiteDetailPage({ params }: { params: Promise<{ id:
 
   if (site.status === "archived") {
     return (
-      <>
-        <header className={TOP_BAR}>
-          <Wordmark className="text-[22px] md:hidden" />
-          <BackLink />
-        </header>
-        <main className="flex max-w-[640px] flex-col gap-5 px-4 pt-7 pb-24 md:px-10">
-          <h1 className="font-display text-[clamp(32px,6vw,40px)] leading-[1.1] font-bold tracking-[-0.03em] break-words text-text">
-            {name}
-          </h1>
-          <p data-testid="archived-notice" className="text-[15px] leading-relaxed text-text">
-            {archivedNotice(site.updatedAt, site.purgeAfter)}
-          </p>
-          <Button asChild variant="secondary" className="self-start font-body font-medium">
-            <a href={pageDownloadHref(site.id)} data-testid="download-page" download>
-              <Download aria-hidden="true" strokeWidth={1.5} />
-              Download
-            </a>
-          </Button>
-        </main>
-      </>
+      <ReducedView name={name}>
+        <p data-testid="archived-notice" className="text-[15px] leading-relaxed text-text">
+          {archivedNotice(site.updatedAt, site.purgeAfter)}
+        </p>
+        <Button asChild variant="secondary" className="self-start font-body font-medium">
+          <a href={pageDownloadHref(site.id)} data-testid="download-page" download>
+            <Download aria-hidden="true" strokeWidth={1.5} />
+            Download
+          </a>
+        </Button>
+      </ReducedView>
     );
   }
 
   const now = new Date();
+  const restriction = isRestrictedSite(site) ? await readRestriction(site, now) : null;
+  const banner = restriction ? (
+    <RestrictedBanner
+      view={restriction}
+      appealUrl={`/api/sites/${site.id}/appeal`}
+      downloadHref={isDownloadable(site, now) ? pageDownloadHref(site.id) : undefined}
+    />
+  ) : null;
+
+  if (site.status === "removed") {
+    return (
+      <ReducedView name={name}>
+        <p className="font-mono text-[13px] text-text-secondary">{host}</p>
+        {banner}
+      </ReducedView>
+    );
+  }
+
   const [home, html, versions, visits] = await Promise.all([
     getDashboardSites(profile.id),
     readPreviewHtml(site, "site-detail"),
@@ -189,6 +206,9 @@ export default async function SiteDetailPage({ params }: { params: Promise<{ id:
         baseDomain={servingBaseDomain()}
         html={html}
         previewTooLarge={!previewFits(site)}
+        previewWithheld={withholdsBytes(site)}
+        downloadable={isDownloadable(site, now)}
+        banner={banner}
         thumbnail={ogCardPath(site)}
         versions={versions}
         visits={visits}
@@ -197,5 +217,23 @@ export default async function SiteDetailPage({ params }: { params: Promise<{ id:
         qrSvg={qrSvg(url)}
       />
     </ClockProvider>
+  );
+}
+
+/** The archived and removed screens: the top bar, the name, and what is left to do. */
+function ReducedView({ name, children }: { name: string; children: ReactNode }) {
+  return (
+    <>
+      <header className={TOP_BAR}>
+        <Wordmark className="text-[22px] md:hidden" />
+        <BackLink />
+      </header>
+      <main className="flex max-w-[640px] flex-col gap-5 px-4 pt-7 pb-24 md:px-10">
+        <h1 className="font-display text-[clamp(32px,6vw,40px)] leading-[1.1] font-bold tracking-[-0.03em] break-words text-text">
+          {name}
+        </h1>
+        {children}
+      </main>
+    </>
   );
 }

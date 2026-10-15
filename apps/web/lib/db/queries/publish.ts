@@ -12,7 +12,7 @@
  * inconsistency with a defined unwind (`deleteSiteCascade`) rather than an
  * object in R2 that nobody can name.
  */
-import type { PublishChannel, Region, SiteStatus } from "@kept/shared";
+import type { ModerationReason, PublishChannel, Region, SiteStatus } from "@kept/shared";
 import { and, desc, eq, gt, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 
 import { isNameAvailable } from "../../names/availability";
@@ -441,6 +441,8 @@ export interface AnonSite {
   title: string | null;
   contentHash: string | null;
   sizeBytes: number | null;
+  /** Why E07 restricted the page; `null` unless it is. Read for D13's byte rule. */
+  moderationReason: ModerationReason | null;
 }
 
 /**
@@ -461,6 +463,7 @@ const MANAGED_SITE_COLUMNS = {
   title: sites.title,
   contentHash: sites.contentHash,
   sizeBytes: sites.sizeBytes,
+  moderationReason: sites.moderationReason,
 } as const;
 
 /**

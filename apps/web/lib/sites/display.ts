@@ -135,26 +135,36 @@ export function expiredDraftNotice(
  * the detail screen (task 008) — all *disable and explain* from one sentence
  * rather than each inventing its own or, worse, dropping the button.
  *
- * E06 renders these states and writes none of them; E07 owns every flip.
+ * E07 writes all three states; the studio renders them. Every one of them is
+ * hidden at the edge, and none of them can be deleted either (Arun
+ * 2026-10-15, decision 2): a delete would launder the restriction. `removed`
+ * never reaches the verbs' own primitives — they answer it not-found first —
+ * but the cards and the detail screen list it until `purge_after` (D13), so it
+ * explains itself in the same way.
  *
- * Download is deliberately not promised here, even though task 008's detail
- * screen now offers one. That control is bounded by `PREVIEW_MAX_BYTES` — it
- * hands back the bytes the screen already read — so it is not always on screen,
- * and a shared sentence that promised it would be the interface lying about a
- * button that is not there. The screen that *has* the button says so itself.
+ * Download is deliberately not promised here: it is bounded by
+ * `PREVIEW_MAX_BYTES` on some screens and withheld outright for one reason
+ * (D13), so the screen that *has* the button says so itself.
  */
 export function managementRefusal(status: SiteStatus): string | null {
   switch (status) {
     case "quarantined":
-      return "This page is under review and is not being served. Renaming, replacing and keeping are on hold until the review finishes. Deleting still works.";
+      return "This page is hidden. Renaming, replacing, keeping and deleting are on hold unless a review brings it back.";
     case "under_review":
-      return "This page is being reviewed. It stays at its link in the meantime, but renaming, replacing and keeping are on hold until the review finishes. Deleting still works.";
+      return "This page is hidden while we take a look. Renaming, replacing, keeping and deleting are on hold until we're done.";
+    case "removed":
+      return "This page was removed, so it can't be renamed, replaced, kept or deleted. You can ask for a review.";
     default:
       return null;
   }
 }
 
-/** Whether the verbs above are refused. The predicate behind the sentence. */
+/**
+ * Whether the verbs above are refused — the page is restricted (under review,
+ * hidden or removed). The predicate behind the sentence, and the one every
+ * studio surface asks: the card's chip, the drafts tab's Delete and Select, the
+ * detail screen's banner and Danger zone.
+ */
 export function isManagementRestricted(status: SiteStatus): boolean {
   return managementRefusal(status) !== null;
 }

@@ -1,5 +1,15 @@
-import { DRAFT_TTL_DAYS, KEPT_PAGE_LIMIT } from "@kept/shared";
+import {
+  DRAFT_GRACE_DAYS,
+  DRAFT_TTL_DAYS,
+  generateAnonToken,
+  hashToken,
+  KEPT_PAGE_LIMIT,
+  MODERATION_REASON_SENTENCES,
+  type ModerationReason,
+  type SiteStatus,
+} from "@kept/shared";
 import { test, expect, type Page } from "@playwright/test";
+import { eq, inArray } from "drizzle-orm";
 
 import {
   DELETE_GRACE_NOTE,
@@ -12,7 +22,10 @@ import {
   publishViaApi,
   SKIP_LIVE_PUBLISH,
 } from "./live-publish";
-import { LIVE_STACK_TIMEOUT } from "./live-stack";
+import { closeDb, db, schema } from "../lib/db";
+import { formatUpdatedAt } from "../lib/sites/display";
+
+import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
 
 /**
  * The two anon-token screens, against a page that was really published:
@@ -515,6 +528,143 @@ test.describe("an anon token that resolves to nothing", () => {
           page.getByRole("heading", { name: /doesn.t open a page/ }),
         ).toBeVisible();
       }
+    }
+  });
+});
+
+/**
+ * `/p/[anonToken]` on a restricted page (E07 §6.10, AC38): the token holder
+ * manages the page, so they see its status — the banner, the reason and the
+ * appeal form — and nothing that touches the bytes. Every other non-live case
+ * stays the uniform 404.
+ *
+ * Rows straight into Postgres with a real token's digest, and NO bytes: a
+ * restricted view that tried to preview would have nothing to read, which is
+ * the point. No KV, no R2, no publish (and no publish rate limit).
+ */
+test.describe("the restricted /p view", () => {
+  test.skip(!!SKIP_LIVE_PUBLISH, String(SKIP_LIVE_PUBLISH));
+  test.describe.configure({ timeout: LIVE_STACK_TIMEOUT });
+
+  const DAY = 24 * 60 * 60 * 1000;
+  const siteIds: string[] = [];
+
+  test.beforeAll(async () => {
+    if (SKIP_LIVE_PUBLISH) return;
+    await warmDb();
+  });
+
+  test.afterAll(async () => {
+    if (SKIP_LIVE_PUBLISH) return;
+    if (siteIds.length > 0) {
+      // Appeals cascade with the site; the moderation log only NULLs its id.
+      await db.delete(schema.moderationActions).where(inArray(schema.moderationActions.siteId, siteIds));
+      await db.delete(schema.sites).where(inArray(schema.sites.id, siteIds));
+    }
+    await closeDb();
+  });
+
+  /** An anonymous draft in `status`, managed by the returned token. */
+  async function anonPage(
+    status: SiteStatus,
+    { reason = "phishing", purgeAfter }: { reason?: ModerationReason; purgeAfter?: Date } = {},
+  ) {
+    const id = crypto.randomUUID();
+    const token = generateAnonToken();
+    const slug = `e07-009-p-${id.slice(0, 8)}`;
+    const expiresAt = new Date(Date.now() + DRAFT_TTL_DAYS * DAY);
+    await db.insert(schema.sites).values({
+      id,
+      slug,
+      publisherHash: "e07-009-e2e",
+      anonTokenHash: await hashToken(token),
+      status,
+      moderationReason: status === "live" || status === "expired" || status === "archived" ? null : reason,
+      expiresAt,
+      purgeAfter: purgeAfter ?? new Date(expiresAt.getTime() + DRAFT_GRACE_DAYS * DAY),
+      contentHash: `e07-009-${id}`,
+      sizeBytes: 128,
+    });
+    siteIds.push(id);
+    return { id, slug, token };
+  }
+
+  async function expectNothingThatTouchesTheBytes(page: Page) {
+    await expect(page.locator("iframe")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /copy/i })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /replace|delete|keep|stop serving/i })).toHaveCount(0);
+    await expect(page.locator("a[download]")).toHaveCount(0);
+    await expect(page.getByTestId("restricted-download")).toHaveCount(0);
+  }
+
+  test("AC38: under review, hidden and removed-before-purge show the banner, the reason and the appeal — no preview, download, copy-link, replace, keep or delete", async ({
+    page,
+  }) => {
+    const cases = [
+      { status: "under_review", headline: "This page is hidden while we take a look." },
+      { status: "quarantined", headline: "This page is hidden. It stays offline unless a review brings it back." },
+      { status: "removed", headline: "This page was removed." },
+    ] as const;
+    for (const { status, headline } of cases) {
+      const purgeAfter = status === "removed" ? new Date(Date.now() + 20 * DAY) : undefined;
+      const site = await anonPage(status, { reason: "crypto_scam", purgeAfter });
+      const response = await page.goto(`/p/${site.token}`);
+      expect(response?.status(), status).toBe(200);
+
+      const banner = page.getByTestId("restricted-banner");
+      await expect(banner, status).toHaveAttribute("data-state", status);
+      await expect(banner).toContainText(headline);
+      await expect(banner.getByTestId("restricted-reason")).toHaveText(
+        MODERATION_REASON_SENTENCES.crypto_scam.sentence,
+      );
+      await expect(page.getByText(site.slug)).toBeVisible();
+      await expect(banner.getByTestId("appeal-button")).toBeEnabled();
+      if (purgeAfter) {
+        await expect(banner.getByTestId("restricted-deadline")).toHaveText(
+          `It will be deleted for good on ${formatUpdatedAt(purgeAfter)}.`,
+        );
+      }
+      await expectNothingThatTouchesTheBytes(page);
+    }
+  });
+
+  test("AC19 + AC38: the token holder appeals through the form — one open appeal, recorded as anonymous", async ({
+    page,
+  }) => {
+    const site = await anonPage("quarantined");
+    await page.goto(`/p/${site.token}`);
+    const banner = page.getByTestId("restricted-banner");
+    await banner.getByTestId("appeal-button").click();
+    const message = "I made this page for my own wallet app's beta testers. Nothing on it asks for keys.";
+    await banner.getByTestId("appeal-message").fill(message);
+    await banner.getByTestId("appeal-submit").click();
+    await expect(banner.getByTestId("appeal-open")).toHaveText("We've got your request — we'll email you.", {
+      timeout: LIVE_STACK_TIMEOUT,
+    });
+    await expect(banner.getByTestId("appeal-button")).toBeDisabled();
+
+    const rows = await db.select().from(schema.appeals).where(eq(schema.appeals.siteId, site.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: "open", message, submittedByUserId: null });
+
+    await page.reload();
+    await expect(page.getByTestId("appeal-open")).toBeVisible();
+    await expectNothingThatTouchesTheBytes(page);
+  });
+
+  test("every other non-live page is still the uniform 404 — archived, expired, removed past its purge date", async ({
+    page,
+  }) => {
+    const gone = [
+      await anonPage("archived"),
+      await anonPage("expired"),
+      await anonPage("removed", { purgeAfter: new Date(Date.now() - 60_000) }),
+    ];
+    for (const site of gone) {
+      const response = await page.goto(`/p/${site.token}`);
+      expect(response?.status(), site.slug).toBe(404);
+      await expect(page.getByRole("heading", { name: /doesn.t open a page/ })).toBeVisible();
+      await expect(page.getByTestId("restricted-banner")).toHaveCount(0);
     }
   });
 });

@@ -7,7 +7,8 @@
  *   · **Demote to draft** — kept `live` pages only. The confirm states the
  *     fresh `DRAFT_TTL_DAYS` clock and its deadline BEFORE anything is sent;
  *     then the toast and `router.refresh()`. Name and Explore flag survive.
- *   · **Delete** — every page the owner still has. The design's type-the-name
+ *   · **Delete** — every page the owner still has that E07 has not restricted
+ *     (the detail screen leaves this section out on one). The design's type-the-name
  *     gate (the page's name, its slug) over PRD §11's sentence, then
  *     `DELETE /api/sites/:id` and back to `/dashboard`. **No Undo** (design call
  *     5): delete archives, and there is no un-archive path — the dialog says

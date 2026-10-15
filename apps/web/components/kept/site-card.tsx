@@ -76,6 +76,7 @@ import {
   expiredDraftNotice,
   formatTimestamp,
   isDraftUrgent,
+  isManagementRestricted,
   JUST_PUBLISHED,
   pageName,
   publishedLabel,
@@ -164,9 +165,22 @@ export function SiteCard(props: SiteCardProps) {
 /** How a flagged page, or an expired draft, recedes on its card (the design's `dim`). */
 const MUTED = "opacity-50";
 
-/** The statuses E07 writes that a card states in a chip (PRD §9.1); order unchanged. */
+/**
+ * The statuses E07 writes that a card states in a chip (PRD §9.1): under
+ * review, hidden and removed — `isManagementRestricted`, the one predicate the
+ * detail screen's banner uses too. Order unchanged.
+ */
 function isFlagged(status: SiteStatus): boolean {
-  return status === "under_review" || status === "quarantined";
+  return isManagementRestricted(status);
+}
+
+/**
+ * The clock a draft's card counts down — none on a removed draft (D13): it is
+ * not serving and cannot be kept, so "3 days left" or "keep within" would
+ * promise something nothing can deliver. Its chip says Removed instead.
+ */
+function draftClock(site: SiteCardSite): Date | null {
+  return site.status === "removed" ? null : site.expiresAt;
 }
 
 /** The title-row dot: `--live` when serving, `--warning` when flagged. */
@@ -497,7 +511,7 @@ function DraftCard({
 }: Extract<SiteCardProps, { variant: "draft" }>) {
   // A draft card is only ever handed a draft; a row whose clock was cleared
   // since the render (kept elsewhere) simply shows no chip.
-  const expiresAt = site.expiresAt;
+  const expiresAt = draftClock(site);
   const { now, expired, urgent } = useDraftClock(expiresAt);
   const flagged = isFlagged(site.status);
   // A draft whose clock ran out on screen stops serving, so it stops previewing.
@@ -569,7 +583,7 @@ function DraftRow({
   selected,
   className,
 }: Extract<SiteCardProps, { variant: "draft-list" }>) {
-  const expiresAt = site.expiresAt;
+  const expiresAt = draftClock(site);
   const { now, expired, urgent } = useDraftClock(expiresAt);
   const flagged = isFlagged(site.status);
 

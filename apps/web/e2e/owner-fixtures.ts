@@ -372,6 +372,11 @@ export async function cleanup(scope: OwnerScope): Promise<void> {
     // with no FK, so they outlive the row unless they are collected here.
     await db.delete(schema.nameEvents).where(inArray(schema.nameEvents.siteId, scope.siteIds));
     await db.delete(schema.nameHolds).where(inArray(schema.nameHolds.siteId, scope.siteIds));
+    // E07: the moderation log only NULLs its `site_id` when the row goes, and a
+    // re-purge row has no FK at all — both would outlive the drill. (Appeals
+    // cascade with the site.)
+    await db.delete(schema.moderationActions).where(inArray(schema.moderationActions.siteId, scope.siteIds));
+    await db.delete(schema.pendingPurges).where(inArray(schema.pendingPurges.siteId, scope.siteIds));
     await db.delete(schema.sites).where(inArray(schema.sites.id, scope.siteIds));
   }
   if (scope.userIds.length) {

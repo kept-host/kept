@@ -565,6 +565,33 @@ test.describe("the Pages home", () => {
     await expect(reviewed.getByRole("button", { name: /Replace file/ })).toHaveCount(0);
   });
 
+  test("a removed kept page (E07 D13) is on the wall, labelled, until its purge date — and holds no kept slot", async ({
+    page,
+    baseURL,
+  }) => {
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const [kept, removed, purged] = await seedKept(scope, userId, 3);
+    const DAY = 24 * 60 * 60 * 1000;
+    await db
+      .update(schema.sites)
+      .set({ status: "removed", moderationReason: "scam", purgeAfter: new Date(Date.now() + 20 * DAY) })
+      .where(eq(schema.sites.id, removed!.siteId));
+    await db
+      .update(schema.sites)
+      .set({ status: "removed", moderationReason: "scam", purgeAfter: new Date(Date.now() - 60_000) })
+      .where(eq(schema.sites.id, purged!.siteId));
+
+    await page.goto("/dashboard");
+    await hydrated(page);
+    await expect(card(page, kept!.siteId)).toBeVisible();
+    await expect(card(page, removed!.siteId)).toContainText("Removed");
+    // It opens where `/site/[id]` shows it: the reduced view.
+    await expect(card(page, removed!.siteId).locator(`a[href="/site/${removed!.siteId}"]`).first()).toBeVisible();
+    await expect(card(page, purged!.siteId)).toHaveCount(0);
+    // Listed, but not counted: `isKeptCondition` is still the cap's one rule.
+    await expect(summaryItem(page, "Kept")).toContainText(`1 / ${FREE.keptPages}`);
+  });
+
   test("the screen paints from tokens, so it is correct in dark too", async ({ page, baseURL }) => {
     await signInAs(page, baseURL!, scope);
     await publishOwned(page, baseURL!, scope, "E06 dark");

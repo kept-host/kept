@@ -1,10 +1,12 @@
 import { readFileSync } from "node:fs";
 
 import {
-  ABUSE_CONTACT_EMAIL,
+  APPEAL_MESSAGE_MIN,
   DRAFT_GRACE_DAYS,
   DRAFT_TTL_DAYS,
   limitsFor,
+  MODERATION_REASON_SENTENCES,
+  type ModerationReason,
   PAGE_TITLE_MAX_LENGTH,
 } from "@kept/shared";
 import { expect, test, type Page } from "@playwright/test";
@@ -16,11 +18,13 @@ import { qrMatrix, qrPath } from "../lib/qr/qr-code";
 import {
   DEMOTE_NOTE,
   deletePageWarning,
+  formatUpdatedAt,
   REPLACED_TOAST,
   UNDONE_TOAST,
 } from "../lib/sites/display";
 import { VISITS_EMPTY_NOTE, VISITS_PRIVACY_LINE, VISITS_UNAVAILABLE } from "../lib/sites/visits-view";
 
+import { decideAppeal } from "./appeal-decision";
 import { waitForBytes } from "./live-publish";
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
 import {
@@ -44,8 +48,12 @@ import { waitForTokensApplied } from "./tokens-applied";
  * magic-link session; every verb goes over the wire to the same origin-gated
  * route the screen calls; every assertion that matters re-reads Postgres. The
  * only rows written directly are states E06 renders and never writes — E07's
- * `under_review` / `quarantined` / `expired`, and the visits sync's daily rows
- * (task 009's sync is gated on a human credential).
+ * `under_review` / `quarantined` / `removed` / `expired` and their reason, and
+ * the visits sync's daily rows (task 009's sync is gated on a human
+ * credential). E07 task 009's restricted banner is driven end to end: the
+ * appeal goes through the form and the real route, and Arun's decisions
+ * through `rejectAppeal` / `grantAppeal` themselves (`./appeal-decision.ts`;
+ * task 011 builds the screen that calls them).
  *
  * SKIPS without dev credentials: CI runs fork PRs with no secrets.
  */
@@ -115,8 +123,15 @@ async function openDetail(page: Page, siteId: string) {
   await page.getByRole("tab", { name: "General" }).click();
 }
 
-async function setStatus(siteId: string, status: "under_review" | "quarantined" | "expired") {
-  await db.update(schema.sites).set({ status }).where(eq(schema.sites.id, siteId));
+async function setStatus(
+  siteId: string,
+  status: "under_review" | "quarantined" | "removed" | "expired",
+  restriction: { moderationReason?: ModerationReason; purgeAfter?: Date } = {},
+) {
+  await db
+    .update(schema.sites)
+    .set({ status, moderationReason: restriction.moderationReason ?? null, ...restriction })
+    .where(eq(schema.sites.id, siteId));
 }
 
 test.describe("the page detail screen", () => {
@@ -578,32 +593,33 @@ test.describe("the page detail screen", () => {
     await expectNoLaterEpicText(page, "archived");
   });
 
-  test("the status matrix: under review, quarantined and expired show only what PRD §5.2 allows; the appeal is a mailto naming the page", async ({
+  test("the status matrix: under review, quarantined and expired show only what PRD §5.2 allows; restricted pages have the banner and no delete", async ({
     page,
     baseURL,
   }) => {
     await signInAs(page, baseURL!, scope);
     const site = await publishOwned(page, baseURL!, scope, "E06 flagged");
-    const host = new URL(site.liveUrl).host;
 
-    // ── under_review: view, title, download, delete.
-    await setStatus(site.siteId, "under_review");
+    // ── under_review: view, title, download — no delete (E07 decision 2), no QR (hidden at the edge).
+    await setStatus(site.siteId, "under_review", { moderationReason: "phishing" });
     await openDetail(page, site.siteId);
     await expect(page.getByTestId("status-chip")).toHaveText("Under review");
-    const banner = page.getByTestId("review-banner");
-    await expect(banner).toContainText("This page is under review.");
-    const appeal = banner.getByTestId("appeal-link");
-    await expect(appeal).toHaveText("Appeal this review");
-    const href = await appeal.getAttribute("href");
-    expect(href!.startsWith(`mailto:${ABUSE_CONTACT_EMAIL}?subject=`), href!).toBe(true);
-    expect(decodeURIComponent(href!.split("subject=")[1]!)).toContain(host);
+    const banner = page.getByTestId("restricted-banner");
+    await expect(banner).toHaveAttribute("data-state", "under_review");
+    await expect(banner).toContainText("This page is hidden while we take a look.");
+    await expect(banner.getByTestId("restricted-reason")).toHaveText(MODERATION_REASON_SENTENCES.phishing.sentence);
+    await expect(banner.getByTestId("appeal-button")).toBeEnabled();
+    // The `mailto:` appeal is gone (AC19).
+    await expect(page.getByTestId("appeal-link")).toHaveCount(0);
+    await expect(page.locator('main a[href^="mailto:"]')).toHaveCount(0);
     await expect(page.getByTestId("title-input")).toBeVisible();
     await expect(page.getByTestId("explore-toggle")).toBeDisabled();
     await expect(page.getByText("Paused while this page is under review.")).toBeVisible();
     await expect(page.getByTestId("rename-start")).toHaveCount(0);
     await expect(page.getByTestId("demote-button")).toHaveCount(0);
-    await expect(page.getByTestId("delete-button")).toBeVisible();
-    await expect(page.getByTestId("download-qr-svg")).toBeVisible();
+    await expect(page.getByTestId("delete-button")).toHaveCount(0);
+    await expect(page.getByTestId("danger-zone")).toHaveCount(0);
+    await expect(page.getByTestId("download-qr-svg")).toHaveCount(0);
     await expect(page.getByTestId("download-page")).toBeVisible();
     await page.getByRole("tab", { name: "Versions" }).click();
     await expect(page.getByTestId("restore-button")).toHaveCount(0);
@@ -611,15 +627,18 @@ test.describe("the page detail screen", () => {
     await page.getByRole("tab", { name: "General" }).click();
     await expectNoLaterEpics(page);
 
-    // ── quarantined: download, delete — and the banner.
-    await setStatus(site.siteId, "quarantined");
+    // ── quarantined: download — and the banner, firmer.
+    await setStatus(site.siteId, "quarantined", { moderationReason: "phishing" });
     await openDetail(page, site.siteId);
-    await expect(page.getByTestId("review-banner")).toBeVisible();
+    await expect(page.getByTestId("restricted-banner")).toHaveAttribute("data-state", "quarantined");
+    await expect(page.getByTestId("restricted-banner")).toContainText(
+      "This page is hidden. It stays offline unless a review brings it back.",
+    );
     await expect(page.getByTestId("title-input")).toHaveCount(0);
     await expect(page.getByTestId("explore-toggle")).toBeDisabled();
     await expect(page.getByTestId("download-qr-svg")).toHaveCount(0);
     await expect(page.getByTestId("download-page")).toBeVisible();
-    await expect(page.getByTestId("delete-button")).toBeVisible();
+    await expect(page.getByTestId("delete-button")).toHaveCount(0);
     await expect(page.getByTestId("rename-start")).toHaveCount(0);
     await expect(page.getByTestId("keep-button")).toHaveCount(0);
     await expectNoLaterEpics(page);
@@ -637,12 +656,159 @@ test.describe("the page detail screen", () => {
     await expect(page.getByTestId("status-chip")).toHaveText("Draft · expired");
     await expect(page.getByTestId("keep-button")).toBeVisible();
     await expect(page.getByTestId("title-input")).toHaveCount(0);
-    await expect(page.getByTestId("review-banner")).toHaveCount(0);
+    await expect(page.getByTestId("restricted-banner")).toHaveCount(0);
     await expect(page.getByTestId("delete-button")).toBeVisible();
     await expect(page.getByTestId("download-page")).toBeVisible();
     await expectNoLaterEpics(page);
 
     expect((await readSite(site.siteId)).status, "rendering a state must not change it").toBe("expired");
+  });
+
+  test("AC19: the owner asks for a review from the banner — inline errors, then open; a rejection shows its note; a grant brings the page back", async ({
+    page,
+    baseURL,
+  }) => {
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const site = await publishOwned(page, baseURL!, scope, "E07 appeal");
+    await setStatus(site.siteId, "quarantined", { moderationReason: "phishing" });
+    await openDetail(page, site.siteId);
+
+    const banner = page.getByTestId("restricted-banner");
+    const ask = async (message: string) => {
+      await banner.getByTestId("appeal-button").click();
+      await banner.getByTestId("appeal-message").fill(message);
+      await banner.getByTestId("appeal-submit").click();
+    };
+    const appeals = () => db.select().from(schema.appeals).where(eq(schema.appeals.siteId, site.siteId));
+
+    // Too short: refused inline, nothing sent.
+    await ask("Please look.");
+    await expect(banner.getByTestId("appeal-error")).toHaveText(
+      `Tell us a little more — at least ${APPEAL_MESSAGE_MIN} characters.`,
+    );
+    expect(await appeals()).toHaveLength(0);
+
+    const message = "This is the sign-in page for my own app, on my own domain. Please take another look.";
+    await banner.getByTestId("appeal-message").fill(message);
+    await banner.getByTestId("appeal-submit").click();
+    await expect(banner.getByTestId("appeal-open")).toHaveText("We've got your request — we'll email you.", {
+      timeout: LIVE_STACK_TIMEOUT,
+    });
+    await expect(banner.getByTestId("appeal-button")).toBeDisabled();
+    const [first] = await appeals();
+    expect(first).toMatchObject({ status: "open", message, submittedByUserId: userId });
+
+    // The open appeal survives a reload: the server's view, not the form's state.
+    await openDetail(page, site.siteId);
+    await expect(banner.getByTestId("appeal-open")).toBeVisible();
+    await expect(banner.getByTestId("appeal-button")).toBeDisabled();
+
+    // Arun rejects it: the note is shown, and a new appeal is allowed again.
+    const note = "It still asks visitors for their bank password.";
+    expect(decideAppeal("reject", first!.id, userId, note)).toBe(true);
+    await openDetail(page, site.siteId);
+    await expect(banner.getByTestId("appeal-rejected")).toContainText(note);
+    await expect(banner.getByTestId("appeal-open")).toHaveCount(0);
+
+    await ask(`${message} I removed the password field.`);
+    await expect(banner.getByTestId("appeal-open")).toBeVisible({ timeout: LIVE_STACK_TIMEOUT });
+    const second = (await appeals()).find((row) => row.status === "open");
+    expect(second, "the second appeal is the open one").toBeDefined();
+
+    // Arun grants it: the page is live again and the banner is gone.
+    expect(decideAppeal("grant", second!.id, userId, "Checked — it's your own sign-in page.")).toBe(true);
+    await openDetail(page, site.siteId);
+    await expect(page.getByTestId("restricted-banner")).toHaveCount(0);
+    await expect(page.getByTestId("status-chip")).toHaveText("Live · Kept");
+    const restored = await readSite(site.siteId);
+    expect([restored.status, restored.moderationReason]).toEqual(["live", null]);
+    expect((await appeals()).map((row) => row.status).sort()).toEqual(["granted", "rejected"]);
+  });
+
+  test("AC37: a removed page opens in the reduced view — reason, Download until its purge date, appeal, no other control; past purge_after it is not found", async ({
+    page,
+    baseURL,
+  }) => {
+    await signInAs(page, baseURL!, scope);
+    const site = await publishOwned(page, baseURL!, scope, "E07 removed");
+    const purgeAfter = new Date(Date.now() + (DRAFT_GRACE_DAYS - 1) * DAY);
+    await setStatus(site.siteId, "removed", { moderationReason: "scam", purgeAfter });
+
+    await page.goto(`/site/${site.siteId}`);
+    const banner = page.getByTestId("restricted-banner");
+    await expect(banner).toHaveAttribute("data-state", "removed");
+    await expect(banner).toContainText("This page was removed.");
+    await expect(banner.getByTestId("restricted-reason")).toHaveText(MODERATION_REASON_SENTENCES.scam.sentence);
+    const download = banner.getByTestId("restricted-download");
+    await expect(download).toHaveText(`Download until ${formatUpdatedAt(purgeAfter)}`);
+    await expect(download).toHaveAttribute("href", `/api/sites/${site.siteId}/download`);
+    const bytes = await page.request.get(`${baseURL}/api/sites/${site.siteId}/download`);
+    expect(bytes.status()).toBe(200);
+    expect(await bytes.text()).toBe(site.html);
+    await expect(banner.getByTestId("appeal-button")).toBeEnabled();
+
+    // The reduced view: nothing else to do to it.
+    for (const id of [
+      "keep-button",
+      "demote-button",
+      "delete-button",
+      "danger-zone",
+      "rename-start",
+      "title-input",
+      "restore-button",
+      "versions-panel",
+      "download-qr-svg",
+    ]) {
+      await expect(page.getByTestId(id), id).toHaveCount(0);
+    }
+    await expect(page.getByRole("tab")).toHaveCount(0);
+    await expect(page.locator("iframe")).toHaveCount(0);
+
+    // The home lists it, labelled, where `/site/[id]` can open it.
+    await page.goto("/dashboard");
+    const card = page.locator(`[data-testid="home-card"][data-site-id="${site.siteId}"]`);
+    await expect(card).toContainText("Removed");
+
+    // Past purge_after it is the purge job's: not found, like any other id.
+    await setStatus(site.siteId, "removed", { moderationReason: "scam", purgeAfter: new Date(Date.now() - 60_000) });
+    await page.goto(`/site/${site.siteId}`);
+    await expect(page.getByTestId("site-not-found")).toBeVisible();
+    expect((await page.request.get(`${baseURL}/api/sites/${site.siteId}/download`)).status()).toBe(404);
+  });
+
+  test("AC39: child sexual abuse material — no preview and no download anywhere in the studio, hidden or removed", async ({
+    page,
+    baseURL,
+  }) => {
+    await signInAs(page, baseURL!, scope);
+    const site = await publishOwned(page, baseURL!, scope, "E07 withheld");
+    const download = () => page.request.get(`${baseURL}/api/sites/${site.siteId}/download`);
+
+    await setStatus(site.siteId, "quarantined", { moderationReason: "child_sexual_abuse" });
+    await openDetail(page, site.siteId);
+    await expect(page.getByTestId("restricted-reason")).toHaveText(
+      MODERATION_REASON_SENTENCES.child_sexual_abuse.sentence,
+    );
+    await expect(page.locator("iframe")).toHaveCount(0);
+    await expect(page.getByText("There is no preview of this page while it is restricted.")).toBeVisible();
+    await expect(page.getByTestId("download-page")).toHaveCount(0);
+    await expect(page.getByTestId("download-withheld")).toBeVisible();
+    expect((await download()).status()).toBe(404);
+
+    const purgeAfter = new Date(Date.now() + (DRAFT_GRACE_DAYS - 1) * DAY);
+    await setStatus(site.siteId, "removed", { moderationReason: "child_sexual_abuse", purgeAfter });
+    await page.goto(`/site/${site.siteId}`);
+    const banner = page.getByTestId("restricted-banner");
+    await expect(banner.getByTestId("restricted-download")).toHaveCount(0);
+    await expect(banner.getByTestId("restricted-deadline")).toHaveText(
+      `It will be deleted for good on ${formatUpdatedAt(purgeAfter)}.`,
+    );
+    await expect(banner.getByTestId("appeal-button")).toBeEnabled();
+    expect((await download()).status()).toBe(404);
+    // The export leaves it out too: the zip names no file for it.
+    const exported = await page.request.get(`${baseURL}/api/export`);
+    expect(exported.status()).toBe(200);
+    expect((await exported.body()).includes(Buffer.from(`${site.slug}/index.html`))).toBe(false);
   });
 
   test("the screen paints from tokens, so it is correct in dark too", async ({ page, baseURL }) => {

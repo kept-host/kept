@@ -1,6 +1,6 @@
 import { bulkResultSchema, demoteResultSchema, DRAFT_GRACE_DAYS, limitsFor, studioErrorSchema } from "@kept/shared";
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
 import { pointerKey } from "../lib/storage/manifest";
@@ -10,6 +10,7 @@ import {
   draftsDeletedToast,
   draftsKeptToast,
   formatTimestamp,
+  managementRefusal,
   publishedLabel,
 } from "../lib/sites/display";
 
@@ -395,6 +396,48 @@ test.describe("the drafts tab", () => {
     await page.goto(`/site/${stale.siteId}`);
     await expect(page.getByTestId("site-not-found")).toBeVisible();
     expect(await readSite(stale.siteId)).toEqual(before);
+  });
+
+  test("restricted drafts (E07): no Delete and no checkbox; a removed draft is listed as Removed with no countdown, and its Keep says why", async ({
+    page,
+    baseURL,
+  }) => {
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const live = await seedDraft(userId, { expiresAt: new Date(Date.now() + 3 * DAY) });
+    const flagged = await seedDraft(userId, { expiresAt: new Date(Date.now() + 4 * DAY) });
+    const removed = await seedDraft(userId, { expiresAt: new Date(Date.now() + 5 * DAY) });
+    await db
+      .update(schema.sites)
+      .set({ status: "under_review", moderationReason: "phishing" })
+      .where(eq(schema.sites.id, flagged.siteId));
+    await db
+      .update(schema.sites)
+      .set({ status: "removed", moderationReason: "spam", purgeAfter: new Date(Date.now() + 20 * DAY) })
+      .where(eq(schema.sites.id, removed.siteId));
+
+    await page.goto("/dashboard?tab=drafts");
+    await hydrated(page);
+    await expect.poll(() => order(draftsList(page)).then((ids) => [...ids].sort())).toEqual(
+      [live.siteId, flagged.siteId, removed.siteId].sort(),
+    );
+
+    await expect(card(page, live.siteId).getByTestId("delete-draft")).toBeVisible();
+    for (const site of [flagged, removed]) {
+      await expect(card(page, site.siteId).getByTestId("delete-draft"), site.slug).toHaveCount(0);
+    }
+    await expect(card(page, flagged.siteId)).toContainText("Under review");
+    await expect(card(page, removed.siteId)).toContainText("Removed");
+    await expect(card(page, removed.siteId)).not.toContainText(/days? left/);
+    const keep = card(page, removed.siteId).getByTestId("keep-button");
+    await expect(keep).toBeDisabled();
+    await expect(keep).toHaveAttribute("title", managementRefusal("removed")!);
+
+    await page.getByTestId("select-drafts").click();
+    await expect(card(page, live.siteId).getByTestId("select-draft")).toBeVisible();
+    for (const site of [flagged, removed]) {
+      await expect(card(page, site.siteId).getByTestId("select-draft"), site.slug).toHaveCount(0);
+    }
+    await expect(page.getByRole("button", { name: "Select all (1 shown)" })).toBeVisible();
   });
 
   test("an account with kept pages and no drafts: the Drafts tab says so calmly — no hero", async ({ page, baseURL }) => {
