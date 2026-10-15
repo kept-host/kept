@@ -23,7 +23,9 @@
  * had its manifest REMOVED when it expired, so the edge says "gone" and only a
  * KV write brings it back. Keeping it flips the row to `live` and clears its
  * clocks inside the transaction, and then — only after COMMIT —
- * `restoreManifest` writes the manifest through `writeManifest`. Postgres first:
+ * `restoreManifest` writes the manifest through `syncManifest`, from the row
+ * under its lock (D18: a flag committed in between is what the edge serves,
+ * never a stale `live`). Postgres first:
  * the reverse order would put a page back on the internet that the database
  * still calls expired, and E07's grace sweep would take it down again underneath
  * its new owner. Both keep doors (`./anon-keep.ts`, the owner route) and the
@@ -59,7 +61,6 @@ import {
   type DemoteResult,
   type KeepResult,
   type KeptQuota,
-  type KvManifest,
   type Plan,
   type SiteStatus,
   type SwapResult,
@@ -72,7 +73,7 @@ import { profiles, sites } from "../db/schema";
 // retyped: `now + DRAFT_TTL_DAYS`, then `+ DRAFT_GRACE_DAYS`, both from
 // `@kept/shared`.
 import { draftClocks } from "../publish/pipeline";
-import { writeManifest } from "../storage/manifest";
+import { syncManifest } from "../storage/manifest";
 
 import { bulkKeepRefusal, managementRefusal } from "./display";
 import { StudioRefusal } from "./studio-refusal";
@@ -322,10 +323,13 @@ function isGone(site: LockedSite, now: Date): boolean {
   return isPastGrace(site, now) || (site.status === "expired" && site.purgeAfter === null);
 }
 
-/** What a late keep still owes the edge once its transaction has committed. */
+/**
+ * What a late keep still owes the edge once its transaction has committed: a
+ * `syncManifest` of this site. Only the id — the manifest is read from the row
+ * at sync time, never carried from inside the transaction (D18).
+ */
 interface PendingRestore {
-  slug: string;
-  manifest: KvManifest;
+  siteId: string;
 }
 
 /**
@@ -410,22 +414,7 @@ async function keepLocked(
         `site ${site.id} (slug "${site.slug}") is expired with no current version — cannot restore.`,
       );
     }
-    restore = {
-      slug: site.slug,
-      manifest: {
-        siteId: site.id,
-        versionId: site.currentVersionId,
-        // Drafts and kept pages are both `live`; the clock lives in Postgres
-        // and never in the manifest.
-        status: "live",
-        // From the row, never a hardcoded "auto" — an EU page must not come back
-        // pointing at the wrong bucket.
-        region: site.region,
-        // The page is owned as of this transaction.
-        ownerId: profileId,
-        updatedAt: Date.now(),
-      },
-    };
+    restore = { siteId: site.id };
   }
 
   const underCap = (await countKept(trx, profileId)) < limitsFor(plan).keptPages;
@@ -478,28 +467,30 @@ async function keepLocked(
 
 /**
  * The store half of a late keep, run only after the keep's transaction has
- * committed. A PURGE IS TWO PURGES — `writeManifest` already schedules the second
- * one 125 seconds later (`2 × cacheTtl + 5 s`); do not add a third, do not await
- * the delayed one, and do not reimplement the pointer → KV → purge ordering.
+ * committed — and never while `lockOwner` is held (Risk 12): `keepSites` calls it
+ * after its batch transaction ends. A PURGE IS TWO PURGES — `syncManifest`'s
+ * write already schedules the second one 125 seconds later (`2 × cacheTtl +
+ * 5 s`); do not add a third, do not await the delayed one, and do not
+ * reimplement the pointer → KV → purge ordering.
  *
  * A failed write is NOT SWALLOWED. Postgres has committed: the page is owned,
  * marked `live`, and either permanent or on a fresh clock, but the edge still
  * says gone. Answering "kept!" would be a lie the owner only discovers by
  * clicking their own link. The row is internally consistent and Postgres is the
- * authority, so the restore is replayable — by E07's divergence audit, or by any
- * later write on the page going through `writeManifest` again.
+ * authority, so the restore is replayable: the failed sync left a
+ * `pending_purges` row that the repurge job replays.
  *
- * `written.purge.ok === false` is NOT a failure (edge-purge contract §3): both
- * stores agree and `writeManifest` has already logged it.
+ * A failed purge is NOT a failure (edge-purge contract §3): `syncManifest` only
+ * fails when a store write did.
  */
 async function restoreManifest(restore: PendingRestore | null): Promise<void> {
   if (!restore) return;
-  const written = await writeManifest(restore.slug, restore.manifest);
-  if (written.ok) return;
+  const synced = await syncManifest(restore.siteId);
+  if (synced.ok) return;
   throw new StudioRefusal(
     "internal_error",
     RESTORE_INCOMPLETE_MESSAGE,
-    `RESTORE INCOMPLETE — site ${restore.manifest.siteId} (slug "${restore.slug}") is kept and marked live in Postgres, but the manifest write failed at the "${written.step}" step: ${written.error}. The page is NOT serving; the row disagrees. E07 DIVERGENCE AUDIT: Postgres is the authority, never an R2 list (contract §7.5).`,
+    `RESTORE INCOMPLETE — site ${restore.siteId} (slug "${synced.slug}") is kept and marked live in Postgres, but the manifest sync failed: ${synced.error}. The page is NOT serving; the row disagrees until the repurge job replays the sync.`,
   );
 }
 

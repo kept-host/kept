@@ -9,8 +9,8 @@
  *
  * THE THREE OPERATIONS, AND THE ONE RULE EACH TURNS ON:
  *
- *   replace   R2 object → writeManifest(pointer → KV → purge), same slug, same
- *             siteId, NEW versionId. The purge is load-bearing here in a way it
+ *   replace   R2 object → syncManifest (pointer → KV → purge, from the row
+ *             under its lock — D18), same slug, same siteId, NEW versionId. The purge is load-bearing here in a way it
  *             is not on publish: a replaced slug ALWAYS has a cached
  *             predecessor, and `LIVE_CACHE_CONTROL` is a year. Without the
  *             purge the product's most visible behaviour — "I re-dropped my
@@ -45,7 +45,6 @@ import { z } from "zod";
 import {
   archiveSite,
   insertReplacementVersion,
-  revertReplacementVersion,
   setReminderEmail,
   type AnonSite,
 } from "../db/queries/publish";
@@ -194,6 +193,10 @@ export async function replacePage(
     return internalError();
   }
 
+  // The manifest is `syncManifest`'s, read from the row under its lock (D18),
+  // so a flag that committed after `resolveAnonToken` saw `live` is what the
+  // edge serves. A failed write reverts the row to `previous` and syncs again:
+  // the page keeps serving what it served before, never dark.
   const stored = await writePageAndManifest({
     slug: site.slug,
     siteId: site.id,
@@ -201,23 +204,13 @@ export async function replacePage(
     r2Key,
     html,
     ownerId: site.ownerId,
-    // The unwind restores this version's manifest rather than removing it: a
-    // failed replace must leave the page serving what it served before, never
-    // dark.
-    previousVersionId: previous.versionId ?? undefined,
+    previous,
   });
 
   if (!stored.ok) {
     console.error(
       `[kept] replace: store write failed for site ${site.id} (slug "${site.slug}", object "${r2Key}") — ${stored.error}`,
     );
-    try {
-      await revertReplacementVersion({ siteId: site.id, versionId, previous });
-    } catch (err) {
-      console.error(
-        `[kept] ROLLBACK INCOMPLETE — site ${site.id} (slug "${site.slug}") still points at version ${versionId}: ${message(err)}. E07 DIVERGENCE AUDIT: Postgres is the authority, never an R2 list (contract §7.5).`,
-      );
-    }
     return internalError();
   }
 

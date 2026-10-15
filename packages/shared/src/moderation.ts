@@ -200,6 +200,9 @@ export const UNSCANNED_GRACE_MINUTES = 10 as const;
 /** A `pending_purges` row is replayed at most this many times, then an admin alert. */
 export const REPURGE_MAX_ATTEMPTS = 5 as const;
 
+/** `pending_purges` rows the `repurge` job reads per query, until none are due or its deadline. */
+export const REPURGE_BATCH_SIZE = 50 as const;
+
 /** A reporter's name and email are cleared this long after the report is resolved. */
 export const REPORTER_CONTACT_RETENTION_DAYS = 180 as const;
 

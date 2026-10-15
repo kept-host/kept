@@ -78,6 +78,11 @@ const GUARDED_FILES = [
   "lib/email/admin-alert.ts",
   "lib/publish/anon-manage.ts",
   "lib/publish/pipeline.ts",
+  // E07 task 003: syncManifest and the durable re-purge.
+  "lib/storage/manifest.ts",
+  "lib/storage/repurge.ts",
+  "lib/db/queries/manifest-sync.ts",
+  "app/api/cron/repurge/route.ts",
 ];
 
 /** `email`, `ip`, `token`, or a camelCase name ending in one of them. */

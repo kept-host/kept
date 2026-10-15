@@ -18,7 +18,7 @@
  *   status 'live', under cap    → `kept`                       POSTGRES ONLY
  *   status 'live', at cap       → `owned_draft`                POSTGRES ONLY
  *   status 'expired', in grace  → `live` again, then after COMMIT
- *                                 writeManifest(slug, …)       pointer → KV →
+ *                                 syncManifest(site)           pointer → KV →
  *                                                              purge → purge+125s
  *
  * The ordinary keep does NOT write a manifest and does NOT purge — see the

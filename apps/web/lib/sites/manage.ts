@@ -5,7 +5,8 @@
  *
  * ── TWO VERBS, TWO DELIBERATELY INVERSE ORDERINGS ────────────────────────────
  *
- *   replace:  Postgres (new version) → R2 object → pointer → KV → purge
+ *   replace:  Postgres (new version) → R2 object → syncManifest (pointer → KV
+ *             → purge, from the row under its lock — D18)
  *             → scan → prune (R2 delete THEN row, per pruned version)
  *   delete:   pointer → KV → purge   → Postgres (archive + purge_after + hold)
  *
@@ -60,11 +61,7 @@ import {
 import { and, eq } from "drizzle-orm";
 
 import { db } from "../db";
-import {
-  findSiteForOwner,
-  insertReplacementVersion,
-  revertReplacementVersion,
-} from "../db/queries/publish";
+import { findSiteForOwner, insertReplacementVersion } from "../db/queries/publish";
 import { deleteVersionRow, lockPrunableVersions } from "../db/queries/versions";
 import { sites } from "../db/schema";
 import { claimsItsName } from "../names/availability";
@@ -237,6 +234,11 @@ export async function replaceSite(
     publishedVia: "studio",
   });
 
+  // The manifest is `syncManifest`'s, read from the row under its lock (D18):
+  // a flag or expiry that committed after the status check above is what the
+  // edge serves, never a stale `live`. A failed write reverts the row to
+  // `previous` and syncs again, so the page keeps serving what it served before,
+  // never dark. That branch is `writePageAndManifest`'s and exists for this call.
   const stored = await writePageAndManifest({
     slug: site.slug,
     siteId: site.id,
@@ -244,23 +246,13 @@ export async function replaceSite(
     r2Key,
     html,
     ownerId: profileId,
-    // The unwind RESTORES this version's manifest rather than removing it: a
-    // failed replace must leave the page serving what it served before, never
-    // dark. That branch is `writePageAndManifest`'s and exists for this call.
-    previousVersionId: previous.versionId ?? undefined,
+    previous,
   });
 
   if (!stored.ok) {
     console.error(
       `[kept] owner replace: store write failed for site ${site.id} (slug "${site.slug}", object "${r2Key}") — ${stored.error}`,
     );
-    try {
-      await revertReplacementVersion({ siteId: site.id, versionId, previous });
-    } catch (err) {
-      console.error(
-        `[kept] ROLLBACK INCOMPLETE — site ${site.id} (slug "${site.slug}") still points at version ${versionId}: ${message(err)}. E07 DIVERGENCE AUDIT: Postgres is the authority, never an R2 list (contract §7.5).`,
-      );
-    }
     throw new ManageStoreError("replace", stored.error);
   }
 
