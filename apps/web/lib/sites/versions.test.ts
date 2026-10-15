@@ -231,8 +231,8 @@ test("AC28 at source level: the restore module writes no page bytes, and both ve
 
   // "Fires the scan hook" (AC25) — `enqueueScan` is E07's stub with nothing to
   // observe yet, so the proof is that both paths call it with the new version.
-  assert.ok(restoreSource.includes("void enqueueScan(site.id, version.id)"));
-  assert.ok(code("./manage.ts").includes("void enqueueScan(site.id, versionId)"));
+  assert.ok(restoreSource.includes('void enqueueScan(site.id, version.id, "restore")'));
+  assert.ok(code("./manage.ts").includes('void enqueueScan(site.id, versionId, "replace")'));
 });
 
 // ── Replace ────────────────────────────────────────────────────────────────

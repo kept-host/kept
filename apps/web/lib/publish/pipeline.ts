@@ -4,8 +4,9 @@
  * The first request in the product that touches all four stores, and the reason
  * their ordering is written down in `docs/edge-purge-contract.md`:
  *
- *   validate → E07 hooks → content_hash → dedup probe → Postgres tx
- *     → R2 page object → writeManifest(pointer → KV → purge)
+ *   validate → Turnstile → request ceiling → content_hash → dedup probe
+ *     → new-page governors → Postgres tx → R2 page object
+ *     → writeManifest(pointer → KV → purge) → enqueueScan
  *
  * NO HTTP IN THIS FILE. `publishPage` takes an already-extracted body and a
  * publisher identity and returns an outcome; `app/api/publish/route.ts` is a
@@ -59,10 +60,11 @@ import { appOrigin, publisherHashSalt, servingBaseDomain } from "../storage/env"
 import { removeManifest, writeManifest } from "../storage/manifest";
 import { PAGE_CONTENT_TYPE, pageObjectKey, r2Store } from "../storage/r2";
 import {
-  checkHeuristics,
   checkRateLimit,
+  checkRequestLimit,
   enqueueScan,
   verifyTurnstile,
+  type RateLimitDecision,
 } from "./hooks";
 import { extractPageTitle } from "./page-title";
 
@@ -315,17 +317,10 @@ export async function publishPage(
     publisherHashSalt(),
   );
 
-  const rate = await checkRateLimit(publisherHash);
-  if (!rate.allowed) {
-    return fail(429, {
-      error: "rate_limited",
-      message: `Too many pages published from here (${rate.reason}). Try again in ${rate.retryAfterSeconds} seconds.`,
-      retry_after_seconds: rate.retryAfterSeconds,
-    });
-  }
-
-  const heuristics = await checkHeuristics(html);
-  if (!heuristics.allowed) return contentRejected(heuristics.reason);
+  // The request ceiling counts every request, deduped or not — a dedup hit
+  // still rotates the token. The new-page governors wait for the probe below.
+  const requests = await checkRequestLimit(publisherHash);
+  if (!requests.allowed) return rateLimited(requests);
 
   // ── 3. content hash ────────────────────────────────────────────────────────
   // Over the exact bytes that will be stored: `hashContent` digests the UTF-8
@@ -353,6 +348,7 @@ export async function publishPage(
     anonTokenHash,
   });
   if (deduped) {
+    // Spends nothing from `publish:<key>` — the governors count NEW pages.
     // Same site, same slug, same version, same bytes, same clock — no new row,
     // no new version, no new object, no store write at all. An agent's retry
     // loop converges on ONE page. The token was rotated inside the probe's
@@ -365,7 +361,11 @@ export async function publishPage(
     });
   }
 
-  // ── 5. Postgres tx ─────────────────────────────────────────────────────────
+  // ── 5. new-page governors ──────────────────────────────────────────────────
+  const rate = await checkRateLimit(publisherHash);
+  if (!rate.allowed) return rateLimited(rate);
+
+  // ── 6. Postgres tx ─────────────────────────────────────────────────────────
   const siteId = crypto.randomUUID();
   const versionId = crypto.randomUUID();
   const r2Key = pageObjectKey(siteId, versionId);
@@ -396,7 +396,7 @@ export async function publishPage(
     return internalError();
   }
 
-  // ── 6–9. object → pointer → KV → purge ─────────────────────────────────────
+  // ── 7–10. object → pointer → KV → purge ────────────────────────────────────
   const stored = await writePageAndManifest({
     slug,
     siteId,
@@ -422,20 +422,23 @@ export async function publishPage(
 
   // Fire and forget by contract: the page is already live and a scan must never
   // delay or fail the response.
-  void enqueueScan(siteId, versionId);
+  void enqueueScan(siteId, versionId, "publish");
 
   return respond({ slug, anonToken, expiresAt, deduped: false });
 }
 
 /**
- * The heuristic content check refused the bytes. One sentence for every path
- * that stores bytes — the keyless publish and replace here, the studio's
- * publish and replace through `lib/sites/owner-routes.ts`.
+ * A governor refused (`./hooks`). One shape for every anonymous path — the
+ * publish here and the replace in `./anon-manage` — so an agent backs off the
+ * same way whichever limit it hit.
  */
-export function contentRejected(reason: string): PublishFailure {
-  return fail(422, {
-    error: "content_rejected",
-    message: `This page was refused by the content check (${reason}).`,
+export function rateLimited(
+  rate: Extract<RateLimitDecision, { allowed: false }>,
+): PublishFailure {
+  return fail(429, {
+    error: "rate_limited",
+    message: `Too many requests from here (${rate.reason}). Try again in ${rate.retryAfterSeconds} seconds.`,
+    retry_after_seconds: rate.retryAfterSeconds,
   });
 }
 

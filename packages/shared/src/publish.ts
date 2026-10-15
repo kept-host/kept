@@ -179,8 +179,6 @@ export const PUBLISH_ERROR_CODES = [
   "turnstile_failed",
   /** Rate limited (E07). Carries `retry_after_seconds`. */
   "rate_limited",
-  /** The heuristic content check rejected the page (E07). */
-  "content_rejected",
   /** Slug minting exhausted its retry bound — transient, safe to retry. */
   "slug_unavailable",
   "internal_error",

@@ -52,13 +52,13 @@ import {
 import { removeManifest } from "../storage/manifest";
 import { pageObjectKey } from "../storage/r2";
 import { notFound, resolveAnonToken } from "./anon-token";
-import { checkHeuristics, enqueueScan, verifyTurnstile } from "./hooks";
+import { checkReplaceLimit, enqueueScan, verifyTurnstile } from "./hooks";
 import { extractPageTitle } from "./page-title";
 import {
-  contentRejected,
   fail,
   internalError,
   liveUrl,
+  rateLimited,
   requestError,
   writePageAndManifest,
   type PublishFailure,
@@ -140,9 +140,9 @@ export async function replacePage(
   const { html, turnstileToken } = parsed.data;
 
   // The same seams as publish, for the same reason: a replace is a re-publish,
-  // and a path that stores new bytes without the content check or the scan
-  // enqueue is a hole big enough to publish anything through — publish clean,
-  // then replace with the payload.
+  // and a path that stores new bytes without a governor or the scan enqueue is
+  // a hole big enough to publish anything through — publish clean, then
+  // replace with the payload. The limit is per page (`anon-replace:<siteId>`).
   if (turnstileToken !== undefined) {
     const turnstile = await verifyTurnstile(turnstileToken);
     if (!turnstile.ok) {
@@ -153,8 +153,8 @@ export async function replacePage(
     }
   }
 
-  const heuristics = await checkHeuristics(html);
-  if (!heuristics.allowed) return contentRejected(heuristics.reason);
+  const limit = await checkReplaceLimit(site.id);
+  if (!limit.allowed) return rateLimited(limit);
 
   const contentHash = await hashContent(html);
   const sizeBytes = Buffer.byteLength(html, "utf8");
@@ -223,7 +223,7 @@ export async function replacePage(
 
   // Fire and forget by contract — the new bytes are already live and a scan must
   // never delay or fail the response.
-  void enqueueScan(site.id, versionId);
+  void enqueueScan(site.id, versionId, "replace");
 
   return {
     ok: true,

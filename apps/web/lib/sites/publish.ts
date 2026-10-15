@@ -18,8 +18,7 @@
  * The store half is `writePageAndManifest` from `lib/publish/pipeline.ts` — the
  * R2 → pointer → KV → purge sequence and its unwind, in the one place it is
  * written down. The clocks are `draftClocks`, the URL is `liveUrl`, the name is
- * `extractPageTitle`, the content check and the scan are the same `./hooks`
- * seams, the size cap is `MAX_PAGE_BYTES` through the same schema, and the slug
+ * `extractPageTitle`, the scan is the same `./hooks` seam, the size cap is `MAX_PAGE_BYTES` through the same schema, and the slug
  * comes out of the same generate-and-retry loop (`withMintedSlug`: the namespace
  * check, then `sites_slug_key`). Nothing about the ordering is re-derived here. The version
  * row records `published_via = 'studio'` (§5.9).
@@ -50,8 +49,8 @@
  *      on every row here, which is what E07 needs to decide the authenticated
  *      policy — governing an account is E07's to write, against `owner_id`.
  *
- * ⚠️ NO HTTP IN THIS FILE, and no zod. `./owner-routes.ts` validates the body,
- * runs the content heuristic and maps failures onto statuses; this module owns
+ * ⚠️ NO HTTP IN THIS FILE, and no zod. `./owner-routes.ts` validates the body
+ * and maps failures onto statuses; this module owns
  * the cap, the database and the store ordering. Same split as `./rename.ts` and
  * `./manage.ts`.
  */
@@ -175,7 +174,7 @@ async function insertWithMintedSlug(input: {
 /**
  * Publish a page that belongs to an account from the moment it exists.
  *
- * The caller has already validated the body and run the content heuristics.
+ * The caller has already validated the body.
  *
  * @returns `{ site }` for a new page, `{ site, duplicate: true }` when this
  *   account already has these bytes live — nothing is written for a duplicate.
@@ -251,7 +250,7 @@ export async function publishOwnedPage(args: {
   // Fire and forget by contract: the page is already live and a scan must never
   // delay or fail the response. The same seam, in the same position, as every
   // other path that stores bytes.
-  void enqueueScan(siteId, versionId);
+  void enqueueScan(siteId, versionId, "publish");
 
   return { site: landed.site };
 }

@@ -5,7 +5,7 @@
  *
  *   PG tx (lock site; current = v; v.activated_at = now())
  *     → writeManifest(slug, v)   — a REPLACE EVENT in edge-purge-contract terms
- *     → enqueueScan(site, v)
+ *     → enqueueScan(site, v, "restore")
  *
  * ── NO PAGE BYTES ARE WRITTEN, AND THIS FILE IS WHERE THAT IS PROVEN (AC28) ──
  * The restored version's object has sat in R2 since the replace that stored it,
@@ -155,7 +155,7 @@ export async function restoreVersion(
 
   // The bytes are not new, but the served version is: the scan contract is
   // keyed by (site, version) and a restore is a replace event.
-  void enqueueScan(site.id, version.id);
+  void enqueueScan(site.id, version.id, "restore");
 
   return {
     unchanged: false,

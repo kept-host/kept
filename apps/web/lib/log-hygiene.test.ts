@@ -74,6 +74,10 @@ const GUARDED_FILES = [
   "lib/og/preview.ts",
   "scripts/check-resend-tracking.ts",
   "scripts/smoke-release.ts",
+  // E07 task 002: the governors' alert path.
+  "lib/email/admin-alert.ts",
+  "lib/publish/anon-manage.ts",
+  "lib/publish/pipeline.ts",
 ];
 
 /** `email`, `ip`, `token`, or a camelCase name ending in one of them. */

@@ -176,8 +176,8 @@ function message(err: unknown): string {
 /**
  * Swap a page's bytes, keeping its URL, its slug, its `siteId` and its clock.
  *
- * The caller (`./owner-routes.ts`) has already validated the body's shape and
- * run the content heuristics; this function owns ownership, state and ordering.
+ * The caller (`./owner-routes.ts`) has already validated the body's shape;
+ * this function owns ownership, state and ordering.
  *
  * Bytes identical to the current version are `{ unchanged: true }` with nothing
  * written (D7, AC27). Otherwise the answer names the version it replaced — what
@@ -268,7 +268,7 @@ export async function replaceSite(
   // must never delay or fail the response. A path that stores new bytes without
   // this is a hole big enough to publish anything through: publish clean, then
   // replace with the payload.
-  void enqueueScan(site.id, versionId);
+  void enqueueScan(site.id, versionId, "replace");
 
   return {
     unchanged: false,
