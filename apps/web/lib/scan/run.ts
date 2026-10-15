@@ -55,6 +55,7 @@ import {
 } from "../db/queries/scans";
 import { sendAdminAlert, type AdminAlertOutcome } from "../email/admin-alert";
 import { setStatus } from "../moderation/status";
+import { MS_PER_DAY, MS_PER_SECOND } from "../sites/display";
 import { servingBaseDomain } from "../storage/env";
 import { r2Store } from "../storage/r2";
 import { withJobRun } from "../visits/sync";
@@ -63,9 +64,6 @@ import { defaultClassifier, type ContentClassifier } from "./classifier";
 import { extract } from "./extract";
 import { decide } from "./policy";
 import type { PageFacts, PolicyDecision, PolicyRule } from "./types";
-
-const MS_PER_SECOND = 1000;
-const MS_PER_DAY = 24 * 60 * 60 * MS_PER_SECOND;
 
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);

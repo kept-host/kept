@@ -55,7 +55,8 @@ export function effectiveStatus(
 }
 
 /** Clock arithmetic for the studio's dates — shared, so no screen re-spells it. */
-export const MS_PER_HOUR = 60 * 60 * 1000;
+export const MS_PER_SECOND = 1000;
+export const MS_PER_HOUR = 60 * 60 * MS_PER_SECOND;
 export const MS_PER_DAY = 24 * MS_PER_HOUR;
 
 /** `1 day`, `3 days`. Shared with `components/kept/draft-chip.tsx`. */

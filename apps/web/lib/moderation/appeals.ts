@@ -28,12 +28,11 @@ import {
 import { sendAdminAlert } from "../email/admin-alert";
 import { appealAlert, buildAppealRejectedEmail } from "../email/moderation";
 import { liveUrl } from "../publish/pipeline";
+import { MS_PER_DAY, MS_PER_SECOND } from "../sites/display";
 import { isPastGrace } from "../sites/keep";
 import { appOrigin } from "../storage/env";
 
 import { mailOwner, setStatus, type SetStatusResult, type StatementOutcome } from "./status";
-
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /** The statuses a page can be appealed from (a `removed` one only before purge). */
 const APPEALABLE: readonly SiteStatus[] = ["under_review", "quarantined", "removed"];
@@ -79,7 +78,7 @@ export async function submitAppeal(
       if (recent.count >= APPEALS_PER_SITE_WINDOW.limit && recent.oldest) {
         const retryAfterSeconds = Math.max(
           1,
-          Math.ceil((recent.oldest.getTime() + windowMs - now.getTime()) / 1000),
+          Math.ceil((recent.oldest.getTime() + windowMs - now.getTime()) / MS_PER_SECOND),
         );
         return { ok: false as const, refusal: "rate_limited" as const, retryAfterSeconds };
       }

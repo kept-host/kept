@@ -32,6 +32,7 @@ import {
   type PendingPurge,
 } from "../db/queries/manifest-sync";
 import { sendAdminAlert } from "../email/admin-alert";
+import { MS_PER_SECOND } from "../sites/display";
 import { withJobRun } from "../visits/sync";
 
 import { KV_REPURGE_DELAY_MS, slugPurgeUrls, syncManifestForReplay } from "./manifest";
@@ -103,7 +104,7 @@ export async function replayPendingPurge(row: PendingPurge): Promise<ReplayOutco
 /** The whole job: due rows in batches until none are left or the deadline. */
 export function replayDuePurges(): Promise<RepurgeCounts> {
   return withJobRun("repurge", async () => {
-    const deadline = Date.now() + JOB_DEADLINE_SECONDS * 1000;
+    const deadline = Date.now() + JOB_DEADLINE_SECONDS * MS_PER_SECOND;
     const counts: RepurgeCounts = { synced: 0, purged: 0, deferred: 0, failed: 0, gave_up: 0 };
     const gaveUp: PendingPurge[] = [];
 

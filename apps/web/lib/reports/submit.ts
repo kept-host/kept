@@ -57,11 +57,10 @@ import { setStatus, type SetStatusResult } from "../moderation/status";
 import { enqueueScan, verifyTurnstile } from "../publish/hooks";
 import { liveUrl } from "../publish/pipeline";
 import { hit, ipKey } from "../rate-limit";
+import { MS_PER_DAY } from "../sites/display";
 import { appOrigin, servingBaseDomain } from "../storage/env";
 
 import { reportedSlug } from "./url";
-
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /** The per-IP buckets' route: `report:<digest>` (hour) and `report:<digest>:day`. */
 const REPORT_ROUTE = "report";
