@@ -57,6 +57,13 @@
       "when": 1791736903571,
       "tag": "0007_waitlist_double_opt_in",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792095729374,
+      "tag": "0008_moderation",
+      "breakpoints": true
     }
   ]
 }

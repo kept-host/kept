@@ -9,18 +9,26 @@
  * Core tables: `profiles`, `sites`, `site_versions`, plus Better Auth's four
  * tables (E05), plus the creator studio's `name_holds`, `name_events`,
  * `page_views_daily` and `job_runs` (E06, migration 0005), plus the launch
- * `waitlist` (migration 0006). Other per-epic tables
- * (E07 `scans`/`abuse_reports`/`moderation_actions`) are intentionally NOT
- * created here — they arrive via their own epic's migration.
+ * `waitlist` (migration 0006), plus E07's moderation tables — `scans`,
+ * `abuse_reports`, `moderation_actions`, `appeals`, `pending_purges` — and
+ * `sites.moderation_reason` (migration 0008).
  */
 import {
+  APPEAL_STATUSES,
   FOUNDING_NOTE_MAX,
   FOUNDING_STATUSES,
+  MODERATION_ACTIONS,
+  MODERATION_ACTORS,
+  MODERATION_REASONS,
   NAME_HOLD_REASONS,
   NAME_KINDS,
   PLANS,
   PUBLISH_CHANNELS,
   REGIONS,
+  REPORT_STATUSES,
+  SCAN_STATUSES,
+  SCAN_TRIGGERS,
+  SCAN_VERDICTS,
   SITE_STATUSES,
   TITLE_SOURCES,
   WAITLIST_SOURCES,
@@ -32,6 +40,8 @@ import {
   date,
   index,
   integer,
+  jsonb,
+  numeric,
   pgEnum,
   pgTable,
   primaryKey,
@@ -48,6 +58,15 @@ export const regionEnum = pgEnum("region", REGIONS);
 export const nameKindEnum = pgEnum("name_kind", NAME_KINDS);
 export const publishChannelEnum = pgEnum("publish_channel", PUBLISH_CHANNELS);
 export const nameHoldReasonEnum = pgEnum("name_hold_reason", NAME_HOLD_REASONS);
+export const moderationReasonEnum = pgEnum("moderation_reason", MODERATION_REASONS);
+
+/**
+ * The body of a text `CHECK (column in (…))` — the house pattern for a value
+ * set that is not a pgEnum. The values are `@kept/shared` literals, never input.
+ */
+function inValues(values: readonly string[]) {
+  return sql.raw(values.map((value) => `'${value}'`).join(", "));
+}
 
 // ── Better Auth (E05) ────────────────────────────────────────────────────────
 // Self-hosted Better Auth v1.6.x through the Drizzle adapter, in this same Neon
@@ -297,6 +316,10 @@ export const sites = pgTable(
     // existing resolver — it is a second credential for the same page, not a
     // second code path — and it is revoked (set NULL) by unsubscribing.
     reminderKeepTokenHash: text("reminder_keep_token_hash"),
+    // Why the page is restricted (E07, migration 0008). Written and cleared ONLY
+    // by `lib/moderation` (`setStatus`), with the status, in one update; NULL
+    // on every page nobody has restricted.
+    moderationReason: moderationReasonEnum("moderation_reason"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -370,6 +393,12 @@ export const sites = pgTable(
       .where(
         sql`${table.reminderEmail} is not null and ${table.reminderSentAt} is null and ${table.ownerId} is null and ${table.status} = 'live'`,
       ),
+    // E07's expiry sweep (migration 0008): every live draft, nearest clock
+    // first, owned or not. `sites_owner_status_expires_idx` leads with
+    // `owner_id` and cannot serve it. Partial for the reason given above.
+    index("sites_live_expires_idx")
+      .on(table.expiresAt)
+      .where(sql`${table.status} = 'live' and ${table.expiresAt} is not null`),
   ],
 );
 
@@ -475,6 +504,12 @@ export const jobRuns = pgTable("job_runs", {
   lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
   lastSuccessAt: timestamp("last_success_at", { withTimezone: true }),
   lastError: text("last_error"),
+  // The UTC day a job last finished checking (E07, migration 0008). Written
+  // only by `spike-check`, which cannot derive it from its own
+  // `last_success_at`: a late manual visits sync puts the two on different UTC
+  // days and the same day would be re-checked every run. NULL for every other
+  // job — the visits sync's code is frozen (E07 AC22) and never writes it.
+  lastDay: date("last_day"),
 });
 
 // ── waitlist ─────────────────────────────────────────────────────────────────
@@ -503,13 +538,10 @@ export const waitlist = pgTable(
     foundingDecidedAt: timestamp("founding_decided_at", { withTimezone: true }),
   },
   (table) => [
-    check(
-      "waitlist_source_check",
-      sql`${table.source} in (${sql.raw(WAITLIST_SOURCES.map((s) => `'${s}'`).join(", "))})`,
-    ),
+    check("waitlist_source_check", sql`${table.source} in (${inValues(WAITLIST_SOURCES)})`),
     check(
       "waitlist_founding_status_check",
-      sql`${table.foundingStatus} in (${sql.raw(FOUNDING_STATUSES.map((s) => `'${s}'`).join(", "))})`,
+      sql`${table.foundingStatus} in (${inValues(FOUNDING_STATUSES)})`,
     ),
     check(
       "waitlist_note_length_check",
@@ -532,6 +564,175 @@ export const rateLimits = pgTable(
     count: integer("count").notNull(),
   },
   (table) => [primaryKey({ columns: [table.bucket, table.windowStart] })],
+);
+
+// ── scans (E07) ──────────────────────────────────────────────────────────────
+// One row per scan of one version (§6.1). The row is written first, so a crash
+// leaves a `pending` row that `scan-retry` finds. No page text is stored —
+// `facts` and the typed `answers` only; R2 holds the HTML. A `done` row is
+// reused for the same `(content_hash, policy_version)`.
+export const scans = pgTable(
+  "scans",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    siteId: uuid("site_id")
+      .notNull()
+      .references(() => sites.id, { onDelete: "cascade" }),
+    versionId: uuid("version_id")
+      .notNull()
+      .references(() => siteVersions.id, { onDelete: "cascade" }),
+    contentHash: text("content_hash").notNull(),
+    trigger: text("trigger", { enum: SCAN_TRIGGERS }).notNull(),
+    status: text("status", { enum: SCAN_STATUSES }).notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+    verdict: text("verdict", { enum: SCAN_VERDICTS }),
+    rule: text("rule"),
+    reason: moderationReasonEnum("reason"),
+    policyVersion: text("policy_version").notNull(),
+    model: text("model"),
+    facts: jsonb("facts"),
+    answers: jsonb("answers"),
+    costUsd: numeric("cost_usd", { precision: 10, scale: 6 }),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [
+    check("scans_trigger_check", sql`${table.trigger} in (${inValues(SCAN_TRIGGERS)})`),
+    check("scans_status_check", sql`${table.status} in (${inValues(SCAN_STATUSES)})`),
+    check("scans_verdict_check", sql`${table.verdict} in (${inValues(SCAN_VERDICTS)})`),
+    // `scan-retry`'s due rows.
+    index("scans_status_next_attempt_idx").on(table.status, table.nextAttemptAt),
+    // The reuse probe.
+    index("scans_content_hash_policy_idx")
+      .on(table.contentHash, table.policyVersion)
+      .where(sql`${table.status} = 'done'`),
+    // A version's latest scan ("scanned in the last 24 h", the admin screen).
+    index("scans_version_created_idx").on(table.versionId, table.createdAt),
+  ],
+);
+
+// ── abuse_reports (E07) ──────────────────────────────────────────────────────
+// A report from `/report` (§6.8). Outlives the page: `site_id` goes NULL on
+// purge and `slug` keeps the record readable. `reporter_bucket` is a salted
+// digest for the 24 h duplicate collapse — never a raw IP. Name and email are
+// cleared `REPORTER_CONTACT_RETENTION_DAYS` after resolution, by `purge`.
+export const abuseReports = pgTable(
+  "abuse_reports",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    siteId: uuid("site_id").references(() => sites.id, { onDelete: "set null" }),
+    slug: text("slug").notNull(),
+    url: text("url").notNull(),
+    category: moderationReasonEnum("category").notNull(),
+    details: text("details").notNull(),
+    reporterName: text("reporter_name"),
+    reporterEmail: text("reporter_email"),
+    reporterBucket: text("reporter_bucket").notNull(),
+    status: text("status", { enum: REPORT_STATUSES }).notNull().default("open"),
+    resolutionNote: text("resolution_note"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  },
+  (table) => [
+    check("abuse_reports_status_check", sql`${table.status} in (${inValues(REPORT_STATUSES)})`),
+    index("abuse_reports_status_created_idx").on(table.status, table.createdAt),
+    index("abuse_reports_site_created_idx").on(table.siteId, table.createdAt),
+  ],
+);
+
+// ── moderation_actions (E07) ─────────────────────────────────────────────────
+// The log: one row per status change or decision (§6.7). Outlives the page
+// (`SET NULL` + `slug`). The scan / report / appeal ids carry no FK for the same
+// reason — the record stays whole after its subject is purged.
+export const moderationActions = pgTable(
+  "moderation_actions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    siteId: uuid("site_id").references(() => sites.id, { onDelete: "set null" }),
+    slug: text("slug").notNull(),
+    actor: text("actor", { enum: MODERATION_ACTORS }).notNull(),
+    actorUserId: uuid("actor_user_id"),
+    action: text("action", { enum: MODERATION_ACTIONS }).notNull(),
+    fromStatus: siteStatusEnum("from_status").notNull(),
+    toStatus: siteStatusEnum("to_status"),
+    reason: moderationReasonEnum("reason"),
+    automated: boolean("automated").notNull(),
+    note: text("note"),
+    scanId: uuid("scan_id"),
+    reportId: uuid("report_id"),
+    appealId: uuid("appeal_id"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    check(
+      "moderation_actions_actor_check",
+      sql`${table.actor} in (${inValues(MODERATION_ACTORS)})`,
+    ),
+    check(
+      "moderation_actions_action_check",
+      sql`${table.action} in (${inValues(MODERATION_ACTIONS)})`,
+    ),
+    index("moderation_actions_site_created_idx").on(table.siteId, table.createdAt),
+    index("moderation_actions_created_idx").on(table.createdAt),
+  ],
+);
+
+// ── appeals (E07) ────────────────────────────────────────────────────────────
+// An owner's (or token holder's) request for review (§6.10). Goes with the
+// page. `submitted_by_user_id` NULL = sent through the anonymous token.
+export const appeals = pgTable(
+  "appeals",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    siteId: uuid("site_id")
+      .notNull()
+      .references(() => sites.id, { onDelete: "cascade" }),
+    submittedByUserId: uuid("submitted_by_user_id"),
+    message: text("message").notNull(),
+    status: text("status", { enum: APPEAL_STATUSES }).notNull().default("open"),
+    decisionNote: text("decision_note"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+  },
+  (table) => [
+    check("appeals_status_check", sql`${table.status} in (${inValues(APPEAL_STATUSES)})`),
+    // One open appeal per site; a second answers `409 appeal_open`.
+    uniqueIndex("appeals_site_open_key")
+      .on(table.siteId)
+      .where(sql`${table.status} = 'open'`),
+  ],
+);
+
+// ── pending_purges (E07) ─────────────────────────────────────────────────────
+// The durable re-purge (§6.14): written before the in-process delayed purge is
+// scheduled, deleted when it succeeds, replayed by the `repurge` cron.
+// `site_id` set → replay is `syncManifest(site_id)` then purge; NULL → purge
+// `urls` only. No FK: the row must outlive a purged page.
+export const pendingPurges = pgTable(
+  "pending_purges",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    siteId: uuid("site_id"),
+    slug: text("slug").notNull(),
+    urls: jsonb("urls").notNull(),
+    dueAt: timestamp("due_at", { withTimezone: true }).notNull(),
+    attempts: integer("attempts").notNull().default(0),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [index("pending_purges_due_idx").on(table.dueAt)],
 );
 
 // ── relations ────────────────────────────────────────────────────────────────

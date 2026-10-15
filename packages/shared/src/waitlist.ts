@@ -45,8 +45,9 @@ export const FOUNDING_NOTE_MAX = 280 as const;
 export type RateLimitRule = { readonly limit: number; readonly windowSeconds: number };
 
 const HOUR_SECONDS = 60 * 60;
+const DAY_SECONDS = 24 * HOUR_SECONDS;
 
-/** PRD §5. Over any of them: 429 with `Retry-After`. */
+/** PRD §5 (E07 §6.8 adds the report limits). Over any of them: 429 with `Retry-After`. */
 export const RATE_LIMITS = {
   /** `POST /api/waitlist`, founding applications included. */
   waitlistPerIp: { limit: 5, windowSeconds: HOUR_SECONDS },
@@ -54,6 +55,9 @@ export const RATE_LIMITS = {
   magicLinkPerEmail: { limit: 3, windowSeconds: HOUR_SECONDS },
   /** Every confirmation mail, all addresses combined. */
   confirmationMailsGlobal: { limit: 300, windowSeconds: HOUR_SECONDS },
+  /** `POST /api/reports` (E07 §6.8): two rules, because a rule holds one window. */
+  reportPerIpHour: { limit: 5, windowSeconds: HOUR_SECONDS },
+  reportPerIpDay: { limit: 20, windowSeconds: DAY_SECONDS },
 } as const satisfies Record<string, RateLimitRule>;
 
 /** A confirmation token stays valid this long after it is sent. */

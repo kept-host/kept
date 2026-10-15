@@ -70,6 +70,8 @@ const APEX_PATHS: PathSet = {
     "/founding/review",
     "/waitlist/confirm",
     "/waitlist/unsubscribe",
+    // E07 §6.8: the public report form, served while closed.
+    "/report",
   ]),
   prefixes: ["/legal/"],
 };
@@ -106,7 +108,8 @@ const AUTH_API_PREFIX = "/api/auth/";
 
 /**
  * Route handlers that answer while kept is closed (E06a §1), on any host: the
- * release smoke's probe, the waitlist and founding forms, and the cron routes —
+ * release smoke's probe, the waitlist and founding forms, the report form
+ * (E07), and the cron routes —
  * which carry their own secret check (`lib/cron/authorize.ts`). An allow list,
  * so a route added later is closed until someone decides otherwise.
  */
@@ -117,6 +120,8 @@ const CLOSED_API_PATHS: PathSet = {
     "/api/waitlist/confirm",
     "/api/waitlist/unsubscribe",
     "/api/founding/review",
+    // E07 §6.8: abuse reports are taken while closed (Turnstile + per-IP limits).
+    "/api/reports",
   ]),
   prefixes: ["/api/cron/"],
 };
@@ -141,7 +146,8 @@ const CREDENTIAL_API_PATHS: PathSet = {
  */
 const APP_API_PATHS: PathSet = {
   exact: new Set(["/api/auth", "/api/sites", "/api/export", "/api/names/check", "/api/account"]),
-  prefixes: ["/api/auth/", "/api/sites/", "/api/og/"],
+  // `/api/admin/` (E07): the moderation actions; the handlers 404 non-admins.
+  prefixes: ["/api/auth/", "/api/sites/", "/api/og/", "/api/admin/"],
 };
 
 /**
@@ -153,7 +159,8 @@ const APP_API_PATHS: PathSet = {
  */
 const APP_PAGE_PATHS: PathSet = {
   exact: new Set(["/auth", "/dashboard", "/settings"]),
-  prefixes: ["/auth/", "/site/", "/keep/", "/p/", "/unsubscribe/"],
+  // `/admin/` (E07): the moderation screen; it 404s anyone but an admin.
+  prefixes: ["/auth/", "/site/", "/keep/", "/p/", "/unsubscribe/", "/admin/"],
 };
 
 /** What `middleware()` should do with this request. */
@@ -285,7 +292,8 @@ export function waitlistHref(appUrl: string | undefined): string {
  * deploy.
  *
  *   CLOSED_API_PATHS (health, waitlist,
- *   founding review, /api/cron/*)        → not mine
+ *   founding review, reports,
+ *   /api/cron/*)                         → not mine
  *   /api/publish, /api/anon/*            → not mine with a Bearer header or the
  *                                          session cookie; else `not-open`
  *   APP_API_PATHS (auth, studio)         → not mine on the `app.` host; else
@@ -299,7 +307,7 @@ export function waitlistHref(appUrl: string | undefined): string {
  *                                          the split rule would send to
  *                                          `/dashboard`)
  *   APP_PAGE_PATHS (sign-in, studio,
- *   keep, manage, unsubscribe)           → not mine (the split rule sends them
+ *   keep, manage, unsubscribe, admin)    → not mine (the split rule sends them
  *                                          to the `app.` host)
  *   everything else                      → 307 to the landing's `/`
  *

@@ -380,3 +380,14 @@ export function turnstileConfig(): { secretKey: string; siteKey: string } {
   });
   return { secretKey: env.TURNSTILE_SECRET_KEY, siteKey: env.NEXT_PUBLIC_TURNSTILE_SITE_KEY };
 }
+
+/**
+ * `OPENROUTER_API_KEY` (E07 D17): the abuse scanner's classifier credential.
+ * OPTIONAL — absent (or blank) means the scanner is off: scans are recorded as
+ * `skipped`, only the deterministic rule runs, and `/api/health` reports
+ * `scanner: "off"`. Never logged, never echoed into an error, never
+ * `NEXT_PUBLIC_`. Per track; the account carries a monthly credit limit.
+ */
+export function openRouterApiKey(): string | null {
+  return read({ OPENROUTER_API_KEY: blankAsAbsent(nonEmpty.optional()) }).OPENROUTER_API_KEY ?? null;
+}
