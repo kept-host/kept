@@ -96,6 +96,16 @@ const GUARDED_FILES = [
   "lib/email/moderation.ts",
   "app/api/sites/[id]/appeal/route.ts",
   "app/api/anon/[anonToken]/appeal/route.ts",
+  // E07 task 010: reports — the route, the decisions, the reporter mail.
+  "lib/reports/submit.ts",
+  "lib/reports/http.ts",
+  "lib/reports/url.ts",
+  "lib/reports/client.ts",
+  "lib/db/queries/reports.ts",
+  "lib/email/reports.ts",
+  "app/api/reports/route.ts",
+  "app/(marketing)/report/page.tsx",
+  "components/kept/report-form.tsx",
 ];
 
 /** `email`, `ip`, `token`, or a camelCase name ending in one of them. */

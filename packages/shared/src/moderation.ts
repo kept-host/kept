@@ -4,7 +4,7 @@
 // value set (no `0.8`, `500`, `30`, `120`, `180` or `24000` literal in app code).
 import { z } from "zod";
 
-import type { RateLimitRule } from "./waitlist";
+import { waitlistEmailSchema, type RateLimitRule } from "./waitlist";
 
 const MINUTE_SECONDS = 60;
 const HOUR_SECONDS = 60 * MINUTE_SECONDS;
@@ -174,6 +174,70 @@ export type ReportCategory = (typeof REPORT_CATEGORIES)[number]["reason"];
 /** A report's explanation, in characters. */
 export const REPORT_DETAILS_MIN = 20 as const;
 export const REPORT_DETAILS_MAX = 2000 as const;
+
+/** The reported link and the reporter's (optional) name, in characters. */
+export const REPORT_URL_MAX = 2048 as const;
+export const REPORTER_NAME_MAX = 200 as const;
+
+/**
+ * A second report on the same page from the same reporter bucket within this
+ * many hours is stored as `duplicate` and alerts nobody (§6.8, AC16).
+ */
+export const REPORT_DUPLICATE_WINDOW_HOURS = 24 as const;
+
+/** A report re-scans the current version unless a `done` scan of it is younger than this. */
+export const REPORT_RESCAN_FRESH_HOURS = 24 as const;
+
+/** The report alert to the admins: at most one per page per hour (`report-alert:<siteId>`). */
+export const REPORT_ALERT_PER_SITE_HOUR = {
+  limit: 1,
+  windowSeconds: HOUR_SECONDS,
+} as const satisfies RateLimitRule;
+
+const REPORT_CATEGORY_REASONS = REPORT_CATEGORIES.map(({ reason }) => reason) as [
+  ReportCategory,
+  ...ReportCategory[],
+];
+
+/** An optional free-text field: blank is "not given". */
+const optionalText = <T extends z.ZodTypeAny>(schema: T) =>
+  z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+    schema.optional(),
+  );
+
+/**
+ * `POST /api/reports` (§6.8): the DSA notice elements. `name` and `email` are
+ * stored only when given; blank counts as not given. The form validates with
+ * the same schema (minus the token) for its inline field errors.
+ */
+export const reportRequestSchema = /*#__PURE__*/ z.object({
+  url: z.string().trim().min(1).max(REPORT_URL_MAX),
+  category: z.enum(REPORT_CATEGORY_REASONS),
+  details: z.string().trim().min(REPORT_DETAILS_MIN).max(REPORT_DETAILS_MAX),
+  name: optionalText(z.string().trim().max(REPORTER_NAME_MAX)),
+  email: optionalText(waitlistEmailSchema),
+  goodFaith: z.literal(true),
+  turnstileToken: z.string().min(1).max(2048),
+});
+export type ReportRequest = z.infer<typeof reportRequestSchema>;
+
+/** Every code `POST /api/reports` refuses with. */
+export const REPORT_ERROR_CODES = [
+  "invalid",
+  "turnstile_failed",
+  "not_a_kept_page",
+  "rate_limited",
+] as const;
+export const reportErrorCodeEnum = /*#__PURE__*/ z.enum(REPORT_ERROR_CODES);
+export type ReportErrorCode = (typeof REPORT_ERROR_CODES)[number];
+
+/** `{ error: { code, message } }`, plus `retry_after_seconds` on `rate_limited` — the appeal envelope. */
+export const reportErrorSchema = /*#__PURE__*/ z.object({
+  error: z.object({ code: reportErrorCodeEnum, message: z.string() }),
+  retry_after_seconds: z.number().int().positive().optional(),
+});
+export type ReportError = z.infer<typeof reportErrorSchema>;
 
 /** An appeal's message, in characters. */
 export const APPEAL_MESSAGE_MIN = 20 as const;
