@@ -6,7 +6,8 @@
  *   … --thresholds harm=0.75,impersonates=0.6,minors=0.5      replay under candidate thresholds
  *
  * Sets: the clean set is public (`apps/web/eval/scanner/clean/`, ≥ 60); the
- * harmful set lives only in `.agent/eval/scanner/harmful/` (gitignored, ≥ 40)
+ * harmful set lives only in `.agent/eval/scanner/harmful/` (gitignored, ≥ 8 —
+ * Arun 2026-10-16, D-70: a few inert pages, not the PRD's 40)
  * and must be inert — the run refuses while any harmful page names a host that
  * is not `.invalid`. Judgments go to `.agent/eval/scanner/judgments-<date>.json`
  * and the table to `.agent/eval/scanner/results-<date>.md` for Arun's sign-off.
@@ -38,7 +39,7 @@ config({ path: ".env.local", quiet: true });
 const CLEAN_DIR = fileURLToPath(new URL("../eval/scanner/clean/", import.meta.url));
 const AGENT_DIR = fileURLToPath(new URL("../../../.agent/eval/scanner/", import.meta.url));
 const HARMFUL_DIR = `${AGENT_DIR}harmful/`;
-const MIN_PAGES: Record<EvalSet, number> = { clean: 60, harmful: 40 };
+const MIN_PAGES: Record<EvalSet, number> = { clean: 60, harmful: 8 };
 
 interface Args {
   replay: string | true | null;
