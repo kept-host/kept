@@ -13,6 +13,7 @@ import { closeDb, db, schema } from "../lib/db";
 import { holdName } from "../lib/names/holds";
 import { pointerKey, syncManifest } from "../lib/storage/manifest";
 import { pageObjectKey, r2Store } from "../lib/storage/r2";
+import { clearPendingPurges } from "../lib/testing/pending-purges";
 
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
 import {
@@ -94,6 +95,7 @@ test.describe("account deletion", () => {
     for (const slug of createdSlugs) {
       await removeManifest(slug).catch(() => undefined);
     }
+    await clearPendingPurges(createdSlugs, createdSiteIds);
     for (const id of createdSiteIds) {
       const versions = await db
         .select({ id: schema.siteVersions.id })

@@ -166,6 +166,8 @@ after(async () => {
   const { inArray } = await import("drizzle-orm");
 
   if (createdSites.size > 0) {
+    // The bulk delete's own edge removals leave purge rows naming these sites.
+    await (await import("../testing/pending-purges")).clearPendingPurges([], createdSites);
     await db.delete(sites).where(inArray(sites.id, [...createdSites]));
   }
   if (createdProfiles.size > 0) {

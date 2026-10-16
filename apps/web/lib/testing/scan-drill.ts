@@ -10,15 +10,16 @@
  * removes exactly those — dev KV is on the free plan (1k deletes a day).
  */
 import { hashContent } from "@kept/shared";
-import { inArray, or } from "drizzle-orm";
+import { inArray } from "drizzle-orm";
 
 import { db } from "../db";
 import type { ScanTarget } from "../db/queries/scans";
-import { moderationActions, pendingPurges, sites, siteVersions } from "../db/schema";
+import { moderationActions, sites, siteVersions } from "../db/schema";
 import { removeManifest } from "../storage/manifest";
 import { PAGE_CONTENT_TYPE, pageObjectKey, r2Store } from "../storage/r2";
 
 import { stillServed } from "./moderation-drill";
+import { clearPendingPurges } from "./pending-purges";
 
 export class ScanDrill {
   private readonly siteIds = new Set<string>();
@@ -70,9 +71,7 @@ export class ScanDrill {
       const served = new Set([...this.published, ...(await stillServed(siteIds))]);
       for (const slug of served) await removeManifest(slug).catch(() => undefined);
       await db.delete(moderationActions).where(inArray(moderationActions.siteId, siteIds));
-      await db
-        .delete(pendingPurges)
-        .where(or(inArray(pendingPurges.siteId, siteIds), inArray(pendingPurges.slug, [...this.slugs])));
+      await clearPendingPurges(this.slugs, siteIds);
       const versions = await db
         .select({ r2Key: siteVersions.r2Key })
         .from(siteVersions)

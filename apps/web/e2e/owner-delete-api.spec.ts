@@ -13,6 +13,7 @@ import { eq, inArray } from "drizzle-orm";
 import { closeDb, db, schema } from "../lib/db";
 import { pointerKey } from "../lib/storage/manifest";
 import { PAGE_CONTENT_TYPE, pageObjectKey, r2Store } from "../lib/storage/r2";
+import { clearPendingPurges } from "../lib/testing/pending-purges";
 
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
 import {
@@ -97,6 +98,7 @@ test.describe("owner delete", () => {
     for (const slug of createdSlugs) {
       await removeManifest(slug).catch(() => undefined);
     }
+    await clearPendingPurges(createdSlugs, createdSiteIds);
     for (const id of createdSiteIds) {
       const versions = await db
         .select({ id: schema.siteVersions.id })

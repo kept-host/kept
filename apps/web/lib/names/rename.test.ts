@@ -49,6 +49,7 @@ after(async () => {
   for (const name of published) {
     await removeManifest(name).catch(() => undefined);
   }
+  await (await import("../testing/pending-purges")).clearPendingPurges(published);
   await drill.cleanup();
   await closeDb();
 });

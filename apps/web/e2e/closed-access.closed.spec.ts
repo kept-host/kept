@@ -1,12 +1,15 @@
+import { hashPublisher } from "@kept/shared";
 import { test, expect, type APIRequestContext } from "@playwright/test";
 import { config } from "dotenv";
-import { count } from "drizzle-orm";
+import { count, eq, like } from "drizzle-orm";
 
 import { closeDb, db } from "../lib/db";
-import { sites } from "../lib/db/schema";
+import { rateLimits, sites } from "../lib/db/schema";
 import { keptOpen } from "../lib/launch";
 import { mintAccessToken } from "../lib/access-token";
 import { waitlistHref } from "../lib/routing/host-split";
+import { publisherHashSalt } from "../lib/storage/env";
+import { drillIp } from "../lib/testing/drill-ip";
 
 import { pageHtml, publishViaApi, SKIP_LIVE_PUBLISH } from "./live-publish";
 import { LIVE_STACK_TIMEOUT, skipAuth, warmDb } from "./live-stack";
@@ -81,35 +84,46 @@ test.describe("closed deploy — who may publish", () => {
 
   test.describe("against the real database", () => {
     test.skip(!!SKIP_LIVE_PUBLISH, String(SKIP_LIVE_PUBLISH));
-    // AC2 counts every site row; AC3 adds one. In order, never side by side.
     test.describe.configure({ mode: "serial" });
     test.setTimeout(LIVE_STACK_TIMEOUT);
     test.beforeAll(warmDb);
     test.afterAll(closeDb);
 
-    const siteCount = async () => (await db.select({ n: count() }).from(sites))[0]!.n;
-
     test("AC2: an unknown token is refused before the body is read, and writes nothing", async ({
       request,
     }) => {
       const unknown = (await mintAccessToken()).token;
-      const before = await siteCount();
+      // This test's OWN publisher: a fresh client address and user agent, so
+      // "writes nothing" is asserted against rows only it could have written —
+      // never a count of a table the specs beside it are filling and emptying.
+      const ip = drillIp();
+      const userAgent = `kept-e2e-closed-ac2/${crypto.randomUUID()}`;
+      const publisherHash = await hashPublisher(ip, userAgent, publisherHashSalt());
+      const client = { ...bearer(unknown), "x-forwarded-for": ip, "user-agent": userAgent };
 
       // Malformed JSON: an open deploy answers it 400 `invalid_request`. A 404
       // here proves the handler refused before it parsed anything.
       const publish = await request.post("/api/publish", {
-        headers: { ...bearer(unknown), "content-type": "application/json" },
+        headers: { ...client, "content-type": "application/json" },
         data: "{not json",
       });
       await expectNotOpen(publish);
 
       const replace = await request.post("/api/anon/tok_e2e/replace", {
-        headers: { ...bearer(unknown), "content-type": "application/json" },
+        headers: { ...client, "content-type": "application/json" },
         data: "{not json",
       });
       await expectNotOpen(replace);
 
-      expect(await siteCount()).toBe(before);
+      // No page, and not even a hit on the publisher's request ceiling — the
+      // first thing a publish past the gate writes.
+      const pages = await db.select({ n: count() }).from(sites).where(eq(sites.publisherHash, publisherHash));
+      expect(pages[0]!.n).toBe(0);
+      const hits = await db
+        .select({ n: count() })
+        .from(rateLimits)
+        .where(like(rateLimits.bucket, `%${publisherHash}%`));
+      expect(hits[0]!.n).toBe(0);
     });
 
     test("AC3: the run's access token publishes an ordinary draft, claim link included", async ({

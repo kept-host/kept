@@ -24,13 +24,14 @@ import {
   type SiteStatus,
 } from "@kept/shared";
 import { config } from "dotenv";
-import { eq, inArray, or } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 
 import { closeDb, db } from "../db";
-import { appeals, moderationActions, pendingPurges, sites, user } from "../db/schema";
+import { appeals, moderationActions, sites, user } from "../db/schema";
 import { removeManifest } from "../storage/manifest";
 import { NamesDrill } from "../testing/names-drill";
 import { stillServed } from "../testing/moderation-drill";
+import { clearPendingPurges } from "../testing/pending-purges";
 
 import { appealAnonSite, appealOwnedSite } from "./appeal-http";
 import { grantAppeal, rejectAppeal, submitAppeal } from "./appeals";
@@ -66,9 +67,7 @@ after(async () => {
     // Only the granted page was ever given a manifest.
     for (const slug of await stillServed([...siteIds])) await removeManifest(slug).catch(() => undefined);
     await db.delete(moderationActions).where(inArray(moderationActions.siteId, [...siteIds]));
-    await db
-      .delete(pendingPurges)
-      .where(or(inArray(pendingPurges.siteId, [...siteIds]), inArray(pendingPurges.slug, [...slugs])));
+    await clearPendingPurges(slugs, siteIds);
   }
   await drill.cleanup();
   await closeDb();

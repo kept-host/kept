@@ -13,9 +13,10 @@
  *
  * Failures count against `REPURGE_MAX_ATTEMPTS`; a row that uses them stays in
  * the table, is never selected again, and is reported in ONE admin alert per
- * run. Batched, bounded by `JOB_DEADLINE_SECONDS`, and idempotent: every row it
- * touches leaves the due set (deleted, or due later), so a second run right
- * after the first finds nothing.
+ * run (`alert` in the counts: `null` when nothing gave up). Batched, bounded by
+ * `JOB_DEADLINE_SECONDS`, and idempotent: every row it touches leaves the due
+ * set (deleted, or due later), so a second run right after the first finds
+ * nothing.
  */
 import {
   JOB_DEADLINE_SECONDS,
@@ -31,7 +32,7 @@ import {
   recordPendingPurgeFailure,
   type PendingPurge,
 } from "../db/queries/manifest-sync";
-import { sendAdminAlert } from "../email/admin-alert";
+import { sendAdminAlert, type AdminAlertOutcome } from "../email/admin-alert";
 import { MS_PER_SECOND } from "../sites/display";
 import { withJobRun } from "../visits/sync";
 
@@ -40,7 +41,7 @@ import { purgeUrls } from "./purge";
 
 export type ReplayOutcome = "synced" | "purged" | "deferred" | "failed" | "gave_up";
 
-export type RepurgeCounts = Record<ReplayOutcome, number>;
+export type RepurgeCounts = Record<ReplayOutcome, number> & { alert: AdminAlertOutcome | null };
 
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -101,33 +102,40 @@ export async function replayPendingPurge(row: PendingPurge): Promise<ReplayOutco
   }
 }
 
-/** The whole job: due rows in batches until none are left or the deadline. */
+/**
+ * The sweep: due rows in batches until none are left or the deadline, then one
+ * alert for every row that gave up. `scope` is the drills' fence — see
+ * `duePendingPurges`.
+ */
+export async function replayDue(scope?: readonly string[]): Promise<RepurgeCounts> {
+  const deadline = Date.now() + JOB_DEADLINE_SECONDS * MS_PER_SECOND;
+  const counts: RepurgeCounts = { synced: 0, purged: 0, deferred: 0, failed: 0, gave_up: 0, alert: null };
+  const gaveUp: PendingPurge[] = [];
+
+  while (Date.now() < deadline) {
+    const rows = await duePendingPurges(REPURGE_BATCH_SIZE, scope);
+    if (rows.length === 0) break;
+    for (const row of rows) {
+      if (Date.now() >= deadline) break;
+      const outcome = await replayPendingPurge(row);
+      counts[outcome] += 1;
+      if (outcome === "gave_up") gaveUp.push(row);
+    }
+  }
+
+  if (gaveUp.length > 0) {
+    counts.alert = await sendAdminAlert({
+      subject: `${gaveUp.length} edge purge(s) gave up after ${REPURGE_MAX_ATTEMPTS} attempts`,
+      lines: [
+        "These pages may be serving a stale copy at the edge. Their pending_purges rows stay in the table with the last error; fix the cause, then reset `attempts` to replay them.",
+        ...gaveUp.map((row) => `${row.slug || "(no slug)"} — site ${row.siteId ?? "none"}, row ${row.id}`),
+      ],
+    });
+  }
+  return counts;
+}
+
+/** The whole job, recorded in `job_runs` as `repurge`. */
 export function replayDuePurges(): Promise<RepurgeCounts> {
-  return withJobRun("repurge", async () => {
-    const deadline = Date.now() + JOB_DEADLINE_SECONDS * MS_PER_SECOND;
-    const counts: RepurgeCounts = { synced: 0, purged: 0, deferred: 0, failed: 0, gave_up: 0 };
-    const gaveUp: PendingPurge[] = [];
-
-    while (Date.now() < deadline) {
-      const rows = await duePendingPurges(REPURGE_BATCH_SIZE);
-      if (rows.length === 0) break;
-      for (const row of rows) {
-        if (Date.now() >= deadline) break;
-        const outcome = await replayPendingPurge(row);
-        counts[outcome] += 1;
-        if (outcome === "gave_up") gaveUp.push(row);
-      }
-    }
-
-    if (gaveUp.length > 0) {
-      await sendAdminAlert({
-        subject: `${gaveUp.length} edge purge(s) gave up after ${REPURGE_MAX_ATTEMPTS} attempts`,
-        lines: [
-          "These pages may be serving a stale copy at the edge. Their pending_purges rows stay in the table with the last error; fix the cause, then reset `attempts` to replay them.",
-          ...gaveUp.map((row) => `${row.slug || "(no slug)"} — site ${row.siteId ?? "none"}, row ${row.id}`),
-        ],
-      });
-    }
-    return counts;
-  });
+  return withJobRun("repurge", () => replayDue());
 }

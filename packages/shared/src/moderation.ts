@@ -98,6 +98,12 @@ export const SCAN_TEXT_BUDGET_CHARS = 24000 as const;
 export const SCAN_THRESHOLDS = { harm: 0.8, minors: 0.5, impersonates: 0.6 } as const;
 export type ScanThresholds = { readonly [K in keyof typeof SCAN_THRESHOLDS]: number };
 
+/** D5's bar for the eval's harmful set: at least this share flagged (and no clean page). */
+export const SCAN_EVAL_HARMFUL_FLAG_RATE = 0.8 as const;
+
+/** The window the admin Scanner tab totals classifier spend over, in days. */
+export const SCANNER_SPEND_WINDOW_DAYS = 30 as const;
+
 /**
  * Delay before each retry of a `failed` scan, in SECONDS (§6.5): 5 min, 15 min,
  * 1 h, 6 h, 24 h. Attempt N waits `SCAN_RETRY_DELAYS[N - 1]`; past the last, the

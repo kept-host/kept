@@ -107,10 +107,16 @@ process.env.KEPT_E2E_DRILL_ADMIN_EMAIL ??= `delivered+e06a-drill-${crypto.random
  * moderation screen and deletes the account afterwards, for the same reason.
  */
 process.env.KEPT_E2E_MODERATION_ADMIN_EMAIL ??= `delivered+e07-mod-${crypto.randomUUID().slice(0, 8)}@resend.dev`;
+/**
+ * A fourth for `epic-drill*.spec.ts` (E07 task 012), which runs beside
+ * `admin-moderation*.spec.ts` and deletes its account afterwards too.
+ */
+process.env.KEPT_E2E_EPIC_ADMIN_EMAIL ??= `delivered+e07-epic-${crypto.randomUUID().slice(0, 8)}@resend.dev`;
 process.env.KEPT_ADMIN_EMAILS = [
   process.env.KEPT_E2E_ADMIN_EMAIL,
   process.env.KEPT_E2E_DRILL_ADMIN_EMAIL,
   process.env.KEPT_E2E_MODERATION_ADMIN_EMAIL,
+  process.env.KEPT_E2E_EPIC_ADMIN_EMAIL,
 ].join(",");
 
 /**
@@ -132,6 +138,25 @@ process.env.TURNSTILE_SECRET_KEY ??= TURNSTILE_TEST_KEYS.secretPass;
 process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ??= TURNSTILE_TEST_KEYS.siteKeyPass;
 process.env.KEPT_ADMIN_SECRET ??= randomBytes(32).toString("base64url");
 
+/**
+ * ── EVERY WORKER IS ITS OWN ANONYMOUS PUBLISHER (E07 §6.15) ──────────────────
+ *
+ * The keyless publish path counts new pages per publisher — `publish:<key>`, 30
+ * an hour and 200 a day — and the key is the salted hash of the client's IP and
+ * user agent. Every request here comes from one machine with one user agent, so
+ * without this the whole suite (and every run that day) would be ONE publisher:
+ * two runs in the same clock hour, or a long day of runs, would hit the 429s for
+ * a reason no test is about.
+ *
+ * So the user agent carries a per-worker suffix. This file is evaluated again in
+ * every worker, so each worker — and each run — is a distinct publisher whose
+ * buckets start empty. Nothing is mocked and no limit is relaxed: a distinct
+ * user agent IS a distinct publisher to the real limiter, and the browser and
+ * the `request` fixture both send it. Specs that need a second identity inside
+ * one test still pass their own `user-agent` header.
+ */
+const workerPublisher = `kept-e2e/${randomBytes(4).toString("hex")}`;
+
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
@@ -147,7 +172,7 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      use: { ...devices["Desktop Chrome"], userAgent: `${devices["Desktop Chrome"].userAgent} ${workerPublisher}` },
     },
   ],
   webServer: {

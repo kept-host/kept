@@ -216,6 +216,7 @@ after(async () => {
   for (const slug of createdSlugs) {
     await removeManifest(slug).catch(() => undefined);
   }
+  await (await import("../testing/pending-purges")).clearPendingPurges(createdSlugs, createdSites);
   // The moderation record outlives a page by design (`SET NULL`); a drill's
   // own record does not outlive the drill.
   if (createdSites.size > 0) {

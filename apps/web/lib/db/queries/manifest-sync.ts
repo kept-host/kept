@@ -13,7 +13,7 @@
  *     failed purge or a failed manifest write leaves one due now.
  */
 import { REPURGE_MAX_ATTEMPTS } from "@kept/shared";
-import { and, asc, eq, lt, lte, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, lt, lte, sql } from "drizzle-orm";
 
 import { db, type Tx } from "../index";
 import { pendingPurges, sites } from "../schema";
@@ -67,12 +67,22 @@ export async function deletePendingPurge(id: string): Promise<void> {
  * Up to `limit` rows due now that have not given up, oldest due first. A row
  * that has used its `REPURGE_MAX_ATTEMPTS` stays in the table for a human to
  * read and is never selected again.
+ *
+ * `scope` limits the batch to the given row ids. Only the drills pass it: the
+ * dev table is shared, and an unscoped replay would replay every other run's
+ * rows (the same fence as `lib/db/queries/lifecycle.ts`).
  */
-export async function duePendingPurges(limit: number): Promise<PendingPurge[]> {
+export async function duePendingPurges(limit: number, scope?: readonly string[]): Promise<PendingPurge[]> {
   return db
     .select()
     .from(pendingPurges)
-    .where(and(lte(pendingPurges.dueAt, sql`now()`), lt(pendingPurges.attempts, REPURGE_MAX_ATTEMPTS)))
+    .where(
+      and(
+        lte(pendingPurges.dueAt, sql`now()`),
+        lt(pendingPurges.attempts, REPURGE_MAX_ATTEMPTS),
+        scope ? inArray(pendingPurges.id, [...scope]) : undefined,
+      ),
+    )
     .orderBy(asc(pendingPurges.dueAt))
     .limit(limit);
 }

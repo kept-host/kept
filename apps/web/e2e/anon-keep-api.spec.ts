@@ -11,6 +11,7 @@ import { config } from "dotenv";
 import { eq, inArray } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
+import { clearPendingPurges } from "../lib/testing/pending-purges";
 
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
 import { jarlessContext, sessionHeaders } from "./session-request";
@@ -86,6 +87,7 @@ test.describe("anonymous keep route", () => {
   test.afterAll(async () => {
     if (SKIP) return;
     if (createdSiteIds.length) {
+      await clearPendingPurges([], createdSiteIds);
       await db.delete(schema.sites).where(inArray(schema.sites.id, createdSiteIds));
     }
     if (createdUserIds.length) {

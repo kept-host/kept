@@ -7,7 +7,7 @@
  * Judgments are saved once and replayed: a threshold change never costs a new
  * classifier call (D5).
  */
-import type { ScanThresholds } from "@kept/shared";
+import { SCAN_EVAL_HARMFUL_FLAG_RATE, type ScanThresholds } from "@kept/shared";
 
 import type { ClassifierResult } from "./classifier";
 import { decide } from "./policy";
@@ -50,9 +50,6 @@ export interface EvalSummary {
   /** D5: 0 clean flagged, ≥ 80% harmful flagged, and every page actually judged. */
   gate: boolean;
 }
-
-/** D5's bar for the harmful set. */
-export const HARMFUL_FLAG_RATE = 0.8;
 
 /** Every host a `//host` URL names anywhere in the page (markup, script, text) — not just the hosts the extractor surfaces. */
 const URL_HOST = /(?:[a-z][a-z0-9+.-]*:)?\/\/([a-z0-9-]+(?:\.[a-z0-9-]+)+)/gi;
@@ -108,7 +105,7 @@ export function summarize(rows: EvalRow[]): EvalSummary {
     summary.errors === 0 &&
     summary.clean.flagged === 0 &&
     summary.harmful.total > 0 &&
-    summary.harmful.flagged / summary.harmful.total >= HARMFUL_FLAG_RATE;
+    summary.harmful.flagged / summary.harmful.total >= SCAN_EVAL_HARMFUL_FLAG_RATE;
   return summary;
 }
 
@@ -177,7 +174,7 @@ export function resultsTable(rows: EvalRow[], summary: EvalSummary): string {
   lines.push(
     "",
     `- Clean flagged: **${summary.clean.flagged} / ${summary.clean.total}** (gate: 0)`,
-    `- Harmful flagged: **${summary.harmful.flagged} / ${summary.harmful.total} (${pct(summary.harmful.flagged, summary.harmful.total)})** (gate: ≥ ${HARMFUL_FLAG_RATE * 100}%)`,
+    `- Harmful flagged: **${summary.harmful.flagged} / ${summary.harmful.total} (${pct(summary.harmful.flagged, summary.harmful.total)})** (gate: ≥ ${SCAN_EVAL_HARMFUL_FLAG_RATE * 100}%)`,
     `- Flags by rule: ${rules || "none"}`,
     `- Classifier errors: ${summary.errors}`,
     `- Total cost: $${summary.cost.toFixed(6)}`,

@@ -142,6 +142,7 @@ after(async () => {
   for (const slug of publishedSlugs) {
     await removeManifest(slug).catch(() => undefined);
   }
+  await (await import("../testing/pending-purges")).clearPendingPurges(publishedSlugs, createdSites);
   if (createdSites.size > 0) {
     const versions = await db
       .select({ id: siteVersions.id, siteId: siteVersions.siteId })

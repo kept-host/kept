@@ -24,14 +24,13 @@ import { after, test } from "node:test";
 
 import { RATE_LIMITS, REPORT_ALERT_PER_SITE_HOUR, SCAN_POLICY_VERSION, type SiteStatus } from "@kept/shared";
 import { config } from "dotenv";
-import { eq, inArray, like, or, sql } from "drizzle-orm";
+import { eq, inArray, like, sql } from "drizzle-orm";
 
 import { closeDb, db } from "../db";
 import { findReportTarget } from "../db/queries/reports";
 import {
   abuseReports,
   moderationActions,
-  pendingPurges,
   rateLimits,
   scans,
   sites,
@@ -44,6 +43,7 @@ import { removeManifest } from "../storage/manifest";
 import { drillIp } from "../testing/drill-ip";
 import { stillServed } from "../testing/moderation-drill";
 import { NamesDrill } from "../testing/names-drill";
+import { clearPendingPurges } from "../testing/pending-purges";
 import { setTurnstileTestKeys, TURNSTILE_TEST_KEYS } from "../testing/turnstile";
 
 import { submitReport, type ReportAccepted, type ReportOutcome } from "./submit";
@@ -84,9 +84,7 @@ after(async () => {
     for (const slug of await stillServed(ids)) await removeManifest(slug).catch(() => undefined);
     await db.delete(abuseReports).where(inArray(abuseReports.siteId, ids));
     await db.delete(moderationActions).where(inArray(moderationActions.siteId, ids));
-    await db
-      .delete(pendingPurges)
-      .where(or(inArray(pendingPurges.siteId, ids), inArray(pendingPurges.slug, [...slugs])));
+    await clearPendingPurges(slugs, ids);
     await db
       .delete(rateLimits)
       .where(inArray(rateLimits.bucket, ids.map((id) => adminAlertBucket(`report-alert:${id}`))));

@@ -114,6 +114,7 @@ after(async () => {
       }
       await db.delete(sites).where(eq(sites.id, row.id));
     }
+    await (await import("../testing/pending-purges")).clearPendingPurges(created);
   }
   if (buckets.size > 0) await db.delete(rateLimits).where(inArray(rateLimits.bucket, [...buckets]));
   await closeDb();

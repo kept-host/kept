@@ -117,6 +117,7 @@ after(async () => {
         .catch(() => undefined);
     }
   }
+  await (await import("../testing/pending-purges")).clearPendingPurges(createdSlugs, createdSites);
   if (createdSites.size > 0) await db.delete(sites).where(inArray(sites.id, [...createdSites]));
   await (await drill()).cleanup();
   await closeDb();

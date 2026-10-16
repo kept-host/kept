@@ -90,6 +90,7 @@ after(async () => {
     }
     await db.delete(sites).where(eq(sites.id, row.id));
   }
+  await (await import("../testing/pending-purges")).clearPendingPurges(created);
   // Release the pool, or `tsx --test` hangs on `idle_timeout`.
   await db.$client.end();
 });

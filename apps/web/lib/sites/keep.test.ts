@@ -260,6 +260,7 @@ after(async () => {
       await removeManifest(slug).catch(() => undefined);
     }
   }
+  await (await import("../testing/pending-purges")).clearPendingPurges(createdManifests, createdSites);
   if (createdSites.size > 0) {
     await db.delete(sites).where(inArray(sites.id, [...createdSites]));
   }

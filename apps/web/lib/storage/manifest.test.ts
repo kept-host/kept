@@ -36,6 +36,9 @@ import {
 // force the KV miss the two drills are built around. `eslint.config.mjs`
 // exempts this file for that reason and no other: nothing below writes a
 // manifest through it.
+import { closeDb } from "../db";
+import { clearPendingPurges } from "../testing/pending-purges";
+
 import { kvStore } from "./kv";
 import {
   KV_REPURGE_DELAY_MS,
@@ -73,6 +76,8 @@ const PROBE_INTERVAL_MS = 3_000;
 
 const SITE_ID = `e04-drill-${crypto.randomUUID().slice(0, 8)}`;
 const SLUG = `d${crypto.randomUUID().replace(/-/g, "").slice(0, 7)}`;
+/** Every slug a drill here wrote a manifest for: their `pending_purges` rows go in `after`. */
+const drillSlugs = new Set([SLUG]);
 
 /** `sites/{siteId}/{versionId}/index.html` — the locked R2 layout. The publish
  *  route (task 005) grows the real builder; this is a fixture path. */
@@ -117,6 +122,8 @@ after(async () => {
     r2.delete(objectKey("v1")).catch(() => undefined),
     r2.delete(objectKey("v2")).catch(() => undefined),
   ]);
+  await clearPendingPurges(drillSlugs);
+  await closeDb();
 });
 
 test("pointer key and purge URLs match the contract", () => {
@@ -345,6 +352,7 @@ test(
     const r2 = r2Store();
     const siteId = `e04-repurge-${crypto.randomUUID().slice(0, 8)}`;
     const slug = `d${crypto.randomUUID().replace(/-/g, "").slice(0, 7)}`;
+    drillSlugs.add(slug);
     const key = `sites/${siteId}/v1/index.html`;
     const url = `https://${slug}.${process.env.KEPT_BASE_DOMAIN}/`;
     const marker = "repurge-drill";

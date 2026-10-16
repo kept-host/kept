@@ -6,6 +6,7 @@
  * Every string here that came from a stranger — a slug, a report's words, an
  * appeal — is rendered as React text, never as markup.
  */
+import { SCANNER_SPEND_WINDOW_DAYS } from "@kept/shared";
 import Link from "next/link";
 import type { ReactNode } from "react";
 
@@ -30,8 +31,6 @@ import type { ModerationTab } from "./tab-list";
 
 /** Watch: spike re-scans of the last two weeks. */
 const WATCH_DAYS = 14;
-/** Scanner: spend over the last 30 days. */
-const SPEND_DAYS = 30;
 
 export function itemHref(siteId: string): string {
   return `/admin/moderation/site/${siteId}`;
@@ -212,7 +211,7 @@ async function ScannerPanel() {
   const [job, failures, spend] = await Promise.all([
     jobRun(SCAN_RETRY_JOB),
     recentScanFailures(),
-    scanSpendUsd(SPEND_DAYS),
+    scanSpendUsd(SCANNER_SPEND_WINDOW_DAYS),
   ]);
   const keyPresent = scannerEnabled();
   const light = scannerLight({ keyPresent, lastSuccessAt: job?.lastSuccessAt ?? null, now: new Date() });
@@ -234,7 +233,7 @@ async function ScannerPanel() {
       <dd className="text-sm">{job?.lastSuccessAt ? formatTimestamp(job.lastSuccessAt) : "never"}</dd>
       <dt className="text-sm text-text-secondary">Failures, 24 h</dt>
       <dd className="text-sm">{failures.failures}</dd>
-      <dt className="text-sm text-text-secondary">Spend, {SPEND_DAYS} days</dt>
+      <dt className="text-sm text-text-secondary">Spend, {SCANNER_SPEND_WINDOW_DAYS} days</dt>
       <dd className="font-mono text-sm">${spend.toFixed(4)}</dd>
       {light === "red" && lastError ? (
         <>

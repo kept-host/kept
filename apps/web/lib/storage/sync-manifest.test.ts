@@ -22,6 +22,9 @@
  * KV QUOTA (dev is on the free plan, 1k writes + 1k deletes a day): one page per
  * race, about seven KV writes and nine deletes for the whole file.
  *
+ * The batch replay's alert (task 012) goes to Resend's test inbox: this process
+ * sets its own `KEPT_ADMIN_EMAILS`, so no drill ever mails a real admin.
+ *
  * SKIPS when the database or the dev store credentials are absent (fork-PR CI).
  */
 import assert from "node:assert/strict";
@@ -30,7 +33,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { generateAnonToken, hashToken, REPURGE_MAX_ATTEMPTS, type SiteStatus } from "@kept/shared";
 import { config } from "dotenv";
-import { eq, inArray, or } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import postgres from "postgres";
 
 import { closeDb, db } from "../db";
@@ -42,12 +45,15 @@ import { keepSite } from "../sites/keep";
 import { replaceSite } from "../sites/manage";
 import { restoreVersion } from "../sites/restore";
 import { NamesDrill } from "../testing/names-drill";
+import { clearPendingPurges } from "../testing/pending-purges";
 
-import { pointerKey, removeManifest, syncManifest } from "./manifest";
+import { KV_REPURGE_DELAY_MS, pointerKey, removeManifest, syncManifest } from "./manifest";
 import { pageObjectKey, r2Store } from "./r2";
-import { replayPendingPurge } from "./repurge";
+import { replayDue, replayPendingPurge } from "./repurge";
 
 config({ path: ".env.local", quiet: true });
+process.env.KEPT_ADMIN_EMAILS = `delivered+e07-012-admin-${crypto.randomUUID().slice(0, 8)}@resend.dev`;
+const mailOn = Boolean(process.env.RESEND_API_KEY?.trim() && process.env.EMAIL_FROM?.trim());
 
 const LIVE_VARS = [
   "DATABASE_URL",
@@ -84,9 +90,7 @@ after(async () => {
       .from(siteVersions)
       .where(inArray(siteVersions.siteId, [...siteIds]));
     for (const { r2Key } of objects) await r2Store().delete(r2Key).catch(() => undefined);
-    await db
-      .delete(pendingPurges)
-      .where(or(inArray(pendingPurges.siteId, [...siteIds]), inArray(pendingPurges.slug, [...slugs])));
+    await clearPendingPurges(slugs, siteIds);
   }
   await drill.cleanup();
   await side?.end();
@@ -350,4 +354,52 @@ test("AC35: a replay that keeps failing is counted, and gives up at REPURGE_MAX_
   // The non-durable replay sync recorded no second row of its own.
   const rows = await db.select().from(pendingPurges).where(eq(pendingPurges.siteId, page.id));
   assert.equal(rows.length, 1, "a failed replay must not spawn a new row");
+});
+
+test("AC35 (batch): one replay run purges, defers and gives up row by row, sends ONE alert, and a second run finds nothing", { skip }, async () => {
+  const page = await ownedPage();
+  const settled = new Date(Date.now() - KV_REPURGE_DELAY_MS - 1_000);
+  // Owes one purge and is past the KV read cache's turnover: purged and deleted.
+  const done = await insertPendingPurge({ siteId: null, slug: page.slug, urls: [], dueAt: new Date() });
+  await db.update(pendingPurges).set({ createdAt: settled }).where(eq(pendingPurges.id, done));
+  // Owes one purge of a write just made: purged, then deferred until it settles.
+  const fresh = await insertPendingPurge({ siteId: null, slug: page.slug, urls: [], dueAt: new Date() });
+  // A sync that keeps failing, on its last attempt: gives up and is alerted.
+  const stuck = await insertPendingPurge({ siteId: page.id, slug: page.slug, urls: [], dueAt: new Date() });
+  await db.update(pendingPurges).set({ attempts: REPURGE_MAX_ATTEMPTS - 1 }).where(eq(pendingPurges.id, stuck));
+  const scope = [done, fresh, stuck];
+
+  // A real KV failure for the sync; the purges never touch KV.
+  const prior = process.env.KV_NAMESPACE_ID;
+  delete process.env.KV_NAMESPACE_ID;
+  let first;
+  try {
+    first = await replayDue(scope);
+  } finally {
+    process.env.KV_NAMESPACE_ID = prior;
+  }
+  console.log(`[repurge] batch → ${JSON.stringify(first)}`);
+  assert.deepEqual(first, {
+    synced: 0,
+    purged: 1,
+    deferred: 1,
+    failed: 0,
+    gave_up: 1,
+    alert: mailOn ? "sent" : "failed",
+  });
+
+  const rows = await db.select().from(pendingPurges).where(inArray(pendingPurges.id, scope));
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  assert.equal(byId.has(done), false, "a purge that landed after the window is deleted");
+  const deferred = byId.get(fresh);
+  assert.ok(deferred, "a purge inside the window is kept for its second purge");
+  assert.equal(deferred.attempts, 0, "deferring is not a failure");
+  assert.ok(deferred.dueAt.getTime() > Date.now(), "due once the window has passed");
+  const gaveUp = byId.get(stuck);
+  assert.ok(gaveUp, "a row that gave up stays for a human");
+  assert.equal(gaveUp.attempts, REPURGE_MAX_ATTEMPTS);
+  assert.match(gaveUp.lastError ?? "", /^sync: kv/);
+
+  // Idempotent: nothing it touched is due again, and nothing gave up twice.
+  assert.deepEqual(await replayDue(scope), { synced: 0, purged: 0, deferred: 0, failed: 0, gave_up: 0, alert: null });
 });

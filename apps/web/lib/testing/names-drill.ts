@@ -15,6 +15,8 @@ import { eq, inArray, or } from "drizzle-orm";
 import { db } from "../db";
 import { nameEvents, nameHolds, profiles, sites, user } from "../db/schema";
 
+import { clearPendingPurges } from "./pending-purges";
+
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 export interface DrillSite {
@@ -150,7 +152,12 @@ export class NamesDrill {
       await db.delete(nameEvents).where(or(...byOwner));
     }
     if (names.length > 0) await db.delete(nameHolds).where(inArray(nameHolds.name, names));
-    if (siteIds.length > 0) await db.delete(sites).where(inArray(sites.id, siteIds));
+    if (siteIds.length > 0) {
+      // Current slugs, and every name the drill handed out (a rename moves off one).
+      const slugs = await db.select({ slug: sites.slug }).from(sites).where(inArray(sites.id, siteIds));
+      await clearPendingPurges([...slugs.map((row) => row.slug), ...names], siteIds);
+      await db.delete(sites).where(inArray(sites.id, siteIds));
+    }
     if (profileIds.length > 0) {
       // `profiles.id` → `user.id` cascades, so deleting the user does both.
       await db.delete(user).where(inArray(user.id, profileIds));

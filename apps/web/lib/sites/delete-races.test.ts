@@ -32,16 +32,17 @@ import { after, test } from "node:test";
 
 import { generateAnonToken, hashToken, type SiteStatus } from "@kept/shared";
 import { config } from "dotenv";
-import { eq, inArray, or } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 
 import { closeDb, db } from "../db";
 import { archiveSite } from "../db/queries/publish";
-import { pendingPurges, sites } from "../db/schema";
+import { sites } from "../db/schema";
 import { deletePage } from "../publish/anon-manage";
 import { notFound } from "../publish/anon-token";
 import { removeManifest, syncManifest, writeManifest } from "../storage/manifest";
 import { edgeStatus, liveSkip, LockDrill, manifestAt, settle } from "../testing/lock-drill";
 import { NamesDrill } from "../testing/names-drill";
+import { clearPendingPurges } from "../testing/pending-purges";
 
 import { deleteAccount } from "./account-deletion";
 import { managementRefusal } from "./display";
@@ -63,9 +64,7 @@ after(async () => {
   if (skipDb) return;
   if (!skip) for (const slug of slugs) await removeManifest(slug).catch(() => undefined);
   if (siteIds.size > 0) {
-    // Every slug here belongs to a tracked site, so the site set is never empty when the slug set is not.
-    const bySlug = slugs.size > 0 ? [inArray(pendingPurges.slug, [...slugs])] : [];
-    await db.delete(pendingPurges).where(or(inArray(pendingPurges.siteId, [...siteIds]), ...bySlug));
+    await clearPendingPurges(slugs, siteIds);
   }
   await drill.cleanup();
   await locks?.end();

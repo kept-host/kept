@@ -7,6 +7,7 @@ import { config } from "dotenv";
 import { eq, inArray } from "drizzle-orm";
 
 import { db, schema } from "../lib/db";
+import { clearPendingPurges } from "../lib/testing/pending-purges";
 
 import { SKIP_LIVE_PUBLISH } from "./live-publish";
 
@@ -376,7 +377,7 @@ export async function cleanup(scope: OwnerScope): Promise<void> {
     // re-purge row has no FK at all — both would outlive the drill. (Appeals
     // cascade with the site.)
     await db.delete(schema.moderationActions).where(inArray(schema.moderationActions.siteId, scope.siteIds));
-    await db.delete(schema.pendingPurges).where(inArray(schema.pendingPurges.siteId, scope.siteIds));
+    await clearPendingPurges(scope.slugs, scope.siteIds);
     await db.delete(schema.sites).where(inArray(schema.sites.id, scope.siteIds));
   }
   if (scope.userIds.length) {

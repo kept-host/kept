@@ -15,13 +15,14 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
 import { config } from "dotenv";
-import { eq, inArray, or } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 
 import { closeDb, db } from "../db";
-import { abuseReports, moderationActions, pendingPurges, sites } from "../db/schema";
+import { abuseReports, moderationActions, sites } from "../db/schema";
 import { removeManifest } from "../storage/manifest";
 import { stillServed } from "../testing/moderation-drill";
 import { NamesDrill } from "../testing/names-drill";
+import { clearPendingPurges } from "../testing/pending-purges";
 
 import { allowedSiteActions, dismissReports, moderateSite, readAdminHtml } from "./admin";
 
@@ -55,9 +56,7 @@ after(async () => {
   if (siteIds.size > 0) {
     for (const slug of await stillServed([...siteIds])) await removeManifest(slug).catch(() => undefined);
     await db.delete(moderationActions).where(inArray(moderationActions.siteId, [...siteIds]));
-    await db
-      .delete(pendingPurges)
-      .where(or(inArray(pendingPurges.siteId, [...siteIds]), inArray(pendingPurges.slug, [...slugs])));
+    await clearPendingPurges(slugs, siteIds);
   }
   if (reportIds.length) await db.delete(abuseReports).where(inArray(abuseReports.id, reportIds));
   await drill.cleanup();

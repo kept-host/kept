@@ -115,6 +115,7 @@ after(async () => {
         .catch(() => undefined);
     }
   }
+  await (await import("../testing/pending-purges")).clearPendingPurges(createdSlugs, createdSites);
   if (createdSites.size > 0) await db.delete(sites).where(inArray(sites.id, [...createdSites]));
   if (createdUsers.size > 0) await db.delete(user).where(inArray(user.id, [...createdUsers]));
   // Release the pool, or `tsx --test` hangs on `idle_timeout`.

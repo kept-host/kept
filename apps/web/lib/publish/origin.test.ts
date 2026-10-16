@@ -416,6 +416,7 @@ after(async () => {
     }
     await client.delete(sites).where(eq(sites.id, id));
   }
+  await (await import("../testing/pending-purges")).clearPendingPurges(createdSlugs, createdSites);
   for (const id of createdProfiles) {
     // `profiles.id` FKs `user.id` with `on delete cascade`, so one delete does both.
     await client.delete(profiles).where(eq(profiles.id, id));

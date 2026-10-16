@@ -11,6 +11,7 @@ import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
 import { pageObjectKey, r2Store } from "../lib/storage/r2";
+import { clearPendingPurges } from "../lib/testing/pending-purges";
 
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
 import { pageHtml, probeEdge, servingDomain, SKIP_LIVE_PUBLISH } from "./live-publish";
@@ -90,6 +91,7 @@ test.describe("owned publish", () => {
     for (const slug of createdSlugs) {
       await removeManifest(slug).catch(() => undefined);
     }
+    await clearPendingPurges(createdSlugs, createdSiteIds);
     for (const id of createdSiteIds) {
       const versions = await db
         .select({ id: schema.siteVersions.id })

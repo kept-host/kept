@@ -22,16 +22,17 @@ import { after, test } from "node:test";
 
 import { DRAFT_GRACE_DAYS, DRAFT_TTL_DAYS, limitsFor, SCAN_POLICY_VERSION, type SiteStatus } from "@kept/shared";
 import { config } from "dotenv";
-import { and, eq, inArray, or } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 
 import { closeDb, db } from "../db";
-import { appeals, moderationActions, nameHolds, pendingPurges, scans, sites, siteVersions, user } from "../db/schema";
+import { appeals, moderationActions, nameHolds, scans, sites, siteVersions, user } from "../db/schema";
 import { isNameAvailable } from "../names/availability";
 import { restoreVersion } from "../sites/restore";
 import { removeManifest } from "../storage/manifest";
 import { PAGE_CONTENT_TYPE, pageObjectKey, r2Store } from "../storage/r2";
 import { NamesDrill } from "../testing/names-drill";
 import { stillServed } from "../testing/moderation-drill";
+import { clearPendingPurges } from "../testing/pending-purges";
 
 import { isAllowedTransition, lastVerdictFor, setStatus } from "./status";
 
@@ -70,9 +71,7 @@ after(async () => {
     // served costs a KV delete. (Never the quota fillers — 50 deletes.)
     for (const slug of await stillServed([...siteIds])) await removeManifest(slug).catch(() => undefined);
     await db.delete(moderationActions).where(inArray(moderationActions.siteId, [...siteIds]));
-    await db
-      .delete(pendingPurges)
-      .where(or(inArray(pendingPurges.siteId, [...siteIds]), inArray(pendingPurges.slug, [...slugs])));
+    await clearPendingPurges(slugs, siteIds);
   }
   for (const key of r2Keys) await r2Store().delete(key).catch(() => undefined);
   await drill.cleanup();

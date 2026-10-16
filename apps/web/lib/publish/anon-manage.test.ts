@@ -141,6 +141,7 @@ after(async () => {
     }
     await db.delete(sites).where(eq(sites.id, row.id));
   }
+  await (await import("../testing/pending-purges")).clearPendingPurges(created);
 });
 
 test(

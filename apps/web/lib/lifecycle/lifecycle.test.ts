@@ -29,17 +29,18 @@ import { after, test } from "node:test";
 
 import { EXPIRE_BATCH_SIZE, REPORTER_CONTACT_RETENTION_DAYS, type NameKind, type SiteStatus } from "@kept/shared";
 import { config } from "dotenv";
-import { eq, inArray, or, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 
 import { closeDb, db } from "../db";
 import { clearResolvedReporterContacts, dueExpiriesQuery } from "../db/queries/lifecycle";
-import { abuseReports, appeals, moderationActions, nameHolds, pendingPurges, sites, siteVersions } from "../db/schema";
+import { abuseReports, appeals, moderationActions, nameHolds, sites, siteVersions } from "../db/schema";
 import { MS_PER_DAY } from "../sites/display";
 import { keepSite } from "../sites/keep";
 import { removeManifest, syncManifest } from "../storage/manifest";
 import { pageObjectKey, PAGE_CONTENT_TYPE, r2Store } from "../storage/r2";
 import { edgeStatus, liveSkip, LockDrill, manifestAt, settle } from "../testing/lock-drill";
 import { NamesDrill } from "../testing/names-drill";
+import { clearPendingPurges } from "../testing/pending-purges";
 
 import { expireDue, expireSite } from "./expire";
 import { purgeDue, purgeSite } from "./purge";
@@ -68,8 +69,7 @@ after(async () => {
   if (siteIds.size > 0) {
     // Every fixture slug is in `slugs`, so the set is never empty here.
     await db.delete(moderationActions).where(inArray(moderationActions.slug, [...slugs]));
-    const bySlug = slugs.size > 0 ? [inArray(pendingPurges.slug, [...slugs])] : [];
-    await db.delete(pendingPurges).where(or(inArray(pendingPurges.siteId, [...siteIds]), ...bySlug));
+    await clearPendingPurges(slugs, siteIds);
   }
   await drill.cleanup();
   await locks?.end();
