@@ -3,11 +3,11 @@
 // Reached only through `./names` (which re-exports it), never through the
 // barrel: the Worker has no use for a name policy, exactly as for `./names`.
 //
-// ⚠️ THE v1 LISTS BELOW ARE A PROPOSAL FOR ARUN (E07 open question Q4), not a
-// reviewed policy. Every entry has a "must accept" case beside it in
-// `apps/web/lib/names/brand-terms.test.ts`, which fails if an entry lands
-// without one. Two deliberate moves away from the task's examples, recorded
-// for that review: `outlook` is an ordinary word, so it is a PAIR brand (the
+// The v1 lists below were proposed in E07 (open question Q4) and adopted as
+// proposed by Arun on 2026-10-16. Every entry has a "must accept" case beside
+// it in `apps/web/lib/names/brand-terms.test.ts`, which fails if an entry
+// lands without one. Two deliberate moves away from the task's examples:
+// `outlook` is an ordinary word, so it is a PAIR brand (the
 // PRD's definition of the two lists), not a term blocked anywhere; and a term
 // whose letters turn up inside ordinary words once hyphens are stripped and
 // repeats collapsed (`google` → `gogle` ⊂ `goggles`, `icloud` ⊂ `musicloud`,
