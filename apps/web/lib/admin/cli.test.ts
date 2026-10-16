@@ -200,7 +200,6 @@ test("scan: --all-live --dry-run counts a would-be flag and writes nothing; --un
 test("waitlist export and stats: CSV with filters, counts by state/source", { skip: skipLive }, async () => {
   const { db } = await import("../db");
   const { waitlist } = await import("../db/schema");
-  const before = await run("waitlist", "stats");
 
   const now = new Date("2026-10-02T03:04:05.000Z");
   const confirmed = address("confirmed");
@@ -241,14 +240,17 @@ test("waitlist export and stats: CSV with filters, counts by state/source", { sk
 
   assert.deepEqual(mine((await run("waitlist", "export", "--confirmed", "--founding=approved")).out), []);
 
-  const afterStats = await run("waitlist", "stats");
-  const count = (lines: string[], label: string) =>
-    Number(lines.find((line) => line.startsWith(`  ${label}: `))?.slice(label.length + 4) ?? 0);
-  const delta = (label: string) => count(afterStats.out, label) - count(before.out, label);
-  assert.ok(afterStats.out[0]!.startsWith("total: "));
-  assert.ok(delta("landing_drop/confirmed") >= 1);
-  assert.ok(delta("landing_nav/unsubscribed") >= 1);
-  assert.ok(delta("landing_notify/pending") >= 1);
-  assert.ok(delta("legacy/pending") >= 1, "legacy rows are counted");
-  assert.ok(delta("approved") >= 1, "founding status is counted");
+  // Stats are table-wide and other files add and delete their own rows concurrently, so a
+  // before/after delta races them. This test's rows stay until its own teardown: each bucket
+  // it filled must therefore count at least its rows, whatever the other files are doing.
+  const stats = (await run("waitlist", "stats")).out;
+  const count = (label: string) =>
+    Number(stats.find((line) => line.startsWith(`  ${label}: `))?.slice(label.length + 4) ?? 0);
+  assert.ok(stats[0]!.startsWith("total: "));
+  assert.ok(Number(stats[0]!.slice("total: ".length)) >= listed.length, "total counts this test's rows");
+  assert.ok(count("landing_drop/confirmed") >= 1);
+  assert.ok(count("landing_nav/unsubscribed") >= 1);
+  assert.ok(count("landing_notify/pending") >= 1);
+  assert.ok(count("legacy/pending") >= 1, "legacy rows are counted");
+  assert.ok(count("approved") >= 1, "founding status is counted");
 });
