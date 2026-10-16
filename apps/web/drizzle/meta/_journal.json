@@ -64,6 +64,13 @@
       "when": 1792095729374,
       "tag": "0008_moderation",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1792188832180,
+      "tag": "0009_admin_restore_version",
+      "breakpoints": true
     }
   ]
 }

@@ -1,7 +1,8 @@
 /**
  * The scan runtime (E07 task 007): `enqueueScan` → `runScan`, verdict reuse,
- * P4 on a classifier error, `scan-retry`'s pieces, the failure alert and the
- * spike check — AC2, AC3, AC7, AC8, AC10, AC11, AC12, AC22.
+ * P4 on a classifier error, an admin restore the scanner leaves alone,
+ * `scan-retry`'s pieces, the failure alert and the spike check — AC2, AC3,
+ * AC7, AC8, AC10, AC11, AC12, AC22.
  *
  * NO MOCKS. Real dev Postgres for every row; real R2 objects for every page
  * scanned; real `setStatus` → `syncManifest` (R2 pointer + KV + purge) for
@@ -19,8 +20,9 @@
  * deploy without the key does — `skipped` rows, P4 still flags.
  *
  * KV QUOTA (dev free plan): the keyless publish (1 write) + its flag (1) + the
- * owned publish, replace and restore (3) + the P4-on-error flag (1), and one
- * delete per served page in `after` (3) — about 9 KV operations.
+ * owned publish, replace and restore (3) + the P4-on-error flag (1) + the
+ * admin-restore drill's flag, restore and hide (3), and one delete per served
+ * page in `after` (4) — about 13 KV operations.
  *
  * SKIPS without the database or the dev store credentials (fork-PR CI).
  */
@@ -353,6 +355,42 @@ test("a classifier error still lets P4 flag, then the row is failed with +5 min;
   assert.equal(rows[0]!.attempts, 2);
   assert.equal(rows[0]!.nextAttemptAt, null);
   assert.equal((await site(page.siteId)).status, "under_review", "D4: the second flag is refused, nothing else moves");
+});
+
+test("an admin restore sticks: a report's rescan reuses the flag and records it, the page stays live; an admin's later hide lifts that", { skip, timeout: 60_000 }, async () => {
+  const { runScan } = await import("./run");
+  const { setStatus } = await import("../moderation/status");
+  const { adminRestored } = await import("../db/queries/moderation");
+  const { db } = await deps();
+  const drill = (await drillPromise)!;
+
+  const page = await drill.page(p4Html());
+  const restoredBy = (versionId: string) => db.transaction((tx) => adminRestored(tx, page.siteId, versionId));
+  const first = await runScan(page.siteId, page.versionId, "publish", await fixtureClassifier());
+  assert.equal(first?.status, "done");
+  assert.equal(first?.flagged, true, "P4 flags the page");
+  assert.equal((await site(page.siteId)).status, "under_review");
+
+  const restored = await setStatus(page.siteId, "live", { actor: "admin", automated: false, note: "Reviewed: a drill page." });
+  assert.ok(restored.ok, JSON.stringify(restored));
+  assert.equal(await restoredBy(page.versionId), true);
+  assert.equal(await restoredBy(crypto.randomUUID()), false, "keyed per version: a new one is scanned as usual");
+
+  // The report path: `rescan` → `runScan`, which reuses the cached verdict.
+  const rescan = await runScan(page.siteId, page.versionId, "report", null);
+  assert.equal(rescan?.status, "done", "the verdict is reused");
+  assert.equal(rescan?.decision?.verdict, "flag");
+  assert.equal(rescan?.flagged, false, "not acted on");
+  assert.equal((await site(page.siteId)).status, "live", "the admin's restore stands");
+  const [latest] = await scansOf(page.versionId);
+  assert.equal(latest?.trigger, "report");
+  assert.equal(latest?.status, "done");
+  assert.equal(latest?.verdict, "flag", "the verdict is still on the record");
+
+  // Only the latest admin status decision counts: a hide of the same version lifts it.
+  const hidden = await setStatus(page.siteId, "quarantined", { actor: "admin", automated: false, reason: "phishing" });
+  assert.ok(hidden.ok, JSON.stringify(hidden));
+  assert.equal(await restoredBy(page.versionId), false);
 });
 
 test("the sixth failed attempt is final; a dead process's pending row is picked up", { skip, timeout: 60_000 }, async () => {

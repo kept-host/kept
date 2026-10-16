@@ -7,7 +7,7 @@
  * (`lockSiteForModeration`) → names (`holdName` / `dropRemovedHold`).
  */
 import type { ModerationAction, ModerationActor, ModerationReason, SiteStatus } from "@kept/shared";
-import { and, asc, count, desc, eq, gt, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, inArray, isNotNull, ne, sql } from "drizzle-orm";
 
 import { claimsItsName } from "../../names/availability";
 import { db, type Tx } from "../index";
@@ -78,6 +78,8 @@ export interface ModerationActionRow {
   reason: ModerationReason | null;
   automated: boolean;
   note: string | null;
+  /** The version the page served when the action was taken. */
+  versionId: string | null;
   scanId: string | null;
   reportId: string | null;
   appealId: string | null;
@@ -91,6 +93,29 @@ export async function insertModerationAction(tx: Tx, row: ModerationActionRow): 
     .returning({ id: moderationActions.id });
   if (!inserted) throw new Error(`moderation_actions insert for site ${row.siteId} returned no row`);
   return inserted.id;
+}
+
+/**
+ * Whether an admin's latest status decision on this version of the page put it
+ * back live (a restore or a granted appeal). Report dismissals and appeal
+ * rejections change no status, so they neither set nor clear it; an admin who
+ * later hides or removes the same version clears it.
+ */
+export async function adminRestored(tx: Tx, siteId: string, versionId: string): Promise<boolean> {
+  const [row] = await tx
+    .select({ action: moderationActions.action })
+    .from(moderationActions)
+    .where(
+      and(
+        eq(moderationActions.siteId, siteId),
+        eq(moderationActions.versionId, versionId),
+        eq(moderationActions.actor, "admin"),
+        isNotNull(moderationActions.toStatus),
+      ),
+    )
+    .orderBy(desc(moderationActions.createdAt))
+    .limit(1);
+  return row?.action === "restore" || row?.action === "appeal_granted";
 }
 
 /**

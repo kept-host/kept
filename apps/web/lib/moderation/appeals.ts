@@ -169,6 +169,7 @@ export async function rejectAppeal(
       reason: site.moderationReason,
       automated: false,
       note: decisionNote,
+      versionId: site.currentVersionId,
       scanId: null,
       reportId: null,
       appealId,

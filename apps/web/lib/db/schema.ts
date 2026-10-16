@@ -648,8 +648,10 @@ export const abuseReports = pgTable(
 
 // ── moderation_actions (E07) ─────────────────────────────────────────────────
 // The log: one row per status change or decision (§6.7). Outlives the page
-// (`SET NULL` + `slug`). The scan / report / appeal ids carry no FK for the same
-// reason — the record stays whole after its subject is purged.
+// (`SET NULL` + `slug`). The version / scan / report / appeal ids carry no FK
+// for the same reason — the record stays whole after its subject is purged.
+// `version_id` is the version the page served when the action was taken: an
+// admin restore is keyed by it, so the scanner leaves that version alone.
 export const moderationActions = pgTable(
   "moderation_actions",
   {
@@ -664,6 +666,7 @@ export const moderationActions = pgTable(
     reason: moderationReasonEnum("reason"),
     automated: boolean("automated").notNull(),
     note: text("note"),
+    versionId: uuid("version_id"),
     scanId: uuid("scan_id"),
     reportId: uuid("report_id"),
     appealId: uuid("appeal_id"),

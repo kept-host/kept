@@ -1,7 +1,8 @@
 /**
  * `setStatus` (E07 task 004): the transition table, D4 (AC9), the D19 name hold
- * (AC36), the restore clock rules, the flagged-version restore (edge case 4)
- * and the action row + statement of reasons (AC14).
+ * (AC36), the restore clock rules, the flagged-version restore (edge case 4),
+ * an admin restore the rollback leaves alone (D-72) and the action row +
+ * statement of reasons (AC14).
  *
  * NO MOCKS. Real dev Postgres for every row; real `syncManifest` (R2 pointer +
  * KV + purge) for every change that commits; real Resend for every mail.
@@ -13,7 +14,7 @@
  *
  * KV QUOTA (dev free plan): refusals write nothing; each committed change is
  * one KV write or delete, plus one delete per page left with a manifest in
- * `after`. About 20 KV operations for the file.
+ * `after`. About 26 KV operations for the file.
  *
  * SKIPS without the database or the dev store credentials (fork-PR CI).
  */
@@ -326,29 +327,35 @@ test("a restore grants the open appeal; a named appeal must still be open", { sk
   const [action] = await actionsFor(hidden.id);
   assert.equal(action?.action, "appeal_granted");
   assert.equal(action?.appealId, appeal!.id);
+  assert.equal(action?.versionId, (await drill.read(hidden.id)).currentVersionId, "the version the grant applied to");
   assert.equal(action?.reason, "scam", "a restore records what it was restored from");
 });
 
-test("edge case 4: restoring a version whose last scan flagged goes straight to under_review", { skip }, async () => {
-  const owned = await page({});
-  const flaggedVersion = crypto.randomUUID();
-  const r2Key = pageObjectKey(owned.id, flaggedVersion);
+/** An older version of `siteId` with its bytes in R2, for an owner rollback. */
+async function olderVersion(siteId: string): Promise<string> {
+  const versionId = crypto.randomUUID();
+  const r2Key = pageObjectKey(siteId, versionId);
   await r2Store().put(r2Key, "<!doctype html><title>old</title><p>old</p>", PAGE_CONTENT_TYPE);
   r2Keys.add(r2Key);
   await db.insert(siteVersions).values({
-    id: flaggedVersion,
-    siteId: owned.id,
+    id: versionId,
+    siteId,
     r2Key,
-    contentHash: `e07-004-${flaggedVersion}`,
+    contentHash: `e07-004-${versionId}`,
     sizeBytes: 42,
     activatedAt: new Date(Date.now() - MS_PER_DAY),
   });
+  return versionId;
+}
+
+/** A finished scan that flagged `versionId` for phishing. Returns its id. */
+async function flaggedScan(siteId: string, versionId: string): Promise<string> {
   const [scan] = await db
     .insert(scans)
     .values({
-      siteId: owned.id,
-      versionId: flaggedVersion,
-      contentHash: `e07-004-${flaggedVersion}`,
+      siteId,
+      versionId,
+      contentHash: `e07-004-${versionId}`,
       trigger: "publish",
       status: "done",
       verdict: "flag",
@@ -358,8 +365,15 @@ test("edge case 4: restoring a version whose last scan flagged goes straight to 
       completedAt: new Date(),
     })
     .returning({ id: scans.id });
+  return scan!.id;
+}
 
-  assert.deepEqual(await lastVerdictFor(flaggedVersion), { verdict: "flag", reason: "phishing", scanId: scan!.id });
+test("edge case 4: restoring a version whose last scan flagged goes straight to under_review", { skip }, async () => {
+  const owned = await page({});
+  const flaggedVersion = await olderVersion(owned.id);
+  const scanId = await flaggedScan(owned.id, flaggedVersion);
+
+  assert.deepEqual(await lastVerdictFor(flaggedVersion), { verdict: "flag", reason: "phishing", scanId });
   assert.equal(await lastVerdictFor(crypto.randomUUID()), null);
 
   const restored = await restoreVersion(owned.id, flaggedVersion, owned.ownerId!);
@@ -373,7 +387,29 @@ test("edge case 4: restoring a version whose last scan flagged goes straight to 
     .from(moderationActions)
     .where(and(eq(moderationActions.siteId, owned.id), eq(moderationActions.action, "flag")));
   assert.equal(action?.actor, "scanner");
-  assert.equal(action?.scanId, scan!.id);
+  assert.equal(action?.scanId, scanId);
   // The hold table is untouched by a flag.
   assert.deepEqual(await db.select().from(nameHolds).where(eq(nameHolds.name, owned.slug)), []);
+});
+
+test("D-72: rolling back to a version an admin restored does not re-flag it; the restore row names that version", { skip }, async () => {
+  const owned = await page({});
+  const restoredVersion = await olderVersion(owned.id);
+  await flaggedScan(owned.id, restoredVersion);
+  const otherVersion = await olderVersion(owned.id);
+
+  await restoreVersion(owned.id, restoredVersion, owned.ownerId!);
+  assert.equal((await drill.read(owned.id)).status, "under_review", "edge case 4, before any admin decision");
+  const restored = await setStatus(owned.id, "live", { actor: "admin", automated: false, note: "Reviewed: fine." });
+  assert.ok(restored.ok, JSON.stringify(restored));
+  const restoreRow = (await actionsFor(owned.id)).find((row) => row.action === "restore");
+  assert.equal(restoreRow?.versionId, restoredVersion, "the action row names the version it applied to");
+
+  // Away and back: the owner's rollback reads the same flag, and the admin's restore outranks it.
+  await restoreVersion(owned.id, otherVersion, owned.ownerId!);
+  await restoreVersion(owned.id, restoredVersion, owned.ownerId!);
+  const row = await drill.read(owned.id);
+  assert.equal(row.currentVersionId, restoredVersion);
+  assert.equal(row.status, "live", "the admin's restore stands");
+  assert.equal((await actionsFor(owned.id)).filter((action) => action.action === "flag").length, 1, "flagged once, before the restore");
 });

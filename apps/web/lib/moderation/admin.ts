@@ -96,6 +96,7 @@ async function logDismissals(
       reason: row.category,
       automated: false,
       note,
+      versionId: null,
       scanId: null,
       reportId: row.id,
       appealId: null,

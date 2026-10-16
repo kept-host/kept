@@ -36,6 +36,7 @@ import {
 
 import { db, type Tx } from "../db";
 import {
+  adminRestored,
   grantOpenAppeal,
   insertModerationAction,
   latestDoneScan,
@@ -139,6 +140,7 @@ export type SetStatusRefusal =
   | "not_allowed"
   | "reason_required"
   | "not_current_version"
+  | "admin_restored"
   | "slug_taken"
   | "appeal_not_open";
 
@@ -148,6 +150,7 @@ const REFUSAL_MESSAGES: Record<SetStatusRefusal, string> = {
   not_allowed: "That status change is not allowed from the page's current status, for this actor.",
   reason_required: "A restriction needs a reason.",
   not_current_version: "The scanned version is no longer the page's current version; nothing changed.",
+  admin_restored: "An admin restored this version; the scanner does not flag it again.",
   slug_taken:
     "Another page has taken this page's name since it was removed, so it cannot be restored under it.",
   appeal_not_open: "That appeal is not open for this page any more.",
@@ -220,6 +223,15 @@ async function decide(
   if (options.actor === "scanner" && site.currentVersionId !== options.versionId) {
     return refused("not_current_version");
   }
+  // D-72: an admin who restored this version overruled the scanner on it, so
+  // no flag of it — reused, rescanned or read back by a rollback — undoes that.
+  // Unconditional, P2 included: the human decision is the later, better-
+  // informed one, and an admin who changes their mind hides the version, which
+  // lifts this. A new version is a new key and is flagged as usual. Read under
+  // the row lock, so a restore committing while a scan runs is seen here.
+  if (options.actor === "scanner" && (await adminRestored(tx, site.id, options.versionId))) {
+    return refused("admin_restored");
+  }
 
   const now = new Date();
   let appealId = options.appealId ?? null;
@@ -267,6 +279,7 @@ async function decide(
     reason,
     automated: options.automated,
     note: options.note ?? null,
+    versionId: site.currentVersionId,
     scanId: options.scanId ?? null,
     reportId: options.reportId ?? null,
     appealId,

@@ -209,8 +209,9 @@ async function settle(scan: DueScan, classifier: ContentClassifier | null): Prom
     const judgment = await judge(scan, classifier);
     let flagged = false;
     if (judgment.decision?.verdict === "flag") {
-      // D4 lives in `setStatus`: a page no longer live, or a version no longer
-      // current (replaced while scanning, edge case 3), is refused there.
+      // D4 lives in `setStatus`: a page no longer live, a version no longer
+      // current (replaced while scanning, edge case 3), or one an admin
+      // restored (D-72) is refused there — the scan row still records the flag.
       const result = await setStatus(scan.siteId, "under_review", {
         actor: "scanner",
         automated: true,

@@ -53,7 +53,7 @@ must not see.
 | --- | --- | --- |
 | **Hide** (reason required) | `live`, `under_review` | `quarantined`. The edge serves 451. The owner can appeal. The page's open reports close as actioned and their reporters are told. |
 | **Remove** (reason required, confirmed) | any status but `removed` | `removed`. The page leaves the edge. Its name is held with no owner for 12 months, and that hold outlives the page. The owner keeps a read-only view and a download for 30 days (`purge_after`). After that the purge job deletes the bytes and the row. Open reports close as actioned. |
-| **Restore** (note required) | `under_review`, `quarantined`, `removed` | `live`. The reason and any name hold are cleared, and an open appeal is granted. A kept page stays kept even over its limit. A draft whose clock ran out while hidden gets a fresh 7 days. Refused if another page has taken the name. |
+| **Restore** (note required) | `under_review`, `quarantined`, `removed` | `live`. The reason and any name hold are cleared, and an open appeal is granted. A kept page stays kept even over its limit. A draft whose clock ran out while hidden gets a fresh 7 days. The scanner never re-flags the restored version (a new version is scanned as usual; Hide it if you change your mind — D-72). Refused if another page has taken the name. |
 | **Dismiss** (note required) | open reports | The reports close as dismissed and the reporters are told. The page is not touched. |
 | **Grant appeal** (note required) | open appeal | The same as Restore. |
 | **Reject appeal** (note required) | open appeal | The appeal closes and the owner gets your note. The page is not touched. The owner may appeal again (3 per page per 30 days). |

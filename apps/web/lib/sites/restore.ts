@@ -144,7 +144,8 @@ export async function restoreVersion(
   }
 
   // Edge case 4: a version whose last scan flagged goes straight back to
-  // `under_review` — the scanner's own edge, with the verdict it already gave.
+  // `under_review` — the scanner's own edge, with the verdict it already gave —
+  // unless an admin restored that version (D-72), which `setStatus` refuses.
   const last = await lastVerdictFor(version.id);
   if (last?.verdict === "flag") {
     await setStatus(site.id, "under_review", {
