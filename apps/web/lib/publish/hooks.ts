@@ -22,7 +22,9 @@
  * `retry_after_seconds` and a `Retry-After` header.
  */
 import { PUBLISH_RATE_LIMITS, type ScanTrigger } from "@kept/shared";
-import { after } from "next/server";
+// `.js`: Playwright's ESM loader cannot resolve the bare subpath (`next` has no
+// exports map), and e2e specs reach this file through `lib/sites/export.ts`.
+import { after } from "next/server.js";
 
 import { sendAdminAlert } from "../email/admin-alert";
 import { hit, type RateLimitResult } from "../rate-limit";
