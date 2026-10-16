@@ -596,8 +596,9 @@ export async function restoreOwnedVersion(
  * Idempotent: a second delete is the same 200.
  *
  * The freed slot rides back on the response so the studio can repaint its
- * quota without a second request, and a `quarantined` page is deletable on
- * purpose — delete is one of the two affordances a flagged page keeps.
+ * quota without a second request. A flagged page is NOT deletable (E07
+ * decision 2 — a delete would launder the flag): `under_review` / `quarantined`
+ * are `409 not_allowed_in_status`, `removed` is the 404.
  */
 export async function deleteOwnedSite(
   rawSiteId: string,

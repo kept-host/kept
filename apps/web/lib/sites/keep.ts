@@ -20,15 +20,15 @@
  *
  * ── THE ONE STORE CALL: THE LATE KEEP ──────────────────────────────────────
  * An `expired` row inside its grace window (`purge_after > now()`, PRD §5.3)
- * had its manifest REMOVED when it expired, so the edge says "gone" and only a
- * KV write brings it back. Keeping it flips the row to `live` and clears its
+ * carries an `expired` manifest — E07's `expire` job writes it through
+ * `syncManifest` — so the edge answers 410 "This draft wasn't kept", and only a
+ * KV write brings the page back. Keeping it flips the row to `live` and clears its
  * clocks inside the transaction, and then — only after COMMIT —
  * `restoreManifest` writes the manifest through `syncManifest`, from the row
  * under its lock (D18: a flag committed in between is what the edge serves,
  * never a stale `live`). Postgres first:
  * the reverse order would put a page back on the internet that the database
- * still calls expired, and E07's grace sweep would take it down again underneath
- * its new owner. Both keep doors (`./anon-keep.ts`, the owner route) and the
+ * still calls expired, and E07's purge would delete it underneath its new owner. Both keep doors (`./anon-keep.ts`, the owner route) and the
  * swap reach that sequence through this module and nowhere else; there is no
  * other store call here, and a direct `lib/storage/kv` import is a lint error.
  *
@@ -299,9 +299,10 @@ type LockedSite = NonNullable<Awaited<ReturnType<typeof lockSite>>>;
  * writes both at publish); for an archived page, the end of its download window
  * (D14). A kept page has no `purge_after` and is never past it.
  *
- * ⚠️ IT READS THE CLOCK, NEVER `status`. No expiry sweep exists until E07, so a
- * draft whose grace ran out weeks ago still says `live` — and the home listed it
- * with a Keep button that worked. The home's read, the keep primitives below and
+ * ⚠️ IT READS THE CLOCK, NEVER `status`. The `expire` job runs hourly, so a
+ * draft whose clock just ran out can still say `live` for up to an hour — and a
+ * draft from before E07 said `live` for weeks, which the home once listed with a
+ * Keep button that worked. The home's read, the keep primitives below and
  * the owner's download / detail screen (`./export.ts`) all ask this one function.
  */
 export function isPastGrace(site: { purgeAfter: Date | null }, now: Date): boolean {

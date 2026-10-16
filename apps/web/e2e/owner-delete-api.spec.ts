@@ -342,22 +342,32 @@ test.describe("owner delete", () => {
     expect((await probeEdge(urlsFor(body.slug)[0]!)).status).toBe(200);
   });
 
-  test("a page under review can still be deleted", async ({ request, baseURL }) => {
+  test("a flagged page is never deleted: 409 with its own sentence, row and manifest unchanged", async ({
+    request,
+    baseURL,
+  }) => {
     const cookie = await signIn(baseURL!);
-    const page = await ownedPage(request, baseURL!, cookie);
+    const { syncManifest } = await import("../lib/storage/manifest");
+    const { managementRefusal } = await import("../lib/sites/display");
 
-    await db
-      .update(schema.sites)
-      .set({ status: "quarantined" })
-      .where(eq(schema.sites.id, page.siteId));
+    // E07 decision 2: a delete would launder the flag. Both flags, each with
+    // the manifest saying so (the edge's 451), refused before the edge moves.
+    for (const status of ["under_review", "quarantined"] as const) {
+      const page = await ownedPage(request, baseURL!, cookie);
+      await db.update(schema.sites).set({ status }).where(eq(schema.sites.id, page.siteId));
+      expect((await syncManifest(page.siteId)).ok, "precondition: the manifest says the flag").toBe(true);
+      const before = await readSite(page.siteId);
 
-    // Delete and download are the only affordances a flagged page keeps —
-    // rename, replace and keep are refused, and this must not be.
-    const response = await remove(request, baseURL!, cookie, page.siteId);
-    expect(response.status(), await response.text()).toBe(200);
-    expect(deleteResultSchema.parse(await response.json()).status).toBe("archived");
-    expect((await readSite(page.siteId)).status).toBe("archived");
-    expect(await r2Store().get(pointerKey(page.slug))).toBeNull();
+      const response = await remove(request, baseURL!, cookie, page.siteId);
+      expect(response.status(), await response.text()).toBe(409);
+      const { error } = studioErrorSchema.parse(await response.json());
+      expect(error.code).toBe("not_allowed_in_status");
+      expect(error.message).toBe(managementRefusal(status));
+      expect(await readSite(page.siteId), `${status}: the row is untouched`).toEqual(before);
+      const pointer = await r2Store().get(pointerKey(page.slug));
+      expect(pointer, `${status}: the edge still answers for the page`).not.toBeNull();
+      expect((JSON.parse(pointer!) as { status: string }).status).toBe(status);
+    }
   });
 
   test("signed out is 401, another account's page is the not-found body — for delete and download alike", async ({

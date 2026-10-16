@@ -106,6 +106,12 @@ const GUARDED_FILES = [
   "app/api/reports/route.ts",
   "app/(marketing)/report/page.tsx",
   "components/kept/report-form.tsx",
+  // E07 task 008: the end-of-life jobs (purge clears reporter contacts).
+  "lib/lifecycle/expire.ts",
+  "lib/lifecycle/purge.ts",
+  "lib/db/queries/lifecycle.ts",
+  "app/api/cron/expire/route.ts",
+  "app/api/cron/purge/route.ts",
 ];
 
 /** `email`, `ip`, `token`, or a camelCase name ending in one of them. */

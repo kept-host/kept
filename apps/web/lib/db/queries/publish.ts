@@ -502,11 +502,11 @@ export async function findSiteByAnonTokenHash(
  * else is indistinguishable here from a page that never existed: both are
  * `null`, and both become the single `ownerNotFound()` body one layer up.
  *
- * ⚠️ IT DOES NOT FILTER ON STATUS. Delete must reach a `quarantined` page —
- * delete and download are the only affordances left on one — and replace has to
- * be able to tell an owner *why* their flagged page cannot be replaced. A
- * resolver that hid non-`live` rows would answer both of those with a 404 that
- * reads as data loss. The status decision belongs to `lib/sites/manage.ts`.
+ * ⚠️ IT DOES NOT FILTER ON STATUS. Replace and delete have to be able to tell an
+ * owner *why* their flagged page cannot be changed (E07 decision 2: a flagged
+ * page is never deletable either). A resolver that hid non-`live` rows would
+ * answer both with a 404 that reads as data loss. The status decision belongs
+ * to `lib/sites/manage.ts`.
  */
 export async function findSiteForOwner(
   siteId: string,
@@ -654,22 +654,37 @@ export async function revertReplacementVersion(input: {
 }
 
 /**
+ * The statuses a delete may move to `archived` — owner and anonymous alike
+ * (Arun 2026-10-15, decision 2). Everything else is refused: `archived` is
+ * already there, `removed` is a takedown, and `under_review` / `quarantined`
+ * are flags a delete would launder.
+ */
+export const DELETABLE_STATUSES = ["live", "expired"] as const satisfies readonly SiteStatus[];
+
+/**
  * The anonymous delete, in Postgres: ARCHIVE, NEVER DESTROY.
  *
  * The row, its versions and the R2 objects all stay; only the status moves, and
- * `purge_after` — set at publish — is what E07's grace-end job sweeps to do the
- * hard delete. Keeping the row is also what makes a second delete with the same
+ * `purge_after` — set at publish — is what E07's purge sweeps to do the hard
+ * delete. Keeping the row is also what makes a second delete with the same
  * token return success instead of a 404: the token still resolves, it just
  * resolves to a page that is already archived.
+ *
+ * THE STATUS RE-CHECK IS THE `WHERE` (AC42). One `UPDATE` takes the row lock and
+ * Postgres re-evaluates the predicate against the row as it stands once the
+ * lock is granted, so a flag that committed after the caller's read leaves the
+ * row alone. Returns whether the row moved; `false` is the caller's to explain.
  *
  * `anon_token_hash` is deliberately NOT cleared, for that idempotency and for
  * E07/E05's late-recovery path.
  */
-export async function archiveSite(siteId: string): Promise<void> {
-  await db
+export async function archiveSite(siteId: string): Promise<boolean> {
+  const moved = await db
     .update(sites)
     .set({ status: "archived", updatedAt: new Date() })
-    .where(eq(sites.id, siteId));
+    .where(and(eq(sites.id, siteId), inArray(sites.status, [...DELETABLE_STATUSES])))
+    .returning({ id: sites.id });
+  return moved.length > 0;
 }
 
 /**

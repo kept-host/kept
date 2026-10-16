@@ -69,7 +69,9 @@ export function notFound(): PublishFailure {
  * unmanageable — replacing the bytes behind a moderated page would be an
  * obvious abuse path, and resurrecting an archived one is not a flow that
  * exists. Delete is the exception and handles it itself: a second delete has to
- * succeed, so it resolves with `requireLive: false`.
+ * succeed, so it resolves with `requireLive: false` and refuses every flagged
+ * status (`under_review`, `quarantined`, `removed`) with the same `null`-shaped
+ * 404 (E07 decision 2).
  */
 export async function resolveAnonToken(
   token: string,

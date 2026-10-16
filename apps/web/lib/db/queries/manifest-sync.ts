@@ -48,9 +48,9 @@ export interface PendingPurgeInput {
   dueAt: Date;
 }
 
-/** Record a purge that is still owed. Returns the row id. */
-export async function insertPendingPurge(input: PendingPurgeInput): Promise<string> {
-  const [row] = await db
+/** Record a purge that is still owed — on `tx` when given. Returns the row id. */
+export async function insertPendingPurge(input: PendingPurgeInput, tx: Tx | typeof db = db): Promise<string> {
+  const [row] = await tx
     .insert(pendingPurges)
     .values({ siteId: input.siteId, slug: input.slug, urls: [...input.urls], dueAt: input.dueAt })
     .returning({ id: pendingPurges.id });

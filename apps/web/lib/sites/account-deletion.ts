@@ -24,12 +24,14 @@
  *   removeManifest(slug) × every active page  ← pointer → KV → purge. Serving STOPS.
  *   BEGIN
  *     lockOwner(profile)                ← the publish/keep/rename serialisation point
+ *     SELECT … FOR UPDATE               ← the rows, status re-checked under the lock
  *     lockNames(chosen names)           ← then the names, sorted (../names/availability.ts)
  *     UPDATE sites SET archived, purge_after  WHERE owner_id = ? AND claims its name
  *     holdName(name, NULL, 'account_deleted') × every chosen name
  *     UPDATE sites SET owner_id = NULL, reminder_email = NULL  WHERE owner_id = ?
  *     DELETE FROM "user" WHERE id = ?
  *   COMMIT
+ *   syncManifest(site) × every site unwound or archived  ← AC42: the edge back on the row
  *
  * The manifest calls cannot join a database transaction, so they go **first**:
  * a crash after the unwind and before the commit leaves pages offline that
@@ -37,7 +39,8 @@
  * retries and every step is idempotent. The reverse order could leave a row
  * that says archived for a page still answering the internet with nobody left
  * to take it down. So a failed unwind refuses the whole deletion
- * (`AccountDeletionStoreError`) before a single row moves.
+ * (`AccountDeletionStoreError`) before a single row moves — and re-syncs the
+ * pages it had already unwound, so they serve again.
  *
  * ⚠️ ONLY PAGES THAT STILL CLAIM THEIR NAME ARE UNWOUND. An `archived` or
  * `removed` row keeps its slug for history without holding it (D5), so the same
@@ -75,7 +78,7 @@ import { getDashboardSites } from "../db/queries/dashboard";
 import { sites, user } from "../db/schema";
 import { claimsItsName, lockNames } from "../names/availability";
 import { holdName } from "../names/holds";
-import { removeManifest } from "../storage/manifest";
+import { removeManifest, syncManifest } from "../storage/manifest";
 
 import { lockOwner } from "./keep";
 import { archivedForGrace } from "./manage";
@@ -101,10 +104,6 @@ export class AccountDeletionStoreError extends StudioRefusal {
     );
     this.name = "AccountDeletionStoreError";
   }
-}
-
-function message(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 /**
@@ -152,8 +151,8 @@ export async function getAccountDeletionSummary(
 }
 
 /** Take one page off the edge, or refuse the whole deletion. */
-async function unwind(slug: string): Promise<void> {
-  const removed = await removeManifest(slug);
+async function unwind(siteId: string, slug: string): Promise<void> {
+  const removed = await removeManifest(slug, siteId);
   if (removed.ok) return;
   // `removed.purge.ok === false` is NOT this branch (contract §3) — both stores
   // agree the slug is gone and only the edge is stale. This is a store failure.
@@ -164,8 +163,33 @@ async function unwind(slug: string): Promise<void> {
 }
 
 /**
+ * Which of the account's rows the deletion takes off the edge and archives.
+ *
+ * ⚠️ OPEN — Q10 (Arun): what account deletion does with the user's FLAGGED
+ * sites. Today this is `claimsItsName()`: it selects `under_review` and
+ * `quarantined` rows with the rest and ARCHIVES them, which launders the flag;
+ * `removed` rows are not selected and only lose their owner below. The default
+ * proposal (stated, not built) is to leave flagged sites in place, ownerless,
+ * so review continues and the D19 hold applies on removal. Once Arun answers,
+ * the answer is this predicate (both the unwind and the locked re-read use it)
+ * plus the ownerless update below — nothing else in this file decides it.
+ */
+function archivedByAccountDeletion() {
+  return claimsItsName();
+}
+
+/**
  * Destroy an account (D16): take every active page offline, archive it with no
  * owner, hold its chosen names with no owner, and remove the user.
+ *
+ * AC42 (Arun 2026-10-15, decision 1): edge first (`unwind`, unchanged), then
+ * the rows under `lockOwner` AND each site's row lock, re-read there — so the
+ * set archived is the rows' status as it stands under the lock — then a
+ * trailing `syncManifest` for EVERY site the deletion touched, unwound or
+ * archived. That sync is what puts the edge back on the row when a writer slipped
+ * in between (a page published or renamed after the unwind is taken down; a
+ * row that left the set is re-published as its row says). Its failures are
+ * `pending_purges` rows the repurge job replays; the account is gone either way.
  *
  * The caller can only ever pass **their own** profile id — `app/api/account/route.ts`
  * resolves it from the session and there is no id parameter naming a victim.
@@ -174,91 +198,104 @@ async function unwind(slug: string): Promise<void> {
  */
 export async function deleteAccount(profileId: string): Promise<AccountDeletionResult> {
   const active = await db
-    .select({ slug: sites.slug })
+    .select({ id: sites.id, slug: sites.slug })
     .from(sites)
-    .where(and(eq(sites.ownerId, profileId), claimsItsName()));
+    .where(and(eq(sites.ownerId, profileId), archivedByAccountDeletion()));
 
   // Sequential, never concurrent: `removeManifest` issues real purges, and
   // fanning a hundred of them at Cloudflare at once is how an account with a lot
   // of pages gets itself rate-limited half way through a teardown.
-  const unwound = new Set<string>();
-  for (const site of active) {
-    await unwind(site.slug);
-    unwound.add(site.slug);
+  const touched = new Set<string>();
+  try {
+    for (const site of active) {
+      touched.add(site.id);
+      await unwind(site.id, site.slug);
+    }
+  } catch (err) {
+    // Refused before a row moved: every page already unwound goes back on the
+    // edge, so "nothing was deleted" is true of the internet too.
+    await syncTouched(touched, profileId);
+    throw err;
   }
 
-  const archived = await db.transaction(async (tx) => {
-    // THE SAME SERIALISATION POINT every publish, keep and rename takes. A tab
-    // publishing or renaming while another confirms deletion either committed
-    // before this lock (caught by the reconciliation below) or finds no profile
-    // afterwards and rolls itself back.
-    await lockOwner(tx, profileId);
+  let archived: { id: string }[];
+  try {
+    archived = await db.transaction(async (tx) => {
+      // THE SAME SERIALISATION POINT every publish, keep and rename takes. A tab
+      // publishing or renaming while another confirms deletion either committed
+      // before this lock (taken down by the trailing sync below) or finds no
+      // profile afterwards and rolls itself back.
+      await lockOwner(tx, profileId);
 
-    // Re-read under the lock: this is the set the rows below move.
-    const pages = await tx
-      .select({ id: sites.id, slug: sites.slug, nameKind: sites.nameKind })
-      .from(sites)
-      .where(and(eq(sites.ownerId, profileId), claimsItsName()));
-    const chosen = pages.filter((page) => page.nameKind === "chosen");
-    // Every chosen name locked, sorted, BEFORE a row moves — a rename-to by
-    // another account waits here and then finds the hold.
-    await lockNames(
-      tx,
-      chosen.map((page) => page.slug),
-    );
+      // Re-read under the lock, each row locked `FOR UPDATE` (lockOwner → the
+      // rows → the names): the status re-check. This is the set the rows below move.
+      const pages = await tx
+        .select({ id: sites.id, slug: sites.slug, nameKind: sites.nameKind })
+        .from(sites)
+        .where(and(eq(sites.ownerId, profileId), archivedByAccountDeletion()))
+        .for("update");
+      const chosen = pages.filter((page) => page.nameKind === "chosen");
+      // Every chosen name locked, sorted, BEFORE a row moves — a rename-to by
+      // another account waits here and then finds the hold.
+      await lockNames(
+        tx,
+        chosen.map((page) => page.slug),
+      );
 
-    if (pages.length > 0) {
+      if (pages.length > 0) {
+        await tx
+          .update(sites)
+          .set(archivedForGrace())
+          .where(
+            inArray(
+              sites.id,
+              pages.map((page) => page.id),
+            ),
+          );
+      }
+      for (const page of chosen) {
+        await holdName(page.slug, null, "account_deleted", page.id, tx);
+      }
+
+      // EVERY row the account had, archived before or just now: no owner left to
+      // name, and nobody left to remind. ONE owner-scoped statement — a `WHERE`
+      // that forgot `owner_id` here would orphan the internet's pages.
       await tx
         .update(sites)
-        .set(archivedForGrace())
-        .where(
-          inArray(
-            sites.id,
-            pages.map((page) => page.id),
-          ),
-        );
-    }
-    for (const page of chosen) {
-      await holdName(page.slug, null, "account_deleted", page.id, tx);
-    }
+        .set({ ownerId: null, reminderEmail: null })
+        .where(eq(sites.ownerId, profileId));
 
-    // EVERY row the account had, archived before or just now: no owner left to
-    // name, and nobody left to remind. ONE owner-scoped statement — a `WHERE`
-    // that forgot `owner_id` here would orphan the internet's pages.
-    await tx
-      .update(sites)
-      .set({ ownerId: null, reminderEmail: null })
-      .where(eq(sites.ownerId, profileId));
+      // AND ONLY NOW THE USER. `session`, `account` and `profiles` cascade with
+      // it; the user's earlier holds keep their deadline and lose their owner
+      // (`name_holds.user_id` is `ON DELETE SET NULL`).
+      await tx.delete(user).where(eq(user.id, profileId));
 
-    // AND ONLY NOW THE USER. `session`, `account` and `profiles` cascade with
-    // it; the user's earlier holds keep their deadline and lose their owner
-    // (`name_holds.user_id` is `ON DELETE SET NULL`).
-    await tx.delete(user).where(eq(user.id, profileId));
+      return pages;
+    });
+  } catch (err) {
+    // Nothing committed, but pages are already off the edge: put each back on
+    // what its row (still owned, still live) says, then fail.
+    await syncTouched(touched, profileId);
+    throw err;
+  }
 
-    return pages;
-  });
+  for (const page of archived) touched.add(page.id);
+  await syncTouched(touched, profileId);
 
-  // A page published or renamed between the unwind loop and the lock: archived
-  // in Postgres, but its manifest was never taken down. Post-commit, so it
-  // cannot fail the deletion the user already got — the account is gone either way.
-  for (const page of archived) {
-    if (unwound.has(page.slug)) continue;
-    console.error(
-      `[kept] account deletion: "${page.slug}" appeared while profile ${profileId} was being deleted; unwinding it after the fact.`,
-    );
-    try {
-      const late = await removeManifest(page.slug);
-      if (!late.ok) {
-        console.error(
-          `[kept] account deletion: LATE UNWIND FAILED for "${page.slug}" at the "${late.step}" step — ${late.error}. The row is \`archived\` but the page is still serving. E07 DIVERGENCE AUDIT: reconcile against Postgres (contract §7.5).`,
-        );
-      }
-    } catch (err) {
+  return { pagesArchived: archived.length };
+}
+
+/**
+ * AC42's trailing sync, one site at a time for the reason the unwind is.
+ * Never throws: `syncManifest` records its own failure for the repurge job.
+ */
+async function syncTouched(siteIds: ReadonlySet<string>, profileId: string): Promise<void> {
+  for (const siteId of siteIds) {
+    const synced = await syncManifest(siteId);
+    if (!synced.ok) {
       console.error(
-        `[kept] account deletion: LATE UNWIND THREW for "${page.slug}" — ${message(err)}. The row is \`archived\` but the page is still serving.`,
+        `[kept] account deletion: trailing manifest sync failed for site ${siteId} (profile ${profileId}) — ${synced.error}. Recorded for the repurge job.`,
       );
     }
   }
-
-  return { pagesArchived: archived.length };
 }

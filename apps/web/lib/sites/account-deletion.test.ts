@@ -287,6 +287,8 @@ test(
     await renameSite(named.siteId, owner.id, namedName);
     const generated = await publish(owner.id, "e06-008-ad-generated");
     const flagged = await publish(owner.id, "e06-008-ad-flagged");
+    // Q10 (OPEN, Arun): a flagged page is archived with the rest today
+    // (`archivedByAccountDeletion`); this expectation changes with the answer.
     await db.update(sites).set({ status: "quarantined" }).where(eq(sites.id, flagged.siteId));
     const draft = await publish(owner.id, "e06-008-ad-draft");
     await demoteSite(draft.siteId, owner.id);

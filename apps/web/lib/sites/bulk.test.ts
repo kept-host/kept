@@ -293,23 +293,30 @@ test(
 );
 
 test(
-  "bulk delete archives each page for its grace window; another account's id is not_found and untouched",
+  "bulk delete archives each page for its grace window; a flagged page is refused alone; another account's id is not_found and untouched",
   { skip: skipStores },
   async () => {
     const owner = await makeProfile();
     const stranger = await makeProfile();
-    const mine = await makeSites({ ownerId: owner }, { ownerId: owner }, { ownerId: owner, status: "quarantined" });
+    const mine = await makeSites({ ownerId: owner }, { ownerId: owner });
+    const [flagged] = await makeSites({ ownerId: owner, status: "quarantined" });
     const [theirs] = await makeSites({ ownerId: stranger });
+    const flaggedBefore = await readSite(flagged!);
     const theirsBefore = await readSite(theirs!);
     const started = Date.now();
 
-    const results = await bulk("delete", [...mine, theirs!], owner);
+    const results = await bulk("delete", [...mine, flagged!, theirs!], owner);
 
     assert.deepEqual(
       results.map((item) => (item.ok ? "ok" : item.code)),
-      ["ok", "ok", "ok", "not_found"],
-      "a flagged draft is deletable on purpose — delete is one of its two affordances",
+      ["ok", "ok", "not_allowed_in_status", "not_found"],
+      "a flagged page is never deletable (E07 decision 2) — a delete would launder the flag",
     );
+    const { managementRefusal } = await import("./display");
+    const refusal = results[2]!;
+    assert.ok(!refusal.ok);
+    assert.equal(refusal.message, managementRefusal("quarantined"), "the flagged page's own sentence");
+    assert.deepEqual(await readSite(flagged!), flaggedBefore, "refused before anything moved");
     for (const id of mine) {
       const row = await readSite(id);
       assert.equal(row.status, "archived", "D14: delete archives, never destroys");
@@ -323,6 +330,6 @@ test(
 
     // Idempotent, like the single DELETE: deleting again is the same success.
     const again = await bulk("delete", mine, owner);
-    assert.deepEqual(again.map((item) => item.ok), [true, true, true]);
+    assert.deepEqual(again.map((item) => item.ok), [true, true]);
   },
 );

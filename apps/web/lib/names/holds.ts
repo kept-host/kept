@@ -55,11 +55,11 @@ export async function holdName(
  * (edge case 7, 08 §4). A chosen name gets a `purged` hold for the page's last
  * owner; a generated name is simply gone.
  *
- * ⚠️ ITS CALLER IS E07's PURGE JOB, NOT ANYTHING IN E06. The only E06 caller is
- * its test; it is the published seam E07 builds against, not dead code. The
- * purge sweep must take `lockOwner` on the page's owner before calling this
- * (epic Risk 7): a late keep re-reads the row under that lock, and a sweep that
- * did not take it could purge a page in the same instant its owner kept it.
+ * ⚠️ ITS CALLER IS E07's PURGE JOB (`lib/lifecycle/purge.ts`), which skips it
+ * for a `removed` page so the ownerless D19 hold survives. The purge takes
+ * `lockOwner` on the page's owner before calling this (epic Risk 7): a late
+ * keep re-reads the row under that lock, and a sweep that did not take it could
+ * purge a page in the same instant its owner kept it.
  */
 export async function releaseName(siteId: string, tx?: Tx): Promise<void> {
   const run = async (trx: Tx) => {

@@ -237,6 +237,9 @@ test.describe("account deletion", () => {
     });
     expect(archived.status(), await archived.text()).toBe(200);
     const archivedBefore = await readSite(pages[0]!.siteId);
+    // Q10 (OPEN, Arun): account deletion still archives a flagged page like the
+    // rest (`archivedByAccountDeletion` in lib/sites/account-deletion.ts). This
+    // expectation changes with the answer; nothing else here depends on it.
     await db
       .update(schema.sites)
       .set({ status: "quarantined" })

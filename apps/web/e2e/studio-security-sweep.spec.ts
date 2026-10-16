@@ -85,6 +85,8 @@ const NOT_COOKIE_AUTHENTICATED: Record<string, string> = {
     "unauthenticated: the HMAC-signed unsubscribe token is the authority; RFC 8058 one-click (waitlist-opt-in.spec)",
   "POST /api/cron/waitlist-prune": "Authorization: Bearer CRON_SECRET, from GitHub Actions",
   "POST /api/cron/repurge": "Authorization: Bearer CRON_SECRET, from GitHub Actions",
+  "POST /api/cron/expire": "Authorization: Bearer CRON_SECRET, from GitHub Actions",
+  "POST /api/cron/purge": "Authorization: Bearer CRON_SECRET, from GitHub Actions",
   "POST /api/cron/scan-retry": "Authorization: Bearer CRON_SECRET, from GitHub Actions",
   "POST /api/reports":
     "unauthenticated: public (E07 §6.8) — reads no cookie, writes a report nobody owns; Turnstile and the per-IP limits guard it (report.spec)",

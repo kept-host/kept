@@ -277,6 +277,8 @@ export const REPORTER_CONTACT_RETENTION_DAYS = 180 as const;
 
 /** The expiry sweep's batch size… */
 export const EXPIRE_BATCH_SIZE = 500 as const;
+/** …the purge sweep's (smaller: each page is an R2 delete per version, a KV delete and a purge)… */
+export const PURGE_BATCH_SIZE = 100 as const;
 /** …and every lifecycle job's wall-clock budget per run, in seconds. */
 export const JOB_DEADLINE_SECONDS = 50 as const;
 

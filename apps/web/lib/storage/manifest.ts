@@ -60,7 +60,7 @@ import {
 } from "@kept/shared";
 import { z } from "zod";
 
-import { db } from "../db";
+import { db, type Tx } from "../db";
 import {
   deletePendingPurge,
   insertPendingPurge,
@@ -186,8 +186,15 @@ export async function repurgeAfterKvPropagation(
  * the caller IS the record. Only the repurge replay passes `null`: its own row
  * carries the attempt count, and a second row per failed replay would multiply
  * every outage into more rows each run.
+ *
+ * `tx`: the caller's open transaction — `syncManifest`'s, which holds the site
+ * row lock across the store write. The row is written ON that connection (in a
+ * savepoint), never on a second one from the pool: a sync that held one
+ * connection and waited for another would starve the pool (`max: 5`) as soon as
+ * five syncs ran at once — a bulk delete's four trailing syncs plus any other
+ * request was enough to hang the control plane (E07 task 008).
  */
-type PurgeLedger = { siteId: string | null } | null;
+type PurgeLedger = { siteId: string | null; tx?: Tx } | null;
 
 /**
  * Record a purge that is still owed, and NEVER throw: the write it follows has
@@ -201,7 +208,10 @@ async function recordPendingPurge(
 ): Promise<string | null> {
   if (ledger === null) return null;
   try {
-    return await insertPendingPurge({ ...input, siteId: ledger.siteId });
+    const row = { ...input, siteId: ledger.siteId };
+    const { tx } = ledger;
+    // A savepoint, so a failed insert cannot abort the sync's transaction.
+    return await (tx ? tx.transaction((savepoint) => insertPendingPurge(row, savepoint)) : insertPendingPurge(row));
   } catch (err) {
     console.error(
       `[kept] pending_purges row NOT recorded for slug "${input.slug}" — ${message(err)}. URLs: ${input.urls.join(", ")}. Replay this purge by hand if the process restarts (contract §3).`,
@@ -442,7 +452,7 @@ async function syncSite(siteId: string, durable: boolean): Promise<SyncManifestR
     return await db.transaction(async (tx): Promise<SyncManifestResult> => {
       const site = await lockSiteForSync(tx, siteId);
       if (!site) return { ok: true, outcome: "missing" };
-      const ledger: PurgeLedger = durable ? { siteId: site.id } : null;
+      const ledger: PurgeLedger = durable ? { siteId: site.id, tx } : null;
 
       if (isUnserved(site.status)) {
         const removed = await unstoreManifest(site.slug, ledger);
