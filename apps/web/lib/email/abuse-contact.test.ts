@@ -1,8 +1,10 @@
 /**
  * `ABUSE_CONTACT_EMAIL` — the one address abuse reports and moderation appeals
  * go to (Arun's decision 3, 2026-10-04). The quarantined / under-review banner
- * builds its `mailto:` from it, so the constant is the only place the address
- * may be spelled.
+ * builds its `mailto:` from it, so the constant is the only place CODE may
+ * spell the address. The legal texts (`content/legal/*.md`) are prose that must
+ * name it; they are pinned byte for byte, and `lib/legal/legal.test.ts` asserts
+ * they carry the constant's value.
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -23,7 +25,7 @@ test("no app or package source spells an abuse@ address except the constant", ()
   try {
     hits = execFileSync(
       "git",
-      ["grep", "--untracked", "-l", "abuse@", "--", "apps", "packages", ":!*.test.ts"],
+      ["grep", "--untracked", "-l", "abuse@", "--", "apps", "packages", ":!*.test.ts", ":!apps/web/content/legal/*.md"],
       { cwd: repoRoot, encoding: "utf8" },
     )
       .split("\n")

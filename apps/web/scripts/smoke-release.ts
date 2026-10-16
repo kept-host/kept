@@ -44,8 +44,8 @@
  * with no cookie → no session and no `Set-Cookie`; the draft-reminder cron
  * without its secret → 401 (the gate passes `/api/cron/*`).
  *
- * THE LEGAL PAGES (E06a AC19), on every deploy, open or closed: `/legal/impressum`
- * and `/legal/privacy` must answer 200, and while either still carries a `[[`
+ * THE LEGAL PAGES (E06a AC19, E07 AC29), on every deploy, open or closed: every
+ * `LEGAL_DOCS` page must answer 200, and while any still carries a `[[`
  * placeholder the run FAILS or WARNS per `--legal-placeholders` /
  * `SMOKE_LEGAL_PLACEHOLDERS` (`fail` | `warn`, default `fail`). The workflow
  * hands the value in — `release.yml` `fail`, `deploy-dev.yml` `warn` — so the
@@ -688,9 +688,9 @@ async function smokeLegal(
   }
 
   if (withPlaceholders.length === 0) {
-    return pass(name, "/legal/impressum and /legal/privacy → 200, no [[ placeholders");
+    return pass(name, `${LEGAL_DOCS.map((doc) => `/legal/${doc}`).join(", ")} → 200, no [[ placeholders`);
   }
-  const detail = `${withPlaceholders.join(" and ")} still contain [[ placeholders — fill content/legal/*.md (and the sha256 pins in lib/legal/legal.test.ts)`;
+  const detail = `${withPlaceholders.join(", ")} still contain [[ placeholders — fill content/legal/*.md (and the sha256 pins in lib/legal/legal.test.ts)`;
   return policy === "fail" ? fail(name, detail) : { ...pass(name, `${detail} (warn on this track)`), warn: true };
 }
 

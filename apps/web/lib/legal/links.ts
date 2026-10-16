@@ -1,5 +1,5 @@
 /**
- * Where the two legal pages live (E06a, PRD §6 / D8) — client-safe, no `fs`.
+ * Where the legal pages live (E06a, PRD §6 / D8; E07 added acceptable use) — client-safe, no `fs`.
  *
  * The pages are apex pages. On the `app.` host, and in every email, the links
  * must therefore be ABSOLUTE apex URLs, derived FROM CONFIGURATION
@@ -10,13 +10,14 @@
  */
 import { farewellHref } from "../routing/host-split";
 
-export const LEGAL_DOCS = ["impressum", "privacy"] as const;
+export const LEGAL_DOCS = ["impressum", "privacy", "acceptable-use"] as const;
 export type LegalDoc = (typeof LEGAL_DOCS)[number];
 
 /** The link labels — exactly these words, English only (Arun, 2026-10-11). */
 export const LEGAL_LABELS: Record<LegalDoc, string> = {
   impressum: "Impressum",
   privacy: "Privacy",
+  "acceptable-use": "Acceptable use",
 };
 
 export function isLegalDoc(value: string): value is LegalDoc {

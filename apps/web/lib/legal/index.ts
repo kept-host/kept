@@ -1,8 +1,8 @@
 /**
  * The legal texts (E06a, PRD §6 / D8) — server-only: reads `content/legal/`.
  *
- * `content/legal/{impressum,privacy}.md` are VERBATIM copies of the files
- * delivered with the PRD. Nothing here edits them; Arun fills the `[[…]]`
+ * `content/legal/{impressum,privacy,acceptable-use}.md` — the texts pinned by
+ * `legal.test.ts`. Nothing here edits them; Arun fills the `[[…]]`
  * placeholders himself. While any remain, the pages carry a DRAFT banner and a
  * prod release fails (AC19, task 010's smoke).
  *
@@ -43,7 +43,7 @@ export function hasLegalPlaceholders(source: string): boolean {
   return source.includes(PLACEHOLDER_OPEN);
 }
 
-/** True while either legal file still contains a `[[…]]` placeholder. */
+/** True while any legal file still contains a `[[…]]` placeholder. */
 export function legalPlaceholdersRemain(): boolean {
   return LEGAL_DOCS.some((doc) => hasLegalPlaceholders(legalSource(doc)));
 }

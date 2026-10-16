@@ -6,7 +6,7 @@ import { LegalLinks } from "@/components/kept/legal-links";
 import { legalPlaceholdersRemain, legalTitle, renderLegal } from "@/lib/legal";
 import { isLegalDoc, LEGAL_DOCS } from "@/lib/legal/links";
 
-/** Only the two delivered texts exist; any other `/legal/*` is a 404. */
+/** Only the `LEGAL_DOCS` texts exist; any other `/legal/*` is a 404. */
 export const dynamicParams = false;
 
 export function generateStaticParams() {

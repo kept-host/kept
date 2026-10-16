@@ -2323,8 +2323,8 @@ export default function KeptLanding() {
                 heading="SAFETY"
                 links={[
                   { label: "The forever promise", href: "/promise" },
-                  { label: "Report a page" },
-                  { label: "Acceptable use" },
+                  { label: "Report a page", href: "/report" },
+                  { label: "Acceptable use", href: "/legal/acceptable-use" },
                 ]}
               />
             </div>

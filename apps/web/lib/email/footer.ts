@@ -1,6 +1,6 @@
 /**
  * The footer every kept email carries (E06a, PRD §6): the sender's name and the
- * "Impressum" and "Privacy" links as ABSOLUTE apex URLs.
+ * `LEGAL_DOCS` links ("Impressum", "Privacy", "Acceptable use") as ABSOLUTE apex URLs.
  *
  * Pure: the caller passes the `from` it already holds (`resendConfig().from`)
  * and the control-plane origin from configuration (`appOrigin()`) — never a

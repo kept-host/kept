@@ -12,12 +12,13 @@ test("split deploy: links are absolute on the apex, never the app. host", () => 
   console.log(`[footer] text=${JSON.stringify(footer.text)}`);
   assert.equal(
     footer.text,
-    "-- \nkept\nImpressum: https://kept.host/legal/impressum\nPrivacy: https://kept.host/legal/privacy\n"
+    "-- \nkept\nImpressum: https://kept.host/legal/impressum\nPrivacy: https://kept.host/legal/privacy\nAcceptable use: https://kept.host/legal/acceptable-use\n"
   );
   assert.equal(
     footer.html,
     '<hr><p>kept · <a href="https://kept.host/legal/impressum">Impressum</a> · ' +
-      '<a href="https://kept.host/legal/privacy">Privacy</a></p>'
+      '<a href="https://kept.host/legal/privacy">Privacy</a> · ' +
+      '<a href="https://kept.host/legal/acceptable-use">Acceptable use</a></p>'
   );
   assert.doesNotMatch(`${footer.text}${footer.html}`, /app\.kept\.host/);
 });

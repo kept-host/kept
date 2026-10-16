@@ -259,4 +259,25 @@ test.describe("landing content", () => {
       footer.locator("a[href='']"),
     ).toHaveCount(0);
   });
+
+  test("AC29: the footer links to the acceptable-use rules and the report form, and both serve", async ({
+    page,
+    request,
+  }) => {
+    await page.goto("/");
+    const footer = page.locator("footer");
+    for (const [label, href] of [
+      ["Acceptable use", "/legal/acceptable-use"],
+      ["Report a page", "/report"],
+    ] as const) {
+      // "Acceptable use" also sits in the footer's LegalLinks row, which on a
+      // single-origin deploy carries the same relative href — so at least one.
+      const count = await footer.locator(`a[href='${href}']`, { hasText: label }).count();
+      console.log(`[landing] footer "${label}" → ${href}: ${count}`);
+      expect(count).toBeGreaterThan(0);
+      const res = await request.get(href, { maxRedirects: 0 });
+      console.log(`[landing] GET ${href} → ${res.status()}`);
+      expect(res.status()).toBe(200);
+    }
+  });
 });

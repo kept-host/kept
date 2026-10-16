@@ -22,4 +22,4 @@ Phone: [[PHONE]]
 We are neither willing nor obliged to take part in dispute resolution proceedings before a consumer arbitration board.
 
 **Pages published by users**
-Pages on `*.kept.host` subdomains are created by kept's users, not by kept. To report a page, email [[EMAIL]].
+Pages on `*.kept.host` subdomains are created by kept's users, not by kept. To report a page, use the form at [kept.host/report](/report) or email [abuse@kept.host](mailto:abuse@kept.host).
