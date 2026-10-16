@@ -50,7 +50,10 @@ import { and, eq, inArray, isNull } from "drizzle-orm";
 
 import { closeDb, db } from "../db";
 import {
+  abuseReports,
   account,
+  appeals,
+  moderationActions,
   nameHolds,
   profiles,
   session,
@@ -58,6 +61,8 @@ import {
   sites,
   user,
 } from "../db/schema";
+import { submitAppeal } from "../moderation/appeals";
+import { setStatus } from "../moderation/status";
 import { renameSite } from "../names/rename";
 import { pointerKey } from "../storage/manifest";
 import { pageObjectKey, r2Store } from "../storage/r2";
@@ -211,6 +216,12 @@ after(async () => {
   for (const slug of createdSlugs) {
     await removeManifest(slug).catch(() => undefined);
   }
+  // The moderation record outlives a page by design (`SET NULL`); a drill's
+  // own record does not outlive the drill.
+  if (createdSites.size > 0) {
+    await db.delete(moderationActions).where(inArray(moderationActions.siteId, [...createdSites]));
+    await db.delete(abuseReports).where(inArray(abuseReports.siteId, [...createdSites]));
+  }
   for (const id of createdSites) {
     const versions = await db
       .select({ id: siteVersions.id })
@@ -287,8 +298,9 @@ test(
     await renameSite(named.siteId, owner.id, namedName);
     const generated = await publish(owner.id, "e06-008-ad-generated");
     const flagged = await publish(owner.id, "e06-008-ad-flagged");
-    // Q10 (OPEN, Arun): a flagged page is archived with the rest today
-    // (`archivedByAccountDeletion`); this expectation changes with the answer.
+    // D-68 (Q10, Arun 2026-10-16): a flagged page goes with the account like
+    // any other — archived, offline, ownerless. The moderated shapes (a real
+    // flag, a removal, an appeal, the record) are drilled in the next test.
     await db.update(sites).set({ status: "quarantined" }).where(eq(sites.id, flagged.siteId));
     const draft = await publish(owner.id, "e06-008-ad-draft");
     await demoteSite(draft.siteId, owner.id);
@@ -408,6 +420,110 @@ test(
       (await db.select({ id: user.id }).from(user).where(eq(user.id, bystander.id))).length,
       1,
     );
+  },
+);
+
+test(
+  "flagged pages go with the account whatever their status (D-68): offline and ownerless, open appeals closed, the removal's hold and the moderation record kept",
+  { skip },
+  async () => {
+    const owner = await makeAccount();
+    // Statements of reasons go to Resend's test inbox — a `.invalid` address
+    // would bounce.
+    await db
+      .update(user)
+      .set({ email: `delivered+e07-008-ad-${owner.id.slice(0, 12)}@resend.dev` })
+      .where(eq(user.id, owner.id));
+
+    // The three flagged statuses, each reached through the real `setStatus`, so
+    // the manifest, the clocks, the D19 hold and the action rows are the ones
+    // production writes. The removed page carries a CHOSEN name.
+    const reviewed = await publish(owner.id, "e07-008-ad-review");
+    const csam = await publish(owner.id, "e07-008-ad-csam");
+    const removed = await publish(owner.id, "e07-008-ad-removed");
+    const removedName = chosenName();
+    await renameSite(removed.siteId, owner.id, removedName);
+    for (const [page, to, reason] of [
+      [reviewed, "under_review", "phishing"],
+      [csam, "quarantined", "child_sexual_abuse"],
+      [removed, "removed", "phishing"],
+    ] as const) {
+      const flagged = await setStatus(page.siteId, to, { actor: "admin", reason, automated: false });
+      assert.equal(flagged.ok, true, `${to}: ${JSON.stringify(flagged)}`);
+    }
+    // An open appeal on two of them, and a report — the review is mid-flight.
+    for (const page of [csam, removed]) {
+      const appealed = await submitAppeal(page.siteId, "e07-008 drill: please look again.", owner.id);
+      assert.equal(appealed.ok, true, JSON.stringify(appealed));
+    }
+    await db.insert(abuseReports).values({
+      siteId: csam.siteId,
+      slug: csam.slug,
+      url: `https://${csam.slug}.example`,
+      category: "child_sexual_abuse",
+      details: "e07-008 drill: a report about this page.",
+      reporterBucket: `e07-008-ad-${owner.id.slice(0, 12)}`,
+    });
+
+    const flaggedIds = [reviewed.siteId, csam.siteId, removed.siteId];
+    const actionsBefore = await db
+      .select({ id: moderationActions.id })
+      .from(moderationActions)
+      .where(inArray(moderationActions.siteId, flaggedIds));
+    assert.equal(actionsBefore.length, 3, "precondition: one action row per flag");
+    const removedBefore = await readSite(removed.siteId);
+    const removedHoldBefore = await holdOf(removedName);
+    assert.equal(removedHoldBefore?.reason, "removed", "precondition: the D19 hold");
+    assert.equal(removedHoldBefore?.userId, null);
+
+    const result = accountDeletionResultSchema.parse(await deleteAccount(owner.id));
+    assert.equal(result.pagesArchived, 2, "the two flagged pages still serving a 451 were taken offline now");
+
+    for (const page of [reviewed, csam]) {
+      const row = await readSite(page.siteId);
+      assert.equal(row.status, "archived", `${page.slug}: deleted with the account, flag or not`);
+      assertGraceFromNow(row.purgeAfter, page.slug);
+      assert.equal(row.ownerId, null, `${page.slug}: no owner left`);
+      assert.equal(await r2Store().get(pointerKey(page.slug)), null, `${page.slug}: off the edge`);
+    }
+    // The reason stays on the row: every CSAM byte refusal (D-64) keys on it.
+    assert.equal((await readSite(csam.siteId)).moderationReason, "child_sexual_abuse");
+
+    // A removed page was already off the edge with its own deadline: it only
+    // loses its owner, and stays `removed` so purge keeps its D19 hold (D-63).
+    const removedAfter = await readSite(removed.siteId);
+    assert.equal(removedAfter.status, "removed");
+    assert.equal(removedAfter.ownerId, null, "no owner left");
+    assert.deepEqual(removedAfter.purgeAfter, removedBefore.purgeAfter, "its own purge deadline");
+    assert.equal(await r2Store().get(pointerKey(removedName)), null, "still off the edge");
+    assert.deepEqual(await holdOf(removedName), removedHoldBefore, "the removal's hold is untouched");
+
+    // Nobody is left to hear an appeal, and purge waits on an open one.
+    const closed = await db
+      .select({ status: appeals.status, decisionNote: appeals.decisionNote, decidedAt: appeals.decidedAt })
+      .from(appeals)
+      .where(inArray(appeals.siteId, flaggedIds));
+    assert.equal(closed.length, 2);
+    for (const appeal of closed) {
+      assert.equal(appeal.status, "rejected");
+      assert.equal(appeal.decisionNote, "Closed without a decision: the account was deleted.");
+      assert.ok(appeal.decidedAt);
+    }
+
+    // The moderation record is audit, not account data: every row survives.
+    const actionsAfter = await db
+      .select({ id: moderationActions.id })
+      .from(moderationActions)
+      .where(inArray(moderationActions.siteId, flaggedIds));
+    assert.deepEqual(
+      actionsAfter.map((row) => row.id).sort(),
+      actionsBefore.map((row) => row.id).sort(),
+    );
+    const reports = await db
+      .select({ id: abuseReports.id })
+      .from(abuseReports)
+      .where(eq(abuseReports.siteId, csam.siteId));
+    assert.equal(reports.length, 1, "the report survives the account");
   },
 );
 

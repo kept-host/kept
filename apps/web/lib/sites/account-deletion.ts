@@ -8,6 +8,16 @@
  * every other device is signed out on its next request (edge case 19). Owners
  * reach `archived`; `removed` is E07's.
  *
+ * WHATEVER THE STATUS (D-68, Arun 2026-10-16): flagged pages go with the
+ * account like any other. `under_review` / `quarantined` still claim their name,
+ * so they are unwound and archived with the rest; a `removed` page is already
+ * off the edge with its own `purge_after` and its ownerless D19 hold, so it only
+ * loses its owner — it stays `removed`, which is what keeps that hold through
+ * purge (D-63). Every open appeal on the account's pages is rejected: nobody is
+ * left to hear it, and purge waits on one. The moderation log, reports and
+ * appeal rows are not touched — they reference the site (`SET NULL` / with the
+ * page), never the user.
+ *
  * ── THE BUG THIS FILE EXISTS TO PREVENT ──────────────────────────────────────
  *
  *   user  ──cascade──▶  profiles  ──SET NULL──▶  sites.owner_id
@@ -29,6 +39,7 @@
  *     UPDATE sites SET archived, purge_after  WHERE owner_id = ? AND claims its name
  *     holdName(name, NULL, 'account_deleted') × every chosen name
  *     UPDATE sites SET owner_id = NULL, reminder_email = NULL  WHERE owner_id = ?
+ *     UPDATE appeals SET rejected  WHERE open AND site_id IN (those rows)
  *     DELETE FROM "user" WHERE id = ?
  *   COMMIT
  *   syncManifest(site) × every site unwound or archived  ← AC42: the edge back on the row
@@ -75,6 +86,7 @@ import { and, eq, inArray } from "drizzle-orm";
 
 import { db } from "../db";
 import { getDashboardSites } from "../db/queries/dashboard";
+import { rejectOpenAppealsOn } from "../db/queries/moderation";
 import { sites, user } from "../db/schema";
 import { claimsItsName, lockNames } from "../names/availability";
 import { holdName } from "../names/holds";
@@ -83,6 +95,9 @@ import { removeManifest, syncManifest } from "../storage/manifest";
 import { lockOwner } from "./keep";
 import { archivedForGrace } from "./manage";
 import { StudioRefusal } from "./studio-refusal";
+
+/** The decision note on an appeal its account's deletion closed (D-68). */
+const APPEAL_CLOSED_NOTE = "Closed without a decision: the account was deleted.";
 
 /**
  * A page could not be taken off the edge, so **nothing** was deleted.
@@ -163,22 +178,6 @@ async function unwind(siteId: string, slug: string): Promise<void> {
 }
 
 /**
- * Which of the account's rows the deletion takes off the edge and archives.
- *
- * ⚠️ OPEN — Q10 (Arun): what account deletion does with the user's FLAGGED
- * sites. Today this is `claimsItsName()`: it selects `under_review` and
- * `quarantined` rows with the rest and ARCHIVES them, which launders the flag;
- * `removed` rows are not selected and only lose their owner below. The default
- * proposal (stated, not built) is to leave flagged sites in place, ownerless,
- * so review continues and the D19 hold applies on removal. Once Arun answers,
- * the answer is this predicate (both the unwind and the locked re-read use it)
- * plus the ownerless update below — nothing else in this file decides it.
- */
-function archivedByAccountDeletion() {
-  return claimsItsName();
-}
-
-/**
  * Destroy an account (D16): take every active page offline, archive it with no
  * owner, hold its chosen names with no owner, and remove the user.
  *
@@ -200,7 +199,7 @@ export async function deleteAccount(profileId: string): Promise<AccountDeletionR
   const active = await db
     .select({ id: sites.id, slug: sites.slug })
     .from(sites)
-    .where(and(eq(sites.ownerId, profileId), archivedByAccountDeletion()));
+    .where(and(eq(sites.ownerId, profileId), claimsItsName()));
 
   // Sequential, never concurrent: `removeManifest` issues real purges, and
   // fanning a hundred of them at Cloudflare at once is how an account with a lot
@@ -232,7 +231,7 @@ export async function deleteAccount(profileId: string): Promise<AccountDeletionR
       const pages = await tx
         .select({ id: sites.id, slug: sites.slug, nameKind: sites.nameKind })
         .from(sites)
-        .where(and(eq(sites.ownerId, profileId), archivedByAccountDeletion()))
+        .where(and(eq(sites.ownerId, profileId), claimsItsName()))
         .for("update");
       const chosen = pages.filter((page) => page.nameKind === "chosen");
       // Every chosen name locked, sorted, BEFORE a row moves — a rename-to by
@@ -257,13 +256,22 @@ export async function deleteAccount(profileId: string): Promise<AccountDeletionR
         await holdName(page.slug, null, "account_deleted", page.id, tx);
       }
 
-      // EVERY row the account had, archived before or just now: no owner left to
-      // name, and nobody left to remind. ONE owner-scoped statement — a `WHERE`
-      // that forgot `owner_id` here would orphan the internet's pages.
-      await tx
+      // EVERY row the account had, archived before or just now, `removed`
+      // included: no owner left to name, and nobody left to remind. ONE
+      // owner-scoped statement — a `WHERE` that forgot `owner_id` here would
+      // orphan the internet's pages.
+      const owned = await tx
         .update(sites)
         .set({ ownerId: null, reminderEmail: null })
-        .where(eq(sites.ownerId, profileId));
+        .where(eq(sites.ownerId, profileId))
+        .returning({ id: sites.id });
+      // D-68: after the update above holds every one of those rows, so an appeal
+      // submitted meanwhile has committed (and is closed here) or finds no owner.
+      await rejectOpenAppealsOn(
+        tx,
+        owned.map((row) => row.id),
+        APPEAL_CLOSED_NOTE,
+      );
 
       // AND ONLY NOW THE USER. `session`, `account` and `profiles` cascade with
       // it; the user's earlier holds keep their deadline and lose their owner

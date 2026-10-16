@@ -7,7 +7,7 @@
  * (`lockSiteForModeration`) → names (`holdName` / `dropRemovedHold`).
  */
 import type { ModerationAction, ModerationActor, ModerationReason, SiteStatus } from "@kept/shared";
-import { and, asc, count, desc, eq, gt, ne, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, inArray, ne, sql } from "drizzle-orm";
 
 import { claimsItsName } from "../../names/availability";
 import { db, type Tx } from "../index";
@@ -223,4 +223,17 @@ export async function rejectOpenAppeal(tx: Tx, appealId: string, note: string) {
     .where(and(eq(appeals.id, appealId), eq(appeals.status, "open")))
     .returning({ siteId: appeals.siteId });
   return row ?? null;
+}
+
+/**
+ * Reject every open appeal on `siteIds` with `note` — account deletion (D-68):
+ * nobody is left to hear the decision, and purge waits on an open appeal
+ * (edge case 24), so one left open would keep the page's bytes forever.
+ */
+export async function rejectOpenAppealsOn(tx: Tx, siteIds: readonly string[], note: string): Promise<void> {
+  if (siteIds.length === 0) return;
+  await tx
+    .update(appeals)
+    .set({ status: "rejected", decisionNote: note, decidedAt: sql`now()` })
+    .where(and(inArray(appeals.siteId, [...siteIds]), eq(appeals.status, "open")));
 }
