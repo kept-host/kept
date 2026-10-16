@@ -102,7 +102,16 @@ process.env.KEPT_E2E_ADMIN_EMAIL ??= `delivered+e06a-${crypto.randomUUID().slice
  * from under `admin-sign-in.closed.spec.ts` running beside it.
  */
 process.env.KEPT_E2E_DRILL_ADMIN_EMAIL ??= `delivered+e06a-drill-${crypto.randomUUID().slice(0, 8)}@resend.dev`;
-process.env.KEPT_ADMIN_EMAILS = `${process.env.KEPT_E2E_ADMIN_EMAIL},${process.env.KEPT_E2E_DRILL_ADMIN_EMAIL}`;
+/**
+ * A third for `admin-moderation*.spec.ts` (E07 task 011): it signs in to the
+ * moderation screen and deletes the account afterwards, for the same reason.
+ */
+process.env.KEPT_E2E_MODERATION_ADMIN_EMAIL ??= `delivered+e07-mod-${crypto.randomUUID().slice(0, 8)}@resend.dev`;
+process.env.KEPT_ADMIN_EMAILS = [
+  process.env.KEPT_E2E_ADMIN_EMAIL,
+  process.env.KEPT_E2E_DRILL_ADMIN_EMAIL,
+  process.env.KEPT_E2E_MODERATION_ADMIN_EMAIL,
+].join(",");
 
 /**
  * `lib/rate-limit` salts its per-IP buckets with `RATE_LIMIT_SECRET`, and every

@@ -396,9 +396,12 @@ export interface ScanRetryResult {
   spikes: SpikeCheck;
 }
 
-/** The whole `scan-retry` job, recorded in `job_runs` as `scan-retry`. */
+/** `scan-retry`'s `job_runs` key — the moderation screen's Scanner tab reads it too. */
+export const SCAN_RETRY_JOB = "scan-retry";
+
+/** The whole `scan-retry` job, recorded in `job_runs` as `SCAN_RETRY_JOB`. */
 export function runScanRetry(classifier: ContentClassifier | null = defaultClassifier()): Promise<ScanRetryResult> {
-  return withJobRun("scan-retry", async () => {
+  return withJobRun(SCAN_RETRY_JOB, async () => {
     const deadline = Date.now() + JOB_DEADLINE_SECONDS * MS_PER_SECOND;
     const retried = await retryDueScans(classifier, { deadline });
     const unscanned = await scanUnscanned(classifier, { deadline });

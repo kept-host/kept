@@ -85,6 +85,7 @@ const NOT_COOKIE_AUTHENTICATED: Record<string, string> = {
     "unauthenticated: the HMAC-signed unsubscribe token is the authority; RFC 8058 one-click (waitlist-opt-in.spec)",
   "POST /api/cron/waitlist-prune": "Authorization: Bearer CRON_SECRET, from GitHub Actions",
   "POST /api/cron/repurge": "Authorization: Bearer CRON_SECRET, from GitHub Actions",
+  "POST /api/cron/scan-retry": "Authorization: Bearer CRON_SECRET, from GitHub Actions",
   "POST /api/reports":
     "unauthenticated: public (E07 §6.8) — reads no cookie, writes a report nobody owns; Turnstile and the per-IP limits guard it (report.spec)",
   "POST /api/founding/review":
@@ -203,6 +204,33 @@ const SWEPT: Record<string, SweptRoute> = {
     send: (ctx, base, t, headers) =>
       ctx.delete(`${base}/api/account`, { headers, data: { email: t.email } }),
     stranger: "deletes the session's own account; it names no page",
+  },
+  // E07 §6.11: the moderation actions. Neither user here is an admin, so past
+  // the gate every one is the bare 404 a non-admin gets (AC20) — the same for
+  // A's page as for nothing, which is what (b) asserts.
+  "POST /api/admin/moderation/sites/[id]": {
+    send: (ctx, base, t, headers) =>
+      ctx.post(`${base}/api/admin/moderation/sites/${t.siteId}`, {
+        headers,
+        data: { action: "remove", reason: "spam", note: sweepName() },
+      }),
+    stranger: true,
+  },
+  "POST /api/admin/moderation/reports": {
+    send: (ctx, base, t, headers) =>
+      ctx.post(`${base}/api/admin/moderation/reports`, {
+        headers,
+        data: { reportIds: [t.siteId], note: sweepName() },
+      }),
+    stranger: true,
+  },
+  "POST /api/admin/moderation/appeals/[id]": {
+    send: (ctx, base, t, headers) =>
+      ctx.post(`${base}/api/admin/moderation/appeals/${t.siteId}`, {
+        headers,
+        data: { decision: "grant", note: sweepName() },
+      }),
+    stranger: true,
   },
   // Cookie-authenticated although its path carries a token: the keep attaches
   // the page to the SESSION's account, so it is gated like every route above.

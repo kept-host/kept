@@ -191,7 +191,11 @@ export async function recentScanFailures(): Promise<{ failures: number; lastErro
 /** A scheduled job's last success and checked day; `null` when it never ran. */
 export async function jobRun(job: string) {
   const [row] = await db
-    .select({ lastSuccessAt: jobRuns.lastSuccessAt, lastDay: jobRuns.lastDay })
+    .select({
+      lastSuccessAt: jobRuns.lastSuccessAt,
+      lastError: jobRuns.lastError,
+      lastDay: jobRuns.lastDay,
+    })
     .from(jobRuns)
     .where(eq(jobRuns.job, job));
   return row ?? null;

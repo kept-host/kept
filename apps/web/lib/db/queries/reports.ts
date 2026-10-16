@@ -6,7 +6,7 @@
 import type { ModerationReason, ReportStatus } from "@kept/shared";
 import { and, desc, eq, gt, inArray, or, sql } from "drizzle-orm";
 
-import { db } from "../index";
+import { db, type Tx } from "../index";
 import { abuseReports, moderationActions, scans, sites } from "../schema";
 
 /**
@@ -139,4 +139,37 @@ export async function automatedMeansUsed(report: Pick<StoredReport, "id" | "site
     .where(and(eq(scans.siteId, report.siteId), eq(scans.trigger, "report"), gt(scans.createdAt, report.createdAt)))
     .limit(1);
   return scan !== undefined;
+}
+
+/**
+ * Close the open reports `target` names — some reports by id, or every open
+ * report on one page — as `actioned` or `dismissed`, with the reviewer's note.
+ * A report that is no longer open is left as it is. Returns what was closed,
+ * with the page status each one's log row records (`null`: page purged).
+ */
+export async function resolveOpenReports(
+  tx: Tx,
+  target: { reportIds: string[] } | { siteId: string },
+  status: "actioned" | "dismissed",
+  note: string | null,
+) {
+  const which =
+    "siteId" in target ? eq(abuseReports.siteId, target.siteId) : inArray(abuseReports.id, target.reportIds);
+  const closed = await tx
+    .update(abuseReports)
+    .set({ status, resolutionNote: note, resolvedAt: sql`now()` })
+    .where(and(eq(abuseReports.status, "open"), which))
+    .returning({
+      id: abuseReports.id,
+      siteId: abuseReports.siteId,
+      slug: abuseReports.slug,
+      category: abuseReports.category,
+    });
+  if (closed.length === 0) return [];
+  const siteIds = [...new Set(closed.flatMap((row) => (row.siteId ? [row.siteId] : [])))];
+  const statuses = siteIds.length
+    ? await tx.select({ id: sites.id, status: sites.status }).from(sites).where(inArray(sites.id, siteIds))
+    : [];
+  const statusOf = new Map(statuses.map((row) => [row.id, row.status]));
+  return closed.map((row) => ({ ...row, siteStatus: row.siteId ? (statusOf.get(row.siteId) ?? null) : null }));
 }
