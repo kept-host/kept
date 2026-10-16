@@ -101,8 +101,8 @@ unless an appeal is open. Under D-68, deleting the owner's account archives a
 quarantined page, and its bytes are purged after the same 30-day grace. Make
 the report to the authorities before then. There is no legal-hold switch: if an
 authority asks for the content to be kept longer, move that row's
-`purge_after` forward by hand. *(Retention period to be confirmed with the
-lawyer.)*
+`purge_after` forward by hand. kept keeps no evidence copy of its own (D-71);
+retention is revisited once kept has traffic.
 
 ## 4. Scanner outage and the credit limit
 
