@@ -19,11 +19,11 @@
  * module never logs either.
  */
 import type { RateLimitRule } from "@kept/shared";
-import { Resend } from "resend";
 
 import { hit } from "../rate-limit";
-import { adminEmails, appOrigin, resendConfig } from "../storage/env";
+import { adminEmails, appOrigin } from "../storage/env";
 import { emailFooter } from "./footer";
+import { sendEmail } from "./send";
 
 export type AdminAlert = {
   subject: string;
@@ -84,21 +84,16 @@ export async function sendAdminAlert(alert: AdminAlert): Promise<AdminAlertOutco
       return "no_recipients";
     }
 
-    const { apiKey, from } = resendConfig();
-    const message = buildAdminAlertEmail({
-      subject: alert.subject,
-      priority: alert.priority,
-      lines: alert.lines,
-      from,
-      origin: appOrigin(),
-    });
-    const { error } = await new Resend(apiKey).emails.send({
-      from,
+    await sendEmail((from) => ({
       to: admins,
-      subject: message.subject,
-      text: message.text,
-    });
-    if (error) throw new Error(`${error.name} — ${error.message}`);
+      ...buildAdminAlertEmail({
+        subject: alert.subject,
+        priority: alert.priority,
+        lines: alert.lines,
+        from,
+        origin: appOrigin(),
+      }),
+    }));
     return "sent";
   } catch (err) {
     console.error(

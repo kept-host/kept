@@ -22,8 +22,10 @@ import { gotoWithTokensApplied } from "./tokens-applied";
  *      server component — which is why a session read that fails, or simply
  *      returns null, cannot stop the screen drawing.
  *   2. Both failure paths reach a readable error panel with a working button,
- *      not a spinner. The magic-link failure is a REAL rejection from Resend
- *      (`example.com` is refused at request time), not a substituted response.
+ *      not a spinner. Both are genuine transport failures in the browser, not
+ *      substituted responses. (The magic-link case used to be Resend refusing
+ *      `example.com`; the harness now runs with `KEPT_EMAIL_DELIVERY=off`, so
+ *      the server accepts every send and no test spends the 100/day budget.)
  *   3. The `next` return URL is threaded into the real request body and is
  *      validated by `safeReturnPath` on the way in.
  *
@@ -74,8 +76,7 @@ const SIGN_IN_HEADING = "Sign in to kept";
 /**
  * A new `example.com` address per send. The magic-link limit is 3 an hour per
  * address (E06a §5), so one fixed address would be refused 429 from the second
- * run of the hour on — a different failure from the Resend refusal asserted
- * below. `example.com` itself is what Resend refuses, so any local part works.
+ * run of the hour on — a failure no test here is about.
  */
 const someone = () => `someone-${crypto.randomUUID().slice(0, 8)}@example.com`;
 
@@ -90,14 +91,15 @@ function trackConsoleErrors(page: Page): string[] {
 
 /**
  * Hold a request open long enough to observe the loading state, then let it go
- * to the real server. Returns a promise that resolves once it has been held.
+ * to the real server — or, with `abort`, fail it at the socket (a genuine
+ * transport failure; nothing fabricates a body).
  */
-async function slowRequest(page: Page, urlPart: string, ms: number) {
+async function slowRequest(page: Page, urlPart: string, ms: number, abort = false) {
   await page.route(
     (url) => url.pathname.includes(urlPart),
     async (route) => {
       await new Promise((resolve) => setTimeout(resolve, ms));
-      await route.continue();
+      await (abort ? route.abort("connectionfailed") : route.continue());
     },
   );
 }
@@ -229,7 +231,7 @@ test.describe("/auth sign-in screen", () => {
   test("a magic-link submit shows its own loading copy, then the send failure", async ({
     page,
   }) => {
-    await slowRequest(page, "/sign-in/magic-link", 700);
+    await slowRequest(page, "/sign-in/magic-link", 700, true);
     await page.goto("/auth");
 
     await page.getByLabel("Email").fill(someone());
@@ -239,8 +241,9 @@ test.describe("/auth sign-in screen", () => {
       page.getByRole("heading", { name: "Sending your link…" }),
     ).toBeVisible();
 
-    // Task 003's `sendMagicLink` rejects rather than swallowing a Resend
-    // failure precisely so it surfaces here.
+    // A send that fails — the server rejecting (task 003's `sendMagicLink`
+    // rejects rather than swallowing a Resend failure) or, as here, never
+    // being reached — surfaces as words, not a spinner.
     await expect(
       page.getByRole("heading", { name: "We could not send that email" }),
     ).toBeVisible({ timeout: 15_000 });

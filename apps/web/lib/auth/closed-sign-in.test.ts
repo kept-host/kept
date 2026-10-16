@@ -9,7 +9,10 @@
  *
  * "No mail was sent" is proved, not assumed: the drill addresses are on
  * `.invalid`, which Resend refuses at request time, and `sendMagicLink` rejects
- * on a refusal — so a 200 for one of them means the send never happened.
+ * on a refusal — so a 200 for one of them means the send never happened. That
+ * proof needs the Resend call, so this file turns `KEPT_EMAIL_DELIVERY=off`
+ * (set by `test:unit`) back off; a refused send delivers nothing and spends
+ * none of the daily budget.
  *
  * Nothing here prints an address, a token or an IP.
  */
@@ -21,6 +24,8 @@ import { config } from "dotenv";
 import { drillIp } from "../testing/drill-ip";
 
 config({ path: ".env.local", quiet: true });
+
+delete process.env.KEPT_EMAIL_DELIVERY;
 
 const skipLive = process.env.DATABASE_URL
   ? false

@@ -19,12 +19,11 @@ import {
   type ModerationReason,
   type SiteStatus,
 } from "@kept/shared";
-import { Resend } from "resend";
 
-import { resendConfig } from "../storage/env";
 import type { AdminAlert } from "./admin-alert";
 import { formatUtcDate } from "./draft-reminder";
 import { emailFooter } from "./footer";
+import { sendEmail } from "./send";
 import { apexUrl } from "./waitlist";
 
 export interface ModerationEmail {
@@ -167,15 +166,7 @@ export async function sendModerationEmail(
   recipient: string,
   build: (from: string) => ModerationEmail,
 ): Promise<void> {
-  const { apiKey, from } = resendConfig();
-  const message = build(from);
-  const { error } = await new Resend(apiKey).emails.send({
-    from,
-    to: recipient,
-    subject: message.subject,
-    text: message.text,
-  });
-  if (error) throw new Error(`${error.name} — ${error.message}`);
+  await sendEmail((from) => ({ to: recipient, ...build(from) }));
 }
 
 const ALERT_VERBS: Record<ModeratedStatus, string> = {

@@ -37,10 +37,10 @@
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { magicLink } from "better-auth/plugins";
-import { Resend } from "resend";
 
 import { db, schema } from "../db";
 import { emailFooter } from "../email/footer";
+import { sendEmail } from "../email/send";
 import {
   appOrigin,
   authConfig,
@@ -63,8 +63,8 @@ function createAuth() {
   const { secret, baseUrl } = authConfig();
   const github = githubOAuth();
   const google = googleOAuth();
-  const resend = resendConfig();
-  const mailer = new Resend(resend.apiKey);
+  // Validated at construction with the rest; `sendEmail` reads it per send.
+  resendConfig();
 
   return betterAuth({
     appName: "kept",
@@ -347,25 +347,23 @@ function createAuth() {
           // exactly as it does for an admin — `/auth` shows one neutral line
           // either way, so the screen never confirms who is an admin.
           if (!maySignIn(email)) return;
-          const { error } = await mailer.emails.send({
-            from: resend.from,
+          // REJECT, don't swallow. A magic link that silently fails to send is
+          // indistinguishable from a broken product, and tasks 004/005 surface
+          // this as a retryable error with a visible message rather than a
+          // spinner that never resolves.
+          await sendEmail((from) => ({
             to: email,
             subject: "Sign in to kept",
             text:
               `Open this link to sign in to kept:\n\n${url}\n\n` +
               `It works once and expires in 5 minutes. ` +
               `If you did not ask to sign in, ignore this email.\n\n` +
-              emailFooter({ from: resend.from, origin: appOrigin() }).text,
-          });
-          // REJECT, don't swallow. A magic link that silently fails to send is
-          // indistinguishable from a broken product, and tasks 004/005 surface
-          // this as a retryable error with a visible message rather than a
-          // spinner that never resolves.
-          if (error) {
+              emailFooter({ from, origin: appOrigin() }).text,
+          })).catch((err: unknown) => {
             throw new Error(
-              `Resend refused the magic-link email: ${error.name} — ${error.message}`,
+              `Resend refused the magic-link email: ${err instanceof Error ? err.message : String(err)}`,
             );
-          }
+          });
         },
       }),
     ],

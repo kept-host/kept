@@ -139,6 +139,16 @@ process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ??= TURNSTILE_TEST_KEYS.siteKeyPass;
 process.env.KEPT_ADMIN_SECRET ??= randomBytes(32).toString("base64url");
 
 /**
+ * No spec spends the Resend budget (100 a day, shared by every send): mail is
+ * composed, addressed and recorded as sent, and only the Resend call is skipped
+ * (`lib/email/send.ts`; honoured on a localhost origin only). Open and closed
+ * runs alike; workers inherit it. An explicit value wins, so
+ * `KEPT_EMAIL_DELIVERY=on` makes a run send for real. A server already on :3000
+ * (`reuseExistingServer`) keeps whatever it was started with.
+ */
+process.env.KEPT_EMAIL_DELIVERY ??= "off";
+
+/**
  * ── EVERY WORKER IS ITS OWN ANONYMOUS PUBLISHER (E07 §6.15) ──────────────────
  *
  * The keyless publish path counts new pages per publisher — `publish:<key>`, 30

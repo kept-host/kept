@@ -11,11 +11,10 @@
  *
  * Throws on a Resend refusal; the caller decides. Nothing here logs.
  */
-import { Resend } from "resend";
-
 import type { FoundingApplication } from "../db/queries/founding";
-import { appOrigin, resendConfig } from "../storage/env";
+import { appOrigin } from "../storage/env";
 import { emailFooter } from "./footer";
+import { sendEmail } from "./send";
 import { apexUrl, waitlistUnsubscribe } from "./waitlist";
 
 export interface FoundingEmail {
@@ -77,32 +76,22 @@ export async function sendApplicationEmail(
   application: Pick<FoundingApplication, "email" | "socialUrl" | "note">,
   reviewToken: string,
 ): Promise<void> {
-  const { apiKey, from } = resendConfig();
   const origin = appOrigin();
   const reviewUrl = apexUrl(`/founding/review?t=${encodeURIComponent(reviewToken)}`, origin);
-  const message = buildApplicationEmail({ application, reviewUrl, from, origin });
-  const { error } = await new Resend(apiKey).emails.send({
-    from,
+  await sendEmail((from) => ({
     to: admins,
-    subject: message.subject,
-    text: message.text,
-  });
-  if (error) throw new Error(`${error.name} — ${error.message}`);
+    ...buildApplicationEmail({ application, reviewUrl, from, origin }),
+  }));
 }
 
 /** Tell the creator they are in. Replies go to `admins`. */
 export async function sendApprovalEmail(email: string, admins: string[]): Promise<void> {
-  const { apiKey, from } = resendConfig();
   const origin = appOrigin();
   const unsubscribe = waitlistUnsubscribe(email, origin);
-  const message = buildApprovalEmail({ unsubscribeUrl: unsubscribe.url, from, origin });
-  const { error } = await new Resend(apiKey).emails.send({
-    from,
+  await sendEmail((from) => ({
     to: email,
     ...(admins.length > 0 ? { replyTo: admins } : {}),
-    subject: message.subject,
-    text: message.text,
+    ...buildApprovalEmail({ unsubscribeUrl: unsubscribe.url, from, origin }),
     headers: unsubscribe.headers,
-  });
-  if (error) throw new Error(`${error.name} — ${error.message}`);
+  }));
 }
