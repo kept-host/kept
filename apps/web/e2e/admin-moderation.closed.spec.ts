@@ -39,7 +39,12 @@ test.describe("the moderation screen (closed)", () => {
 
   test("AC20: signed out, every admin page and API is the bare 404", async ({ request }) => {
     const id = crypto.randomUUID();
-    for (const path of ["/admin/moderation", `/admin/moderation/site/${id}`, `/api/admin/moderation/sites/${id}/source`]) {
+    for (const path of [
+      "/admin/moderation",
+      `/admin/moderation/site/${id}`,
+      `/api/admin/moderation/sites/${id}/source`,
+      `/api/admin/moderation/sites/${id}/preview?show=1`,
+    ]) {
       expect((await request.get(path)).status(), path).toBe(404);
     }
     const post = await request.post(`/api/admin/moderation/sites/${id}`, { data: { action: "restore", note: "x" } });

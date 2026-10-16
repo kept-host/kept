@@ -3,6 +3,7 @@ import { expect, test, type Browser, type BrowserContext, type Page } from "@pla
 import { and, eq, inArray } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
+import { ADMIN_PREVIEW_CSP } from "../lib/routing/admin-csp";
 
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
 import { cleanup, newScope, publishOwned, readSite, signInAs, SKIP_OWNER_UI } from "./owner-fixtures";
@@ -15,12 +16,14 @@ import { cleanup, newScope, publishOwned, readSite, signInAs, SKIP_OWNER_UI } fr
  *   - the gate: signed out, signed in as anyone else, and every admin API → the
  *     bare 404; the CSP on `/admin/*` and on nothing else;
  *   - the screen hydrates under that CSP (a tab switch is client navigation);
- *   - the item view: facts, scan, `sandbox="allow-scripts"` srcdoc preview,
- *     escaped Source;
+ *   - the item view: facts, scan, a `sandbox="allow-scripts"` preview frame on
+ *     its own route whose CSP lets the page's scripts run in an opaque origin
+ *     with no network (D-69) — framed or opened top-level — and escaped Source;
  *   - Dismiss, Hide, Restore and Remove through the UI on a seeded flagged page,
  *     each checked in Postgres; Remove's `purge_after` is now + 30 days;
- *   - a child-sexual-abuse item: no bytes in the document until "Show"; an
- *     appeal on it rejected through the UI.
+ *   - a child-sexual-abuse item: no bytes in the document, and none from either
+ *     byte route without `?show=1`, until "Show"; an appeal on it rejected
+ *     through the UI.
  *
  * NO MOCKS. Pages are published through `POST /api/sites` (real R2 + KV); the
  * flag, the scan row, the reports and the appeal are SEEDED rows — the scanner
@@ -33,6 +36,18 @@ import { cleanup, newScope, publishOwned, readSite, signInAs, SKIP_OWNER_UI } fr
 const RUN = crypto.randomUUID().slice(0, 8);
 const ADMIN = process.env.KEPT_E2E_MODERATION_ADMIN_EMAIL!;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+/**
+ * The fixture's script (D-69): it writes into its own DOM, then probes what an
+ * opaque origin must not reach — the embedding window and `app.`'s cookies.
+ * Only "readable" / "reached" is ever written, never a value.
+ */
+const PROBE = `<p id="ran"></p><p id="top"></p><p id="cookie"></p><script>
+document.getElementById("ran").textContent = "ran";
+try { void parent.document.title; document.getElementById("top").textContent = parent === window ? "self" : "reached"; } catch (e) { document.getElementById("top").textContent = "blocked"; }
+try { void document.cookie; document.getElementById("cookie").textContent = "readable"; } catch (e) { document.getElementById("cookie").textContent = "blocked"; }
+</script>`;
+const previewUrl = (siteId: string, shown = false) =>
+  `/api/admin/moderation/sites/${siteId}/preview${shown ? "?show=1" : ""}`;
 const ownerEmail = (ownerId: string) => `delivered+e07-011-owner-${RUN}-${ownerId.slice(0, 8)}@resend.dev`;
 
 test.describe("the moderation screen (open)", () => {
@@ -75,7 +90,7 @@ test.describe("the moderation screen (open)", () => {
     flag: { status: "under_review" | "quarantined"; reason: "phishing" | "child_sexual_abuse" },
   ) {
     const marker = `e07-011-${RUN}-${flag.reason}`;
-    const published = await publishOwned(owner, baseURL, scope, marker, `<h1 id="m">${marker}</h1><script>window.ran = 1</script>`);
+    const published = await publishOwned(owner, baseURL, scope, marker, `<h1 id="m">${marker}</h1>${PROBE}`);
     await db
       .update(schema.sites)
       .set({ status: flag.status, moderationReason: flag.reason })
@@ -171,6 +186,9 @@ test.describe("the moderation screen (open)", () => {
       stranger.request.post(`/api/admin/moderation/appeals/${id}`, { headers: origin, data: { decision: "grant", note: "x" } }),
       stranger.request.get(`/api/admin/moderation/sites/${id}/source`),
       request.get(`/api/admin/moderation/sites/${id}/source`),
+      stranger.request.get(previewUrl(id)),
+      stranger.request.get(previewUrl(id, true)),
+      request.get(previewUrl(id)),
     ];
     for (const response of await Promise.all(calls)) {
       expect(response.status(), response.url()).toBe(404);
@@ -188,7 +206,7 @@ test.describe("the moderation screen (open)", () => {
     const csp = response!.headers()["content-security-policy"] ?? "";
     expect(csp).toContain("default-src 'self'");
     expect(csp).toMatch(/script-src 'self' 'nonce-[^']+' 'strict-dynamic'/);
-    expect(csp).toContain("frame-src about:");
+    expect(csp).toContain("frame-src 'self'");
     expect(csp).toContain("frame-ancestors 'none'");
     expect(csp).not.toMatch(/script-src[^;]*'unsafe-inline'/);
 
@@ -224,11 +242,36 @@ test.describe("the moderation screen (open)", () => {
     await expect(admin.getByTestId("item-scan")).toContainText("P1");
     await expect(admin.getByTestId("item-scan")).toContainText("0.97");
 
-    // The preview: sandboxed srcdoc, nothing else granted; the page renders in it.
+    // The preview (D-69): a sandboxed frame on its own route, nothing else
+    // granted; the page's script runs in it and reaches neither this window nor
+    // `app.`'s cookies.
     const frame = admin.getByTestId("item-preview").locator("iframe");
     await expect(frame).toHaveAttribute("sandbox", "allow-scripts");
-    expect(await frame.getAttribute("srcdoc")).toContain(flagged.marker);
-    await expect(admin.frameLocator('[data-testid="item-preview"] iframe').locator("#m")).toHaveText(flagged.marker);
+    await expect(frame).toHaveAttribute("src", previewUrl(flagged.siteId));
+    expect(await frame.getAttribute("srcdoc")).toBeNull();
+    const inFrame = admin.frameLocator('[data-testid="item-preview"] iframe');
+    await expect(inFrame.locator("#m")).toHaveText(flagged.marker);
+    await expect(inFrame.locator("#ran"), "the page's inline script ran").toHaveText("ran");
+    await expect(inFrame.locator("#top"), "parent.document throws: opaque origin").toHaveText("blocked");
+    await expect(inFrame.locator("#cookie"), "document.cookie throws: opaque origin").toHaveText("blocked");
+
+    // The route's own headers — and not the `/admin/*` policy on top of them.
+    const preview = await admin.request.get(previewUrl(flagged.siteId));
+    expect(preview.status()).toBe(200);
+    const headers = preview.headers();
+    expect(headers["content-security-policy"]).toBe(ADMIN_PREVIEW_CSP);
+    expect(headers["content-type"]).toBe("text/html; charset=utf-8");
+    expect(headers["x-content-type-options"]).toBe("nosniff");
+    expect(headers["cache-control"]).toBe("no-store");
+    expect(headers["referrer-policy"]).toBe("no-referrer");
+    expect(await preview.text()).toContain(flagged.marker);
+
+    // Opened top-level, the same policy still sandboxes it: no cookie on `app.`.
+    const direct = await admin.context().newPage();
+    await direct.goto(previewUrl(flagged.siteId));
+    await expect(direct.locator("#ran")).toHaveText("ran");
+    await expect(direct.locator("#cookie")).toHaveText("blocked");
+    await direct.close();
     // Source: escaped text — the markup is shown, not parsed.
     await admin.getByTestId("source-tab").click();
     await expect(admin.getByTestId("source-view")).toContainText(`<h1 id="m">${flagged.marker}</h1>`);
@@ -299,20 +342,35 @@ test.describe("the moderation screen (open)", () => {
     await admin.goto("/admin/moderation");
     await expect(admin.locator('[data-testid^="queue-"]').first()).toHaveAttribute("data-testid", `queue-${csam.siteId}`);
 
+    // Neither byte route answers without the Show intent, not even an admin.
+    for (const path of [`/api/admin/moderation/sites/${csam.siteId}/source`, previewUrl(csam.siteId)]) {
+      const refused = await admin.request.get(path);
+      expect(refused.status(), path).toBe(404);
+      expect(await refused.text(), path).toBe("");
+    }
+
     let sourceFetches = 0;
+    let previewFetches = 0;
     admin.on("request", (req) => {
       if (req.url().includes(`/api/admin/moderation/sites/${csam.siteId}/source`)) sourceFetches++;
+      if (req.url().includes(`/api/admin/moderation/sites/${csam.siteId}/preview`)) previewFetches++;
     });
     await admin.goto(`/admin/moderation/site/${csam.siteId}`);
     await expect(admin.getByTestId("preview-hidden")).toBeVisible();
     await expect(admin.getByTestId("item-preview").locator("iframe")).toHaveCount(0);
     expect(await admin.content(), "no byte of the page in the render").not.toContain(csam.marker);
     expect(sourceFetches, "never prefetched").toBe(0);
+    expect(previewFetches, "never framed").toBe(0);
 
     await admin.getByRole("button", { name: "Show" }).click();
-    await expect(admin.getByTestId("item-preview").locator("iframe")).toHaveAttribute("sandbox", "allow-scripts");
+    const frame = admin.getByTestId("item-preview").locator("iframe");
+    await expect(frame).toHaveAttribute("sandbox", "allow-scripts");
+    await expect(frame).toHaveAttribute("src", previewUrl(csam.siteId, true));
     expect(sourceFetches).toBe(1);
-    await expect(admin.frameLocator('[data-testid="item-preview"] iframe').locator("#m")).toHaveText(csam.marker);
+    const inFrame = admin.frameLocator('[data-testid="item-preview"] iframe');
+    await expect(inFrame.locator("#m")).toHaveText(csam.marker);
+    await expect(inFrame.locator("#ran")).toHaveText("ran");
+    expect(previewFetches).toBe(1);
 
     await decide(admin, "action-reject", { note: "e07-011: the report stands." });
     const [decided] = await db.select().from(schema.appeals).where(eq(schema.appeals.id, appeal!.id));

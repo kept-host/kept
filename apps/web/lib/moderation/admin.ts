@@ -19,6 +19,7 @@ import type { ModerationReason, SiteStatus } from "@kept/shared";
 
 import { db, type Tx } from "../db";
 import { insertModerationAction } from "../db/queries/moderation";
+import { sourceSubject } from "../db/queries/moderation-screen";
 import { resolveOpenReports } from "../db/queries/reports";
 import { sendReportDecision, type ReporterMailOutcome } from "../email/reports";
 import type { ModeratedStatus } from "../email/moderation";
@@ -26,6 +27,7 @@ import { pageObjectKey, r2Store } from "../storage/r2";
 
 import type { SiteAction } from "./admin-rules";
 import { grantAppeal, rejectAppeal, type RejectAppealResult } from "./appeals";
+import { withholdsBytes } from "./restriction";
 import { isAllowedTransition, setStatus, type SetStatusResult } from "./status";
 
 const TARGET: Record<SiteAction, ModeratedStatus> = {
@@ -146,4 +148,16 @@ export async function readAdminHtml(site: { id: string; slug: string; currentVer
     );
     return null;
   }
+}
+
+/**
+ * The bytes the item view's Preview and Source round-trips serve, or `null`
+ * (no such page, nothing readable). A child-sexual-abuse item's only when the
+ * request carries the "Show" click's intent (`shown`, D13): the item view never
+ * names such a URL until Arun asks.
+ */
+export async function readAdminPageHtml(siteId: string, shown: boolean): Promise<string | null> {
+  const site = await sourceSubject(siteId);
+  if (!site || (withholdsBytes(site) && !shown)) return null;
+  return readAdminHtml(site);
 }

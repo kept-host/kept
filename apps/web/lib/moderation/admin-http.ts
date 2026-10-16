@@ -15,8 +15,8 @@ import type { z } from "zod";
 import { readJsonOnlyBody, UnreadableBodyError } from "../publish/http";
 import { siteIdSchema } from "../sites/owner-routes";
 
-import { decideAppeal, dismissReports, moderateSite } from "./admin";
-import { appealDecisionSchema, dismissReportsSchema, siteActionSchema } from "./admin-rules";
+import { decideAppeal, dismissReports, moderateSite, readAdminPageHtml } from "./admin";
+import { appealDecisionSchema, dismissReportsSchema, isShown, siteActionSchema } from "./admin-rules";
 import type { SetStatusResult } from "./status";
 
 const NO_STORE = { "cache-control": "no-store" };
@@ -52,6 +52,18 @@ async function parseBody<S extends z.ZodTypeAny>(request: Request, schema: S): P
 
 function statusRefusal(result: Extract<SetStatusResult, { ok: false }>): NextResponse {
   return refusal(result.refusal === "not_found" ? 404 : 409, result.refusal, result.message);
+}
+
+/**
+ * `GET /api/admin/moderation/sites/:id/{preview,source}` — the page's bytes
+ * under the caller's `headers`, or the bare 404 (a malformed id, no such page,
+ * unreadable bytes, or a child-sexual-abuse item without `?show=1`).
+ */
+export async function adminPageResponse(request: Request, rawId: string, headers: HeadersInit): Promise<NextResponse> {
+  const siteId = siteIdSchema.safeParse(rawId);
+  if (!siteId.success) return adminNotFound();
+  const html = await readAdminPageHtml(siteId.data, isShown(new URL(request.url)));
+  return html === null ? adminNotFound() : new NextResponse(html, { headers });
 }
 
 /** `POST /api/admin/moderation/sites/:id` — Restore, Hide or Remove. */

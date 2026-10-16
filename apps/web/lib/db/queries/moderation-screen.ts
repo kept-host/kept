@@ -242,10 +242,15 @@ export async function moderationItem(siteId: string) {
 export type ModerationItem = NonNullable<Awaited<ReturnType<typeof moderationItem>>>;
 
 
-/** What the "Show" round-trip needs to read a page's bytes; `null`: no such page. */
+/** What the Preview and Source round-trips need to read a page's bytes; `null`: no such page. */
 export async function sourceSubject(siteId: string) {
   const [site] = await db
-    .select({ id: sites.id, slug: sites.slug, currentVersionId: sites.currentVersionId })
+    .select({
+      id: sites.id,
+      slug: sites.slug,
+      currentVersionId: sites.currentVersionId,
+      moderationReason: sites.moderationReason,
+    })
     .from(sites)
     .where(eq(sites.id, siteId));
   return site ?? null;

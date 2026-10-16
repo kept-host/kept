@@ -1,24 +1,37 @@
 "use client";
 
 /**
- * The moderated page, two ways (E07 D12, §6.11, AC20): a Preview — the bytes
- * in `PageFrame` with `scripts`, i.e. `<iframe sandbox="allow-scripts"
- * srcdoc>`, an opaque origin that cannot read `app.` cookies or navigate this
- * window — and Source, the first `ADMIN_SOURCE_PREVIEW_BYTES` as escaped text.
+ * The moderated page, two ways (E07 D12, §6.11, AC20): a Preview — an
+ * `<iframe sandbox="allow-scripts">` on `/api/admin/moderation/sites/:id/preview`,
+ * which answers under its own sandboxed, no-network CSP so the page's scripts
+ * run (D-69) in an opaque origin that cannot read `app.` cookies or navigate
+ * this window — and Source, the first `ADMIN_SOURCE_PREVIEW_BYTES` as escaped
+ * text.
  *
  * A child-sexual-abuse item (D13, AC39 admin half) renders `HiddenPreview`:
- * no bytes are in this page at all until "Show" fetches them — one request,
- * on click, never prefetched.
+ * no bytes are in this page, and no URL names them, until "Show" — one
+ * request for the Source, on click, never prefetched, and the frame's
+ * `?show=1` after it.
  */
 import { ADMIN_SOURCE_PREVIEW_BYTES } from "@kept/shared";
 import { useState } from "react";
 
-import { PageFrame } from "@/components/kept/page-preview";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { sourcePreview } from "@/lib/moderation/admin-rules";
+import { adminPageUrl, sourcePreview } from "@/lib/moderation/admin-rules";
 
-export function PreviewPanel({ html, slug }: { html: string; slug: string }) {
+export function PreviewPanel({
+  html,
+  siteId,
+  slug,
+  shown = false,
+}: {
+  html: string;
+  siteId: string;
+  slug: string;
+  /** Opened through "Show": the frame's URL carries the intent too. */
+  shown?: boolean;
+}) {
   const source = sourcePreview(html);
   return (
     <Tabs defaultValue="preview">
@@ -29,11 +42,13 @@ export function PreviewPanel({ html, slug }: { html: string; slug: string }) {
         </TabsTrigger>
       </TabsList>
       <TabsContent value="preview">
-        <PageFrame
-          html={html}
+        {/* `bg-white`, not a token: an author's page assumes a browser's white default (`PageFrame`). */}
+        <iframe
           title={`Preview of ${slug}`}
-          scripts
-          className="pointer-events-auto h-[560px] w-full rounded-[var(--r-md)] border border-border"
+          src={adminPageUrl(siteId, "preview", shown)}
+          sandbox="allow-scripts"
+          referrerPolicy="no-referrer"
+          className="h-[560px] w-full rounded-[var(--r-md)] border border-border bg-white"
         />
       </TabsContent>
       <TabsContent value="source">
@@ -56,13 +71,13 @@ export function HiddenPreview({ siteId, slug }: { siteId: string; slug: string }
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  if (html !== null) return <PreviewPanel html={html} slug={slug} />;
+  if (html !== null) return <PreviewPanel html={html} siteId={siteId} slug={slug} shown />;
 
   async function show() {
     setPending(true);
     setError(null);
     try {
-      const response = await fetch(`/api/admin/moderation/sites/${siteId}/source`, { cache: "no-store" });
+      const response = await fetch(adminPageUrl(siteId, "source", true), { cache: "no-store" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       setHtml(await response.text());
     } catch (err) {

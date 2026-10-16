@@ -7,7 +7,15 @@ import { test } from "node:test";
 
 import { ADMIN_SOURCE_PREVIEW_BYTES } from "@kept/shared";
 
-import { appealDecisionSchema, dismissReportsSchema, scannerLight, siteActionSchema, sourcePreview } from "./admin-rules";
+import {
+  adminPageUrl,
+  appealDecisionSchema,
+  dismissReportsSchema,
+  isShown,
+  scannerLight,
+  siteActionSchema,
+  sourcePreview,
+} from "./admin-rules";
 
 test("AC21: every action requires a reason — a listed one to restrict, a written one otherwise", () => {
   assert.ok(siteActionSchema.safeParse({ action: "hide", reason: "phishing" }).success);
@@ -50,4 +58,16 @@ test("§9: the Scanner light", () => {
   assert.equal(scannerLight({ keyPresent: true, lastSuccessAt: ago(25), now }), "red");
   assert.equal(scannerLight({ keyPresent: true, lastSuccessAt: null, now }), "red");
   assert.equal(scannerLight({ keyPresent: false, lastSuccessAt: ago(0.1), now }), "red");
+});
+
+test("D13 + D-69: the byte URLs carry the Show intent only when asked, and only ?show=1 counts", () => {
+  const id = "00000000-0000-4000-8000-000000000001";
+  assert.equal(adminPageUrl(id, "preview"), `/api/admin/moderation/sites/${id}/preview`);
+  assert.equal(adminPageUrl(id, "source", true), `/api/admin/moderation/sites/${id}/source?show=1`);
+  const base = "https://app.kept-test.example";
+  assert.ok(isShown(new URL(adminPageUrl(id, "preview", true), base)));
+  assert.ok(!isShown(new URL(adminPageUrl(id, "preview"), base)));
+  for (const query of ["?show=true", "?show=", "?show", "?Show=1"]) {
+    assert.ok(!isShown(new URL(`${adminPageUrl(id, "preview")}${query}`, base)), query);
+  }
 });

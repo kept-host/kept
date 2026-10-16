@@ -55,6 +55,21 @@ export function sourcePreview(html: string): { text: string; truncated: boolean 
   return { text: new TextDecoder().decode(bytes.subarray(0, ADMIN_SOURCE_PREVIEW_BYTES)), truncated: true };
 }
 
+/**
+ * Where the item view reads a page's bytes: `preview` (the page as a document,
+ * under its own sandboxed, no-network CSP, D-69) or `source` (the text). The
+ * "Show" click adds `?show=1` — the explicit intent a child-sexual-abuse item's
+ * bytes require (D13); no screen names that URL until the click.
+ */
+export function adminPageUrl(siteId: string, kind: "preview" | "source", shown = false): string {
+  return `/api/admin/moderation/sites/${siteId}/${kind}${shown ? "?show=1" : ""}`;
+}
+
+/** Whether a request to `adminPageUrl` carries the "Show" intent. */
+export function isShown(url: URL): boolean {
+  return url.searchParams.get("show") === "1";
+}
+
 export type ScannerLight = "green" | "amber" | "red";
 
 /**

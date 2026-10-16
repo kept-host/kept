@@ -3,10 +3,10 @@
  * was flagged, the page itself (sandboxed preview + escaped Source), its
  * reports, its appeal, its timeline, and the decisions.
  *
- * The page's HTML is read from R2 HERE, server-side, and reaches the browser
- * only as the `srcdoc` of a sandboxed iframe and as escaped text — never as
- * markup on `app.`. A child-sexual-abuse item reads nothing here (D13): its
- * bytes leave only through "Show".
+ * The page's HTML is read from R2 HERE, server-side, for the escaped Source;
+ * the Preview frame reads it again from its own sandboxed route (D-69) — never
+ * markup on an `app.` document. A child-sexual-abuse item reads nothing here
+ * (D13): its bytes leave only through "Show".
  */
 import { DRAFT_GRACE_DAYS } from "@kept/shared";
 import Link from "next/link";
@@ -145,7 +145,7 @@ export default async function ModerationItemPage({ params }: { params: Promise<{
         ) : html === null ? (
           <p className="text-sm text-text-secondary">The page&rsquo;s bytes could not be read.</p>
         ) : (
-          <PreviewPanel html={html} slug={site.slug} />
+          <PreviewPanel html={html} siteId={site.id} slug={site.slug} />
         )}
       </Section>
 

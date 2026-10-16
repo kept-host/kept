@@ -8,13 +8,34 @@
  * `Content-Security-Policy` header and stamps it on every script it renders)
  * and the response. Pure, so the policy is unit-tested without a request.
  *
- * ── WHAT THE PREVIEW IFRAME INHERITS ───────────────────────────────────────
- * A `srcdoc` document inherits its embedder's policy container, so the
- * moderated page renders under THIS policy as well as under
- * `sandbox="allow-scripts"`: its inline scripts carry no nonce and do not run,
- * and it loads nothing from other origins. That is strictly safer than the
- * sandbox alone, and the Source tab shows the code the preview did not run.
+ * ── THE PREVIEW IFRAME (D-69) ──────────────────────────────────────────────
+ * A `srcdoc` document inherits its embedder's policy, and a `<meta>` policy can
+ * only tighten one, so a `srcdoc` preview ran none of the page's scripts. The
+ * preview is therefore a URL — `/api/admin/moderation/sites/:id/preview`, which
+ * the middleware never stamps — answered under `ADMIN_PREVIEW_CSP` below, and
+ * this policy allows framing `'self'` for it and nothing more.
  */
+
+/**
+ * The preview route's policy: `sandbox allow-scripts` puts the page in an
+ * opaque origin even when opened top-level (no `app.` cookies, no reach into
+ * the admin window, no forms, popups or navigation of the top); inline script
+ * and style run; nothing loads from the network (data: images and fonts
+ * only), so the reviewer's IP never reaches the page's author; only `app.`
+ * itself may frame it.
+ */
+export const ADMIN_PREVIEW_CSP = [
+  "sandbox allow-scripts",
+  "default-src 'none'",
+  "script-src 'unsafe-inline'",
+  "style-src 'unsafe-inline'",
+  "img-src data:",
+  "font-src data:",
+  "connect-src 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'self'",
+  "base-uri 'none'",
+].join("; ");
 
 /** The prefix the policy applies to. */
 export const ADMIN_PATH_PREFIX = "/admin";
@@ -47,8 +68,8 @@ export function adminContentSecurityPolicy(
     "img-src 'self' data: blob:",
     "font-src 'self'",
     "connect-src 'self'",
-    // The preview is a `srcdoc` iframe (`about:srcdoc`); nothing is ever framed by URL.
-    "frame-src about:",
+    // The preview iframe: `/api/admin/moderation/sites/:id/preview`, under its own policy.
+    "frame-src 'self'",
     "frame-ancestors 'none'",
     "object-src 'none'",
     "base-uri 'none'",
