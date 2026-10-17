@@ -255,10 +255,7 @@ after(async () => {
   if (createdManifests.size > 0) {
     // Pointer, then KV, then purge. No page object was ever written for these
     // rows — a manifest only POINTS at one — so there are no bytes to delete.
-    const { removeManifest } = await import("../storage/manifest");
-    for (const slug of createdManifests) {
-      await removeManifest(slug).catch(() => undefined);
-    }
+    await (await import("../testing/served-manifests")).removeServedManifests(createdManifests);
   }
   await (await import("../testing/pending-purges")).clearPendingPurges(createdManifests, createdSites);
   if (createdSites.size > 0) {

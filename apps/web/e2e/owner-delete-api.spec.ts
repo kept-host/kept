@@ -14,6 +14,7 @@ import { closeDb, db, schema } from "../lib/db";
 import { pointerKey } from "../lib/storage/manifest";
 import { PAGE_CONTENT_TYPE, pageObjectKey, r2Store } from "../lib/storage/r2";
 import { clearPendingPurges } from "../lib/testing/pending-purges";
+import { removeServedManifests } from "../lib/testing/served-manifests";
 
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
 import {
@@ -94,10 +95,7 @@ test.describe("owner delete", () => {
 
   test.afterAll(async () => {
     if (SKIP) return;
-    const { removeManifest } = await import("../lib/storage/manifest");
-    for (const slug of createdSlugs) {
-      await removeManifest(slug).catch(() => undefined);
-    }
+    await removeServedManifests(createdSlugs);
     await clearPendingPurges(createdSlugs, createdSiteIds);
     for (const id of createdSiteIds) {
       const versions = await db

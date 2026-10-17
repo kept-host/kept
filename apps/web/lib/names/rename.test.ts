@@ -26,7 +26,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { closeDb, db } from "../db";
 import { nameEvents } from "../db/schema";
 import { StudioRefusal } from "../sites/studio-refusal";
-import { pointerKey, removeManifest } from "../storage/manifest";
+import { pointerKey } from "../storage/manifest";
 import { r2Store } from "../storage/r2";
 import { NamesDrill } from "../testing/names-drill";
 
@@ -46,9 +46,7 @@ const published = new Set<string>();
 
 after(async () => {
   if (skip) return;
-  for (const name of published) {
-    await removeManifest(name).catch(() => undefined);
-  }
+  await (await import("../testing/served-manifests")).removeServedManifests(published);
   await (await import("../testing/pending-purges")).clearPendingPurges(published);
   await drill.cleanup();
   await closeDb();

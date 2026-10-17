@@ -396,11 +396,10 @@ after(async () => {
   const client = await db();
   const { profiles, sites, siteVersions, user } = await import("../db/schema");
   const { eq } = await import("drizzle-orm");
-  const { removeManifest } = await import("../storage/manifest");
   const { pageObjectKey, r2Store } = await import("../storage/r2");
 
+  await (await import("../testing/served-manifests")).removeServedManifests(createdSlugs);
   for (const slug of createdSlugs) {
-    await removeManifest(slug).catch(() => undefined);
     const [row] = await client.select({ id: sites.id }).from(sites).where(eq(sites.slug, slug));
     if (row) createdSites.add(row.id);
   }

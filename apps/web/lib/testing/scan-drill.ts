@@ -7,7 +7,8 @@
  * and the real R2 object its `r2_key` names, so a scan reads, extracts and
  * decides exactly as it does for a published page. No manifest is written
  * here: only a committed `setStatus` (a flag) writes one, and `cleanup()`
- * removes exactly those — dev KV is on the free plan (1k deletes a day).
+ * removes exactly those still served — dev KV is on the free plan (1k deletes
+ * a day).
  */
 import { hashContent } from "@kept/shared";
 import { inArray } from "drizzle-orm";
@@ -15,11 +16,11 @@ import { inArray } from "drizzle-orm";
 import { db } from "../db";
 import type { ScanTarget } from "../db/queries/scans";
 import { moderationActions, sites, siteVersions } from "../db/schema";
-import { removeManifest } from "../storage/manifest";
 import { PAGE_CONTENT_TYPE, pageObjectKey, r2Store } from "../storage/r2";
 
 import { stillServed } from "./moderation-drill";
 import { clearPendingPurges } from "./pending-purges";
+import { removeServedManifests } from "./served-manifests";
 
 export class ScanDrill {
   private readonly siteIds = new Set<string>();
@@ -68,8 +69,7 @@ export class ScanDrill {
     const siteIds = [...this.siteIds];
     if (siteIds.length > 0) {
       // Only a published page, or one a committed flag synced, has a manifest to remove.
-      const served = new Set([...this.published, ...(await stillServed(siteIds))]);
-      for (const slug of served) await removeManifest(slug).catch(() => undefined);
+      await removeServedManifests([...this.published, ...(await stillServed(siteIds))]);
       await db.delete(moderationActions).where(inArray(moderationActions.siteId, siteIds));
       await clearPendingPurges(this.slugs, siteIds);
       const versions = await db

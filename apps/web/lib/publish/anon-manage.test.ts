@@ -123,12 +123,11 @@ after(async () => {
   const { eq } = await import("drizzle-orm");
   const { db } = await import("../db/index");
   const { sites, siteVersions } = await import("../db/schema");
-  const { removeManifest } = await import("../storage/manifest");
   const { pageObjectKey, r2Store } = await import("../storage/r2");
 
+  await (await import("../testing/served-manifests")).removeServedManifests(created);
   for (const slug of created) {
     const [row] = await db.select({ id: sites.id }).from(sites).where(eq(sites.slug, slug));
-    await removeManifest(slug).catch(() => undefined);
     if (!row) continue;
     const versions = await db
       .select({ id: siteVersions.id })

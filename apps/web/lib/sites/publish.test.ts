@@ -138,10 +138,7 @@ async function readSite(siteId: string) {
 
 after(async () => {
   if (skip) return;
-  const { removeManifest } = await import("../storage/manifest");
-  for (const slug of publishedSlugs) {
-    await removeManifest(slug).catch(() => undefined);
-  }
+  await (await import("../testing/served-manifests")).removeServedManifests(publishedSlugs);
   await (await import("../testing/pending-purges")).clearPendingPurges(publishedSlugs, createdSites);
   if (createdSites.size > 0) {
     const versions = await db

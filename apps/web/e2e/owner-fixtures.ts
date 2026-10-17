@@ -8,6 +8,7 @@ import { eq, inArray } from "drizzle-orm";
 
 import { db, schema } from "../lib/db";
 import { clearPendingPurges } from "../lib/testing/pending-purges";
+import { removeServedManifests } from "../lib/testing/served-manifests";
 
 import { SKIP_LIVE_PUBLISH } from "./live-publish";
 
@@ -327,7 +328,6 @@ export async function drop(page: Page, target: Locator, file: DroppedFile): Prom
  * is `set null`) and leaves a live page serving that no authority can reach.
  */
 export async function cleanup(scope: OwnerScope): Promise<void> {
-  const { removeManifest } = await import("../lib/storage/manifest");
   const { pageObjectKey, r2Store } = await import("../lib/storage/r2");
 
   if (scope.userIds.length) {
@@ -349,9 +349,9 @@ export async function cleanup(scope: OwnerScope): Promise<void> {
     }
   }
 
-  for (const slug of scope.slugs) {
-    await removeManifest(slug).catch(() => undefined);
-  }
+  // Only the slugs still served: a page the spec deleted or renamed away from
+  // already left the edge.
+  await removeServedManifests(scope.slugs);
 
   for (const id of scope.siteIds) {
     const versions = await db

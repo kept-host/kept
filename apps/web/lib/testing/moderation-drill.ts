@@ -13,6 +13,8 @@ import { and, inArray, notInArray } from "drizzle-orm";
 import { db } from "../db";
 import { moderationActions, sites } from "../db/schema";
 
+import { UNSERVED_STATUSES } from "./served-manifests";
+
 export async function stillServed(siteIds: string[]): Promise<string[]> {
   const synced = db
     .selectDistinct({ id: moderationActions.siteId })
@@ -21,6 +23,6 @@ export async function stillServed(siteIds: string[]): Promise<string[]> {
   const rows = await db
     .select({ slug: sites.slug })
     .from(sites)
-    .where(and(inArray(sites.id, synced), notInArray(sites.status, ["removed", "archived"])));
+    .where(and(inArray(sites.id, synced), notInArray(sites.status, [...UNSERVED_STATUSES])));
   return rows.map((row) => row.slug);
 }
