@@ -172,7 +172,8 @@ const workerPublisher = `kept-e2e/${randomBytes(4).toString("hex")}`;
  * --experimental-https` resets connections under the full suite's load and a
  * page loses `layout.css` (`net::ERR_CONNECTION_RESET`), which surfaces as the
  * "design tokens never applied" failures `e2e/tokens-applied.ts` describes.
- * CI stays at 1.
+ * The cap reduces those, it does not eliminate them: a full local run at 3
+ * still sees a few. The gate runs as CI does — 1 worker, 1 retry.
  */
 const LOCAL_WORKERS = 3;
 
