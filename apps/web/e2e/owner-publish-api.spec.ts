@@ -27,7 +27,8 @@ import { jarlessContext, sessionHeaders } from "./session-request";
  * endpoint by a real session minted through the real magic-link verify, so each
  * assertion is made against a genuine row, a genuine R2 object, a genuine KV
  * manifest and a genuinely served page. The slots that merely FILL an account
- * to its kept limit are real rows seeded by direct insert (`seedKept`): the cap
+ * to its kept limit — and the page whose slug lends AC44 its hosted origin —
+ * are real rows seeded by direct insert (`seedKept`): the cap
  * counts them exactly as it counts a publish, and publishing
  * `limitsFor("free").keptPages` pages per test would cost minutes of R2/KV
  * traffic for no extra proof.
@@ -402,12 +403,7 @@ test.describe("owned publish", () => {
     baseURL,
   }) => {
     const { cookie, profileId } = await signIn(baseURL!);
-    const seed = await publishOk(
-      request,
-      baseURL!,
-      cookie,
-      `e06-005-csrf-seed-${crypto.randomUUID().slice(0, 8)}`,
-    );
+    const [seed] = await seedKept({ siteIds: createdSiteIds }, profileId, 1);
 
     const marker = `e06-005-csrf-${crypto.randomUUID().slice(0, 8)}`;
     const refused = await request.post(`${baseURL}/api/sites`, {
@@ -415,7 +411,7 @@ test.describe("owned publish", () => {
       // `SameSite=Lax` does not block it. A script on a page kept hosts filling
       // its visitor's account — and, at the cap, silently spending the slot they
       // were saving — is exactly the attack E05a exists for.
-      headers: { cookie, origin: `https://${seed.site.slug}.${servingDomain()}` },
+      headers: { cookie, origin: `https://${seed!.slug}.${servingDomain()}` },
       data: { html: pageHtml(marker) },
     });
 

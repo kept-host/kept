@@ -17,6 +17,7 @@ import { clearPendingPurges } from "../lib/testing/pending-purges";
 import { removeServedManifests } from "../lib/testing/served-manifests";
 
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
+import { seedOwned } from "./owner-fixtures";
 import {
   pageHtml,
   probeEdge,
@@ -37,7 +38,9 @@ import { jarlessContext, sessionHeaders } from "./session-request";
  * NO MOCKS AND NO FIXTURE ROWS. Every page is published through
  * `POST /api/publish` and adopted through the real anonymous keep, so the
  * pointer, the KV manifest, the R2 object and the edge cache all genuinely exist
- * before a delete unwinds them.
+ * before a delete unwinds them. Only the export, which reads R2 and never the
+ * edge, runs on a page seeded with its bytes (`seedOwned`): dev KV is on the
+ * free plan.
  *
  * ── THE CLAIMS ───────────────────────────────────────────────────────────────
  *
@@ -119,7 +122,7 @@ test.describe("owner delete", () => {
   });
 
   /** A real session cookie, minted through the real magic-link verify endpoint. */
-  async function signIn(baseURL: string): Promise<string> {
+  async function signIn(baseURL: string): Promise<{ cookie: string; profileId: string }> {
     const { auth } = await import("../lib/auth");
     const ctx = await auth.$context;
     const token = crypto.randomUUID().replace(/-/g, "");
@@ -140,11 +143,13 @@ test.describe("owner delete", () => {
       const body = (await response.json()) as { user: { id: string } };
       createdUserIds.push(body.user.id);
 
-      return response
+      const cookie = response
         .headersArray()
         .filter((header) => header.name.toLowerCase() === "set-cookie")
         .map((header) => header.value.split(";", 1)[0])
         .join("; ");
+      // `profiles.id` IS the auth user id (E05 D1) — no second lookup needed.
+      return { cookie, profileId: body.user.id };
     } finally {
       await requestCtx.dispose();
     }
@@ -207,7 +212,7 @@ test.describe("owner delete", () => {
   }) => {
     test.setTimeout(LIVE_STACK_TIMEOUT + STALE_EDGE_WINDOW_MS + 60_000);
 
-    const cookie = await signIn(baseURL!);
+    const { cookie } = await signIn(baseURL!);
     // Two kept pages, so the freed slot is a number that visibly moves rather
     // than a zero that could have come from anywhere.
     const keeper = await ownedPage(request, baseURL!, cookie);
@@ -280,7 +285,7 @@ test.describe("owner delete", () => {
     request,
     baseURL,
   }) => {
-    const cookie = await signIn(baseURL!);
+    const { cookie } = await signIn(baseURL!);
     const page = await ownedPage(request, baseURL!, cookie);
     const chosen = `e06-008d-${crypto.randomUUID().slice(0, 8)}`;
     const renamed = await request.patch(`${baseURL}/api/sites/${page.siteId}/name`, {
@@ -346,7 +351,7 @@ test.describe("owner delete", () => {
     request,
     baseURL,
   }) => {
-    const cookie = await signIn(baseURL!);
+    const { cookie } = await signIn(baseURL!);
     const { syncManifest } = await import("../lib/storage/manifest");
     const { managementRefusal } = await import("../lib/sites/display");
 
@@ -374,7 +379,7 @@ test.describe("owner delete", () => {
     request,
     baseURL,
   }) => {
-    const cookie = await signIn(baseURL!);
+    const { cookie } = await signIn(baseURL!);
     const mine = await ownedPage(request, baseURL!, cookie);
 
     const signedOut = await request.delete(`${baseURL}/api/sites/${mine.siteId}`);
@@ -387,7 +392,7 @@ test.describe("owner delete", () => {
       studioErrorSchema.parse(await anonymous.json());
     }
 
-    const otherCookie = await signIn(baseURL!);
+    const { cookie: otherCookie } = await signIn(baseURL!);
     const theirs = await ownedPage(request, baseURL!, otherCookie);
 
     const refused = await remove(request, baseURL!, cookie, theirs.siteId);
@@ -412,8 +417,8 @@ test.describe("owner delete", () => {
     request,
     baseURL,
   }) => {
-    const cookie = await signIn(baseURL!);
-    const page = await ownedPage(request, baseURL!, cookie);
+    const { cookie, profileId } = await signIn(baseURL!);
+    const page = await seedOwned({ siteIds: createdSiteIds }, profileId, "e06-006d export");
 
     // A plain GET with the session cookie, as a link click sends it — no origin
     // header, no fetch-to-blob.
@@ -437,7 +442,7 @@ test.describe("owner delete", () => {
     request,
     baseURL,
   }) => {
-    const cookie = await signIn(baseURL!);
+    const { cookie } = await signIn(baseURL!);
     const page = await ownedPage(request, baseURL!, cookie);
     const before = await readSite(page.siteId);
 

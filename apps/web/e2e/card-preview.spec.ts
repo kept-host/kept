@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
 import { ogTheme } from "../lib/og/palette";
+import { draftClocks } from "../lib/publish/pipeline";
 
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
 import {
@@ -10,6 +11,7 @@ import {
   hydrated,
   newScope,
   publishOwned,
+  seedOwned,
   signInAs,
   SKIP_OWNER_UI,
 } from "./owner-fixtures";
@@ -31,9 +33,11 @@ import { gotoWithTokensApplied } from "./tokens-applied";
  * from the browser's own requests; a held request (`page.route` → leave →
  * release) shows that leaving the card aborts a read still in flight.
  *
- * NO MOCKS: a real magic-link session, real pages through `POST /api/sites`,
- * real bytes from R2. SKIPS without dev credentials, as every signed-in screen
- * spec does.
+ * NO MOCKS: a real magic-link session, real rows and real bytes from R2. The
+ * preview never asks the edge, so only the rename publishes through
+ * `POST /api/sites`; every other page is seeded with its bytes and no manifest
+ * (`seedOwned`) — dev KV is on the free plan. SKIPS without dev credentials, as
+ * every signed-in screen spec does.
  */
 const scope = newScope();
 
@@ -111,9 +115,9 @@ test.describe("card gradients and the hover preview", () => {
     page,
     baseURL,
   }) => {
-    await signInAs(page, baseURL!, scope);
+    const { userId } = await signInAs(page, baseURL!, scope);
     const marker = `drawn by script ${crypto.randomUUID().slice(0, 8)}`;
-    const site = await publishOwned(page, baseURL!, scope, "E06 hover", scripted(marker));
+    const site = await seedOwned(scope, userId, "E06 hover", { body: scripted(marker) });
 
     await openHome(page);
     const reads = watchReads(page);
@@ -191,8 +195,8 @@ test.describe("card gradients and the hover preview", () => {
     page,
     baseURL,
   }) => {
-    await signInAs(page, baseURL!, scope);
-    const site = await publishOwned(page, baseURL!, scope, "E06 hover abort");
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const site = await seedOwned(scope, userId, "E06 hover abort");
 
     await openHome(page);
 
@@ -218,13 +222,12 @@ test.describe("card gradients and the hover preview", () => {
   });
 
   test("a live draft previews too; a list row never does", async ({ page, baseURL }) => {
-    await signInAs(page, baseURL!, scope);
-    const kept = await publishOwned(page, baseURL!, scope, "E06 hover kept", scripted("kept page body"));
-    const draft = await publishOwned(page, baseURL!, scope, "E06 hover draft", scripted("draft page body"));
-    const demoted = await page.request.post(`${baseURL}/api/sites/${draft.siteId}/demote`, {
-      headers: { origin: new URL(baseURL!).origin },
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const kept = await seedOwned(scope, userId, "E06 hover kept", { body: scripted("kept page body") });
+    const draft = await seedOwned(scope, userId, "E06 hover draft", {
+      body: scripted("draft page body"),
+      expiresAt: draftClocks(new Date()).expiresAt,
     });
-    expect(demoted.status(), await demoted.text()).toBe(200);
 
     // A draft CARD — the Drafts tab in grid view.
     await openHome(page, "/dashboard?tab=drafts&view=grid");
@@ -250,8 +253,8 @@ test.describe("card gradients and the hover preview", () => {
   });
 
   test("a page that is not live never previews, and keeps its gradient", async ({ page, baseURL }) => {
-    await signInAs(page, baseURL!, scope);
-    const site = await publishOwned(page, baseURL!, scope, "E06 hover flagged");
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const site = await seedOwned(scope, userId, "E06 hover flagged");
     // Flagged by hand — E07 owns the real flip; E06 only renders it.
     await db.update(schema.sites).set({ status: "under_review" }).where(eq(schema.sites.id, site.siteId));
     try {
@@ -272,8 +275,8 @@ test.describe("card gradients and the hover preview", () => {
 
   test("under reduced motion the preview still shows, without the fade", async ({ page, baseURL }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
-    await signInAs(page, baseURL!, scope);
-    const site = await publishOwned(page, baseURL!, scope, "E06 hover reduced", scripted("still here"));
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const site = await seedOwned(scope, userId, "E06 hover reduced", { body: scripted("still here") });
 
     await openHome(page);
     await thumbnail(page, site.siteId).hover();
@@ -287,8 +290,8 @@ test.describe("card gradients and the hover preview", () => {
     test.use({ hasTouch: true });
 
     test("there is no hover, so there is no preview — a tap opens the page", async ({ page, baseURL }) => {
-      await signInAs(page, baseURL!, scope);
-      const site = await publishOwned(page, baseURL!, scope, "E06 hover touch");
+      const { userId } = await signInAs(page, baseURL!, scope);
+      const site = await seedOwned(scope, userId, "E06 hover touch");
 
       await openHome(page);
       expect(

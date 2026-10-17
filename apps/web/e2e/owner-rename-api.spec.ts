@@ -16,6 +16,7 @@ import { clearPendingPurges } from "../lib/testing/pending-purges";
 import { removeServedManifests } from "../lib/testing/served-manifests";
 
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
+import { seedOwned } from "./owner-fixtures";
 import {
   pageHtml,
   probeEdge,
@@ -38,7 +39,10 @@ import { jarlessContext, sessionHeaders } from "./session-request";
  * R2 object and no KV manifest would prove nothing about it. Every page here is
  * published through `POST /api/publish` for real and adopted through the real
  * `POST /api/anon/:token/keep`, so by the time a rename runs there is a genuine
- * pointer, a genuine KV manifest and a genuine cached response to move.
+ * pointer, a genuine KV manifest and a genuine cached response to move. The
+ * refusals that are decided before any store call and assert nothing at the
+ * edge — AC17, AC44 and the check route — run on seeded pages (`seedOwned`):
+ * dev KV is on the free plan.
  *
  * WHAT THIS FILE IS FOR, that no unit drill can reach:
  *
@@ -122,7 +126,7 @@ test.describe("owner rename", () => {
   });
 
   /** A real session cookie, minted through the real magic-link verify endpoint. */
-  async function signIn(baseURL: string): Promise<string> {
+  async function signIn(baseURL: string): Promise<{ cookie: string; profileId: string }> {
     const { auth } = await import("../lib/auth");
     const ctx = await auth.$context;
     const token = crypto.randomUUID().replace(/-/g, "");
@@ -145,11 +149,13 @@ test.describe("owner rename", () => {
       const body = (await response.json()) as { user: { id: string } };
       createdUserIds.push(body.user.id);
 
-      return response
+      const cookie = response
         .headersArray()
         .filter((header) => header.name.toLowerCase() === "set-cookie")
         .map((header) => header.value.split(";", 1)[0])
         .join("; ");
+      // `profiles.id` IS the auth user id (E05 D1) — no second lookup needed.
+      return { cookie, profileId: body.user.id };
     } finally {
       await requestCtx.dispose();
     }
@@ -235,7 +241,7 @@ test.describe("owner rename", () => {
     // measurement, so the budget has to cover the worst case plus a sign-in.
     test.setTimeout(LIVE_STACK_TIMEOUT + STALE_EDGE_WINDOW_MS + 30_000);
 
-    const cookie = await signIn(baseURL!);
+    const { cookie } = await signIn(baseURL!);
     const page = await ownedPage(request, baseURL!, cookie);
     const objectKey = pageObjectKey(page.siteId, page.versionId);
     const objectBefore = await r2Store().get(objectKey);
@@ -302,7 +308,7 @@ test.describe("owner rename", () => {
   });
 
   test("renaming a page to its own name writes nothing", async ({ request, baseURL }) => {
-    const cookie = await signIn(baseURL!);
+    const { cookie } = await signIn(baseURL!);
     const page = await ownedPage(request, baseURL!, cookie);
 
     // The pointer's bytes carry `updatedAt`, so identical bytes before and
@@ -326,7 +332,7 @@ test.describe("owner rename", () => {
     request,
     baseURL,
   }) => {
-    const cookie = await signIn(baseURL!);
+    const { cookie } = await signIn(baseURL!);
     const mine = await ownedPage(request, baseURL!, cookie);
     const theirs = await ownedPage(request, baseURL!, cookie);
 
@@ -375,11 +381,11 @@ test.describe("owner rename", () => {
     request,
     baseURL,
   }) => {
-    const cookie = await signIn(baseURL!);
+    const { cookie, profileId } = await signIn(baseURL!);
 
     // A draft: chosen names are for kept pages only (D3). Demoted through the
     // real route, so the clock is the product's, not a fixture's.
-    const draft = await ownedPage(request, baseURL!, cookie);
+    const draft = await seedOwned({ siteIds: createdSiteIds }, profileId, "e06-006 draft");
     const demoted = await request.post(`${baseURL}/api/sites/${draft.siteId}/demote`, {
       headers: sessionHeaders(cookie, baseURL!),
     });
@@ -393,7 +399,7 @@ test.describe("owner rename", () => {
     );
     expect(await readSite(draft.siteId)).toEqual(draftBefore);
 
-    const page = await ownedPage(request, baseURL!, cookie);
+    const page = await seedOwned({ siteIds: createdSiteIds }, profileId, "e06-006 flagged");
 
     // E06 RENDERS these states and writes none of them, so the fixture sets it
     // directly — there is no product path that could.
@@ -424,8 +430,8 @@ test.describe("owner rename", () => {
     request,
     baseURL,
   }) => {
-    const cookie = await signIn(baseURL!);
-    const mine = await ownedPage(request, baseURL!, cookie);
+    const { cookie, profileId } = await signIn(baseURL!);
+    const mine = await seedOwned({ siteIds: createdSiteIds }, profileId, "e06-006 mine");
 
     const signedOut = await request.patch(`${baseURL}/api/sites/${mine.siteId}/name`, {
       data: { name: freshName("signed-out") },
@@ -439,8 +445,8 @@ test.describe("owner rename", () => {
     expect(signedOutCheck.status()).toBe(401);
 
     // A second account, from this account's session.
-    const otherCookie = await signIn(baseURL!);
-    const theirs = await ownedPage(request, baseURL!, otherCookie);
+    const other = await signIn(baseURL!);
+    const theirs = await seedOwned({ siteIds: createdSiteIds }, other.profileId, "e06-006 theirs");
 
     const name = freshName("stolen");
     const refused = await rename(request, baseURL!, cookie, theirs.siteId, name);
@@ -464,7 +470,7 @@ test.describe("owner rename", () => {
     request,
     baseURL,
   }) => {
-    const cookie = await signIn(baseURL!);
+    const { cookie } = await signIn(baseURL!);
     const page = await ownedPage(request, baseURL!, cookie);
     const rowBefore = await readSite(page.siteId);
     const nextSlug = freshName("csrf");
@@ -491,9 +497,9 @@ test.describe("owner rename", () => {
     request,
     baseURL,
   }) => {
-    const cookie = await signIn(baseURL!);
-    const mine = await ownedPage(request, baseURL!, cookie);
-    const theirs = await ownedPage(request, baseURL!, await signIn(baseURL!));
+    const { cookie, profileId } = await signIn(baseURL!);
+    const mine = await seedOwned({ siteIds: createdSiteIds }, profileId, "e06-006 mine");
+    const theirs = await seedOwned({ siteIds: createdSiteIds }, (await signIn(baseURL!)).profileId, "e06-006 theirs");
 
     for (const name of ["app", "www", "explore", "docs"]) {
       const response = await check(request, baseURL!, cookie, mine.siteId, name);

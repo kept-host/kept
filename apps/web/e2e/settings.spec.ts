@@ -5,6 +5,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
+import { draftClocks, graceEnds } from "../lib/publish/pipeline";
 import { EXPORT_MANIFEST_NAME, type ExportEntry } from "../lib/sites/export";
 import { pointerKey } from "../lib/storage/manifest";
 import { pageObjectKey, r2Store } from "../lib/storage/r2";
@@ -18,6 +19,7 @@ import {
   publishOwned,
   readSite,
   seedKept,
+  seedOwned,
   signInAs,
   SKIP_OWNER_UI,
 } from "./owner-fixtures";
@@ -30,8 +32,10 @@ import { waitForTokensApplied } from "./tokens-applied";
  * NO MOCKS. Every account is a brand-new one signed in through the real
  * magic-link verify endpoint (`signInAs`). Sign-in methods are real Better Auth
  * `account` rows and every Connect / Disconnect hits Better Auth's own
- * endpoint; the export is the real streamed zip, downloaded by the browser; the
- * deletion is fired for real on an account seeded seconds earlier.
+ * endpoint; the export is the real streamed zip, downloaded by the browser, of
+ * pages seeded with their real R2 bytes and no manifest (`seedOwned` — the
+ * export never asks the edge, and dev KV is on the free plan); the deletion is
+ * fired for real on an account seeded seconds earlier.
  *
  * What the API specs own is not repeated: `account-deletion.spec.ts` owns the
  * row-state claims of `DELETE /api/account`, `owner-delete-api` the export's
@@ -274,7 +278,7 @@ test.describe("the settings screen", () => {
     page,
     baseURL,
   }) => {
-    await signInAs(page, baseURL!, scope);
+    const { userId } = await signInAs(page, baseURL!, scope);
 
     await page.goto("/settings");
     await openSection(page, "Your data");
@@ -282,7 +286,7 @@ test.describe("the settings screen", () => {
     await expect(button).toBeDisabled();
     await expect(page.getByTestId("export-panel")).toContainText("Nothing to export yet.");
 
-    const published = await publishOwned(page, baseURL!, scope, "E06 settings export");
+    const published = await seedOwned(scope, userId, "E06 settings export");
     await page.reload();
     await openSection(page, "Your data");
     await expect(button).toBeEnabled();
@@ -321,7 +325,7 @@ test.describe("the settings screen", () => {
     baseURL,
   }) => {
     const { userId } = await signInAs(page, baseURL!, scope);
-    await publishOwned(page, baseURL!, scope, "E06 settings export refused");
+    await seedOwned(scope, userId, "E06 settings export refused");
 
     await page.goto("/settings");
     await openSection(page, "Your data");
@@ -343,16 +347,15 @@ test.describe("the settings screen", () => {
     baseURL,
   }) => {
     test.skip(!hasUnzip(), "no `unzip` binary to read the archive with an independent reader");
-    const origin = { origin: new URL(baseURL!).origin };
-
-    await signInAs(page, baseURL!, scope);
-    const kept = await publishOwned(page, baseURL!, scope, "E06 export kept");
-    const draft = await publishOwned(page, baseURL!, scope, "E06 export draft");
-    const archived = await publishOwned(page, baseURL!, scope, "E06 export deleted");
-    const demoted = await page.request.post(`${baseURL}/api/sites/${draft.siteId}/demote`, { headers: origin });
-    expect(demoted.status(), await demoted.text()).toBe(200);
-    const deleted = await page.request.delete(`${baseURL}/api/sites/${archived.siteId}`, { headers: origin });
-    expect(deleted.status(), await deleted.text()).toBe(200);
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const kept = await seedOwned(scope, userId, "E06 export kept");
+    const draft = await seedOwned(scope, userId, "E06 export draft", { expiresAt: draftClocks(new Date()).expiresAt });
+    const archived = await seedOwned(scope, userId, "E06 export deleted");
+    // Deleted as `deleteSite` leaves a page (D14) — the route's edge half is `owner-delete-api`'s.
+    await db
+      .update(schema.sites)
+      .set({ status: "archived", purgeAfter: graceEnds(new Date()) })
+      .where(eq(schema.sites.id, archived.siteId));
 
     await page.goto("/settings");
     await openSection(page, "Your data");

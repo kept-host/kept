@@ -5,7 +5,7 @@ import { closeDb } from "../lib/db";
 
 import { servingDomain } from "./live-publish";
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
-import { cleanup, newScope, publishOwned, readSite, signInAs, SKIP_OWNER_UI } from "./owner-fixtures";
+import { cleanup, newScope, readSite, seedOwned, signInAs, SKIP_OWNER_UI } from "./owner-fixtures";
 import { jarlessContext } from "./session-request";
 
 /**
@@ -20,7 +20,9 @@ import { jarlessContext } from "./session-request";
  * which would confirm the page exists.
  *
  * Two real magic-link sessions in two browser contexts; real rows re-read after
- * every refusal. SKIPS without dev credentials.
+ * every refusal. The page is seeded with its bytes and no manifest
+ * (`seedOwned`): details are a Postgres write, never the edge's, and dev KV is
+ * on the free plan. SKIPS without dev credentials.
  */
 const scope = newScope();
 
@@ -44,8 +46,8 @@ test.describe("PATCH /api/sites/:id (AC44)", () => {
     browser,
     baseURL,
   }) => {
-    await signInAs(page, baseURL!, scope);
-    const site = await publishOwned(page, baseURL!, scope, "E06 details api");
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const site = await seedOwned(scope, userId, "E06 details api");
     const url = `${baseURL}/api/sites/${site.siteId}`;
     const appOrigin = new URL(baseURL!).origin;
 

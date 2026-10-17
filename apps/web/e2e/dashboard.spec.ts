@@ -24,6 +24,7 @@ import {
   publishOwned,
   readSite,
   seedKept,
+  seedOwned,
   seedVisits,
   signInAs,
   titledHtml,
@@ -36,11 +37,13 @@ import { waitForTokensApplied } from "./tokens-applied";
  * E06 task 011 (PRD §5.1, §9.1): AC2 (UI), AC4–AC9, AC10, AC11 (UI), and the
  * card drop → replace.
  *
- * NO MOCKS. Pages an assertion is about are published through `POST /api/sites`
- * by a real magic-link session; rows that only FILL an account (to its kept
- * limit, or to give a list something to sort) are real rows inserted straight
- * into Postgres (`seedKept`, `seedDraft`) — the screens and the cap count them
- * like any page. Visits are real `page_views_daily` rows.
+ * NO MOCKS. Pages a publish, keep, replace or drop assertion is about go
+ * through `POST /api/sites` by a real magic-link session; pages the home only
+ * renders are seeded with their real bytes and no manifest (`seedOwned` — dev
+ * KV is on the free plan); rows that only FILL an account (to its kept limit,
+ * or to give a list something to sort) are real rows inserted straight into
+ * Postgres (`seedKept`, `seedDraft`) — the screens and the cap count them like
+ * any page. Visits are real `page_views_daily` rows.
  *
  * Drops are real files dragged through Chromium's own input pipeline onto the
  * element a user would drop on (`hold` / `drop` in `owner-fixtures.ts`); the
@@ -149,8 +152,8 @@ test.describe("the Pages home", () => {
     page,
     baseURL,
   }) => {
-    await signInAs(page, baseURL!, scope);
-    await publishOwned(page, baseURL!, scope, "E06 shell page");
+    const { userId } = await signInAs(page, baseURL!, scope);
+    await seedOwned(scope, userId, "E06 shell page");
     await page.goto("/dashboard");
     await expect(page.getByRole("heading", { level: 1, name: "Your pages" })).toBeVisible();
 
@@ -210,8 +213,8 @@ test.describe("the Pages home", () => {
     baseURL,
   }) => {
     const { userId } = await signInAs(page, baseURL!, scope);
-    const alpha = await publishOwned(page, baseURL!, scope, "Alpha Tide");
-    const beta = await publishOwned(page, baseURL!, scope, "Beta Orbit");
+    const alpha = await seedOwned(scope, userId, "Alpha Tide");
+    const beta = await seedOwned(scope, userId, "Beta Orbit");
     const seeded = await seedKept(scope, userId, 2);
     const later = await seedDraft(userId, new Date(Date.now() + 5 * DAY));
     const urgent = await seedDraft(userId, new Date(Date.now() + 20 * HOUR));
@@ -439,7 +442,7 @@ test.describe("the Pages home", () => {
   test("Pro: the counters read the premium limits", async ({ page, baseURL }) => {
     const { userId } = await signInAs(page, baseURL!, scope);
     await db.update(schema.profiles).set({ plan: "premium" }).where(eq(schema.profiles.id, userId));
-    await publishOwned(page, baseURL!, scope, "E06 pro page");
+    await seedOwned(scope, userId, "E06 pro page");
     await page.goto("/dashboard");
 
     await expect(summaryItem(page, "Kept")).toContainText(`1 / ${PRO.keptPages}`);
@@ -593,8 +596,8 @@ test.describe("the Pages home", () => {
   });
 
   test("the screen paints from tokens, so it is correct in dark too", async ({ page, baseURL }) => {
-    await signInAs(page, baseURL!, scope);
-    await publishOwned(page, baseURL!, scope, "E06 dark");
+    const { userId } = await signInAs(page, baseURL!, scope);
+    await seedOwned(scope, userId, "E06 dark");
     await page.goto("/dashboard");
     await waitForTokensApplied(page);
 

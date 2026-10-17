@@ -32,6 +32,7 @@ import {
   newScope,
   publishOwned,
   readSite,
+  seedOwned,
   signInAs,
   titledHtml,
   SKIP_OWNER_UI,
@@ -44,10 +45,13 @@ import { waitForTokensApplied } from "./tokens-applied";
  * title half, the PRD §5.2 status matrix, and Epic Verification 12 (the route
  * is the page's id; `/site/{slug}` is gone).
  *
- * NO MOCKS. Every page is published through `POST /api/sites` by a real
- * magic-link session; every verb goes over the wire to the same origin-gated
- * route the screen calls; every assertion that matters re-reads Postgres. The
- * only rows written directly are states E06 renders and never writes — E07's
+ * NO MOCKS. A page whose test replaces, renames, deletes or restores it — every
+ * verb that writes the edge — is published through `POST /api/sites` by a real
+ * magic-link session; one the screen only renders, downloads or keeps is seeded
+ * with its real bytes and no manifest (`seedOwned`), because dev KV is on the
+ * free plan. Every verb goes over the wire to the same origin-gated route the
+ * screen calls; every assertion that matters re-reads Postgres. The only other
+ * rows written directly are states E06 renders and never writes — E07's
  * `under_review` / `quarantined` / `removed` / `expired` and their reason, and
  * the visits sync's daily rows (task 009's sync is gated on a human
  * credential). E07 task 009's restricted banner is driven end to end: the
@@ -154,8 +158,8 @@ test.describe("the page detail screen", () => {
     browser,
     baseURL,
   }) => {
-    await signInAs(page, baseURL!, scope);
-    const site = await publishOwned(page, baseURL!, scope, "E06 detail");
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const site = await seedOwned(scope, userId, "E06 detail");
 
     await openDetail(page, site.siteId);
     await expect(page.getByRole("heading", { level: 1, name: site.name })).toBeVisible();
@@ -258,8 +262,8 @@ test.describe("the page detail screen", () => {
     page,
     baseURL,
   }) => {
-    await signInAs(page, baseURL!, scope);
-    const site = await publishOwned(page, baseURL!, scope, "E06 explore");
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const site = await seedOwned(scope, userId, "E06 explore");
 
     await openDetail(page, site.siteId);
     const toggle = page.getByTestId("explore-toggle");
@@ -451,8 +455,8 @@ test.describe("the page detail screen", () => {
     page,
     baseURL,
   }) => {
-    await signInAs(page, baseURL!, scope);
-    const site = await publishOwned(page, baseURL!, scope, "E06 share");
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const site = await seedOwned(scope, userId, "E06 share");
     const matrix = qrMatrix(site.liveUrl);
 
     await openDetail(page, site.siteId);
@@ -525,9 +529,9 @@ test.describe("the page detail screen", () => {
     page,
     baseURL,
   }) => {
-    await signInAs(page, baseURL!, scope);
-    const visited = await publishOwned(page, baseURL!, scope, "E06 visited");
-    const quiet = await publishOwned(page, baseURL!, scope, "E06 quiet");
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const visited = await seedOwned(scope, userId, "E06 visited");
+    const quiet = await seedOwned(scope, userId, "E06 quiet");
     const dayAgo = (n: number) => new Date(Date.now() - n * DAY).toISOString().slice(0, 10);
     await db.insert(schema.pageViewsDaily).values([
       { siteId: visited.siteId, day: dayAgo(1), views: 12 },
@@ -597,8 +601,8 @@ test.describe("the page detail screen", () => {
     page,
     baseURL,
   }) => {
-    await signInAs(page, baseURL!, scope);
-    const site = await publishOwned(page, baseURL!, scope, "E06 flagged");
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const site = await seedOwned(scope, userId, "E06 flagged");
 
     // ── under_review: view, title, download — no delete (E07 decision 2), no QR (hidden at the edge).
     await setStatus(site.siteId, "under_review", { moderationReason: "phishing" });
@@ -729,8 +733,8 @@ test.describe("the page detail screen", () => {
     page,
     baseURL,
   }) => {
-    await signInAs(page, baseURL!, scope);
-    const site = await publishOwned(page, baseURL!, scope, "E07 removed");
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const site = await seedOwned(scope, userId, "E07 removed");
     const purgeAfter = new Date(Date.now() + (DRAFT_GRACE_DAYS - 1) * DAY);
     await setStatus(site.siteId, "removed", { moderationReason: "scam", purgeAfter });
 
@@ -780,8 +784,8 @@ test.describe("the page detail screen", () => {
     page,
     baseURL,
   }) => {
-    await signInAs(page, baseURL!, scope);
-    const site = await publishOwned(page, baseURL!, scope, "E07 withheld");
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const site = await seedOwned(scope, userId, "E07 withheld");
     const download = () => page.request.get(`${baseURL}/api/sites/${site.siteId}/download`);
 
     await setStatus(site.siteId, "quarantined", { moderationReason: "child_sexual_abuse" });
@@ -812,8 +816,8 @@ test.describe("the page detail screen", () => {
   });
 
   test("the screen paints from tokens, so it is correct in dark too", async ({ page, baseURL }) => {
-    await signInAs(page, baseURL!, scope);
-    const site = await publishOwned(page, baseURL!, scope, "E06 detail dark");
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const site = await seedOwned(scope, userId, "E06 detail dark");
 
     await openDetail(page, site.siteId);
     await waitForTokensApplied(page);
