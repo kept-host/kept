@@ -12,6 +12,7 @@ import {
   newScope,
   publishOwned,
   readSite,
+  seedOwned,
   signInAs,
   titledHtml,
   SKIP_OWNER_UI,
@@ -33,8 +34,10 @@ import {
  * Every outcome is read back from Postgres — the account's pages and the
  * target's versions — and from the requests the screen actually sent.
  *
- * NO MOCKS: a real magic-link session, real pages through `POST /api/sites`, a
- * real replace through `POST /api/sites/:id/replace`. SKIPS without dev
+ * NO MOCKS: a real magic-link session, the page dropped on published through
+ * `POST /api/sites`, a real replace through `POST /api/sites/:id/replace`; the
+ * page a drop must leave alone is seeded with its bytes and no manifest
+ * (`seedOwned` — dev KV is on the free plan). SKIPS without dev
  * credentials, as every signed-in screen spec does.
  */
 const scope = newScope();
@@ -90,82 +93,71 @@ test.describe("one drop, one owner", () => {
   const card = (page: Page, siteId: string) =>
     page.locator(`[data-testid="home-card"][data-site-id="${siteId}"]`);
 
-  /** Where each card variant is on screen: the Kept tab's wall, or the Drafts tab (a list by default). */
-  const PATHS = {
-    grid: "/dashboard",
-    list: "/dashboard?view=list",
-    draft: "/dashboard?tab=drafts&view=grid",
-    "draft-list": "/dashboard?tab=drafts",
-  } as const;
-
-  for (const variant of ["grid", "list", "draft", "draft-list"] as const) {
-    test(`a file dropped on a ${variant} card replaces that page and publishes nothing`, async ({
-      page,
-      baseURL,
-    }) => {
-      const { userId } = await signInAs(page, baseURL!, scope);
-      const target = await publishOwned(page, baseURL!, scope, `E06 card drop ${variant}`);
-      const draft = variant === "draft" || variant === "draft-list";
-      if (draft) {
-        // Demoted through the real route: a live draft takes a drop too.
-        const response = await page.request.post(`${baseURL}/api/sites/${target.siteId}/demote`, {
-          headers: { origin: new URL(baseURL!).origin },
-        });
-        expect(response.status(), await response.text()).toBe(200);
-      }
-      const pagesBefore = await ownedIds(userId);
-      const versionsBefore = await versionIds(target.siteId);
-      const liveBefore = (await readSite(target.siteId)).currentVersionId;
-
-      await page.goto(PATHS[variant]);
-      await hydrated(page);
-      if (draft) {
-        await expect(page.getByTestId("drafts-list")).toContainText(target.name);
-        await expect(page.getByTestId("drafts-list")).toHaveAttribute("data-view", variant === "draft" ? "grid" : "list");
-      } else await expect(page.getByTestId("kept-wall")).toHaveAttribute("data-view", variant);
-      const writes = watchWrites(page);
-
-      // Held over the card: the card says what the drop will do, the window does not.
-      const held = await hold(page, card(page, target.siteId).locator("article"), {
-        name: "modified.html",
-        body: titledHtml(`E06 modified ${crypto.randomUUID().slice(0, 8)}`),
-      });
-      await expect(card(page, target.siteId).getByText("Drop to replace this page")).toBeVisible();
-      await expect(page.getByTestId("drop-overlay-window")).toHaveCount(0);
-
-      await held.drop();
-      await expect(
-        page.locator("[data-sonner-toast]").filter({ hasText: REPLACED_TOAST }),
-      ).toBeVisible({ timeout: LIVE_STACK_TIMEOUT });
-
-      // By the time the replace has answered, a publish fired by the same drop
-      // has long been sent — it would have left before the replace's response.
-      expect(writes.replaces, "exactly one replace, of the card that was dropped on").toEqual([
-        target.siteId,
-      ]);
-      expect(writes.publishes, "a drop on a card publishes nothing").toBe(0);
-      await expect(page.getByTestId("mint-card")).toHaveCount(0);
-
-      expect(await ownedIds(userId), "the account owns the same pages it did before").toEqual(
-        pagesBefore,
-      );
-      const versionsAfter = await versionIds(target.siteId);
-      expect(versionsAfter, "exactly one new version on the page dropped on").toHaveLength(
-        versionsBefore.length + 1,
-      );
-      expect(versionsAfter).toEqual(expect.arrayContaining(versionsBefore));
-      const live = (await readSite(target.siteId)).currentVersionId;
-      expect(live, "the new version is the live one").not.toBe(liveBefore);
-      expect(versionsBefore, "and it is the new one").not.toContain(live);
+  // One card variant: a draft's list row, the Drafts tab's default. The kept
+  // wall's grid card is `dashboard.spec.ts`'s card-drop test, and every variant
+  // takes the drop through the same card — three more real replaces would spend
+  // dev KV's free-plan quota proving the same listener twice over.
+  test("a file dropped on a draft's list row replaces that page and publishes nothing", async ({
+    page,
+    baseURL,
+  }) => {
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const target = await publishOwned(page, baseURL!, scope, "E06 card drop draft-list");
+    // Demoted through the real route: a live draft takes a drop too.
+    const response = await page.request.post(`${baseURL}/api/sites/${target.siteId}/demote`, {
+      headers: { origin: new URL(baseURL!).origin },
     });
-  }
+    expect(response.status(), await response.text()).toBe(200);
+    const pagesBefore = await ownedIds(userId);
+    const versionsBefore = await versionIds(target.siteId);
+    const liveBefore = (await readSite(target.siteId)).currentVersionId;
+
+    await page.goto("/dashboard?tab=drafts");
+    await hydrated(page);
+    await expect(page.getByTestId("drafts-list")).toContainText(target.name);
+    await expect(page.getByTestId("drafts-list")).toHaveAttribute("data-view", "list");
+    const writes = watchWrites(page);
+
+    // Held over the card: the card says what the drop will do, the window does not.
+    const held = await hold(page, card(page, target.siteId).locator("article"), {
+      name: "modified.html",
+      body: titledHtml(`E06 modified ${crypto.randomUUID().slice(0, 8)}`),
+    });
+    await expect(card(page, target.siteId).getByText("Drop to replace this page")).toBeVisible();
+    await expect(page.getByTestId("drop-overlay-window")).toHaveCount(0);
+
+    await held.drop();
+    await expect(
+      page.locator("[data-sonner-toast]").filter({ hasText: REPLACED_TOAST }),
+    ).toBeVisible({ timeout: LIVE_STACK_TIMEOUT });
+
+    // By the time the replace has answered, a publish fired by the same drop
+    // has long been sent — it would have left before the replace's response.
+    expect(writes.replaces, "exactly one replace, of the card that was dropped on").toEqual([
+      target.siteId,
+    ]);
+    expect(writes.publishes, "a drop on a card publishes nothing").toBe(0);
+    await expect(page.getByTestId("mint-card")).toHaveCount(0);
+
+    expect(await ownedIds(userId), "the account owns the same pages it did before").toEqual(
+      pagesBefore,
+    );
+    const versionsAfter = await versionIds(target.siteId);
+    expect(versionsAfter, "exactly one new version on the page dropped on").toHaveLength(
+      versionsBefore.length + 1,
+    );
+    expect(versionsAfter).toEqual(expect.arrayContaining(versionsBefore));
+    const live = (await readSite(target.siteId)).currentVersionId;
+    expect(live, "the new version is the live one").not.toBe(liveBefore);
+    expect(versionsBefore, "and it is the new one").not.toContain(live);
+  });
 
   test("a file dropped off every card publishes exactly one new page and replaces nothing", async ({
     page,
     baseURL,
   }) => {
     const { userId } = await signInAs(page, baseURL!, scope);
-    const neighbour = await publishOwned(page, baseURL!, scope, "E06 window drop neighbour");
+    const neighbour = await seedOwned(scope, userId, "E06 window drop neighbour");
     const pagesBefore = await ownedIds(userId);
     const neighbourVersions = await versionIds(neighbour.siteId);
 

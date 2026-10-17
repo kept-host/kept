@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 
 import { limitsFor } from "@kept/shared";
 import { expect, test, type Page } from "@playwright/test";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
 import { draftClocks, graceEnds } from "../lib/publish/pipeline";
@@ -27,7 +27,7 @@ import { waitForTokensApplied } from "./tokens-applied";
 
 /**
  * `/settings` in a real browser, against the REAL dev stack — E06 task 013
- * (PRD §5.8, §9.3; AC10 for this screen, AC42, the UI half of AC43).
+ * (PRD §5.8, §9.3; AC10 for this screen, AC42, AC43 through the screen).
  *
  * NO MOCKS. Every account is a brand-new one signed in through the real
  * magic-link verify endpoint (`signInAs`). Sign-in methods are real Better Auth
@@ -460,54 +460,6 @@ test.describe("the settings screen", () => {
     await page.getByTestId("delete-account-open").click();
     await expect(input).toHaveValue("");
     await expect(confirm).toBeDisabled();
-  });
-
-  test("AC43 (UI half): confirm, and the user lands on the apex signed out with every page archived", async ({
-    page,
-    baseURL,
-  }) => {
-    const { userId, email } = await signInAs(page, baseURL!, scope);
-    const kept = await publishOwned(page, baseURL!, scope, "E06 farewell kept");
-    const second = await publishOwned(page, baseURL!, scope, "E06 farewell two");
-
-    await page.goto("/settings");
-    await openSection(page, "Danger zone");
-    await expect(page.getByTestId("delete-account-counts")).toHaveText(
-      "Your 2 kept pages and 0 drafts go offline and are archived.",
-    );
-    await page.getByTestId("delete-account-open").click();
-    await page.getByTestId("delete-account-input").fill(email);
-    await page.getByTestId("delete-account-confirm").click();
-
-    // The browser ends on the apex, signed out.
-    await page.waitForURL((url) => url.pathname === "/", { timeout: LIVE_STACK_TIMEOUT });
-
-    for (const site of [kept, second]) {
-      const row = await readSite(site.siteId);
-      expect(row.status, site.slug).toBe("archived");
-      expect(row.purgeAfter, `${site.slug} must be sweepable by E07`).not.toBeNull();
-      expect(row.ownerId, "no owner left").toBeNull();
-    }
-    // Unscoped: a live page with no owner, no token and no clock is unreachable
-    // by any authority in the product, so an owner-scoped query could not see it.
-    expect(
-      await db
-        .select({ id: schema.sites.id })
-        .from(schema.sites)
-        .where(
-          and(
-            eq(schema.sites.status, "live"),
-            isNull(schema.sites.ownerId),
-            isNull(schema.sites.anonTokenHash),
-            isNull(schema.sites.expiresAt),
-          ),
-        ),
-    ).toEqual([]);
-    expect(await db.select({ id: schema.user.id }).from(schema.user).where(eq(schema.user.id, userId))).toEqual([]);
-
-    // The session is gone in this browser: the gate turns the tab away.
-    await page.goto("/dashboard");
-    await expect(page).toHaveURL(/\/auth\?/, { timeout: LIVE_STACK_TIMEOUT });
   });
 
   test("AC43 drill: deleted in one browser, the same account's other browser is signed out on its next request; every page archived and dark; the chosen name held with no owner", async ({

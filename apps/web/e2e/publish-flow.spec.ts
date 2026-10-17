@@ -83,7 +83,10 @@ test.describe("publish flow", () => {
       await deleteDrafts(request, drafts);
     });
 
-    test("drop a file → minting lasts as long as the request → live carries the minted slug", async ({
+    // Two real publishes, not one per face: each is a KV write and a delete on
+    // dev's free plan, so the keep screen rides on the drop and reduced motion
+    // on the paste.
+    test("drop a file → minting lasts as long as the request → live carries the minted slug → Keep opens its keep screen", async ({
       page,
     }) => {
       await page.goto("/");
@@ -116,6 +119,7 @@ test.describe("publish flow", () => {
       const body = (await (await published).json()) as {
         live_url: string;
         slug: string;
+        anonToken: string;
       };
       const host = new URL(body.live_url).host;
 
@@ -138,74 +142,25 @@ test.describe("publish flow", () => {
       ).toHaveCount(0);
       await page.getByRole("button", { name: /Keep it & manage it/ }).click();
 
-      await expect(page).toHaveURL(/\/keep\/[^/]+$/);
+      // Keyed by the token the publish response returned — not an invented one,
+      // and not a panel that would have carried no token at all.
+      await expect(page).toHaveURL(
+        new RegExp(`/keep/${encodeURIComponent(body.anonToken)}$`),
+      );
       // No panel opened on the way, and the pre-pivot "Claim this page"
       // framing is gone entirely.
       await expect(
         page.getByRole("heading", { name: "Keep this page" }),
       ).toHaveCount(0);
       await expect(page.getByText(/Claim this page/)).toHaveCount(0);
-    });
-
-    test("the keep button lands on the real keep screen for the page just minted", async ({
-      page,
-    }) => {
-      await page.goto("/");
-      await page.waitForLoadState("networkidle");
-
-      const published = page.waitForResponse(
-        (res) => res.url().includes("/api/publish") && res.status() === 201,
-      );
-
-      await dropFile(page, pageHtml(marker()));
-
-      const body = (await (await published).json()) as {
-        live_url: string;
-        anonToken: string;
-      };
-      await expect(face(page, "live")).toHaveCSS("opacity", "1");
-
-      await page.getByRole("button", { name: /Keep it & manage it/ }).click();
-
-      // Keyed by the token the publish response returned — not an invented one,
-      // and not a panel that would have carried no token at all.
-      await expect(page).toHaveURL(
-        new RegExp(`/keep/${encodeURIComponent(body.anonToken)}$`),
-      );
       // …and the screen it reaches is the keep screen for THAT page.
       await expect(
         page.getByRole("button", { name: "Keep it forever" }),
       ).toBeVisible();
-      await expect(
-        page.getByText(new URL(body.live_url).host, { exact: false }).first(),
-      ).toBeVisible();
+      await expect(page.getByText(host, { exact: false }).first()).toBeVisible();
     });
 
-    test("paste is publish-equivalent: same path, same phases, same minted link", async ({
-      page,
-    }) => {
-      await page.goto("/");
-      await page.waitForLoadState("networkidle");
-
-      const published = page.waitForResponse(
-        (res) => res.url().includes("/api/publish") && res.status() === 201,
-      );
-
-      await pasteHtml(page, pageHtml(marker()));
-
-      const body = (await (await published).json()) as { live_url: string };
-      const host = new URL(body.live_url).host;
-
-      await expect(face(page, "live")).toHaveCSS("opacity", "1");
-      await expect(liveLabel(page)).toHaveText(host);
-      expect(host.endsWith(`.${servingDomain()}`)).toBe(true);
-
-      // The manage screen is a real URL keyed by the anon token, not a panel.
-      await page.getByRole("button", { name: /manage this draft/ }).click();
-      await expect(page).toHaveURL(/\/p\/[^/]+$/);
-    });
-
-    test("under reduced motion it crossfades straight to live — the engine reads the preference itself", async ({
+    test("paste is publish-equivalent: same path, same phases, same minted link — and under reduced motion it crossfades straight to live", async ({
       page,
     }) => {
       // Before `goto`: the engine reads `prefers-reduced-motion` once, in its
@@ -218,7 +173,7 @@ test.describe("publish flow", () => {
         (res) => res.url().includes("/api/publish") && res.status() === 201,
       );
 
-      await dropFile(page, pageHtml(marker()));
+      await pasteHtml(page, pageHtml(marker()));
 
       const body = (await (await published).json()) as { live_url: string };
       const host = new URL(body.live_url).host;
@@ -228,6 +183,11 @@ test.describe("publish flow", () => {
       await expect(face(page, "live")).toHaveCSS("opacity", "1");
       await expect(liveLabel(page)).toHaveText(host);
       await expect(face(page, "idle")).toHaveCSS("opacity", "0");
+      expect(host.endsWith(`.${servingDomain()}`)).toBe(true);
+
+      // The manage screen is a real URL keyed by the anon token, not a panel.
+      await page.getByRole("button", { name: /manage this draft/ }).click();
+      await expect(page).toHaveURL(/\/p\/[^/]+$/);
     });
   });
 

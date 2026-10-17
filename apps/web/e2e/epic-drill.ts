@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 
-import { appealResultSchema, nameCheckResultSchema, ownedPublishResultSchema } from "@kept/shared";
+import { nameCheckResultSchema, ownedPublishResultSchema } from "@kept/shared";
 import { expect, test, type APIRequestContext, type Browser, type BrowserContext, type Page } from "@playwright/test";
 import { and, desc, eq, inArray } from "drizzle-orm";
 
@@ -16,25 +16,30 @@ import { cleanup, newScope, readSite, signInAs, SKIP_OWNER_UI } from "./owner-fi
 import { reportBody, SKIP_REPORTS } from "./report-flow";
 
 /**
- * The E07 epic drill (task 012), declared once and run on BOTH deploys —
- * `epic-drill.spec.ts` (open) and `epic-drill.closed.spec.ts` (closed). The
- * epic's acceptance, end to end, on real pages against the real dev stack:
+ * The E07 epic drill (task 012), run by `epic-drill.spec.ts` on an OPEN
+ * deploy. The epic's acceptance, end to end, on real pages against the real
+ * dev stack:
  *
  *   A  an inert phishing page published keyless is `under_review` within
  *      seconds and the edge serves 451 within the re-purge window (AC8); the
  *      response never waited for the scan; the token holder appeals; the admin
  *      grants it from /admin/moderation and the owner gets a statement;
- *   B  a report reaches the admin's Reports tab — closed mode too — and the
- *      admin removes the page from the item view; the removed view shows the
- *      deadline; after `purge` its bytes and row are gone and its name stays
- *      refused (D19);
+ *   B  a report reaches the admin's Reports tab and the admin removes the page
+ *      from the item view; the removed view shows the deadline; after `purge`
+ *      its bytes and row are gone and its name stays refused (D19);
  *   C  an unkept draft past `expires_at` → `expired` → the edge's 410 → purged;
  *   D  a child-sexual-abuse report hides an anonymous page at once, and no byte
  *      of it reaches `/p` or the admin before "Show";
- *   E  (open) an owned page flagged by the scanner: the studio appeal, the
- *      admin rejects it, then restores the page;
- *   F  (open) the CSAM byte sweep on an owned page — studio, download, export,
- *      admin preview and source.
+ *   E  an owned page flagged by the scanner: the studio appeal, the admin
+ *      rejects it, then restores the page;
+ *   F  the CSAM byte sweep on an owned page — studio, download, export, admin
+ *      preview and source.
+ *
+ * Closed mode is not re-run here: its gates are drilled on their own —
+ * keyless publishing with the access token by `closed-access.closed.spec.ts`,
+ * `/report` by `report.closed.spec.ts`, the admin screen by
+ * `admin-moderation.closed.spec.ts` — and a second run of this whole flow
+ * spent dev KV's free-plan quota on the same edge writes.
  *
  * NO MOCKS. Every page is published through the real routes (R2 + KV + purge);
  * every flag is the real scanner's — rule P4 fires on the inert fixture's
@@ -46,19 +51,15 @@ import { reportBody, SKIP_REPORTS } from "./report-flow";
  * Skips, each with its reason: the real classifier's own verdict (the server's
  * `/api/health` says `scanner: "off"` without `OPENROUTER_API_KEY`); every mail
  * body (Resend's test inbox accepts the send and cannot be read back — the
- * routes' `statement: "sent"` is asserted instead); the owner halves when
- * closed (closed mode signs in admins only).
+ * routes' `statement: "sent"` is asserted instead).
  *
- * KV (dev free plan): about 20 writes + deletes open, 14 closed, teardown
- * included.
+ * KV (dev free plan): about 20 writes + deletes, teardown included.
  */
 const P4_FIXTURE = readFileSync(new URL("../lib/scan/fixtures/obfuscated-eval-base64.html", import.meta.url), "utf8");
 const APPEAL = "This is my own demo login page for a workshop. The form posts nowhere and the script decodes to a comment.";
 const MS_PER_MINUTE = 60_000;
 /** "Within seconds" (AC8): the scan runs right after the response. */
 const FLAG_WITHIN_MS = 30_000;
-
-type Mode = "open" | "closed";
 
 interface AnonPage {
   siteId: string;
@@ -92,21 +93,15 @@ async function until<T>(what: string, withinMs: number, read: () => Promise<T>, 
 const edgeStatus = (url: string, expected: number, withinMs = STALE_EDGE_WINDOW_MS + 25_000) =>
   until(`${url} at the edge`, withinMs, async () => (await probeEdge(url)).status, (status) => status === expected);
 
-export function epicDrill(mode: Mode): void {
-  test.describe(`E07 epic drill (${mode})`, () => {
-    test.skip(
-      keptOpen() !== (mode === "open"),
-      mode === "open" ? "the harness is closed" : "the harness is open — run `pnpm test:e2e:closed`",
-    );
+export function epicDrill(): void {
+  test.describe("E07 epic drill (open)", () => {
+    test.skip(!keptOpen(), "the harness is closed");
     test.skip(!!SKIP_OWNER_UI, SKIP_OWNER_UI || undefined);
     test.skip(!!SKIP_REPORTS, SKIP_REPORTS || undefined);
     test.describe.configure({ mode: "serial", timeout: LIVE_STACK_TIMEOUT * 3 });
 
-    const RUN = `e07-drill-${mode}-${crypto.randomUUID().slice(0, 8)}`;
+    const RUN = `e07-drill-open-${crypto.randomUUID().slice(0, 8)}`;
     const ADMIN = process.env.KEPT_E2E_EPIC_ADMIN_EMAIL!;
-    const ACCESS = process.env.KEPT_E2E_ACCESS_TOKEN;
-    /** Closed, the keyless routes need the run's access token (E06a §2). */
-    const credential = (): Record<string, string> => (mode === "closed" ? { authorization: `Bearer ${ACCESS}` } : {});
     const reminder = (label: string) => `delivered+${RUN}-${label}@resend.dev`;
 
     const scope = newScope();
@@ -119,18 +114,17 @@ export function epicDrill(mode: Mode): void {
     const pages: Partial<Record<"A" | "B" | "C" | "D", AnonPage>> = {};
 
     test.beforeAll(async ({ browser, request }) => {
-      if (SKIP_OWNER_UI || SKIP_REPORTS || keptOpen() !== (mode === "open")) return;
+      if (SKIP_OWNER_UI || SKIP_REPORTS || !keptOpen()) return;
       expect(ADMIN, "playwright.config.ts sets KEPT_E2E_EPIC_ADMIN_EMAIL").toBeTruthy();
-      if (mode === "closed") expect(ACCESS, "playwright.config.ts mints KEPT_E2E_ACCESS_TOKEN").toBeTruthy();
       const health = (await (await request.get("/api/health")).json()) as { open: boolean; scanner: "on" | "off" };
-      expect(health.open, `the server on :3000 is not ${mode} — stop it and rerun`).toBe(mode === "open");
+      expect(health.open, "the server on :3000 is not open — stop it and rerun").toBe(true);
       scanner = health.scanner;
       await warmDb();
       admin = await signedIn(browser, ADMIN);
     });
 
     test.afterAll(async () => {
-      if (SKIP_OWNER_UI || SKIP_REPORTS || keptOpen() !== (mode === "open")) return;
+      if (SKIP_OWNER_UI || SKIP_REPORTS || !keptOpen()) return;
       for (const context of contexts) await context.close();
       // Purged pages leave their log and reports behind with `site_id` NULL.
       if (allSlugs.size > 0) {
@@ -162,7 +156,7 @@ export function epicDrill(mode: Mode): void {
     async function publishKeyless(request: APIRequestContext, html: string, marker: string, reminderEmail?: string): Promise<AnonPage> {
       const started = Date.now();
       const response = await request.post("/api/publish", {
-        headers: { ...credential(), "content-type": "application/json", "user-agent": `kept-e2e/${marker}` },
+        headers: { "content-type": "application/json", "user-agent": `kept-e2e/${marker}` },
         data: { html, ...(reminderEmail ? { reminderEmail } : {}) },
       });
       const ms = Date.now() - started;
@@ -310,20 +304,12 @@ export function epicDrill(mode: Mode): void {
     test("A: the token holder appeals; the admin grants it from /admin/moderation; a statement goes out", async ({ page, request }) => {
       const a = pages.A!;
       await noBytesOnP(page, a, "under_review");
-      if (mode === "open") {
-        const banner = page.getByTestId("restricted-banner");
-        await banner.getByTestId("appeal-button").click();
-        await banner.getByTestId("appeal-message").fill(APPEAL);
-        await banner.getByTestId("appeal-submit").click();
-        await expect(banner.getByTestId("appeal-open")).toBeVisible({ timeout: LIVE_STACK_TIMEOUT });
-      } else {
-        // Closed, `/api/anon/*` takes the access token, which the browser's form
-        // does not carry — the token holder's agent appeals over the API.
-        const response = await request.post(`/api/anon/${a.token}/appeal`, { headers: credential(), data: { message: APPEAL } });
-        expect(response.status(), await response.text()).toBe(201);
-        appealResultSchema.parse(await response.json());
-      }
-      const again = await request.post(`/api/anon/${a.token}/appeal`, { headers: credential(), data: { message: APPEAL } });
+      const banner = page.getByTestId("restricted-banner");
+      await banner.getByTestId("appeal-button").click();
+      await banner.getByTestId("appeal-message").fill(APPEAL);
+      await banner.getByTestId("appeal-submit").click();
+      await expect(banner.getByTestId("appeal-open")).toBeVisible({ timeout: LIVE_STACK_TIMEOUT });
+      const again = await request.post(`/api/anon/${a.token}/appeal`, { data: { message: APPEAL } });
       expect(again.status(), "one open appeal per page").toBe(409);
 
       const [appeal] = await db.select().from(schema.appeals).where(eq(schema.appeals.siteId, a.siteId));
@@ -391,7 +377,6 @@ export function epicDrill(mode: Mode): void {
     });
 
     test("E (owner): the scanner flags an owned page; the studio appeal; the admin rejects it, then restores the page", async ({ browser }) => {
-      test.skip(mode === "closed", "closed mode signs in admins only — an owner's studio is the open run's");
       const owner = await signedIn(browser, reminder("owner"));
       const e = await publishOwnedHtml(owner, unique(P4_FIXTURE, `${RUN}-e`));
       await flaggedByScanner(e.siteId, e.versionId);
@@ -421,7 +406,6 @@ export function epicDrill(mode: Mode): void {
     });
 
     test("F (owner): the CSAM byte sweep — studio, download, export and the admin's preview and source refuse a reported owned page", async ({ browser, request }) => {
-      test.skip(mode === "closed", "closed mode signs in admins only — an owner's studio is the open run's");
       const owner = await signedIn(browser, reminder("owner-f"));
       const marker = `${RUN}-f`;
       const f = await publishOwnedHtml(owner, cleanHtml(marker));

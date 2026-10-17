@@ -28,10 +28,9 @@ import { jarlessContext, sessionHeaders } from "./session-request";
  * assertion is made against a genuine row, a genuine R2 object, a genuine KV
  * manifest and a genuinely served page. The slots that merely FILL an account
  * to its kept limit — and the page whose slug lends AC44 its hosted origin —
- * are real rows seeded by direct insert (`seedKept`): the cap
- * counts them exactly as it counts a publish, and publishing
- * `limitsFor("free").keptPages` pages per test would cost minutes of R2/KV
- * traffic for no extra proof.
+ * are real rows seeded by direct insert (`seedKept`): the cap counts them
+ * exactly as it counts a publish, and publishing `limitsFor("free").keptPages`
+ * pages per test would cost minutes of R2/KV traffic for no extra proof.
  *
  * WHAT THIS FILE IS FOR, that no unit drill can reach:
  *
@@ -40,9 +39,11 @@ import { jarlessContext, sessionHeaders } from "./session-request";
  *      row**, read out of the database rather than inferred from the response.
  *      A signed-in publish that minted a bearer token would put two authorities
  *      on one page, which is the exact shape D1 rejects.
- *   2. **The cap degrades, it never errors (AC2).** With one slot left the page
- *      lands kept at **201**; the next lands as an owned draft — serving, both
- *      clocks set — at **201** too. There is no 4xx for being full.
+ *   2. **The cap degrades, it never errors (AC2).** The race below answers
+ *      **201** on both sides of the last slot — one kept, one owned draft.
+ *      The sequential case is `lib/sites/publish.test.ts`'s (both clocks, no
+ *      bearer token) and `dashboard.spec.ts`'s (the screen); a third copy here
+ *      only spent dev KV's free-plan quota.
  *   3. **Two tabs cannot exceed the cap.** Two DIFFERENT publishes fired
  *      concurrently one slot short of the limit produce exactly one kept page
  *      and one owned draft, proven by RACING REAL REQUESTS.
@@ -264,46 +265,6 @@ test.describe("owned publish", () => {
     const served = await waitForServe(urlFor(site.slug));
     expect(served.status).toBe(200);
     expect(served.body).toBe(html);
-  });
-
-  test("AC2: one slot left, the next publish is 201 kept and the one after is 201 owned draft — never a 4xx", async ({
-    request,
-    baseURL,
-  }) => {
-    const { cookie, profileId } = await signIn(baseURL!);
-
-    // Fill the account to one short of its limit: real kept rows, seeded rather
-    // than published.
-    await seedKept({ siteIds: createdSiteIds }, profileId, FREE_LIMIT - 1);
-    expect(await countKept(profileId)).toBe(FREE_LIMIT - 1);
-
-    const last = await publishOk(request, baseURL!, cookie, `e06-005-last-${crypto.randomUUID().slice(0, 8)}`);
-    expect(last.site.expiresAt, "the last slot is a kept page").toBeNull();
-    expect(await countKept(profileId)).toBe(FREE_LIMIT);
-
-    const marker = `e06-005-atcap-${crypto.randomUUID().slice(0, 8)}`;
-    const { site, html } = await publishOk(request, baseURL!, cookie, marker);
-
-    // THE CAP IS A BRANCH, NOT AN ERROR. `publishOk` already asserted 201.
-    expect(site.expiresAt, "past the limit the page lands as a draft").not.toBeNull();
-    expect(site.purgeAfter).not.toBeNull();
-
-    const row = await readSite(site.id);
-    expect(row.ownerId, "the page is OWNED, it just has a clock").toBe(profileId);
-    expect(row.anonTokenHash, "still no bearer token, even at the cap").toBeNull();
-    // The response's clocks are the row's, not a second computation.
-    expect(site.expiresAt).toBe(row.expiresAt!.toISOString());
-    expect(site.purgeAfter).toBe(row.purgeAfter!.toISOString());
-
-    // A draft is `live` and serves exactly like a kept page — the clock is the
-    // only difference, and the edge knows nothing about it.
-    const served = await waitForServe(urlFor(site.slug));
-    expect(served.status).toBe(200);
-    expect(served.body).toBe(html);
-
-    // The cap did not move, and the page was not lost.
-    expect(await countKept(profileId)).toBe(FREE_LIMIT);
-    expect(await countOwned(profileId)).toBe(FREE_LIMIT + 1);
   });
 
   test("two different publishes racing one slot short produce exactly one kept page", async ({
