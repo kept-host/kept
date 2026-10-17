@@ -58,7 +58,7 @@ test("P1: a confident harmful pick flags with the Appendix A reason", () => {
 });
 
 test("P1: below the harm threshold is not P1 (and falls through to P3/P4)", () => {
-  const unsure = answers("credential-phishing-unsure"); // 0.72 < 0.8, impersonates 0.41 < 0.6
+  const unsure = answers("credential-phishing-unsure"); // 0.72 < 0.75, impersonates 0.41 < 0.9
   assert.deepEqual(decide(facts("destinations-form-action"), unsure), { verdict: "clean" });
   assert.deepEqual(decide(facts("destinations-form-action"), unsure, { ...SCAN_THRESHOLDS, harm: 0.7 }), {
     verdict: "flag",
@@ -88,7 +88,7 @@ test("P3: secrets leave the page and the page impersonates → phishing", () => 
     rule: "P3",
     priority: false,
   });
-  assert.deepEqual(decide(leaking, answers("impersonating-harvester"), { ...SCAN_THRESHOLDS, impersonates: 0.8 }), {
+  assert.deepEqual(decide(leaking, answers("impersonating-harvester"), { ...SCAN_THRESHOLDS, impersonates: 0.95 }), {
     verdict: "clean",
   });
   // The same answers on a page whose secrets stay put: no P3.

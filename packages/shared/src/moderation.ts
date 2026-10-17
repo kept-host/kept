@@ -89,13 +89,13 @@ export const MODERATION_REASON_SENTENCES: Readonly<
  * in a way that can change a verdict. A `done` scan is reused only for the same
  * `(content_hash, policy_version)`, so a bump re-scans everything it touches.
  */
-export const SCAN_POLICY_VERSION = "2026-10-15.1" as const;
+export const SCAN_POLICY_VERSION = "2026-10-17.1" as const;
 
 /** Most extracted page text sent to the classifier, in characters (§6.2). */
 export const SCAN_TEXT_BUDGET_CHARS = 24000 as const;
 
-/** The policy's confidence thresholds (§6.4). Starting values; the eval sets the final ones. */
-export const SCAN_THRESHOLDS = { harm: 0.8, minors: 0.5, impersonates: 0.6 } as const;
+/** The policy's confidence thresholds (§6.4), set from the 2026-10-17 eval (D-73). A change bumps `SCAN_POLICY_VERSION`. */
+export const SCAN_THRESHOLDS = { harm: 0.75, minors: 0.5, impersonates: 0.9 } as const;
 export type ScanThresholds = { readonly [K in keyof typeof SCAN_THRESHOLDS]: number };
 
 /** D5's bar for the eval's harmful set: at least this share flagged (and no clean page). */

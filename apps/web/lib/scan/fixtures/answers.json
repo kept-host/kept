@@ -77,7 +77,7 @@
       "choice": "none",
       "probabilities": { "none": 0.55, "credential_phishing": 0.38, "payment_harvest": 0.03, "wallet_drainer": 0.0, "malware_download": 0.0, "scam": 0.04, "sexual_content_minors": 0.0 }
     },
-    "impersonates": { "type": "noul", "noul": 0.74 },
+    "impersonates": { "type": "noul", "noul": 0.94 },
     "asks_for_secrets": { "type": "noul", "noul": 0.93 }
   },
   "clean-supabase-login": {

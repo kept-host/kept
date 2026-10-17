@@ -73,7 +73,7 @@ test("replay runs every saved judgment through decide; a failed call replays as 
   assert.deepEqual(verdict("clean/clean-base64-image.html"), { verdict: "clean" });
   assert.deepEqual(verdict("harmful/destinations-form-action.html"), { verdict: "flag", reason: "phishing", rule: "P1", priority: false });
   assert.deepEqual(verdict("harmful/destinations-script-fetch.html"), { verdict: "flag", reason: "phishing", rule: "P3", priority: false });
-  assert.deepEqual(verdict("harmful/destinations-jsx.html"), { verdict: "clean" }); // 0.72 < harm 0.8
+  assert.deepEqual(verdict("harmful/destinations-jsx.html"), { verdict: "clean" }); // 0.72 < harm 0.75
   assert.deepEqual(verdict("harmful/obfuscated-eval-base64.html"), {
     verdict: "flag",
     reason: "suspicious_code",
