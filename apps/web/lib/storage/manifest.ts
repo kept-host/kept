@@ -120,8 +120,18 @@ export type ManifestRemoveResult =
   | { ok: true; purge: PurgeResult }
   | { ok: false; step: ManifestRemoveStep; error: string };
 
+/**
+ * A loggable sentence for `err`. Drizzle wraps every database failure as
+ * `Failed query: <sql>\nparams: <params>` with the Postgres error on `cause`, so
+ * the first line is kept (never the params) and the cause's own message and
+ * SQLSTATE are appended — without them the log says which query failed, never why.
+ */
 function message(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  if (!(err instanceof Error)) return String(err);
+  const cause = err.cause as { message?: unknown; code?: unknown } | undefined;
+  if (typeof cause?.message !== "string") return err.message;
+  const code = typeof cause.code === "string" ? ` [${cause.code}]` : "";
+  return `${err.message.split("\n")[0]} — cause: ${cause.message}${code}`;
 }
 
 /**
