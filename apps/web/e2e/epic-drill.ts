@@ -301,7 +301,8 @@ export function epicDrill(mode: Mode): void {
       const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Sign in to Northwind Bank</title></head><body><h1>Northwind Bank</h1><p>Your account is locked. Confirm your details to unlock it.</p><form action="https://collect.northwind-bank-verify.invalid/login" method="post"><input name="card" placeholder="Card number"><input name="pin" type="password" placeholder="PIN"><button>Unlock</button></form><!-- ${marker} --></body></html>`;
       const page = await publishKeyless(request, html, marker);
       await until("the page's status", LIVE_STACK_TIMEOUT, async () => (await readSite(page.siteId)).status, (s) => s === "under_review");
-      const [scan] = await scansOf(page.versionId);
+      // The flag commits first; the scan row is finished after it (`lib/scan/run.ts` steps 7 → 8).
+      const [scan] = await until("the publish scan", FLAG_WITHIN_MS, () => scansOf(page.versionId), (rows) => rows[0]?.status !== "pending");
       expect(scan).toMatchObject({ status: "done", verdict: "flag" });
       expect(["P1", "P3"]).toContain(scan!.rule);
     });
