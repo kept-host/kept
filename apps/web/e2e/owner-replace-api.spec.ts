@@ -10,6 +10,7 @@ import { config } from "dotenv";
 import { eq, inArray } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
+import { managementRefusal } from "../lib/sites/display";
 import { pointerKey } from "../lib/storage/manifest";
 import { pageObjectKey, r2Store } from "../lib/storage/r2";
 import { clearPendingPurges } from "../lib/testing/pending-purges";
@@ -410,7 +411,7 @@ test.describe("owner replace", () => {
     // An explanation, not a bare refusal: swapping the contents of a flagged
     // page is the evasion the flag exists to stop, and the owner deserves to
     // know that is what happened.
-    expect(error.message.toLowerCase()).toContain("review");
+    expect(error.message).toBe(managementRefusal("under_review"));
 
     expect(await readSite(page.siteId)).toEqual(before);
     expect(await versionRows(page.siteId), "a refused replace writes no version").toHaveLength(1);
