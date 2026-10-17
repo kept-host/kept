@@ -17,8 +17,9 @@
  * ── THE CLAIMS ───────────────────────────────────────────────────────────────
  *
  *  1. **No ownerless live page.** `status = 'live' AND owner_id IS NULL AND
- *     anon_token_hash IS NULL AND expires_at IS NULL` returns zero rows —
- *     asserted globally, because such a row is undiscoverable by ownership.
+ *     anon_token_hash IS NULL AND expires_at IS NULL` returns zero rows among
+ *     every page this file created — scoped by id, not owner, because such a
+ *     row is undiscoverable by ownership.
  *  2. **Every page is `archived`, ownerless, with a deadline.** Pages taken
  *     offline now get `purge_after = now + DRAFT_GRACE_DAYS`; a page the owner
  *     had already deleted keeps its own. `reminder_email` is NULL everywhere.
@@ -374,13 +375,16 @@ test(
       assert.equal(await holdOf(page.slug), null, `${page.slug}: a generated name is never held`);
     }
 
-    // ── CLAIM 1, deliberately UNSCOPED: the failure mode is a row nobody can
-    // reach by ownership, so a query scoped by owner could not see it.
+    // ── CLAIM 1, scoped by ID, not owner: the failure mode is a row nobody can
+    // reach by ownership, so a query scoped by owner could not see it. Not
+    // table-wide either: other files run concurrently and seed live, ownerless
+    // fixture rows of their own (`lib/scan/run.test.ts`'s `ScanDrill.page()`).
     const ownerless = await db
       .select({ id: sites.id, slug: sites.slug })
       .from(sites)
       .where(
         and(
+          inArray(sites.id, [...createdSites]),
           eq(sites.status, "live"),
           isNull(sites.ownerId),
           isNull(sites.anonTokenHash),
