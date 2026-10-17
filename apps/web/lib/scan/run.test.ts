@@ -347,7 +347,7 @@ test("a classifier error still lets P4 flag, then the row is failed with +5 min;
   // Due now: the retry runs the SAME row, and this time the classifier answers.
   await db.update(scans).set({ nextAttemptAt: new Date(Date.now() - 1_000) }).where(eq(scans.id, failed.id));
   const classifier = await fixtureClassifier();
-  const retried = await retryDueScans(classifier);
+  const retried = await retryDueScans(classifier, { scope: [page.siteId] });
   assert.ok(retried.done >= 1, JSON.stringify(retried));
   const rows = await scansOf(page.versionId);
   assert.equal(rows.length, 1, "a retry is not a new row");
@@ -421,7 +421,7 @@ test("the sixth failed attempt is final; a dead process's pending row is picked 
     createdAt: new Date(Date.now() - 11 * MS_PER_MINUTE),
   });
 
-  await retryDueScans(new JevClassifier(`sk-or-v1-invalid-e07-007-${RUN}`));
+  await retryDueScans(new JevClassifier(`sk-or-v1-invalid-e07-007-${RUN}`), { scope: [lastTry.siteId, stale.siteId] });
   const [final] = await scansOf(lastTry.versionId);
   assert.equal(final?.status, "failed");
   assert.equal(final?.attempts, SCAN_RETRY_DELAYS.length + 1);
@@ -430,7 +430,7 @@ test("the sixth failed attempt is final; a dead process's pending row is picked 
   assert.equal(picked?.status, "failed", "the stale pending row was run");
   assert.equal(picked?.attempts, 1);
 
-  await retryDueScans(null);
+  await retryDueScans(null, { scope: [lastTry.siteId] });
   assert.equal((await scansOf(lastTry.versionId))[0]?.attempts, SCAN_RETRY_DELAYS.length + 1, "a final row is left alone");
   assert.equal((await site(lastTry.siteId)).status, "live", "the page stays live throughout");
 });
@@ -441,8 +441,8 @@ test("AC3: a current version older than the grace with no scan row is picked up 
   const old = await drill.page(cleanHtml(), new Date(Date.now() - 11 * MS_PER_MINUTE));
   const young = await drill.page(cleanHtml(), new Date(Date.now() - 5 * MS_PER_MINUTE));
 
-  // Newest first, one: this drill's page is the newest unscanned one past the grace.
-  const counts = await scanUnscanned(null, { limit: 1 });
+  // Fenced to this test's two pages: only the one past the grace is picked.
+  const counts = await scanUnscanned(null, { scope: [old.siteId, young.siteId] });
   assert.equal(counts.skipped, 1, JSON.stringify(counts));
   const [picked] = await scansOf(old.versionId);
   assert.equal(picked?.trigger, "backfill");

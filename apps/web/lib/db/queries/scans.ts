@@ -16,7 +16,7 @@ import {
   type ScanTrigger,
   type ScanVerdict,
 } from "@kept/shared";
-import { and, count, desc, eq, gt, lt, lte, notExists, or, sql } from "drizzle-orm";
+import { and, count, desc, eq, gt, inArray, lt, lte, notExists, or, sql } from "drizzle-orm";
 
 import { db } from "../index";
 import { jobRuns, scans, sites, siteVersions } from "../schema";
@@ -120,21 +120,26 @@ export type DueScan = ScanTarget & { id: string; attempts: number };
 /**
  * `scan-retry`'s due rows: `failed` with `next_attempt_at` reached (a final
  * failure has none and is never selected), and `pending` rows older than the
- * grace — a process that died mid-scan. Oldest first.
+ * grace — a process that died mid-scan. Oldest first. `scope` limits it to the
+ * given site ids — only the drills pass it, as `lib/db/queries/lifecycle.ts`'s
+ * sweeps do: a test against the shared dev database scans no page it did not make.
  */
-export async function dueScans(limit: number): Promise<DueScan[]> {
+export async function dueScans(limit: number, scope?: readonly string[]): Promise<DueScan[]> {
   return db
     .select({ id: scans.id, attempts: scans.attempts, ...targetColumns })
     .from(scans)
     .innerJoin(siteVersions, eq(siteVersions.id, scans.versionId))
     .innerJoin(sites, eq(sites.id, scans.siteId))
     .where(
-      or(
-        and(eq(scans.status, "failed"), lte(scans.nextAttemptAt, sql`now()`)),
-        and(
-          eq(scans.status, "pending"),
-          lt(scans.createdAt, sql`now() - make_interval(mins => ${UNSCANNED_GRACE_MINUTES})`),
+      and(
+        or(
+          and(eq(scans.status, "failed"), lte(scans.nextAttemptAt, sql`now()`)),
+          and(
+            eq(scans.status, "pending"),
+            lt(scans.createdAt, sql`now() - make_interval(mins => ${UNSCANNED_GRACE_MINUTES})`),
+          ),
         ),
+        scope ? inArray(scans.siteId, [...scope]) : undefined,
       ),
     )
     .orderBy(scans.createdAt)
@@ -144,9 +149,13 @@ export async function dueScans(limit: number): Promise<DueScan[]> {
 /**
  * Live pages whose current version has no `scans` row at all and became current
  * before `activatedBefore`, newest first (a crash before step 1 is recent; the
- * pre-E07 backlog is old). `limit` absent: every one.
+ * pre-E07 backlog is old). `limit` absent: every one. `scope`: as `dueScans`.
  */
-export async function unscannedLiveVersions(activatedBefore: Date, limit?: number): Promise<ScanTarget[]> {
+export async function unscannedLiveVersions(
+  activatedBefore: Date,
+  limit?: number,
+  scope?: readonly string[],
+): Promise<ScanTarget[]> {
   const query = db
     .select(targetColumns)
     .from(sites)
@@ -156,6 +165,7 @@ export async function unscannedLiveVersions(activatedBefore: Date, limit?: numbe
         eq(sites.status, "live"),
         lt(siteVersions.activatedAt, activatedBefore),
         notExists(db.select({ one: sql`1` }).from(scans).where(eq(scans.versionId, siteVersions.id))),
+        scope ? inArray(sites.id, [...scope]) : undefined,
       ),
     )
     .orderBy(desc(siteVersions.activatedAt));

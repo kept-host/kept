@@ -289,15 +289,17 @@ interface Batch {
   /** Epoch ms after which no new scan starts. */
   deadline?: number;
   limit?: number;
+  /** Site ids the sweep is limited to — the drills' fence (`dueScans`); the cron never passes it. */
+  scope?: readonly string[];
 }
 
 /** Due `failed` rows (and `pending` rows a dead process left) — run again on the same row. */
 export async function retryDueScans(
   classifier: ContentClassifier | null,
-  { deadline = Infinity, limit = SCAN_RETRY_BATCH_SIZE }: Batch = {},
+  { deadline = Infinity, limit = SCAN_RETRY_BATCH_SIZE, scope }: Batch = {},
 ): Promise<ScanCounts> {
   const tally = counter();
-  for (const scan of await dueScans(limit)) {
+  for (const scan of await dueScans(limit, scope)) {
     if (Date.now() >= deadline) break;
     tally.add(await settle(scan, classifier));
   }
@@ -311,11 +313,11 @@ export async function retryDueScans(
  */
 export async function scanUnscanned(
   classifier: ContentClassifier | null,
-  { deadline = Infinity, limit = SCAN_RETRY_BATCH_SIZE }: Batch = {},
+  { deadline = Infinity, limit = SCAN_RETRY_BATCH_SIZE, scope }: Batch = {},
 ): Promise<ScanCounts> {
   const tally = counter();
   const before = new Date(Date.now() - UNSCANNED_GRACE_MINUTES * 60_000);
-  for (const target of await unscannedLiveVersions(before, limit)) {
+  for (const target of await unscannedLiveVersions(before, limit, scope)) {
     if (Date.now() >= deadline) break;
     tally.add(await runScan(target.siteId, target.versionId, "backfill", classifier));
   }
