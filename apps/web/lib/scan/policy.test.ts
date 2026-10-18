@@ -4,9 +4,22 @@
  * NO MOCKS. Facts come from running the real extractor over the fixture pages
  * in `fixtures/`; classifier answers come from `fixtures/answers.json`, typed
  * exactly like the Decisions API output (`choice` + `probabilities`, `noul`)
- * and validated through `classifierAnswersSchema` before use. Until task 006
- * saves real Jev answers they are built to that documented schema; 006 swaps in
- * the saved answers and re-runs this file.
+ * and validated through `classifierAnswersSchema` before use.
+ *
+ * Real answers: Jev 1.13's saved answers from the 2026-10-17 eval run (task
+ * 013), each from the eval page closest to its fixture — credential-phishing ←
+ * harmful/bank-account-suspended, payment-harvest ← harmful/parcel-customs-fee,
+ * wallet-drainer ← harmful/wallet-recovery-phrase, malware-download ←
+ * harmful/browser-update-download, scam ← harmful/crypto-giveaway-double,
+ * clean-supabase-login ← clean/supabase-auth-todo, clean-netflix-clone ←
+ * clean/netflix-clone-tutorial, clean-base64-image ← clean/family-album-passcode,
+ * clean-minified ← clean/minified-react-app-login.
+ *
+ * Synthetic (schema-shaped, no real page answers that branch):
+ * credential-phishing-unsure (no real harmful pick fell below the harm bar),
+ * sexual-content-minors and sexual-content-minors-low (no eval set holds such a
+ * page, by design), impersonating-harvester (no real page answered harm `none`
+ * with impersonates ≥ the P3 bar).
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -130,7 +143,7 @@ test("clean hard cases stay clean", () => {
   assert.equal(supabase.secretsLeavePage, true);
   assert.deepEqual(decide(supabase, answers("clean-supabase-login")), { verdict: "clean" });
 
-  // A "Netflix clone" that sends nothing anywhere: impersonates, but no secret leaves.
+  // A "Netflix clone" that sends nothing anywhere: a secret field, but no secret leaves.
   const clone = facts("clean-netflix-clone");
   assert.equal(clone.secretField, true);
   assert.equal(clone.secretsLeavePage, false);

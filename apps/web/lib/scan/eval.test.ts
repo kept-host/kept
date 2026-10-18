@@ -110,7 +110,7 @@ test("sweep: the gate-passing thresholds that flag the most harmful pages", () =
   const judgedPages = pages.filter((page) => page.id !== "clean/clean-base64-image.html");
   const best = sweep(judgedPages, judgments, SCAN_THRESHOLDS);
   assert.ok(best);
-  // harm ≤ 0.7 also flags destinations-jsx (0.72): 5/5, while the Netflix clone (impersonates 0.83, nothing leaves) stays clean.
+  // harm ≤ 0.7 also flags destinations-jsx (0.72): 5/5, while every clean page stays clean.
   assert.equal(best.summary.harmful.flagged, 5);
   assert.equal(best.summary.clean.flagged, 0);
   assert.equal(best.thresholds.harm, 0.7);

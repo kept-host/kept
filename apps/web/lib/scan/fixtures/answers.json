@@ -3,10 +3,10 @@
     "harm": {
       "type": "choice",
       "choice": "credential_phishing",
-      "probabilities": { "none": 0.03, "credential_phishing": 0.91, "payment_harvest": 0.03, "wallet_drainer": 0.01, "malware_download": 0.0, "scam": 0.02, "sexual_content_minors": 0.0 }
+      "probabilities": { "none": 0, "credential_phishing": 1, "payment_harvest": 0, "wallet_drainer": 0, "malware_download": 0, "scam": 0, "sexual_content_minors": 0 }
     },
-    "impersonates": { "type": "noul", "noul": 0.88 },
-    "asks_for_secrets": { "type": "noul", "noul": 0.97 }
+    "impersonates": { "type": "noul", "noul": 0.95 },
+    "asks_for_secrets": { "type": "noul", "noul": 0.98 }
   },
   "credential-phishing-unsure": {
     "harm": {
@@ -21,37 +21,37 @@
     "harm": {
       "type": "choice",
       "choice": "payment_harvest",
-      "probabilities": { "none": 0.04, "credential_phishing": 0.05, "payment_harvest": 0.86, "wallet_drainer": 0.0, "malware_download": 0.0, "scam": 0.05, "sexual_content_minors": 0.0 }
+      "probabilities": { "none": 0, "credential_phishing": 0, "payment_harvest": 1, "wallet_drainer": 0, "malware_download": 0, "scam": 0, "sexual_content_minors": 0 }
     },
-    "impersonates": { "type": "noul", "noul": 0.77 },
-    "asks_for_secrets": { "type": "noul", "noul": 0.96 }
+    "impersonates": { "type": "noul", "noul": 0.88 },
+    "asks_for_secrets": { "type": "noul", "noul": 0.98 }
   },
   "wallet-drainer": {
     "harm": {
       "type": "choice",
       "choice": "wallet_drainer",
-      "probabilities": { "none": 0.02, "credential_phishing": 0.03, "payment_harvest": 0.0, "wallet_drainer": 0.93, "malware_download": 0.0, "scam": 0.02, "sexual_content_minors": 0.0 }
+      "probabilities": { "none": 0, "credential_phishing": 0, "payment_harvest": 0, "wallet_drainer": 1, "malware_download": 0, "scam": 0, "sexual_content_minors": 0 }
     },
-    "impersonates": { "type": "noul", "noul": 0.69 },
+    "impersonates": { "type": "noul", "noul": 0.93 },
     "asks_for_secrets": { "type": "noul", "noul": 0.98 }
   },
   "malware-download": {
     "harm": {
       "type": "choice",
       "choice": "malware_download",
-      "probabilities": { "none": 0.06, "credential_phishing": 0.0, "payment_harvest": 0.0, "wallet_drainer": 0.0, "malware_download": 0.89, "scam": 0.05, "sexual_content_minors": 0.0 }
+      "probabilities": { "none": 0, "credential_phishing": 0, "payment_harvest": 0, "wallet_drainer": 0, "malware_download": 1, "scam": 0, "sexual_content_minors": 0 }
     },
-    "impersonates": { "type": "noul", "noul": 0.81 },
-    "asks_for_secrets": { "type": "noul", "noul": 0.02 }
+    "impersonates": { "type": "noul", "noul": 0.52 },
+    "asks_for_secrets": { "type": "noul", "noul": 0.01 }
   },
   "scam": {
     "harm": {
       "type": "choice",
       "choice": "scam",
-      "probabilities": { "none": 0.09, "credential_phishing": 0.0, "payment_harvest": 0.03, "wallet_drainer": 0.0, "malware_download": 0.0, "scam": 0.88, "sexual_content_minors": 0.0 }
+      "probabilities": { "none": 0, "credential_phishing": 0, "payment_harvest": 0, "wallet_drainer": 0, "malware_download": 0, "scam": 1, "sexual_content_minors": 0 }
     },
-    "impersonates": { "type": "noul", "noul": 0.22 },
-    "asks_for_secrets": { "type": "noul", "noul": 0.31 }
+    "impersonates": { "type": "noul", "noul": 0.63 },
+    "asks_for_secrets": { "type": "noul", "noul": 0.03 }
   },
   "sexual-content-minors": {
     "harm": {
@@ -84,36 +84,36 @@
     "harm": {
       "type": "choice",
       "choice": "none",
-      "probabilities": { "none": 0.94, "credential_phishing": 0.04, "payment_harvest": 0.0, "wallet_drainer": 0.0, "malware_download": 0.0, "scam": 0.02, "sexual_content_minors": 0.0 }
+      "probabilities": { "none": 0.99, "credential_phishing": 0.01, "payment_harvest": 0, "wallet_drainer": 0, "malware_download": 0, "scam": 0, "sexual_content_minors": 0 }
     },
-    "impersonates": { "type": "noul", "noul": 0.05 },
+    "impersonates": { "type": "noul", "noul": 0.06 },
     "asks_for_secrets": { "type": "noul", "noul": 0.96 }
   },
   "clean-netflix-clone": {
     "harm": {
       "type": "choice",
       "choice": "none",
-      "probabilities": { "none": 0.71, "credential_phishing": 0.24, "payment_harvest": 0.01, "wallet_drainer": 0.0, "malware_download": 0.0, "scam": 0.04, "sexual_content_minors": 0.0 }
+      "probabilities": { "none": 0.98, "credential_phishing": 0.02, "payment_harvest": 0, "wallet_drainer": 0, "malware_download": 0, "scam": 0, "sexual_content_minors": 0 }
     },
-    "impersonates": { "type": "noul", "noul": 0.83 },
-    "asks_for_secrets": { "type": "noul", "noul": 0.9 }
+    "impersonates": { "type": "noul", "noul": 0.06 },
+    "asks_for_secrets": { "type": "noul", "noul": 0.96 }
   },
   "clean-base64-image": {
     "harm": {
       "type": "choice",
       "choice": "none",
-      "probabilities": { "none": 0.97, "credential_phishing": 0.01, "payment_harvest": 0.0, "wallet_drainer": 0.0, "malware_download": 0.0, "scam": 0.02, "sexual_content_minors": 0.0 }
+      "probabilities": { "none": 0.98, "credential_phishing": 0.02, "payment_harvest": 0, "wallet_drainer": 0, "malware_download": 0, "scam": 0, "sexual_content_minors": 0 }
     },
-    "impersonates": { "type": "noul", "noul": 0.02 },
-    "asks_for_secrets": { "type": "noul", "noul": 0.58 }
+    "impersonates": { "type": "noul", "noul": 0.04 },
+    "asks_for_secrets": { "type": "noul", "noul": 0.95 }
   },
   "clean-minified": {
     "harm": {
       "type": "choice",
       "choice": "none",
-      "probabilities": { "none": 0.92, "credential_phishing": 0.05, "payment_harvest": 0.0, "wallet_drainer": 0.0, "malware_download": 0.01, "scam": 0.02, "sexual_content_minors": 0.0 }
+      "probabilities": { "none": 0.87, "credential_phishing": 0.13, "payment_harvest": 0, "wallet_drainer": 0, "malware_download": 0, "scam": 0, "sexual_content_minors": 0 }
     },
-    "impersonates": { "type": "noul", "noul": 0.04 },
-    "asks_for_secrets": { "type": "noul", "noul": 0.93 }
+    "impersonates": { "type": "noul", "noul": 0.67 },
+    "asks_for_secrets": { "type": "noul", "noul": 0.98 }
   }
 }
