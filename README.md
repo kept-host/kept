@@ -169,8 +169,7 @@ sign in with a provider locally; magic link needs nothing extra.
 
 There is **one** env file: `apps/web/.env.local`. Its template,
 [`apps/web/.env.example`](./apps/web/.env.example), lists every variable the
-code reads, grouped, with what it does, what happens when it is unset, and how
-to get each value.
+code reads, grouped, with short notes on where to get each value.
 
 ```bash
 cp apps/web/.env.example apps/web/.env.local   # then fill it in
