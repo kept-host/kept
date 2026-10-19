@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Netflix clone — built with HTML &amp; CSS (learning project)</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: Helvetica, Arial, sans-serif; background: #000; color: #fff; }
+
+    /* ---------- Hero ---------- */
+    .hero {
+      height: 90vh;
+      background:
+        linear-gradient(to top, rgba(0,0,0,.85), rgba(0,0,0,.3) 60%, rgba(0,0,0,.85)),
+        repeating-linear-gradient(45deg, #2b0a0a 0 40px, #1a0505 40px 80px);
+      border-bottom: 8px solid #222;
+      position: relative;
+    }
+    nav { display: flex; justify-content: space-between; align-items: center; padding: 24px 5%; }
+    .logo { color: #e50914; font-size: 2.2rem; font-weight: 900; letter-spacing: 1px; }
+    .btn-red { background: #e50914; color: #fff; border: none; padding: 8px 18px; border-radius: 4px; font-size: 1rem; cursor: pointer; }
+    .btn-red:hover { background: #f6121d; }
+    .hero-content { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; width: 90%; max-width: 760px; }
+    .hero-content h1 { font-size: 3rem; line-height: 1.1; }
+    .hero-content h2 { font-size: 1.5rem; font-weight: 400; margin: 18px 0; }
+    .hero-content p { font-size: 1.2rem; }
+    .email-row { display: flex; margin-top: 20px; gap: 8px; justify-content: center; }
+    .email-row input { flex: 1; max-width: 420px; padding: 16px; font-size: 1rem; border: 1px solid #555; border-radius: 4px; background: rgba(0,0,0,.6); color: #fff; }
+    .email-row .btn-red { font-size: 1.4rem; padding: 0 26px; }
+
+    /* ---------- Feature rows ---------- */
+    .feature { display: flex; align-items: center; justify-content: center; gap: 40px; padding: 70px 5%; border-bottom: 8px solid #222; }
+    .feature .text { max-width: 520px; }
+    .feature h3 { font-size: 2.6rem; }
+    .feature p { font-size: 1.4rem; margin-top: 14px; color: #ccc; }
+    .feature .art { width: 420px; height: 260px; border-radius: 12px; background: linear-gradient(135deg, #e50914, #4a0207); display: grid; place-items: center; font-size: 4rem; }
+
+    /* ---------- FAQ ---------- */
+    .faq { padding: 70px 5%; text-align: center; border-bottom: 8px solid #222; }
+    .faq h3 { font-size: 2.6rem; margin-bottom: 30px; }
+    .faq details { max-width: 820px; margin: 0 auto 8px; background: #2d2d2d; text-align: left; }
+    .faq summary { padding: 22px; font-size: 1.4rem; cursor: pointer; list-style: none; }
+    .faq details p { padding: 0 22px 22px; font-size: 1.2rem; color: #ddd; }
+
+    /* ---------- Modal ---------- */
+    .modal-bg { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.75); align-items: center; justify-content: center; z-index: 10; }
+    .modal-bg.open { display: flex; }
+    .modal { background: rgba(0,0,0,.9); padding: 50px 60px; border-radius: 6px; width: 420px; }
+    .modal h2 { margin-bottom: 24px; }
+    .modal input { width: 100%; margin-bottom: 14px; padding: 15px; border-radius: 4px; border: none; background: #333; color: #fff; font-size: 1rem; }
+    .modal .btn-red { width: 100%; padding: 15px; margin-top: 16px; font-weight: 700; }
+    .modal .hint { margin-top: 16px; font-size: .85rem; color: #8c8c8c; }
+    .close { float: right; background: none; border: none; color: #aaa; font-size: 1.5rem; cursor: pointer; }
+
+    footer { padding: 50px 10%; color: #757575; font-size: .9rem; }
+    footer .cols { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 24px 0; }
+    footer .disclaimer { border-top: 1px solid #333; padding-top: 18px; line-height: 1.6; }
+    @media (max-width: 760px) { .feature { flex-direction: column; text-align: center; } .feature .art { width: 100%; } footer .cols { grid-template-columns: repeat(2, 1fr); } }
+  </style>
+</head>
+<body>
+
+  <section class="hero">
+    <nav>
+      <div class="logo">NETFLIX</div>
+      <button class="btn-red" id="openSignIn">Sign In</button>
+    </nav>
+    <div class="hero-content">
+      <h1>Unlimited movies, TV shows, and more</h1>
+      <h2>Watch anywhere. Cancel anytime.</h2>
+      <p>Ready to watch? Enter your email to create or restart your membership.</p>
+      <div class="email-row">
+        <input type="email" placeholder="Email address">
+        <button class="btn-red">Get Started &rsaquo;</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="feature">
+    <div class="text">
+      <h3>Enjoy on your TV</h3>
+      <p>Watch on smart TVs, PlayStation, Xbox, Chromecast, Apple TV, Blu-ray players, and more.</p>
+    </div>
+    <div class="art">📺</div>
+  </section>
+
+  <section class="feature">
+    <div class="art">📱</div>
+    <div class="text">
+      <h3>Download your shows to watch offline</h3>
+      <p>Save your favorites easily and always have something to watch.</p>
+    </div>
+  </section>
+
+  <section class="faq">
+    <h3>Frequently Asked Questions</h3>
+    <details><summary>What is this page?</summary><p>A front-end exercise from week 3 of my web development bootcamp — recreating a well-known landing page using only HTML and CSS.</p></details>
+    <details><summary>Does the sign-in work?</summary><p>No. The sign-in modal is just markup and styling. Nothing you type leaves this page.</p></details>
+    <details><summary>What did I learn?</summary><p>Flexbox layouts, the details/summary element, fixed-position modals, and responsive media queries.</p></details>
+  </section>
+
+  <footer>
+    <p>Questions? This is a student project by Priya Nandakumar.</p>
+    <div class="cols">
+      <span>FAQ</span><span>Help Centre</span><span>Account</span><span>Media Centre</span>
+      <span>Ways to Watch</span><span>Terms of Use</span><span>Privacy</span><span>Contact Us</span>
+    </div>
+    <p class="disclaimer">
+      This is a clone made for a coding course (Frontend Foundations, cohort 12). It is not affiliated with,
+      endorsed by, or connected to Netflix, Inc. All trademarks belong to their respective owners.
+      Source on GitHub: github.com/priyank-codes/netflix-clone-css
+    </p>
+  </footer>
+
+  <div class="modal-bg" id="modal">
+    <form class="modal" id="signInForm">
+      <button type="button" class="close" id="closeModal">&times;</button>
+      <h2>Sign In</h2>
+      <input type="email" placeholder="Email or phone number">
+      <input type="password" placeholder="Password">
+      <button type="submit" class="btn-red">Sign In</button>
+      <p class="hint">Practice UI only — this form doesn't submit anywhere.</p>
+    </form>
+  </div>
+
+  <script>
+    const modal = document.getElementById('modal');
+    document.getElementById('openSignIn').onclick = () => modal.classList.add('open');
+    document.getElementById('closeModal').onclick = () => modal.classList.remove('open');
+    document.getElementById('signInForm').addEventListener('submit', (e) => {
+      e.preventDefault(); // intentionally does nothing
+      modal.classList.remove('open');
+    });
+  </script>
+</body>
+</html>

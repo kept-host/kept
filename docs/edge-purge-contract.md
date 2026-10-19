@@ -8,6 +8,9 @@ serving Worker never purges — it never calls the control plane at all.
 Written 2026-08-04 against the E03 cache policy in `apps/edge/src/cache.ts`.
 Amended 2026-10-04 by E06: restore is the replace event (§5, §7.3); rename is
 unchanged; keep and demote are recorded as not purging, as built.
+Amended 2026-10-16 by E07: every write to an existing page goes through
+`syncManifest` (§5), and owed purges are durable `pending_purges` rows that the
+`repurge` job replays (§3).
 Secret **values** never appear here; names refer to the GitHub Environment keys
 defined in E02 task 004.
 
@@ -72,6 +75,31 @@ purge runs; a failed purge must be retried, logged and alerted, **not** rolled
 back and **not** surfaced as a publish failure. Until it succeeds the old copy
 serves.
 
+**As built (E07): owed purges live in Postgres.** `apps/web/lib/storage/manifest.ts`
+records every purge it still owes as a `pending_purges` row (`site_id`, `slug`,
+`urls`, `due_at`, `attempts`, `last_error`):
+
+- A purge that **succeeds** writes a row due in `KV_REPURGE_DELAY_MS` (125 s) for
+  the second purge (§6) *before* it starts the in-process timer. The timer
+  deletes the row when its purge lands, so a restart or redeploy in between
+  leaves a row instead of a stale edge.
+- A purge that **fails** (or cannot run because the zone is not configured)
+  writes a row due now. There is no in-process retry.
+- A `syncManifest` whose store write **fails** writes a row due now with no
+  URLs; its replay is the sync itself.
+- Inside `syncManifest` the row is written on the sync's own transaction (in a
+  savepoint), never on a second pooled connection.
+
+The `repurge` job (`POST /api/cron/repurge`, `.github/workflows/cron-repurge.yml`,
+every 12 minutes, under `CRON_SECRET`) replays due rows in batches
+(`apps/web/lib/storage/repurge.ts`). A row that names a site is re-synced first
+(`syncManifestForReplay`, which reads the row as it stands now), then purged, and
+kept due in 125 s for that write's own second purge. A row without a site is
+purged, then deleted, or deferred until 125 s after it was created. Each failure
+counts an attempt and retries 125 s later. After `REPURGE_MAX_ATTEMPTS` (5) the
+row stays in the table, is never selected again, and the run sends one admin
+alert listing every such row; reset `attempts` to replay it.
+
 ## 4. The URL forms to purge for one slug
 
 `purge_cache` matches the **exact** URL string. `https://foo.kept.host/` and
@@ -106,16 +134,27 @@ and the list is unbounded. The database row is the authority on what URLs exist.
 
 | Event | Epic | Purge |
 | --- | --- | --- |
-| First publish of a new slug | E04 | Yes — a prior 404 for that slug may be cached for up to 60s (`s-maxage=60`); purge makes the new page appear immediately |
-| Version replace | E04 | Yes — all URL forms of the slug |
-| Restore a previous version | E06 | Yes — **restore is the replace event.** The manifest (and pointer) is rewritten to an older `versionId` whose object is already in R2; no page object is written. Same targets, same delayed second purge, same `writeManifest` call as a replace (`apps/web/lib/sites/restore.ts`) |
-| Rename `old` → `new` | E06 | Yes — **both** slugs. `old` must stop serving; `new` may hold a cached 404. Unchanged by E06's names work: still `writeManifest(new)` then `removeManifest(old)` |
-| Delete | E06 | Yes — all URL forms of the slug (the row is archived; account deletion does the same per active page) |
+| First publish of a new slug | E04 | Yes — a prior 404 for that slug may be cached for up to 60s (`s-maxage=60`); purge makes the new page appear immediately. **The only direct `writeManifest` left** (`apps/web/lib/publish/pipeline.ts`); a failed first publish unwinds with `removeManifest` |
+| Version replace (owner, anonymous) | E04 | Yes — all URL forms of the slug, through **`syncManifest(siteId)`** after the replace commits (E07). A failed replace unwinds by re-running `syncManifest`, so the edge returns to whatever the row says |
+| Restore a previous version | E06 | Yes — **restore is the replace event.** The manifest (and pointer) is rewritten to an older `versionId` whose object is already in R2; no page object is written. Same targets, same delayed second purge, same `syncManifest` call as a replace (`apps/web/lib/sites/restore.ts`) |
+| Rename `old` → `new` | E06 | Yes — **both** slugs. `old` must stop serving; `new` may hold a cached 404. `syncManifest` writes `new` from the row, then `removeManifest(old)` (`apps/web/lib/names/rename.ts`) |
+| Delete (owner, bulk, anonymous, account deletion) | E06 | Yes — all URL forms of the slug. **Edge first** (E07 AC42, D-65): `removeManifest` runs before the row is archived, so a delete that answers "done" is already offline; the row change then runs under the site lock (account deletion: `lockOwner`) and re-checks the status; every delete ends with `syncManifest` for each site it touched, whether the row change committed or was refused, which undoes any writer that slipped a manifest back in between. Owner and anonymous delete refuse `under_review` / `quarantined` / `removed` (D-66); account deletion takes every page (D-68) |
 | Demote kept → draft | E06 | **No, as built.** The manifest carries no clock and the status stays `live`, so nothing served changes and demote is Postgres-only. Becomes a purge event when the badge differs between draft and kept (E10) |
-| Keep draft → kept | E06 | **No, as built** — same reason; the manifest's `ownerId` is knowingly left stale because nothing in `apps/edge` reads it (`apps/web/lib/sites/keep.ts` header). The exception is a **late keep** (`expired` within grace → `live`), which rewrites the manifest through `writeManifest` and so purges |
-| Status flip to `under_review` / `quarantined` / `removed` | E07 | Yes — **mandatory**, this is a moderation action; see §6 |
-| Draft expiry (`live` → `expired`) | E07 | Yes |
-| Grace-period purge / hard delete | E07 | Yes |
+| Keep draft → kept | E06 | **No, as built** — same reason; the manifest's `ownerId` is knowingly left stale because nothing in `apps/edge` reads it (`apps/web/lib/sites/keep.ts` header). The exception is a **late keep** (`expired` within grace → `live`), which rewrites the manifest through `syncManifest` and so purges |
+| Status flip to `under_review` / `quarantined` / `removed` / back to `live` | E07 | Yes — **mandatory**, this is a moderation action; see §6. `setStatus` (`apps/web/lib/moderation/status.ts`) commits, then `syncManifest`: a written manifest for `under_review` / `quarantined` (451), a removed one for `removed` |
+| Draft expiry (`live` → `expired`) | E07 | Yes — the hourly `expire` job commits `expired`, then `syncManifest` writes the `expired` manifest (410) |
+| Grace-period purge / hard delete | E07 | Yes — the daily `purge` job calls `removeManifest` (skipped when another page now claims the slug), deletes every version's R2 object, then the row |
+
+**The rule as built (E07 D18).** For any page that already exists, the only
+manifest write is `syncManifest(siteId)` (`apps/web/lib/storage/manifest.ts`). In
+one transaction it locks the site row, reads `slug`, `status`,
+`current_version_id`, `owner_id` and `region`, writes the manifest (`live`,
+`under_review`, `quarantined`, `expired`) or removes it (`removed`, `archived`),
+and commits only after KV has answered. Callers run it **after** their own commit,
+never inside it. Whatever order writers commit in, the last sync reads the last
+row, so a stale `live` can never land after a flag. The only exceptions are the
+brand-new publish (above), the edge-first deletes (which end with a sync) and the
+purge job (which deletes the row).
 
 Rule of thumb: **if the KV manifest for a slug is written, purge that slug.** The
 manifest is what the Worker reads; a manifest write with no purge is a stale

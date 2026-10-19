@@ -102,7 +102,22 @@ process.env.KEPT_E2E_ADMIN_EMAIL ??= `delivered+e06a-${crypto.randomUUID().slice
  * from under `admin-sign-in.closed.spec.ts` running beside it.
  */
 process.env.KEPT_E2E_DRILL_ADMIN_EMAIL ??= `delivered+e06a-drill-${crypto.randomUUID().slice(0, 8)}@resend.dev`;
-process.env.KEPT_ADMIN_EMAILS = `${process.env.KEPT_E2E_ADMIN_EMAIL},${process.env.KEPT_E2E_DRILL_ADMIN_EMAIL}`;
+/**
+ * A third for `admin-moderation*.spec.ts` (E07 task 011): it signs in to the
+ * moderation screen and deletes the account afterwards, for the same reason.
+ */
+process.env.KEPT_E2E_MODERATION_ADMIN_EMAIL ??= `delivered+e07-mod-${crypto.randomUUID().slice(0, 8)}@resend.dev`;
+/**
+ * A fourth for `epic-drill*.spec.ts` (E07 task 012), which runs beside
+ * `admin-moderation*.spec.ts` and deletes its account afterwards too.
+ */
+process.env.KEPT_E2E_EPIC_ADMIN_EMAIL ??= `delivered+e07-epic-${crypto.randomUUID().slice(0, 8)}@resend.dev`;
+process.env.KEPT_ADMIN_EMAILS = [
+  process.env.KEPT_E2E_ADMIN_EMAIL,
+  process.env.KEPT_E2E_DRILL_ADMIN_EMAIL,
+  process.env.KEPT_E2E_MODERATION_ADMIN_EMAIL,
+  process.env.KEPT_E2E_EPIC_ADMIN_EMAIL,
+].join(",");
 
 /**
  * `lib/rate-limit` salts its per-IP buckets with `RATE_LIMIT_SECRET`, and every
@@ -123,12 +138,51 @@ process.env.TURNSTILE_SECRET_KEY ??= TURNSTILE_TEST_KEYS.secretPass;
 process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ??= TURNSTILE_TEST_KEYS.siteKeyPass;
 process.env.KEPT_ADMIN_SECRET ??= randomBytes(32).toString("base64url");
 
+/**
+ * No spec spends the Resend budget (100 a day, shared by every send): mail is
+ * composed, addressed and recorded as sent, and only the Resend call is skipped
+ * (`lib/email/send.ts`; honoured on a localhost origin only). Open and closed
+ * runs alike; workers inherit it. An explicit value wins, so
+ * `KEPT_EMAIL_DELIVERY=on` makes a run send for real. A server already on :3000
+ * (`reuseExistingServer`) keeps whatever it was started with.
+ */
+process.env.KEPT_EMAIL_DELIVERY ??= "off";
+
+/**
+ * ── EVERY WORKER IS ITS OWN ANONYMOUS PUBLISHER (E07 §6.15) ──────────────────
+ *
+ * The keyless publish path counts new pages per publisher — `publish:<key>`, 30
+ * an hour and 200 a day — and the key is the salted hash of the client's IP and
+ * user agent. Every request here comes from one machine with one user agent, so
+ * without this the whole suite (and every run that day) would be ONE publisher:
+ * two runs in the same clock hour, or a long day of runs, would hit the 429s for
+ * a reason no test is about.
+ *
+ * So the user agent carries a per-worker suffix. This file is evaluated again in
+ * every worker, so each worker — and each run — is a distinct publisher whose
+ * buckets start empty. Nothing is mocked and no limit is relaxed: a distinct
+ * user agent IS a distinct publisher to the real limiter, and the browser and
+ * the `request` fixture both send it. Specs that need a second identity inside
+ * one test still pass their own `user-agent` header.
+ */
+const workerPublisher = `kept-e2e/${randomBytes(4).toString("hex")}`;
+
+/**
+ * Local runs cap at 3 workers. With the machine default (6 here), `next dev
+ * --experimental-https` resets connections under the full suite's load and a
+ * page loses `layout.css` (`net::ERR_CONNECTION_RESET`), which surfaces as the
+ * "design tokens never applied" failures `e2e/tokens-applied.ts` describes.
+ * The cap reduces those, it does not eliminate them: a full local run at 3
+ * still sees a few. The gate runs as CI does — 1 worker, 1 retry.
+ */
+const LOCAL_WORKERS = 3;
+
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
-  workers: process.env.CI ? 1 : undefined,
+  workers: process.env.CI ? 1 : LOCAL_WORKERS,
   reporter: "list",
   use: {
     baseURL: "https://localhost:3000",
@@ -138,7 +192,7 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      use: { ...devices["Desktop Chrome"], userAgent: `${devices["Desktop Chrome"].userAgent} ${workerPublisher}` },
     },
   ],
   webServer: {

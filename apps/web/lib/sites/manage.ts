@@ -5,9 +5,11 @@
  *
  * ── TWO VERBS, TWO DELIBERATELY INVERSE ORDERINGS ────────────────────────────
  *
- *   replace:  Postgres (new version) → R2 object → pointer → KV → purge
+ *   replace:  Postgres (new version) → R2 object → syncManifest (pointer → KV
+ *             → purge, from the row under its lock — D18)
  *             → scan → prune (R2 delete THEN row, per pruned version)
- *   delete:   pointer → KV → purge   → Postgres (archive + purge_after + hold)
+ *   delete:   pointer → KV → purge   → Postgres (locked status re-check →
+ *             archive + purge_after + hold) → syncManifest (AC42)
  *
  * **Publish ordering forwards, publish ordering backwards.** A replace's
  * dangerous half-state is "the manifest names bytes that do not exist", so the
@@ -57,22 +59,22 @@ import {
   type ReplaceResult,
   type SiteStatus,
 } from "@kept/shared";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 
 import { db } from "../db";
 import {
+  DELETABLE_STATUSES,
   findSiteForOwner,
   insertReplacementVersion,
-  revertReplacementVersion,
+  lockSiteForOwner,
 } from "../db/queries/publish";
 import { deleteVersionRow, lockPrunableVersions } from "../db/queries/versions";
 import { sites } from "../db/schema";
-import { claimsItsName } from "../names/availability";
 import { holdName } from "../names/holds";
 import { enqueueScan } from "../publish/hooks";
 import { extractPageTitle } from "../publish/page-title";
 import { graceEnds, liveUrl, writePageAndManifest } from "../publish/pipeline";
-import { removeManifest } from "../storage/manifest";
+import { removeManifest, syncManifest } from "../storage/manifest";
 import { pageObjectKey, r2Store } from "../storage/r2";
 
 import { managementRefusal } from "./display";
@@ -108,8 +110,8 @@ export const ownerPageBodySchema = publishRequestSchema.pick({ html: true });
  * swapping the contents of a flagged page for something else is precisely the
  * evasion the flag exists to stop. `archived` and `expired` are refused for a
  * plainer reason — they are not being served, so either verb would repoint a
- * row at bytes nobody can reach. `removed` never gets here: to its owner it is
- * not found.
+ * row at bytes nobody can reach. `removed` never gets here: every mutation
+ * answers it as not found (D13 widened only reading and downloading it).
  */
 export class SiteNotReplaceableError extends StudioRefusal {
   constructor(public readonly status: SiteStatus) {
@@ -176,8 +178,8 @@ function message(err: unknown): string {
 /**
  * Swap a page's bytes, keeping its URL, its slug, its `siteId` and its clock.
  *
- * The caller (`./owner-routes.ts`) has already validated the body's shape and
- * run the content heuristics; this function owns ownership, state and ordering.
+ * The caller (`./owner-routes.ts`) has already validated the body's shape;
+ * this function owns ownership, state and ordering.
  *
  * Bytes identical to the current version are `{ unchanged: true }` with nothing
  * written (D7, AC27). Otherwise the answer names the version it replaced — what
@@ -193,7 +195,8 @@ export async function replaceSite(
   html: string,
 ): Promise<ReplaceResult> {
   const site = await findSiteForOwner(siteId, profileId);
-  // `removed` is E07's takedown: to its owner the page no longer exists (§5.2).
+  // `removed` is E07's takedown. Its owner can still see and download it until
+  // `purge_after` (D13), but every mutation answers it as not found.
   if (!site || site.status === "removed") throw new SiteNotFoundError(siteId);
   if (site.status !== "live") throw new SiteNotReplaceableError(site.status);
 
@@ -237,6 +240,11 @@ export async function replaceSite(
     publishedVia: "studio",
   });
 
+  // The manifest is `syncManifest`'s, read from the row under its lock (D18):
+  // a flag or expiry that committed after the status check above is what the
+  // edge serves, never a stale `live`. A failed write reverts the row to
+  // `previous` and syncs again, so the page keeps serving what it served before,
+  // never dark. That branch is `writePageAndManifest`'s and exists for this call.
   const stored = await writePageAndManifest({
     slug: site.slug,
     siteId: site.id,
@@ -244,23 +252,13 @@ export async function replaceSite(
     r2Key,
     html,
     ownerId: profileId,
-    // The unwind RESTORES this version's manifest rather than removing it: a
-    // failed replace must leave the page serving what it served before, never
-    // dark. That branch is `writePageAndManifest`'s and exists for this call.
-    previousVersionId: previous.versionId ?? undefined,
+    previous,
   });
 
   if (!stored.ok) {
     console.error(
       `[kept] owner replace: store write failed for site ${site.id} (slug "${site.slug}", object "${r2Key}") — ${stored.error}`,
     );
-    try {
-      await revertReplacementVersion({ siteId: site.id, versionId, previous });
-    } catch (err) {
-      console.error(
-        `[kept] ROLLBACK INCOMPLETE — site ${site.id} (slug "${site.slug}") still points at version ${versionId}: ${message(err)}. E07 DIVERGENCE AUDIT: Postgres is the authority, never an R2 list (contract §7.5).`,
-      );
-    }
     throw new ManageStoreError("replace", stored.error);
   }
 
@@ -268,7 +266,7 @@ export async function replaceSite(
   // must never delay or fail the response. A path that stores new bytes without
   // this is a hole big enough to publish anything through: publish clean, then
   // replace with the payload.
-  void enqueueScan(site.id, versionId);
+  void enqueueScan(site.id, versionId, "replace");
 
   return {
     unchanged: false,
@@ -344,28 +342,41 @@ export function archivedForGrace(now = new Date()) {
 /**
  * Stop serving one owned page and archive it (D14).
  *
- * ⚠️ THE EDGE COMES OFF FIRST. `removeManifest` (pointer → KV → purge) runs
- * before the row moves, so the worst case is a row that still says `live` for a
- * page that no longer serves — visible to an audit, invisible to the internet —
- * instead of a row that says gone while the page keeps answering.
+ * ⚠️ THE EDGE COMES OFF FIRST (Arun 2026-10-15, decision 1 / AC42).
+ * `removeManifest` (pointer → KV → purge) runs before the row moves, so a delete
+ * that answers "done" is already offline, and the worst crash leaves a row that
+ * still says `live` for a page that no longer serves — never a row that says gone
+ * while the page keeps answering.
+ *
+ * Then the row moves under `lockOwner` and the site row lock, and its status is
+ * RE-CHECKED there: only `live | expired` becomes `archived`. A CHOSEN name is
+ * held for the owner (`holdName` takes the name's lock — lockOwner, then the
+ * row, then the name). A generated name is not held.
+ *
+ * And LAST, whatever the row change did — committed, refused or thrown —
+ * `syncManifest(siteId)` puts the edge back on the row. That is what undoes a
+ * writer that slipped in between the edge removal and the lock: a flag that
+ * committed there is re-published as the 451, a refused delete leaves the page
+ * serving what its row says. Its failure is a `pending_purges` row the repurge
+ * job replays, never this delete's error.
+ *
+ * ⚠️ A FLAGGED PAGE IS NEVER DELETABLE (decision 2): `under_review` and
+ * `quarantined` are a `409 not_allowed_in_status` with `managementRefusal`'s
+ * sentence, refused before the edge is touched; `removed` is not found, as it
+ * is for every mutation (D13 widened only reading and downloading it).
  *
  * ⚠️ NOTHING IS DESTROYED. No R2 delete, no version removed: the owner may
  * download the page until `purge_after`, and E07's purge collects the bytes
  * after it.
  *
- * The row moves under `lockOwner`, then a CHOSEN name is held for the owner
- * (`holdName`, which takes the name's advisory lock — lockOwner first, then the
- * name, the order `../names/availability.ts` fixes). A generated name is not
- * held. Idempotent: an already-archived page short-circuits to success, and a
- * concurrent second delete finds no row left to move — either way no second
- * hold and no second `purge_after`, because a retrying client or a
- * double-clicked button must not see an error for reaching the state it asked
- * for.
- *
- * A `quarantined` page CAN be deleted, and that is deliberate — delete is one
- * of the two affordances a flagged page keeps.
+ * Idempotent: an already-archived page short-circuits to success, and a
+ * concurrent second delete finds the row already archived under the lock —
+ * either way no second hold and no second `purge_after`, because a retrying
+ * client or a double-clicked button must not see an error for reaching the
+ * state it asked for.
  *
  * @throws {SiteNotFoundError} the page does not exist, is not this profile's, or is `removed`
+ * @throws {StudioRefusal} `not_allowed_in_status` — the page is under review or hidden
  * @throws {ManageStoreError} the page could not be taken off the edge
  */
 export async function deleteSite(
@@ -373,12 +384,11 @@ export async function deleteSite(
   profileId: string,
 ): Promise<DeleteResult> {
   const site = await findSiteForOwner(siteId, profileId);
-  // `removed` is E07's takedown: to its owner the page no longer exists (§5.2),
-  // and a delete must never turn it into `archived`.
-  if (!site || site.status === "removed") throw new SiteNotFoundError(siteId);
+  if (!site) throw new SiteNotFoundError(siteId);
+  refuseUndeletable(site.id, site.status);
 
   if (site.status !== "archived") {
-    const removed = await removeManifest(site.slug);
+    const removed = await removeManifest(site.slug, site.id);
     if (!removed.ok) {
       console.error(
         `[kept] owner delete: manifest removal failed at the "${removed.step}" step for site ${site.id} (slug "${site.slug}") — ${removed.error}. The page is still serving; the row is untouched so the caller can retry.`,
@@ -389,26 +399,37 @@ export async function deleteSite(
     // agree the slug is gone and the edge is merely stale until the logged
     // retry lands. `removeManifest` has already logged it.
 
+    let found: SiteStatus | null;
     try {
-      await db.transaction(async (tx) => {
+      found = await db.transaction(async (tx) => {
         await lockOwner(tx, profileId);
+        const locked = await lockSiteForOwner(tx, site.id, profileId);
+        // The re-check: an `archived` row is a concurrent delete that won (no
+        // second hold, no second clock), anything else not deletable is refused.
+        if (!locked || !isDeletable(locked.status)) return locked?.status ?? null;
         const [archived] = await tx
           .update(sites)
           .set(archivedForGrace())
-          .where(and(eq(sites.id, site.id), eq(sites.ownerId, profileId), claimsItsName()))
+          .where(eq(sites.id, site.id))
           .returning({ slug: sites.slug, nameKind: sites.nameKind });
         if (archived?.nameKind === "chosen") {
           await holdName(archived.slug, profileId, "deleted", site.id, tx);
         }
+        return "archived";
       });
     } catch (err) {
-      // The page has already stopped serving, which is what the caller asked
-      // for, but the row still says `live`. Loud, because only an audit sees it.
       console.error(
-        `[kept] owner delete: manifest removed but site ${site.id} (slug "${site.slug}") failed to archive — ${message(err)}. The page is NOT serving; the row disagrees. E07 DIVERGENCE AUDIT: reconcile against Postgres (contract §7.5).`,
+        `[kept] owner delete: manifest removed but site ${site.id} (slug "${site.slug}") failed to archive — ${message(err)}. Re-syncing the edge to the row.`,
       );
+      await syncDeleted(site.id);
       throw err;
     }
+    await syncDeleted(site.id);
+    // The row changed under us between the read and the lock: a flag, a
+    // removal, or the page leaving this account. The sync above has already put
+    // the edge back on the row; the answer is the refusal that row earns.
+    if (found === null) throw new SiteNotFoundError(site.id);
+    refuseUndeletable(site.id, found);
   }
 
   return {
@@ -423,6 +444,31 @@ export async function deleteSite(
   };
 }
 
+function isDeletable(status: SiteStatus): boolean {
+  return (DELETABLE_STATUSES as readonly SiteStatus[]).includes(status);
+}
+
+/** `removed` is not found; a flag is a 409 with the flagged page's own sentence. */
+function refuseUndeletable(siteId: string, status: SiteStatus): void {
+  if (status === "removed") throw new SiteNotFoundError(siteId);
+  const flagged = managementRefusal(status);
+  if (flagged) throw new StudioRefusal("not_allowed_in_status", flagged);
+}
+
+/**
+ * AC42's trailing sync: the edge back on the row, after every delete that
+ * touched it. Never throws (`syncManifest` records its own failure for the
+ * repurge job); logged here so the delete's log line says which site.
+ */
+async function syncDeleted(siteId: string): Promise<void> {
+  const synced = await syncManifest(siteId);
+  if (!synced.ok) {
+    console.error(
+      `[kept] owner delete: trailing manifest sync failed for site ${siteId} — ${synced.error}. Recorded for the repurge job.`,
+    );
+  }
+}
+
 /**
  * How many pages a bulk delete takes off the edge at once. Each `deleteSite` is
  * a pointer delete, a KV delete and a purge (plus the delayed re-purge), so a
@@ -434,9 +480,10 @@ const BULK_DELETE_CONCURRENCY = 4;
 
 /**
  * Delete many owned pages — the drafts tab's bulk Delete. Every page goes
- * through `deleteSite`, the single DELETE's own code (edge first, then
- * archive + `purge_after` + a chosen name's hold), so nothing about a delete is
- * re-spelled here. Pages are independent: one that is not found or will not
+ * through `deleteSite`, the single DELETE's own code (edge first, then the
+ * locked re-check, archive + `purge_after` + a chosen name's hold, then the
+ * trailing sync), so nothing about a delete is re-spelled here — a flagged page
+ * in the selection is that page's refusal. Pages are independent: one that is not found or will not
  * come off the edge is reported alone, and the rest are still deleted.
  */
 export async function deleteSites(siteIds: readonly string[], profileId: string): Promise<BulkSettled[]> {

@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Blockfall</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex items-center justify-center font-mono">
+  <div class="flex gap-8 items-start">
+    <canvas id="game" width="240" height="480" class="border-4 border-indigo-500 rounded-lg bg-slate-900"></canvas>
+    <div class="w-44 space-y-6">
+      <h1 class="text-3xl font-bold text-indigo-400 tracking-widest">BLOCKFALL</h1>
+      <div>
+        <p class="text-xs text-slate-400 uppercase">Score</p>
+        <p id="score" class="text-2xl font-bold">0</p>
+      </div>
+      <div>
+        <p class="text-xs text-slate-400 uppercase">Lines</p>
+        <p id="lines" class="text-2xl font-bold">0</p>
+      </div>
+      <div>
+        <p class="text-xs text-slate-400 uppercase">Level</p>
+        <p id="level" class="text-2xl font-bold">1</p>
+      </div>
+      <div>
+        <p class="text-xs text-slate-400 uppercase mb-2">Next</p>
+        <canvas id="next" width="96" height="96" class="bg-slate-900 rounded"></canvas>
+      </div>
+      <div class="text-xs text-slate-400 leading-relaxed">
+        ← → move<br>↑ rotate<br>↓ soft drop<br>Space hard drop<br>P pause
+      </div>
+      <button id="startBtn" class="w-full bg-indigo-500 hover:bg-indigo-400 text-white py-2 rounded font-bold">Start</button>
+      <p id="msg" class="text-amber-400 text-sm"></p>
+    </div>
+  </div>
+
+<script>
+const COLS = 10, ROWS = 20, SIZE = 24;
+const ctx = document.getElementById('game').getContext('2d');
+const nctx = document.getElementById('next').getContext('2d');
+
+const SHAPES = {
+  I: [[1,1,1,1]],
+  O: [[1,1],[1,1]],
+  T: [[0,1,0],[1,1,1]],
+  S: [[0,1,1],[1,1,0]],
+  Z: [[1,1,0],[0,1,1]],
+  J: [[1,0,0],[1,1,1]],
+  L: [[0,0,1],[1,1,1]],
+};
+const COLORS = { I:'#22d3ee', O:'#facc15', T:'#a855f7', S:'#4ade80', Z:'#f87171', J:'#60a5fa', L:'#fb923c' };
+
+let board, piece, nextPiece, score, lines, level, dropTimer, lastTime, paused, running;
+
+function emptyBoard() { return Array.from({ length: ROWS }, () => Array(COLS).fill(null)); }
+
+function randomPiece() {
+  const keys = Object.keys(SHAPES);
+  const type = keys[Math.floor(Math.random() * keys.length)];
+  const shape = SHAPES[type].map(r => [...r]);
+  return { type, shape, x: Math.floor((COLS - shape[0].length) / 2), y: 0 };
+}
+
+function rotate(shape) {
+  return shape[0].map((_, i) => shape.map(row => row[i]).reverse());
+}
+
+function collides(p, dx = 0, dy = 0, shape = p.shape) {
+  for (let y = 0; y < shape.length; y++) {
+    for (let x = 0; x < shape[y].length; x++) {
+      if (!shape[y][x]) continue;
+      const nx = p.x + x + dx, ny = p.y + y + dy;
+      if (nx < 0 || nx >= COLS || ny >= ROWS) return true;
+      if (ny >= 0 && board[ny][nx]) return true;
+    }
+  }
+  return false;
+}
+
+function merge() {
+  piece.shape.forEach((row, y) => row.forEach((v, x) => {
+    if (v && piece.y + y >= 0) board[piece.y + y][piece.x + x] = piece.type;
+  }));
+}
+
+function clearLines() {
+  let cleared = 0;
+  for (let y = ROWS - 1; y >= 0; y--) {
+    if (board[y].every(Boolean)) {
+      board.splice(y, 1);
+      board.unshift(Array(COLS).fill(null));
+      cleared++;
+      y++;
+    }
+  }
+  if (cleared) {
+    score += [0, 100, 300, 500, 800][cleared] * level;
+    lines += cleared;
+    level = 1 + Math.floor(lines / 10);
+  }
+}
+
+function spawn() {
+  piece = nextPiece || randomPiece();
+  nextPiece = randomPiece();
+  if (collides(piece)) {
+    running = false;
+    document.getElementById('msg').textContent = 'Game over — press Start';
+  }
+}
+
+function drop() {
+  if (!collides(piece, 0, 1)) { piece.y++; return; }
+  merge();
+  clearLines();
+  spawn();
+}
+
+function drawCell(c, x, y, color, size = SIZE) {
+  c.fillStyle = color;
+  c.fillRect(x * size, y * size, size - 1, size - 1);
+  c.fillStyle = 'rgba(255,255,255,0.15)';
+  c.fillRect(x * size, y * size, size - 1, 4);
+}
+
+function draw() {
+  ctx.fillStyle = '#0f172a';
+  ctx.fillRect(0, 0, COLS * SIZE, ROWS * SIZE);
+  board.forEach((row, y) => row.forEach((t, x) => t && drawCell(ctx, x, y, COLORS[t])));
+  // ghost piece
+  let gy = 0;
+  while (!collides(piece, 0, gy + 1)) gy++;
+  piece.shape.forEach((row, y) => row.forEach((v, x) => {
+    if (v) { ctx.fillStyle = 'rgba(148,163,184,0.2)'; ctx.fillRect((piece.x + x) * SIZE, (piece.y + y + gy) * SIZE, SIZE - 1, SIZE - 1); }
+  }));
+  piece.shape.forEach((row, y) => row.forEach((v, x) => v && drawCell(ctx, piece.x + x, piece.y + y, COLORS[piece.type])));
+
+  nctx.fillStyle = '#0f172a';
+  nctx.fillRect(0, 0, 96, 96);
+  nextPiece.shape.forEach((row, y) => row.forEach((v, x) => v && drawCell(nctx, x + 1, y + 1, COLORS[nextPiece.type], 20)));
+
+  document.getElementById('score').textContent = score;
+  document.getElementById('lines').textContent = lines;
+  document.getElementById('level').textContent = level;
+}
+
+function update(time = 0) {
+  if (!running) return;
+  const delta = time - lastTime;
+  lastTime = time;
+  if (!paused) {
+    dropTimer += delta;
+    if (dropTimer > Math.max(100, 800 - (level - 1) * 70)) { drop(); dropTimer = 0; }
+    draw();
+  }
+  requestAnimationFrame(update);
+}
+
+function start() {
+  board = emptyBoard();
+  score = 0; lines = 0; level = 1; dropTimer = 0; lastTime = 0;
+  paused = false; running = true; nextPiece = null;
+  document.getElementById('msg').textContent = '';
+  spawn();
+  requestAnimationFrame(update);
+}
+
+document.addEventListener('keydown', e => {
+  if (!running) return;
+  if (e.key === 'p' || e.key === 'P') { paused = !paused; document.getElementById('msg').textContent = paused ? 'Paused' : ''; return; }
+  if (paused) return;
+  if (e.key === 'ArrowLeft' && !collides(piece, -1, 0)) piece.x--;
+  if (e.key === 'ArrowRight' && !collides(piece, 1, 0)) piece.x++;
+  if (e.key === 'ArrowDown') { drop(); score += 1; }
+  if (e.key === 'ArrowUp') {
+    const r = rotate(piece.shape);
+    if (!collides(piece, 0, 0, r)) piece.shape = r;
+    else if (!collides(piece, 1, 0, r)) { piece.x++; piece.shape = r; }
+    else if (!collides(piece, -1, 0, r)) { piece.x--; piece.shape = r; }
+  }
+  if (e.key === ' ') {
+    e.preventDefault();
+    while (!collides(piece, 0, 1)) { piece.y++; score += 2; }
+    drop();
+  }
+  draw();
+});
+
+document.getElementById('startBtn').addEventListener('click', start);
+</script>
+</body>
+</html>

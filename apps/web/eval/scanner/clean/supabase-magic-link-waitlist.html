@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Driftwood — a calmer RSS reader · Join the waitlist</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600&family=Inter:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    .serif { font-family: 'Fraunces', serif; }
+    body { font-family: 'Inter', sans-serif; }
+    .wave { background: radial-gradient(1200px 400px at 50% -10%, #fde68a55, transparent), radial-gradient(800px 300px at 90% 110%, #93c5fd44, transparent); }
+  </style>
+</head>
+<body class="wave bg-[#fbf8f2] min-h-screen text-slate-800">
+  <header class="max-w-5xl mx-auto px-6 py-6 flex justify-between items-center">
+    <div class="serif text-2xl">driftwood</div>
+    <a href="https://github.com/driftwood-reader" class="text-sm text-slate-500 hover:text-slate-800">GitHub</a>
+  </header>
+
+  <main class="max-w-3xl mx-auto px-6 pt-16 pb-24 text-center">
+    <span class="inline-block text-xs font-medium bg-amber-100 text-amber-800 px-3 py-1 rounded-full">Private beta · spring</span>
+    <h1 class="serif text-5xl sm:text-6xl mt-6 leading-tight">Read the web<br/>at the speed of tea.</h1>
+    <p class="mt-6 text-lg text-slate-600 max-w-xl mx-auto">
+      Driftwood is an RSS reader with no unread counts, no streaks, and no algorithm. Your feeds arrive once a day as a quiet little digest.
+    </p>
+
+    <form id="waitlist" class="mt-10 flex flex-col sm:flex-row gap-3 max-w-md mx-auto">
+      <input id="email" type="email" required placeholder="you@example.com"
+        class="flex-1 rounded-xl border border-slate-200 bg-white px-4 py-3 focus:outline-none focus:ring-2 focus:ring-amber-400" />
+      <button id="btn" class="rounded-xl bg-slate-900 text-white px-6 py-3 font-medium hover:bg-slate-700">Join waitlist</button>
+    </form>
+    <p id="status" class="mt-4 text-sm text-slate-500 h-5"></p>
+
+    <div class="grid sm:grid-cols-3 gap-6 mt-20 text-left">
+      <div class="bg-white/70 rounded-2xl p-5 border border-slate-100">
+        <div class="text-2xl">🌅</div>
+        <h3 class="font-semibold mt-2">One digest a day</h3>
+        <p class="text-sm text-slate-500 mt-1">Pick a time. Everything new shows up together, then the app goes quiet.</p>
+      </div>
+      <div class="bg-white/70 rounded-2xl p-5 border border-slate-100">
+        <div class="text-2xl">📖</div>
+        <h3 class="font-semibold mt-2">Reader view by default</h3>
+        <p class="text-sm text-slate-500 mt-1">Clean typography, no popups, no autoplay. Just the words.</p>
+      </div>
+      <div class="bg-white/70 rounded-2xl p-5 border border-slate-100">
+        <div class="text-2xl">🔓</div>
+        <h3 class="font-semibold mt-2">OPML in, OPML out</h3>
+        <p class="text-sm text-slate-500 mt-1">Bring your feeds from anywhere. Leave whenever you like.</p>
+      </div>
+    </div>
+  </main>
+
+  <footer class="text-center text-xs text-slate-400 pb-10">
+    Made by Hollis &amp; June · We'll email you once when your invite is ready. No newsletter.
+  </footer>
+
+  <script type="module">
+    import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+
+    const supabase = createClient(
+      "https://qwertyuiopas.supabase.co",
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsInJlZiI6InF3ZXJ0eXVpb3BhcyJ9.fake_anon_key_driftwood_000"
+    );
+
+    const form = document.getElementById("waitlist");
+    const btn = document.getElementById("btn");
+    const status = document.getElementById("status");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const email = document.getElementById("email").value.trim();
+      btn.disabled = true;
+      btn.textContent = "Sending…";
+      status.textContent = "";
+
+      // Magic link doubles as email verification; the trigger on auth.users adds them to the waitlist table.
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+        options: {
+          emailRedirectTo: window.location.origin + "/welcome",
+          data: { source: "landing" }
+        }
+      });
+
+      btn.disabled = false;
+      btn.textContent = "Join waitlist";
+      if (error) {
+        status.textContent = "Hmm, that didn't work: " + error.message;
+        status.className = "mt-4 text-sm text-red-600 h-5";
+        return;
+      }
+      form.reset();
+      status.textContent = "Check your inbox — click the link to confirm your spot. ✨";
+      status.className = "mt-4 text-sm text-emerald-700 h-5";
+    });
+  </script>
+</body>
+</html>

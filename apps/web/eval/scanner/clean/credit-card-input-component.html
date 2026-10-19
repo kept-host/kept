@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Credit card input — React component demo</title>
+  <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: "Inter", system-ui, sans-serif; background: #f5f3ff; color: #1e1b4b; }
+    .page { max-width: 900px; margin: 0 auto; padding: 48px 20px; }
+    .badge { display: inline-block; font-size: 12px; background: #ede9fe; color: #6d28d9; padding: 4px 10px; border-radius: 999px; }
+    h1 { margin: 12px 0 4px; }
+    .muted { color: #6b7280; }
+    .demo { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; margin-top: 36px; align-items: start; }
+    @media (max-width: 760px) { .demo { grid-template-columns: 1fr; } }
+    .card-scene { perspective: 1000px; }
+    .card { position: relative; width: 340px; height: 210px; transition: transform .6s; transform-style: preserve-3d; }
+    .card.flipped { transform: rotateY(180deg); }
+    .face { position: absolute; inset: 0; border-radius: 16px; padding: 22px; color: white; backface-visibility: hidden;
+            background: linear-gradient(135deg, #4c1d95, #7c3aed 60%, #c084fc); box-shadow: 0 20px 40px rgba(76,29,149,.3); }
+    .back { transform: rotateY(180deg); padding: 0; }
+    .chip { width: 44px; height: 32px; background: linear-gradient(135deg,#fde68a,#d97706); border-radius: 6px; }
+    .number { font-family: "Courier New", monospace; font-size: 22px; letter-spacing: 2px; margin: 34px 0 20px; }
+    .row { display: flex; justify-content: space-between; font-size: 12px; text-transform: uppercase; }
+    .row b { display: block; font-size: 14px; font-weight: 500; margin-top: 3px; }
+    .stripe { height: 44px; background: #111; margin-top: 24px; }
+    .cvc { background: white; color: #111; width: 70%; margin: 18px auto; padding: 8px; text-align: right; font-family: monospace; border-radius: 4px; }
+    form { display: grid; gap: 14px; }
+    label { font-size: 13px; font-weight: 600; display: grid; gap: 6px; }
+    input { font-size: 16px; padding: 10px 12px; border: 1px solid #d4d4d8; border-radius: 8px; }
+    input:focus { outline: 2px solid #8b5cf6; border-color: transparent; }
+    .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    button { background: #6d28d9; color: white; border: 0; padding: 12px; border-radius: 8px; font-size: 15px; cursor: pointer; }
+    pre { background: #1e1b4b; color: #ddd6fe; padding: 14px; border-radius: 8px; font-size: 12px; overflow: auto; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <span class="badge">Component demo · no payment is processed</span>
+    <h1>&lt;CardInput /&gt;</h1>
+    <p class="muted">An animated card preview that formats as you type and flips when the CVC field is focused. Use test numbers like 4242 4242 4242 4242. Submitting just logs the component state to the console.</p>
+    <div id="root"></div>
+  </div>
+
+  <script type="text/babel">
+    const { useState } = React;
+
+    const brandOf = (num) => {
+      if (/^4/.test(num)) return "VISA";
+      if (/^(5[1-5]|2[2-7])/.test(num)) return "MASTERCARD";
+      if (/^3[47]/.test(num)) return "AMEX";
+      return "CARD";
+    };
+
+    const formatNumber = (v) => v.replace(/\D/g, "").slice(0, 16).replace(/(.{4})/g, "$1 ").trim();
+    const formatExpiry = (v) => {
+      const d = v.replace(/\D/g, "").slice(0, 4);
+      return d.length > 2 ? d.slice(0, 2) + "/" + d.slice(2) : d;
+    };
+
+    function CardPreview({ number, name, expiry, cvc, flipped }) {
+      const padded = (number || "").padEnd(19, "•").replace(/(\d{4}|•{4}) ?/g, "$1 ").trim();
+      return (
+        <div className="card-scene">
+          <div className={"card" + (flipped ? " flipped" : "")}>
+            <div className="face">
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <div className="chip" />
+                <strong>{brandOf(number.replace(/\s/g, ""))}</strong>
+              </div>
+              <div className="number">{padded}</div>
+              <div className="row">
+                <div>Card holder<b>{name || "YOUR NAME"}</b></div>
+                <div>Expires<b>{expiry || "MM/YY"}</b></div>
+              </div>
+            </div>
+            <div className="face back">
+              <div className="stripe" />
+              <div className="cvc">{cvc || "•••"}</div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function CardInput({ onSubmit }) {
+      const [state, setState] = useState({ number: "", name: "", expiry: "", cvc: "" });
+      const [flipped, setFlipped] = useState(false);
+      const set = (k, fmt = (x) => x) => (e) => setState((s) => ({ ...s, [k]: fmt(e.target.value) }));
+
+      return (
+        <div className="demo">
+          <CardPreview {...state} flipped={flipped} />
+          <form onSubmit={(e) => { e.preventDefault(); onSubmit(state); }}>
+            <label>Card number<input inputMode="numeric" value={state.number} onChange={set("number", formatNumber)} placeholder="4242 4242 4242 4242" /></label>
+            <label>Name on card<input value={state.name} onChange={set("name", (v) => v.toUpperCase().slice(0, 26))} placeholder="ALEX MORGAN" /></label>
+            <div className="two">
+              <label>Expiry<input value={state.expiry} onChange={set("expiry", formatExpiry)} placeholder="MM/YY" /></label>
+              <label>CVC<input value={state.cvc} onChange={set("cvc", (v) => v.replace(/\D/g, "").slice(0, 4))}
+                onFocus={() => setFlipped(true)} onBlur={() => setFlipped(false)} placeholder="123" /></label>
+            </div>
+            <button type="submit">Log state</button>
+            <pre>{`<CardInput onSubmit={(card) => console.log(card)} />`}</pre>
+          </form>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(
+      <CardInput onSubmit={(card) => console.log("[CardInput demo] submitted:", card)} />
+    );
+  </script>
+</body>
+</html>

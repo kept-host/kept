@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FrontierJS 2026 · Rotterdam · June 11–12</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet">
+  <style> body { font-family: 'Space Grotesk', sans-serif; } </style>
+</head>
+<body class="bg-zinc-950 text-zinc-100">
+  <header class="relative overflow-hidden">
+    <div class="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_#7c3aed55,_transparent_60%)]"></div>
+    <nav class="relative max-w-6xl mx-auto flex justify-between items-center px-6 py-5 text-sm">
+      <span class="font-bold text-lg">Frontier<span class="text-yellow-300">JS</span></span>
+      <div class="hidden sm:flex gap-6"><a href="#speakers">Speakers</a><a href="#schedule">Schedule</a><a href="#tickets">Tickets</a></div>
+    </nav>
+    <div class="relative max-w-6xl mx-auto px-6 pt-16 pb-24">
+      <p class="text-yellow-300 font-semibold">June 11–12, 2026 · Kunsthal, Rotterdam</p>
+      <h1 class="text-5xl md:text-7xl font-bold mt-4 leading-none">The edge of<br>the JavaScript web.</h1>
+      <p class="mt-6 max-w-xl text-zinc-400 text-lg">Two days, one track, 18 talks on runtimes, compilers, local-first apps and the browser APIs landing next year. Plus a canal-side party.</p>
+      <div class="mt-10 flex gap-4 flex-wrap">
+        <a href="https://ti.to/frontierjs/2026" class="bg-yellow-300 text-zinc-900 font-bold px-7 py-3 rounded-full hover:bg-yellow-200">Get tickets</a>
+        <a href="#schedule" class="border border-zinc-700 px-7 py-3 rounded-full hover:border-zinc-400">View schedule</a>
+      </div>
+      <div id="countdown" class="mt-12 flex gap-6 text-center"></div>
+    </div>
+  </header>
+
+  <section id="speakers" class="max-w-6xl mx-auto px-6 py-20">
+    <h2 class="text-3xl font-bold mb-10">Speakers</h2>
+    <div id="speakerGrid" class="grid grid-cols-2 md:grid-cols-4 gap-6"></div>
+  </section>
+
+  <section id="schedule" class="bg-zinc-900 py-20">
+    <div class="max-w-4xl mx-auto px-6">
+      <h2 class="text-3xl font-bold mb-6">Schedule</h2>
+      <div class="flex gap-2 mb-8">
+        <button data-day="0" class="day px-4 py-2 rounded-full text-sm">Day 1 · Thu</button>
+        <button data-day="1" class="day px-4 py-2 rounded-full text-sm">Day 2 · Fri</button>
+      </div>
+      <ol id="agenda" class="space-y-3"></ol>
+    </div>
+  </section>
+
+  <section id="tickets" class="max-w-6xl mx-auto px-6 py-20">
+    <h2 class="text-3xl font-bold mb-10">Tickets</h2>
+    <div class="grid md:grid-cols-3 gap-6">
+      <div class="border border-zinc-800 rounded-2xl p-7">
+        <h3 class="font-semibold text-zinc-400">Early Bird</h3>
+        <p class="text-4xl font-bold mt-2">€349</p>
+        <p class="text-sm text-zinc-500 mt-1">Until March 31 · limited to 150</p>
+        <ul class="text-sm mt-6 space-y-2 text-zinc-300"><li>Both conference days</li><li>Lunch &amp; coffee</li><li>Party on Thursday</li></ul>
+        <a href="https://ti.to/frontierjs/2026/with/early-bird" class="block text-center mt-8 border border-zinc-600 py-2.5 rounded-full hover:bg-zinc-800">Buy Early Bird</a>
+      </div>
+      <div class="border-2 border-yellow-300 rounded-2xl p-7 relative">
+        <span class="absolute -top-3 right-6 bg-yellow-300 text-zinc-900 text-xs font-bold px-2 py-0.5 rounded">Best value</span>
+        <h3 class="font-semibold text-zinc-400">Regular</h3>
+        <p class="text-4xl font-bold mt-2">€449</p>
+        <p class="text-sm text-zinc-500 mt-1">April 1 – June 1</p>
+        <ul class="text-sm mt-6 space-y-2 text-zinc-300"><li>Both conference days</li><li>Lunch &amp; coffee</li><li>Party on Thursday</li><li>Video recordings</li></ul>
+        <a href="https://ti.to/frontierjs/2026/with/regular" class="block text-center mt-8 bg-yellow-300 text-zinc-900 font-bold py-2.5 rounded-full hover:bg-yellow-200">Buy Regular</a>
+      </div>
+      <div class="border border-zinc-800 rounded-2xl p-7">
+        <h3 class="font-semibold text-zinc-400">Workshop + Conference</h3>
+        <p class="text-4xl font-bold mt-2">€749</p>
+        <p class="text-sm text-zinc-500 mt-1">Includes June 10 workshop day</p>
+        <ul class="text-sm mt-6 space-y-2 text-zinc-300"><li>Full-day hands-on workshop</li><li>Both conference days</li><li>Video recordings</li></ul>
+        <a href="https://ti.to/frontierjs/2026/with/workshop" class="block text-center mt-8 border border-zinc-600 py-2.5 rounded-full hover:bg-zinc-800">Buy Workshop pass</a>
+      </div>
+    </div>
+    <p class="text-sm text-zinc-500 mt-8">Diversity tickets are available — <a class="underline" href="mailto:hello@frontierjs.dev">email us</a>. Student discount 50% with a valid ID.</p>
+  </section>
+
+  <footer class="border-t border-zinc-900 text-center text-xs text-zinc-500 py-8">FrontierJS is a community conference run by volunteers · Code of Conduct applies to all attendees</footer>
+
+<script>
+  const speakers = [
+    ['Ines Valcourt', 'Runtime engineer, Lattice'], ['Kwame Boateng', 'Author of Signalbox'],
+    ['Hana Sorensen', 'Browser standards, OpenWeb Collective'], ['Diego Marchetti', 'Compiler nerd, Tinyfold'],
+    ['Priya Raman', 'Local-first researcher'], ['Tomás Lindqvist', 'Staff engineer, Ferrylane'],
+    ['Aiko Mori', 'Creative coder'], ['Sam Okonjo', 'Maintainer, Rollkit'],
+  ];
+  const palette = ['bg-violet-500', 'bg-yellow-300', 'bg-emerald-400', 'bg-sky-400', 'bg-rose-400', 'bg-orange-400'];
+  document.getElementById('speakerGrid').innerHTML = speakers.map(([name, role], i) => `
+    <div>
+      <div class="aspect-square rounded-2xl ${palette[i % palette.length]} flex items-center justify-center text-4xl font-bold text-zinc-900">${name.split(' ').map(p => p[0]).join('')}</div>
+      <p class="font-semibold mt-3">${name}</p>
+      <p class="text-sm text-zinc-500">${role}</p>
+    </div>`).join('');
+
+  const agenda = [
+    [['08:30', 'Registration & coffee'], ['09:30', 'Opening keynote: The runtime wars are over (and everyone won)', 'Ines Valcourt'],
+     ['10:30', 'Signals all the way down', 'Kwame Boateng'], ['11:30', 'What ships in browsers in 2027', 'Hana Sorensen'],
+     ['12:30', 'Lunch'], ['14:00', 'Writing a compiler in an afternoon', 'Diego Marchetti'],
+     ['15:00', 'CRDTs for the rest of us', 'Priya Raman'], ['16:30', 'Lightning talks'], ['19:00', 'Canal-side party']],
+    [['09:00', 'Coffee'], ['09:30', 'Shipping 40 MB less JavaScript', 'Tomás Lindqvist'],
+     ['10:30', 'Generative art with WebGPU', 'Aiko Mori'], ['11:30', 'Bundlers: a love letter', 'Sam Okonjo'],
+     ['12:30', 'Lunch'], ['14:00', 'Panel: Is the framework era ending?'], ['15:30', 'Closing keynote & goodbyes']],
+  ];
+  function showDay(d) {
+    document.querySelectorAll('.day').forEach(b => b.className = `day px-4 py-2 rounded-full text-sm ${+b.dataset.day === d ? 'bg-yellow-300 text-zinc-900 font-semibold' : 'border border-zinc-700'}`);
+    document.getElementById('agenda').innerHTML = agenda[d].map(([t, title, who]) => `
+      <li class="flex gap-6 bg-zinc-950 rounded-xl px-5 py-4">
+        <span class="text-yellow-300 font-semibold w-14">${t}</span>
+        <div><p class="font-semibold">${title}</p>${who ? `<p class="text-sm text-zinc-500">${who}</p>` : ''}</div>
+      </li>`).join('');
+  }
+  document.querySelectorAll('.day').forEach(b => b.onclick = () => showDay(+b.dataset.day));
+  showDay(0);
+
+  const target = new Date('2026-06-11T09:30:00+02:00');
+  function tick() {
+    const diff = Math.max(0, target - Date.now());
+    const parts = [['days', 864e5], ['hours', 36e5], ['min', 6e4], ['sec', 1e3]];
+    let rest = diff;
+    document.getElementById('countdown').innerHTML = parts.map(([label, ms]) => {
+      const v = Math.floor(rest / ms); rest -= v * ms;
+      return `<div><p class="text-3xl font-bold">${String(v).padStart(2, '0')}</p><p class="text-xs text-zinc-500 uppercase">${label}</p></div>`;
+    }).join('');
+  }
+  tick();
+  setInterval(tick, 1000);
+</script>
+</body>
+</html>

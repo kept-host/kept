@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Simple Invoice Generator</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #e9ecef; font-family: "Helvetica Neue", Arial, sans-serif; color: #212529; }
+  .toolbar { max-width: 820px; margin: 24px auto 0; display: flex; justify-content: space-between; align-items: center; padding: 0 8px; }
+  .toolbar button { background: #212529; color: #fff; border: 0; padding: 10px 18px; border-radius: 6px; cursor: pointer; font-size: 14px; }
+  .toolbar label { font-size: 14px; }
+  .sheet { max-width: 820px; margin: 16px auto 40px; background: #fff; padding: 48px; box-shadow: 0 2px 12px rgba(0,0,0,.08); }
+  [contenteditable] { outline: none; border-radius: 3px; }
+  [contenteditable]:hover { background: #fff8db; }
+  .top { display: flex; justify-content: space-between; }
+  .top h1 { font-size: 34px; letter-spacing: 3px; margin: 0; color: #495057; }
+  .meta { text-align: right; font-size: 14px; line-height: 1.8; }
+  .parties { display: flex; gap: 40px; margin: 40px 0; font-size: 14px; line-height: 1.6; }
+  .parties div { flex: 1; }
+  .parties h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #868e96; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { text-align: left; border-bottom: 2px solid #212529; padding: 8px 6px; font-size: 12px; text-transform: uppercase; }
+  td { border-bottom: 1px solid #dee2e6; padding: 6px; }
+  td input { width: 100%; border: 0; font: inherit; padding: 4px; background: transparent; }
+  td input:focus { background: #fff8db; outline: none; }
+  td.num, th.num { text-align: right; width: 110px; }
+  td.num input { text-align: right; }
+  .rm { border: 0; background: none; color: #adb5bd; cursor: pointer; font-size: 16px; }
+  .add { margin-top: 10px; background: none; border: 1px dashed #adb5bd; padding: 6px 12px; border-radius: 4px; cursor: pointer; color: #495057; }
+  .totals { margin-left: auto; width: 280px; margin-top: 24px; font-size: 14px; }
+  .totals div { display: flex; justify-content: space-between; padding: 6px 0; }
+  .totals .grand { border-top: 2px solid #212529; font-weight: 700; font-size: 18px; padding-top: 10px; }
+  .totals input { width: 50px; text-align: right; border: 1px solid #dee2e6; border-radius: 3px; }
+  .notes { margin-top: 40px; font-size: 13px; color: #495057; line-height: 1.6; }
+  @media print {
+    body { background: #fff; }
+    .toolbar, .rm, .add { display: none !important; }
+    .sheet { box-shadow: none; margin: 0; padding: 0; }
+    [contenteditable]:hover { background: none; }
+  }
+</style>
+</head>
+<body>
+<div class="toolbar">
+  <label>Currency
+    <select id="currency"><option value="EUR">EUR €</option><option value="USD">USD $</option><option value="GBP">GBP £</option></select>
+  </label>
+  <button onclick="window.print()">Print / Save as PDF</button>
+</div>
+
+<div class="sheet">
+  <div class="top">
+    <h1>INVOICE</h1>
+    <div class="meta">
+      Invoice #: <span contenteditable>2026-041</span><br>
+      Date: <span contenteditable id="date"></span><br>
+      Due: <span contenteditable id="due"></span>
+    </div>
+  </div>
+
+  <div class="parties">
+    <div>
+      <h4>From</h4>
+      <div contenteditable>Clara Holm Illustration<br>Sankt Hans Gade 14, 2. th<br>2200 Copenhagen N, Denmark<br>VAT DK12345678<br>clara@holm-illustration.dk</div>
+    </div>
+    <div>
+      <h4>Bill to</h4>
+      <div contenteditable>Wildflower Kids Books ApS<br>Attn: Accounts Payable<br>Nørrebrogade 88<br>2200 Copenhagen N, Denmark</div>
+    </div>
+  </div>
+
+  <table>
+    <thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th><th></th></tr></thead>
+    <tbody id="items"></tbody>
+  </table>
+  <button class="add" id="addRow">+ Add line</button>
+
+  <div class="totals">
+    <div><span>Subtotal</span><span id="subtotal"></span></div>
+    <div><span>VAT <input id="taxRate" type="number" value="25" min="0" max="100">%</span><span id="tax"></span></div>
+    <div class="grand"><span>Total due</span><span id="total"></span></div>
+  </div>
+
+  <div class="notes" contenteditable>
+    Payment within 14 days by bank transfer. Please include the invoice number as the payment reference.<br>
+    Thank you — it was a pleasure working on this book with you!
+  </div>
+</div>
+
+<script>
+  const rows = [
+    { desc: "Cover illustration — 'The Fox Who Counted Stars'", qty: 1, rate: 1800 },
+    { desc: "Interior spreads (full colour)", qty: 12, rate: 240 },
+    { desc: "Revisions round 2", qty: 3, rate: 75 },
+  ];
+
+  const fmt = () => new Intl.NumberFormat(undefined, { style: "currency", currency: document.getElementById("currency").value });
+  const tbody = document.getElementById("items");
+
+  function render() {
+    tbody.innerHTML = "";
+    rows.forEach((r, i) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td><input value="${r.desc.replace(/"/g, "&quot;")}" data-k="desc"></td>
+        <td class="num"><input type="number" min="0" value="${r.qty}" data-k="qty"></td>
+        <td class="num"><input type="number" min="0" step="0.01" value="${r.rate}" data-k="rate"></td>
+        <td class="num amount"></td>
+        <td><button class="rm" title="Remove">×</button></td>`;
+      tr.querySelectorAll("input").forEach(inp => inp.addEventListener("input", () => {
+        r[inp.dataset.k] = inp.dataset.k === "desc" ? inp.value : parseFloat(inp.value) || 0;
+        recalc();
+      }));
+      tr.querySelector(".rm").onclick = () => { rows.splice(i, 1); render(); };
+      tbody.appendChild(tr);
+    });
+    recalc();
+  }
+
+  function recalc() {
+    const f = fmt();
+    let sub = 0;
+    [...tbody.rows].forEach((tr, i) => {
+      const amt = rows[i].qty * rows[i].rate;
+      sub += amt;
+      tr.querySelector(".amount").textContent = f.format(amt);
+    });
+    const tax = sub * (parseFloat(document.getElementById("taxRate").value) || 0) / 100;
+    document.getElementById("subtotal").textContent = f.format(sub);
+    document.getElementById("tax").textContent = f.format(tax);
+    document.getElementById("total").textContent = f.format(sub + tax);
+  }
+
+  const today = new Date();
+  const due = new Date(today.getTime() + 14 * 864e5);
+  document.getElementById("date").textContent = today.toLocaleDateString();
+  document.getElementById("due").textContent = due.toLocaleDateString();
+
+  document.getElementById("addRow").onclick = () => { rows.push({ desc: "", qty: 1, rate: 0 }); render(); };
+  document.getElementById("taxRate").addEventListener("input", recalc);
+  document.getElementById("currency").addEventListener("change", recalc);
+  render();
+</script>
+</body>
+</html>

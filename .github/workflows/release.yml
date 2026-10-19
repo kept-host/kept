@@ -269,6 +269,7 @@ jobs:
           SMOKE_WEB_URL: ${{ vars.SMOKE_WEB_URL }}
           SMOKE_EDGE_URL: ${{ vars.SMOKE_EDGE_URL }}
           # E06a AC19 — a prod release fails while a legal page still has a [[ placeholder.
+          # E07 AC12 — and while it is open with the scanner off (no OPENROUTER_API_KEY).
           SMOKE_LEGAL_PLACEHOLDERS: fail
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

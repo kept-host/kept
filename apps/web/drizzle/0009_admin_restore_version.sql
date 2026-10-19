@@ -1,0 +1,1 @@
+ALTER TABLE "moderation_actions" ADD COLUMN "version_id" uuid;

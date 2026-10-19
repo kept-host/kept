@@ -199,6 +199,7 @@ after(async () => {
         .catch(() => undefined);
     }
   }
+  await (await import("../testing/pending-purges")).clearPendingPurges(createdSlugs, createdSites);
   if (createdSites.size > 0) await db.delete(sites).where(inArray(sites.id, [...createdSites]));
   if (createdUsers.size > 0) await db.delete(user).where(inArray(user.id, [...createdUsers]));
   // Release the pool, or `tsx --test` hangs on `idle_timeout`.
@@ -227,12 +228,12 @@ test("AC28 at source level: the restore module writes no page bytes, and both ve
     ["r2Store().get("],
     "the one R2 call on the restore path is a read",
   );
-  assert.ok(restoreSource.includes("writeManifest(site.slug"), "a restore is a replace event: the manifest moves");
+  assert.ok(restoreSource.includes("syncManifest(site.id)"), "a restore is a replace event: the manifest moves (D18: from the row)");
 
   // "Fires the scan hook" (AC25) — `enqueueScan` is E07's stub with nothing to
   // observe yet, so the proof is that both paths call it with the new version.
-  assert.ok(restoreSource.includes("void enqueueScan(site.id, version.id)"));
-  assert.ok(code("./manage.ts").includes("void enqueueScan(site.id, versionId)"));
+  assert.ok(restoreSource.includes('void enqueueScan(site.id, version.id, "restore")'));
+  assert.ok(code("./manage.ts").includes('void enqueueScan(site.id, versionId, "replace")'));
 });
 
 // ── Replace ────────────────────────────────────────────────────────────────

@@ -16,6 +16,9 @@
  * fails or the store is unconfigured, `null` comes back and the screen renders
  * with everything that actually matters.
  */
+import type { ModerationReason } from "@kept/shared";
+
+import { withholdsBytes } from "../moderation/restriction";
 import { pageObjectKey, r2Store } from "../storage/r2";
 
 /**
@@ -26,7 +29,7 @@ import { pageObjectKey, r2Store } from "../storage/r2";
 export const PREVIEW_MAX_BYTES = 256 * 1024;
 
 /**
- * The four columns a preview read actually consults.
+ * The five columns a preview read actually consults.
  *
  * ⚠️ THE PARAMETER IS THIS SHAPE, NOT `AnonSite`, and that is deliberate. E06's
  * page-detail screen, `/site/[id]` (task 012), previews an **owner-scoped** row
@@ -41,6 +44,8 @@ export interface PreviewSubject {
   slug: string;
   currentVersionId: string | null;
   sizeBytes: number | null;
+  /** D13: a page restricted for child sexual abuse material previews nowhere. */
+  moderationReason: ModerationReason | null;
 }
 
 /**
@@ -54,7 +59,9 @@ export function previewFits(site: Pick<PreviewSubject, "sizeBytes">): boolean {
 }
 
 /**
- * The page's HTML, or `null` when it cannot be shown. Never throws.
+ * The page's HTML, or `null` when it cannot be shown — too large, unreadable,
+ * or withheld (`withholdsBytes`, D13: read nowhere, so no screen can render
+ * it whatever it does with the result). Never throws.
  *
  * `context` names the calling screen in the failure log. The log names the site
  * id and the slug — which diagnose everything and grant nothing. The bearer
@@ -64,7 +71,7 @@ export async function readPreviewHtml(
   site: PreviewSubject,
   context: string,
 ): Promise<string | null> {
-  if (!site.currentVersionId || !previewFits(site)) return null;
+  if (!site.currentVersionId || !previewFits(site) || withholdsBytes(site)) return null;
 
   try {
     return await r2Store().get(pageObjectKey(site.id, site.currentVersionId));

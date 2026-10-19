@@ -8,7 +8,7 @@
  * inbound links the moment it is let go. Generated names are never held.
  */
 import { NAME_HOLD_DAYS, type NameHoldReason } from "@kept/shared";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 
 import { db, type Tx } from "../db";
 import { nameHolds, sites } from "../db/schema";
@@ -55,11 +55,11 @@ export async function holdName(
  * (edge case 7, 08 §4). A chosen name gets a `purged` hold for the page's last
  * owner; a generated name is simply gone.
  *
- * ⚠️ ITS CALLER IS E07's PURGE JOB, NOT ANYTHING IN E06. The only E06 caller is
- * its test; it is the published seam E07 builds against, not dead code. The
- * purge sweep must take `lockOwner` on the page's owner before calling this
- * (epic Risk 7): a late keep re-reads the row under that lock, and a sweep that
- * did not take it could purge a page in the same instant its owner kept it.
+ * ⚠️ ITS CALLER IS E07's PURGE JOB (`lib/lifecycle/purge.ts`), which skips it
+ * for a `removed` page so the ownerless D19 hold survives. The purge takes
+ * `lockOwner` on the page's owner before calling this (epic Risk 7): a late
+ * keep re-reads the row under that lock, and a sweep that did not take it could
+ * purge a page in the same instant its owner kept it.
  */
 export async function releaseName(siteId: string, tx?: Tx): Promise<void> {
   const run = async (trx: Tx) => {
@@ -71,4 +71,19 @@ export async function releaseName(siteId: string, tx?: Tx): Promise<void> {
     await holdName(site.slug, site.ownerId, "purged", siteId, trx);
   };
   await (tx ? run(tx) : db.transaction(run));
+}
+
+/**
+ * Lift the ownerless `removed` hold a moderation removal put on `name` (E07
+ * D19) — what a restore does. Only that hold, and only this page's: a hold for
+ * an owner (renamed, deleted, purged) is never touched here.
+ *
+ * Takes the name's advisory lock inside `tx`, after the caller's `lockOwner`
+ * and site-row locks (the order `./availability.ts` fixes).
+ */
+export async function dropRemovedHold(name: string, siteId: string, tx: Tx): Promise<void> {
+  await lockNames(tx, [name]);
+  await tx
+    .delete(nameHolds)
+    .where(and(eq(nameHolds.name, name), eq(nameHolds.reason, "removed"), eq(nameHolds.siteId, siteId)));
 }

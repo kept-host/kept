@@ -16,9 +16,12 @@
 
 import { RegExpMatcher, englishDataset, englishRecommendedTransformers } from "obscenity";
 
+import { isBlockedBrandName } from "./brand-terms";
 import type { Plan } from "./enums";
 import { NAME_ABSOLUTE_MIN_LENGTH, RESERVED_NAMES, limitsFor, type NameCheckStatus } from "./plans";
 import { slugSchema } from "./schemas";
+
+export { BLOCKED_NAME_PAIRS, BLOCKED_NAME_TERMS, NAME_SECURITY_WORDS, isBlockedBrandName } from "./brand-terms";
 
 /**
  * Whole terms `obscenity`'s English dataset refuses that are ordinary words in a
@@ -27,8 +30,8 @@ import { slugSchema } from "./schemas";
  * costs a real person their name.
  *
  * Each entry is a reviewed policy edit with a "must accept" case beside it in
- * `apps/web/lib/plans/validate-name.test.ts`. Brand, phishing and appeal policy
- * are E07's.
+ * `apps/web/lib/plans/validate-name.test.ts`. The brand and phishing rule is
+ * E07's own matcher (`./brand-terms`), with its own must-accept list.
  */
 const ACCEPTED_TERMS = ["cockpit"] as const;
 
@@ -80,7 +83,8 @@ export type NameValidation =
  *
  *   1. shape (`slugSchema`: lowercase `a–z`, `0–9`, single hyphens, no edge
  *      hyphen, ≤ `NAME_MAX_LENGTH`)                              → `invalid`
- *   2. a `RESERVED_NAMES` member                                  → `reserved`
+ *   2. a `RESERVED_NAMES` member, or a brand / phishing name
+ *      (`isBlockedBrandName`, E07 §6.16 — `./brand-terms`)        → `reserved`
  *   3. an inappropriate word (`isInappropriateName`)              → `inappropriate`
  *   4. shorter than `NAME_ABSOLUTE_MIN_LENGTH`                    → `too_short`
  *   5. shorter than the plan's `nameMinLength`                    → `pro_length`
@@ -94,24 +98,19 @@ export type NameValidation =
  * does (length) removes that false upsell; it changes the outcome only for
  * reserved and inappropriate inputs.
  *
- * ⚠️ NECESSARY, NOT SUFFICIENT — AND E07 OWNS THE REST. This is a mechanical
- * rule. **None of the following is covered here, deliberately:**
- *
- *   · impersonation — `paypal-verify`, `signin-microsoft`, `apple-id-locked`;
- *   · typosquatting and homoglyph tricks — `paypa1-secure`, `g00gle-docs`,
- *     `rnicrosoft` (`rn` for `m`), and every confusable this alphabet allows;
- *   · any reputation signal — account age, publish history;
- *   · brand and trademark policy, and the takedown path behind it.
- *
- * That is **E07-abuse-and-moderation's** scope ("No impersonation or typosquat
- * policy for user-chosen slugs. Explicitly deferred to E07, and the deferral is
- * recorded in code where the rename validation lives" — this is that record;
- * it moved here with the rename rule). Until E07 lands, `paypa1-secure` IS an
- * acceptable name. Do not read these checks as a claim the namespace is policed.
+ * ⚠️ NECESSARY, NOT SUFFICIENT. This is a mechanical rule. Since E07 it
+ * refuses the brand and phishing names of `./brand-terms` (`paypal-verify`,
+ * `paypa1-secure`, `rnicrosoft`, `apple-id-login`) as `reserved` — a v1 list,
+ * proposed for Arun's review. **Still not covered here, deliberately:** a brand
+ * missing from those lists, any reputation signal (account age, publish
+ * history), and trademark disputes — those go through reports and the
+ * moderation queue (E07). Do not read these checks as a claim the namespace is
+ * policed.
  */
 export function validateName(name: string, plan: Plan): NameValidation {
   if (!slugSchema.safeParse(name).success) return "invalid";
   if ((RESERVED_NAMES as readonly string[]).includes(name)) return "reserved";
+  if (isBlockedBrandName(name)) return "reserved";
   if (isInappropriateName(name)) return "inappropriate";
   if (name.length < NAME_ABSOLUTE_MIN_LENGTH) return "too_short";
   if (name.length < limitsFor(plan).nameMinLength) return "pro_length";

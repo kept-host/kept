@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Thai Green Curry — Maya's Kitchen</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --green: #3f6b3a;
+      --leaf: #e6efd9;
+      --ink: #26302a;
+      --muted: #6b7568;
+      --paper: #fbfaf5;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Inter', sans-serif;
+      color: var(--ink);
+      background: var(--paper);
+      line-height: 1.6;
+    }
+    header {
+      background: linear-gradient(135deg, var(--green), #5c8a4f);
+      color: white;
+      padding: 64px 24px 48px;
+      text-align: center;
+    }
+    header h1 { font-family: 'Fraunces', serif; font-size: 2.8rem; margin: 0 0 8px; }
+    header p { margin: 0; opacity: .85; }
+    .meta { display: flex; gap: 24px; justify-content: center; margin-top: 20px; font-size: .9rem; }
+    main { max-width: 860px; margin: 0 auto; padding: 32px 20px 80px; display: grid; gap: 32px; grid-template-columns: 1fr 1.4fr; }
+    @media (max-width: 720px) { main { grid-template-columns: 1fr; } }
+    .card { background: white; border-radius: 16px; padding: 24px; box-shadow: 0 2px 12px rgba(0,0,0,.05); }
+    h2 { font-family: 'Fraunces', serif; color: var(--green); margin-top: 0; }
+    .scaler { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; background: var(--leaf); padding: 10px 14px; border-radius: 12px; }
+    .scaler button { width: 32px; height: 32px; border-radius: 50%; border: none; background: var(--green); color: white; font-size: 1.1rem; cursor: pointer; }
+    .scaler strong { min-width: 24px; text-align: center; font-size: 1.1rem; }
+    ul.ingredients { list-style: none; padding: 0; margin: 0; }
+    ul.ingredients li { padding: 8px 0; border-bottom: 1px dashed #e3e3da; display: flex; gap: 8px; }
+    ul.ingredients li .qty { font-weight: 600; min-width: 80px; color: var(--green); }
+    ol.steps { padding-left: 20px; }
+    ol.steps li { margin-bottom: 14px; }
+    ol.steps li.done { color: var(--muted); text-decoration: line-through; }
+    .tip { background: #fff7e0; border-left: 4px solid #e2b33c; padding: 12px 16px; border-radius: 8px; font-size: .95rem; }
+    footer { text-align: center; color: var(--muted); font-size: .85rem; padding-bottom: 40px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Thai Green Curry</h1>
+    <p>Fragrant, creamy and ready in 35 minutes — my weeknight favourite.</p>
+    <div class="meta">
+      <span>⏱ Prep 15 min</span>
+      <span>🔥 Cook 20 min</span>
+      <span>🌶 Medium heat</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>Ingredients</h2>
+      <div class="scaler">
+        <span>Servings</span>
+        <button id="minus" aria-label="Fewer servings">−</button>
+        <strong id="servings">4</strong>
+        <button id="plus" aria-label="More servings">+</button>
+      </div>
+      <ul class="ingredients" id="ingredients"></ul>
+    </section>
+
+    <section class="card">
+      <h2>Method</h2>
+      <p style="color: var(--muted); font-size: .9rem;">Tap a step to mark it done.</p>
+      <ol class="steps" id="steps">
+        <li>Heat the coconut oil in a wok or large pan over medium-high heat. Add the green curry paste and fry for 1–2 minutes until fragrant.</li>
+        <li>Pour in about a third of the coconut milk and stir until the paste dissolves and the oil starts to separate.</li>
+        <li>Add the sliced chicken thighs and cook for 4–5 minutes, turning, until no longer pink on the outside.</li>
+        <li>Add the remaining coconut milk, the stock, makrut lime leaves and the palm sugar. Bring to a gentle simmer.</li>
+        <li>Add the Thai aubergines and green beans. Simmer for 8–10 minutes until the vegetables are just tender.</li>
+        <li>Season with fish sauce and lime juice. Taste — it should be salty, slightly sweet and gently spicy.</li>
+        <li>Turn off the heat and stir through the Thai basil leaves and sliced red chilli.</li>
+        <li>Serve with steamed jasmine rice.</li>
+      </ol>
+      <p class="tip"><strong>Tip:</strong> Don't shake the coconut milk tin. Scoop the thick cream off the top for frying the paste — it gives a much richer flavour.</p>
+    </section>
+  </main>
+
+  <footer>From Maya Okafor's recipe box · Serves 4 as written</footer>
+
+  <script>
+    const BASE_SERVINGS = 4;
+    const ingredients = [
+      { qty: 2, unit: 'tbsp', name: 'coconut oil' },
+      { qty: 3, unit: 'tbsp', name: 'green curry paste' },
+      { qty: 800, unit: 'ml', name: 'coconut milk (2 tins)' },
+      { qty: 600, unit: 'g', name: 'boneless chicken thighs, sliced' },
+      { qty: 200, unit: 'ml', name: 'chicken stock' },
+      { qty: 4, unit: '', name: 'makrut lime leaves, torn' },
+      { qty: 1, unit: 'tbsp', name: 'palm sugar (or brown sugar)' },
+      { qty: 150, unit: 'g', name: 'Thai aubergines, quartered' },
+      { qty: 100, unit: 'g', name: 'green beans, trimmed' },
+      { qty: 2, unit: 'tbsp', name: 'fish sauce' },
+      { qty: 1, unit: '', name: 'lime, juiced' },
+      { qty: 1, unit: 'handful', name: 'Thai basil leaves' },
+      { qty: 1, unit: '', name: 'red chilli, sliced' },
+    ];
+
+    let servings = BASE_SERVINGS;
+
+    function formatQty(value) {
+      if (value >= 10) return Math.round(value).toString();
+      const rounded = Math.round(value * 4) / 4;
+      const whole = Math.floor(rounded);
+      const frac = rounded - whole;
+      const fracMap = { 0.25: '¼', 0.5: '½', 0.75: '¾' };
+      if (frac === 0) return whole.toString();
+      return (whole ? whole : '') + fracMap[frac];
+    }
+
+    function render() {
+      document.getElementById('servings').textContent = servings;
+      const list = document.getElementById('ingredients');
+      list.innerHTML = '';
+      const factor = servings / BASE_SERVINGS;
+      ingredients.forEach(item => {
+        const li = document.createElement('li');
+        const qty = document.createElement('span');
+        qty.className = 'qty';
+        qty.textContent = `${formatQty(item.qty * factor)} ${item.unit}`.trim();
+        li.appendChild(qty);
+        li.appendChild(document.createTextNode(item.name));
+        list.appendChild(li);
+      });
+    }
+
+    document.getElementById('minus').addEventListener('click', () => {
+      if (servings > 1) { servings--; render(); }
+    });
+    document.getElementById('plus').addEventListener('click', () => {
+      if (servings < 12) { servings++; render(); }
+    });
+    document.querySelectorAll('#steps li').forEach(li => {
+      li.addEventListener('click', () => li.classList.toggle('done'));
+    });
+
+    render();
+  </script>
+</body>
+</html>

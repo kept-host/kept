@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign in · Fernhill CRM</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: { fern: { 50: '#f1f8f2', 100: '#dcefdf', 500: '#3f8f52', 600: '#327443', 700: '#285c36', 900: '#16311d' } },
+          fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] }
+        }
+      }
+    }
+  </script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+</head>
+<body class="min-h-screen bg-fern-50 font-sans text-slate-800">
+  <div class="min-h-screen grid lg:grid-cols-2">
+    <aside class="hidden lg:flex flex-col justify-between bg-fern-900 text-fern-50 p-12">
+      <div class="flex items-center gap-2 text-xl font-semibold">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 22V8" /><path d="M12 8c0-3 2-5 6-6-1 4-3 6-6 6z" /><path d="M12 13c0-3-2-5-6-6 1 4 3 6 6 6z" />
+        </svg>
+        Fernhill CRM
+      </div>
+      <blockquote class="max-w-md">
+        <p class="text-2xl leading-snug font-medium">"We moved our 14-person agency off spreadsheets in a weekend. Follow-ups don't slip anymore."</p>
+        <footer class="mt-4 text-fern-100/70 text-sm">— Priya Raman, Owner, Northbeam Studio</footer>
+      </blockquote>
+      <p class="text-xs text-fern-100/50">© 2026 Fernhill Software Ltd.</p>
+    </aside>
+
+    <main class="flex items-center justify-center p-6">
+      <div class="w-full max-w-sm">
+        <div class="lg:hidden flex items-center gap-2 text-fern-700 font-semibold text-lg mb-8">🌿 Fernhill CRM</div>
+        <h1 class="text-2xl font-bold">Welcome back</h1>
+        <p class="text-sm text-slate-500 mt-1">Sign in to your Fernhill workspace.</p>
+
+        <form id="loginForm" class="mt-8 space-y-4" novalidate>
+          <div>
+            <label for="email" class="block text-sm font-medium mb-1">Work email</label>
+            <input id="email" name="email" type="email" required autocomplete="email"
+              class="w-full rounded-lg border border-slate-300 px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-fern-500" />
+          </div>
+          <div>
+            <div class="flex justify-between items-center mb-1">
+              <label for="password" class="text-sm font-medium">Password</label>
+              <a href="/forgot-password" class="text-xs text-fern-600 hover:underline">Forgot password?</a>
+            </div>
+            <input id="password" name="password" type="password" required autocomplete="current-password"
+              class="w-full rounded-lg border border-slate-300 px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-fern-500" />
+          </div>
+          <label class="flex items-center gap-2 text-sm text-slate-600">
+            <input type="checkbox" id="remember" class="rounded border-slate-300 text-fern-600" /> Keep me signed in
+          </label>
+          <p id="error" class="hidden text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></p>
+          <button id="submit" type="submit"
+            class="w-full rounded-lg bg-fern-600 hover:bg-fern-700 text-white font-semibold py-2.5 transition disabled:opacity-60">
+            Sign in
+          </button>
+        </form>
+
+        <p class="text-sm text-center text-slate-500 mt-6">
+          New to Fernhill? <a href="/signup" class="text-fern-600 font-medium hover:underline">Create an account</a>
+        </p>
+        <p class="text-xs text-center text-slate-400 mt-10">
+          <a href="/legal/terms" class="hover:underline">Terms</a> · <a href="/legal/privacy" class="hover:underline">Privacy</a> ·
+          <a href="https://status.fernhillcrm.com" class="hover:underline">Status</a>
+        </p>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const API_BASE = "https://api.fernhillcrm.com";
+    const form = document.getElementById("loginForm");
+    const errorBox = document.getElementById("error");
+    const submitBtn = document.getElementById("submit");
+
+    function showError(msg) {
+      errorBox.textContent = msg;
+      errorBox.classList.remove("hidden");
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      errorBox.classList.add("hidden");
+      const email = form.email.value.trim();
+      const password = form.password.value;
+      if (!email || !password) return showError("Please enter your email and password.");
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Signing in…";
+      try {
+        const res = await fetch(`${API_BASE}/auth/login`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password, remember: document.getElementById("remember").checked }),
+        });
+        if (res.status === 401) throw new Error("That email and password don't match our records.");
+        if (res.status === 429) throw new Error("Too many attempts. Please wait a minute and try again.");
+        if (!res.ok) throw new Error("Something went wrong on our side. Please try again.");
+        const { redirectTo } = await res.json();
+        window.location.href = redirectTo || "/app";
+      } catch (err) {
+        showError(err.message);
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Sign in";
+      }
+    });
+  </script>
+</body>
+</html>

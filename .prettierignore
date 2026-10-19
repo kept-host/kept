@@ -7,3 +7,6 @@ pnpm-lock.yaml
 
 # Verbatim legal texts (E06a D8): never reformatted.
 apps/web/content/legal
+
+# Scanner eval pages (E07 AC13): judgments are keyed by each page's bytes, so a reformat invalidates them.
+apps/web/eval

@@ -1,29 +1,34 @@
 /**
- * The publish pipeline's abuse seams — SIGNATURES ARE FINAL.
+ * The publish pipeline's abuse seams (E07 D2, D15, PRD §6.15).
  *
- * Turnstile verification is REAL (E06a task 001: the waitlist forms need it, and
- * the publish paths already called it whenever a token was present). The other
- * three — per-publisher rate limiting, the heuristic content check and scan
- * enqueue — are still E07's stubs. They are declared here, as named functions
- * with the shapes E07 will return, rather than as `// TODO` comments in the
- * route, for one reason: E07 must be able to fill these bodies WITHOUT editing
- * `app/api/publish/route.ts` or `lib/publish/pipeline.ts`. If E07 finds itself
- * back in either file, the seam below was cut in the wrong place.
+ *   verifyTurnstile     web client only, when a token is present (E06a)
+ *   checkRequestLimit   anonymous publish, BEFORE the dedup probe
+ *   checkRateLimit      anonymous publish, AFTER the dedup probe — new pages only
+ *   checkReplaceLimit   anonymous replace, per site
+ *   enqueueScan         every path that stores or re-serves bytes, after the
+ *                       stores agree; fire and forget into `lib/scan/run.ts`
  *
- * Each remaining stub is deliberately PERMISSIVE — allow, allow, no-op — so the
- * keyless publish works while the governors are still absent. The permissive
- * default is safe only because the draft TTL is the real backstop in the
- * interim: nothing published here survives `DRAFT_TTL_DAYS` unless a human
- * signs in and keeps it. (`checkRateLimit` stays E07's; E06a's generic limiter
- * is `lib/rate-limit`, which E07 may build it on.)
+ * NOTHING HERE JUDGES CONTENT SYNCHRONOUSLY. E04 reserved a heuristic check
+ * that answered 422; D2 deleted it and its error code. A page is live the moment its
+ * stores agree and the asynchronous scan is what can take it down, so there is
+ * one content judgement, not two that disagree.
  *
- * The RESULT SHAPES are the part that is load-bearing today. Agents are the
- * primary caller of this API, and an error an agent cannot parse is an infinite
- * retry loop — so `checkRateLimit` already carries `retryAfterSeconds` and the
- * pipeline already turns it into a 429 with `retry_after_seconds` and a
- * `Retry-After` header. E07 changes when that branch is taken, never what it
- * looks like.
+ * THE GOVERNORS ARE THE ANONYMOUS PATH'S ALONE (D15). Signed-in studio
+ * publishing and replacing never call them — see `lib/sites/publish.ts`.
+ *
+ * The RESULT SHAPE is load-bearing: agents are the primary caller, and an error
+ * an agent cannot parse is an infinite retry loop. Every limiter returns
+ * `retryAfterSeconds`, which the caller turns into a 429 with
+ * `retry_after_seconds` and a `Retry-After` header.
  */
+import { PUBLISH_RATE_LIMITS, type ScanTrigger } from "@kept/shared";
+// `.js`: Playwright's ESM loader cannot resolve the bare subpath (`next` has no
+// exports map), and e2e specs reach this file through `lib/sites/export.ts`.
+import { after } from "next/server.js";
+
+import { sendAdminAlert } from "../email/admin-alert";
+import { hit, type RateLimitResult } from "../rate-limit";
+import { runScan } from "../scan/run";
 import { turnstileConfig } from "../storage/env";
 
 /** Allowed, or refused with a reason a caller can act on. */
@@ -32,10 +37,6 @@ export type TurnstileResult = { ok: true } | { ok: false; reason: string };
 export type RateLimitDecision =
   | { allowed: true }
   | { allowed: false; retryAfterSeconds: number; reason: string };
-
-export type HeuristicDecision =
-  | { allowed: true }
-  | { allowed: false; reason: string };
 
 const TURNSTILE_SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 
@@ -90,48 +91,121 @@ export async function verifyTurnstile(token: string, ip?: string): Promise<Turns
 }
 
 
-/**
- * Per-publisher rate limiting and the volume governors.
- *
- * `publisherKey` is `sites.publisher_hash` — the salted digest of IP + UA, not
- * an IP. E07 counts against `sites_publisher_created_idx`, which task 001
- * created for exactly this query.
- */
-export async function checkRateLimit(
-  publisherKey: string,
-): Promise<RateLimitDecision> {
-  // E07: count recent rows for this publisher and refuse past the threshold,
-  // returning the seconds until the window reopens.
-  void publisherKey;
-  return { allowed: true };
+/** One limiter result in the publish vocabulary: a refusal names its rule. */
+function decision(result: RateLimitResult, reason: string): RateLimitDecision {
+  return result.allowed ? result : { ...result, reason };
 }
 
 /**
- * The cheap, synchronous content check that runs BEFORE anything is stored —
- * the phishing/malware heuristics E07 defines. Distinct from `enqueueScan`,
- * which is the slow asynchronous pass over a page that is already live.
+ * The pre-dedup ceiling: `publish-requests:<key>`, every anonymous publish
+ * request, deduped or not. A dedup hit still rotates the token (a write), and
+ * `app.` has no Cloudflare rate limiting in front of it, so a retry loop needs
+ * a bound even when it creates nothing.
+ *
+ * `publisherKey` is `sites.publisher_hash` — the salted digest of IP + UA,
+ * never an IP — and that is all a bucket ever holds.
  */
-export async function checkHeuristics(html: string): Promise<HeuristicDecision> {
-  // E07: the heuristic ruleset (brand impersonation, credential forms, known
-  // malicious patterns). Its output maps to a `content_rejected` 422.
-  void html;
-  return { allowed: true };
+export async function checkRequestLimit(publisherKey: string): Promise<RateLimitDecision> {
+  const rule = PUBLISH_RATE_LIMITS.requestsPerPublisherHour;
+  return decision(
+    await hit(`publish-requests:${publisherKey}`, rule),
+    `${rule.limit} publish requests an hour`,
+  );
+}
+
+/** The fixed bucket every anonymous new page counts against. */
+export const PUBLISH_GLOBAL_BUCKET = "publish:global";
+
+/**
+ * The volume governors on NEW anonymous pages: `publish:<key>` 30 an hour and
+ * 200 a day, then `publish:global` 1,000 an hour across everyone. Runs AFTER
+ * the dedup probe, so an agent retrying the same publish gets its page back
+ * without spending its budget. Stops at the first refusal, so a refused
+ * publish does not also spend the buckets after it.
+ *
+ * THE DAY RULE HAS ITS OWN BUCKET, `publish:<key>:day`. `rate_limits` is keyed
+ * on `(bucket, window_start)` and windows are aligned to the epoch, so the hour
+ * starting 00:00 UTC and the day share a `window_start`: one bucket for both
+ * would make those two rules increment the same row.
+ *
+ * The global cap tripping mails the admins at most once an hour (edge case 18).
+ * The alert is awaited — one upsert while throttled, one send an hour — so the
+ * 429 never races it. `globalBucket` exists for tests, which must never fill
+ * the real one.
+ */
+export async function checkRateLimit(
+  publisherKey: string,
+  globalBucket: string = PUBLISH_GLOBAL_BUCKET,
+): Promise<RateLimitDecision> {
+  const { perPublisherHour, perPublisherDay, globalHour, globalCapAlertHour } =
+    PUBLISH_RATE_LIMITS;
+
+  const hour = decision(
+    await hit(`publish:${publisherKey}`, perPublisherHour),
+    `${perPublisherHour.limit} new pages an hour`,
+  );
+  if (!hour.allowed) return hour;
+
+  const day = decision(
+    await hit(`publish:${publisherKey}:day`, perPublisherDay),
+    `${perPublisherDay.limit} new pages a day`,
+  );
+  if (!day.allowed) return day;
+
+  const global = decision(
+    await hit(globalBucket, globalHour),
+    `kept is taking ${globalHour.limit} new anonymous pages an hour`,
+  );
+  if (!global.allowed) {
+    await sendAdminAlert({
+      subject: "anonymous publishing reached the global cap",
+      lines: [
+        `${globalBucket} reached ${globalHour.limit} new anonymous pages this hour.`,
+        `Anonymous publishers get a 429 for the next ${global.retryAfterSeconds} seconds. Signed-in publishing is not limited.`,
+      ],
+      throttleKey: globalBucket,
+      throttle: globalCapAlertHour,
+    });
+  }
+  return global;
+}
+
+/**
+ * Anonymous replace: `anon-replace:<siteId>`, 60 an hour per page. Keyed on the
+ * page rather than the publisher — the bearer token is the identity here, and a
+ * page re-dropped every minute is the pattern this bounds.
+ */
+export async function checkReplaceLimit(siteId: string): Promise<RateLimitDecision> {
+  const rule = PUBLISH_RATE_LIMITS.anonReplacePerSiteHour;
+  return decision(
+    await hit(`anon-replace:${siteId}`, rule),
+    `${rule.limit} replaces of this page an hour`,
+  );
 }
 
 /**
  * Enqueue the asynchronous scan of a version that is already live.
  *
- * FIRE AND FORGET BY CONTRACT: it runs after the stores agree, and it must
- * never fail a publish or delay the response. The page is live before the scan
- * starts — the status flip on a bad verdict is E07's, through
- * `writeManifest`, and is the reason `under_review` and `quarantined` exist in
- * the manifest status enum.
+ * FIRE AND FORGET BY CONTRACT (D2): callers `void` it, it runs after the stores
+ * agree, and it must never fail a publish or delay the response. The page is
+ * live before the scan starts; a bad verdict moves it to `under_review`.
+ * `trigger` is what the `scans` row records.
+ *
+ * Inside a request it is handed to Next's `after()`, which runs it once the
+ * response is sent. Outside one (`after()` throws: a script, a test) it is a
+ * floating promise on the long-lived process (Risk 9). `runScan` never
+ * rejects; the `.catch` is the last line all the same. The cron job and the
+ * admin CLI do not come through here — they await `runScan` directly.
  */
-export async function enqueueScan(
-  siteId: string,
-  versionId: string,
-): Promise<void> {
-  // E07: push onto the scan queue keyed by (siteId, versionId).
-  void siteId;
-  void versionId;
+export function enqueueScan(siteId: string, versionId: string, trigger: ScanTrigger): void {
+  const scan = () => runScan(siteId, versionId, trigger);
+  try {
+    after(scan);
+  } catch {
+    scan().catch((err: unknown) =>
+      console.error(
+        `[kept] scan of site ${siteId} version ${versionId} was lost — ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
+  }
 }

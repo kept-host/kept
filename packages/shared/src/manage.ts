@@ -44,11 +44,11 @@ export const STUDIO_ERROR_CODES = [
   "version_not_found",
   "unchanged",
   "last_sign_in_method",
-  // The epic's five (Risk 2): the studio routes run the shared publish
+  // The epic's four (Risk 2): the studio routes run the shared publish
   // pipeline and the names-check limiter, which already fail these ways, and
-  // the PRD's list would leave them unrepresentable.
+  // the PRD's list would leave them unrepresentable. (E07 D2 deleted a fifth,
+  // the heuristic refusal: nothing refuses bytes synchronously any more.)
   "invalid_request",
-  "content_rejected",
   "slug_unavailable",
   "rate_limited",
   "internal_error",

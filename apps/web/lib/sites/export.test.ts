@@ -9,7 +9,8 @@
  * ── AC40, AND HOW MEMORY IS MEASURED ─────────────────────────────────────────
  * `EXPORT_PAGES` (≥ 50) real pages are seeded: a `sites` row, a
  * `site_versions` row and an R2 object of `PAGE_BYTES` each, plus an archived
- * and a removed page the export must leave out. The export stream is consumed
+ * and the pages the export must leave out (archived, removed past its window,
+ * and any page whose bytes E07 withholds — D13). The export stream is consumed
  * chunk by chunk and written straight to a file on disk (the TEST's file, so it
  * holds nothing in memory either), and the zip is then checked by an
  * independent implementation — Info-ZIP's `unzip`: integrity (`-t`, CRCs), the
@@ -37,7 +38,7 @@ import { after, test } from "node:test";
 import v8 from "node:v8";
 import vm from "node:vm";
 
-import { DRAFT_GRACE_DAYS, DRAFT_TTL_DAYS, studioErrorSchema } from "@kept/shared";
+import { DRAFT_GRACE_DAYS, DRAFT_TTL_DAYS, type ModerationReason, studioErrorSchema } from "@kept/shared";
 import { config } from "dotenv";
 
 import { hasUnzip, unzip } from "../testing/unzip";
@@ -134,7 +135,13 @@ interface Seeded {
 async function seed(
   ownerId: string,
   n: number,
-  options: { status?: SiteStatusValue; draft?: boolean; purgeAfter?: Date | null; bytes?: number } = {},
+  options: {
+    status?: SiteStatusValue;
+    draft?: boolean;
+    purgeAfter?: Date | null;
+    bytes?: number;
+    moderationReason?: ModerationReason;
+  } = {},
 ): Promise<Seeded[]> {
   const { db, siteVersions, sites, PAGE_CONTENT_TYPE, pageObjectKey, r2Store } = await deps();
   const now = Date.now();
@@ -169,6 +176,7 @@ async function seed(
         claimedAt: new Date(now),
         contentHash: `e06-008-${siteId}`,
         sizeBytes: Buffer.byteLength(html),
+        moderationReason: options.moderationReason ?? null,
         // Distinct, ordered creation times: the export lists by `created_at`.
         createdAt: new Date(now - (n - i) * 1000),
       },
@@ -231,7 +239,7 @@ test(
 );
 
 test(
-  "download: every status but removed, until purge_after — and the same 404 for anyone else",
+  "download: every status until purge_after (removed too, E07 D13), never withheld bytes — and the same 404 for anyone else",
   { skip },
   async () => {
     const { downloadOwnedSite } = await deps();
@@ -246,6 +254,8 @@ test(
       ...(await seed(owner, 1, { status: "expired", draft: true, purgeAfter: future })),
       // D14: an archived page downloads until its purge_after.
       ...(await seed(owner, 1, { status: "archived", purgeAfter: future })),
+      // D13: so does a removed one.
+      ...(await seed(owner, 1, { status: "removed", purgeAfter: future, moderationReason: "phishing" })),
     ];
     for (const page of allowed) {
       const res = await downloadOwnedSite(page.siteId, owner);
@@ -257,7 +267,14 @@ test(
     const refused = [
       ...(await seed(owner, 1, { status: "archived", purgeAfter: past })).map((p) => p.siteId),
       ...(await seed(owner, 1, { status: "expired", draft: true, purgeAfter: past })).map((p) => p.siteId),
-      ...(await seed(owner, 1, { status: "removed" })).map((p) => p.siteId),
+      ...(await seed(owner, 1, { status: "removed", purgeAfter: past, moderationReason: "phishing" })).map(
+        (p) => p.siteId,
+      ),
+      // D13: child sexual abuse material serves its bytes to nobody, in any status.
+      ...(await seed(owner, 1, { status: "removed", purgeAfter: future, moderationReason: "child_sexual_abuse" })).map(
+        (p) => p.siteId,
+      ),
+      ...(await seed(owner, 1, { status: "quarantined", moderationReason: "child_sexual_abuse" })).map((p) => p.siteId),
       crypto.randomUUID(),
       "not-a-uuid",
     ];
@@ -300,7 +317,13 @@ test(
     const drafts = await seed(owner, 1, { draft: true });
     const all = [...pages, ...drafts];
     await seed(owner, 1, { status: "archived", purgeAfter: new Date(Date.now() + MS_PER_DAY) });
-    await seed(owner, 1, { status: "removed" });
+    await seed(owner, 1, { status: "removed", purgeAfter: new Date(Date.now() - 60_000), moderationReason: "spam" });
+    await seed(owner, 1, {
+      status: "removed",
+      purgeAfter: new Date(Date.now() + MS_PER_DAY),
+      moderationReason: "child_sexual_abuse",
+    });
+    await seed(owner, 1, { status: "quarantined", moderationReason: "child_sexual_abuse" });
 
     v8.setFlagsFromString("--expose-gc");
     const gc = (globalThis.gc ?? vm.runInNewContext("gc")) as () => void;
@@ -357,7 +380,7 @@ test(
       assert.deepEqual(
         names,
         ["kept-export.json", ...all.map((p) => `${p.slug}/index.html`)],
-        "the JSON first, then every non-archived page in created order — no archived, no removed",
+        "the JSON first, then every non-archived page in created order — no archived, no removed past its window, no withheld bytes",
       );
 
       const manifest = JSON.parse(unzip(["-p", file, "kept-export.json"]).toString("utf8")) as ExportEntryOnDisk[];
@@ -404,3 +427,118 @@ test("export: an account with no pages still gets a valid zip with an empty list
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// ── E07 D13: a removed page before purge_after, and withheld bytes ───────────
+
+test(
+  "export (D13): a removed page inside its window is in the zip; withheld bytes never are, in any status",
+  { skip: skipZip },
+  async () => {
+    const { exportOwnPages } = await deps();
+    const owner = await makeOwner();
+    const future = new Date(Date.now() + DRAFT_GRACE_DAYS * MS_PER_DAY);
+    const [live] = await seed(owner, 1);
+    const [removed] = await seed(owner, 1, { status: "removed", purgeAfter: future, moderationReason: "scam" });
+    await seed(owner, 1, { status: "removed", purgeAfter: future, moderationReason: "child_sexual_abuse" });
+    await seed(owner, 1, { status: "under_review", moderationReason: "child_sexual_abuse" });
+
+    const dir = await mkdtemp(join(tmpdir(), "kept-export-"));
+    const file = join(dir, "removed.zip");
+    try {
+      const res = await exportOwnPages(owner);
+      assert.equal(res.status, 200);
+      const handle = await open(file, "w");
+      await handle.write(new Uint8Array(await res.arrayBuffer()));
+      await handle.close();
+
+      unzip(["-tq", file]);
+      assert.deepEqual(unzip(["-Z1", file]).toString("utf8").trim().split("\n"), [
+        "kept-export.json",
+        `${live!.slug}/index.html`,
+        `${removed!.slug}/index.html`,
+      ]);
+      const manifest = JSON.parse(unzip(["-p", file, "kept-export.json"]).toString("utf8")) as ExportEntryOnDisk[];
+      assert.deepEqual(
+        manifest.map((entry) => [entry.name, entry.status]),
+        [
+          [live!.slug, "live"],
+          [removed!.slug, "removed"],
+        ],
+      );
+      assert.equal(unzip(["-p", file, `${removed!.slug}/index.html`]).toString("utf8"), removed!.html);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test("preview (D13): withheld bytes are never read for any screen; other restricted pages still preview", { skip }, async () => {
+  const { readPreviewHtml } = await import("../publish/preview");
+  const owner = await makeOwner();
+  const future = new Date(Date.now() + DRAFT_GRACE_DAYS * MS_PER_DAY);
+  const pages = [
+    ...(await seed(owner, 1, { status: "removed", purgeAfter: future, moderationReason: "child_sexual_abuse" })),
+    ...(await seed(owner, 1, { status: "quarantined", moderationReason: "child_sexual_abuse" })),
+    ...(await seed(owner, 1, { status: "under_review", moderationReason: "child_sexual_abuse" })),
+  ];
+  const [phishing] = await seed(owner, 1, { status: "under_review", moderationReason: "phishing" });
+  const { db, eq, sites } = await deps();
+  const read = async (siteId: string) => {
+    const [row] = await db
+      .select({
+        id: sites.id,
+        slug: sites.slug,
+        currentVersionId: sites.currentVersionId,
+        sizeBytes: sites.sizeBytes,
+        moderationReason: sites.moderationReason,
+      })
+      .from(sites)
+      .where(eq(sites.id, siteId));
+    return row!;
+  };
+  for (const page of pages) {
+    assert.equal(await readPreviewHtml(await read(page.siteId), "d13-sweep"), null, page.slug);
+  }
+  assert.equal(await readPreviewHtml(await read(phishing!.siteId), "d13-sweep"), phishing!.html);
+});
+
+test(
+  "D13: every mutation still refuses a removed page inside its window — the same 404 as not yours, nothing written",
+  { skip },
+  async () => {
+    const { db, eq, sites, siteVersions, ...routes } = await deps();
+    const owner = await makeOwner();
+    const [removed] = await seed(owner, 1, {
+      status: "removed",
+      purgeAfter: new Date(Date.now() + DRAFT_GRACE_DAYS * MS_PER_DAY),
+      moderationReason: "phishing",
+    });
+    const id = removed!.siteId;
+    const [version] = await db.select({ id: siteVersions.id }).from(siteVersions).where(eq(siteVersions.siteId, id));
+    const snapshot = async () => (await db.select().from(sites).where(eq(sites.id, id)))[0];
+    const before = await snapshot();
+
+    const attempts = {
+      keep: () => routes.keepOwnedSite(id, owner),
+      demote: () => routes.demoteOwnedSite(id, owner),
+      rename: () => routes.changeOwnedSiteName(id, { name: `d13-${id.slice(0, 8)}` }, owner),
+      title: () => routes.updateOwnedSite(id, { title: "Back again" }, owner),
+      listing: () => routes.updateOwnedSite(id, { listedPublic: true }, owner),
+      replace: () => routes.replaceOwnedSite(id, { html: "<!doctype html><title>back</title>" }, owner),
+      restore: () => routes.restoreOwnedVersion(id, version!.id, owner),
+      delete: () => routes.deleteOwnedSite(id, owner),
+    };
+    for (const [verb, attempt] of Object.entries(attempts)) {
+      const outcome = await attempt();
+      assert.equal(outcome.ok, false, verb);
+      assert.equal(outcome.status, 404, verb);
+      if (!outcome.ok) assert.equal(outcome.body.error.code, "not_found", verb);
+    }
+    assert.deepEqual(await snapshot(), before, "no mutation wrote a column");
+
+    // ...while reading and downloading it still works (D13).
+    const download = await routes.downloadOwnedSite(id, owner);
+    assert.equal(download.status, 200);
+    assert.equal(await download.text(), removed!.html);
+  },
+);

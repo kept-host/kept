@@ -1,0 +1,119 @@
+{
+  "credential-phishing": {
+    "harm": {
+      "type": "choice",
+      "choice": "credential_phishing",
+      "probabilities": { "none": 0, "credential_phishing": 1, "payment_harvest": 0, "wallet_drainer": 0, "malware_download": 0, "scam": 0, "sexual_content_minors": 0 }
+    },
+    "impersonates": { "type": "noul", "noul": 0.95 },
+    "asks_for_secrets": { "type": "noul", "noul": 0.98 }
+  },
+  "credential-phishing-unsure": {
+    "harm": {
+      "type": "choice",
+      "choice": "credential_phishing",
+      "probabilities": { "none": 0.2, "credential_phishing": 0.72, "payment_harvest": 0.05, "wallet_drainer": 0.01, "malware_download": 0.0, "scam": 0.02, "sexual_content_minors": 0.0 }
+    },
+    "impersonates": { "type": "noul", "noul": 0.41 },
+    "asks_for_secrets": { "type": "noul", "noul": 0.95 }
+  },
+  "payment-harvest": {
+    "harm": {
+      "type": "choice",
+      "choice": "payment_harvest",
+      "probabilities": { "none": 0, "credential_phishing": 0, "payment_harvest": 1, "wallet_drainer": 0, "malware_download": 0, "scam": 0, "sexual_content_minors": 0 }
+    },
+    "impersonates": { "type": "noul", "noul": 0.88 },
+    "asks_for_secrets": { "type": "noul", "noul": 0.98 }
+  },
+  "wallet-drainer": {
+    "harm": {
+      "type": "choice",
+      "choice": "wallet_drainer",
+      "probabilities": { "none": 0, "credential_phishing": 0, "payment_harvest": 0, "wallet_drainer": 1, "malware_download": 0, "scam": 0, "sexual_content_minors": 0 }
+    },
+    "impersonates": { "type": "noul", "noul": 0.93 },
+    "asks_for_secrets": { "type": "noul", "noul": 0.98 }
+  },
+  "malware-download": {
+    "harm": {
+      "type": "choice",
+      "choice": "malware_download",
+      "probabilities": { "none": 0, "credential_phishing": 0, "payment_harvest": 0, "wallet_drainer": 0, "malware_download": 1, "scam": 0, "sexual_content_minors": 0 }
+    },
+    "impersonates": { "type": "noul", "noul": 0.52 },
+    "asks_for_secrets": { "type": "noul", "noul": 0.01 }
+  },
+  "scam": {
+    "harm": {
+      "type": "choice",
+      "choice": "scam",
+      "probabilities": { "none": 0, "credential_phishing": 0, "payment_harvest": 0, "wallet_drainer": 0, "malware_download": 0, "scam": 1, "sexual_content_minors": 0 }
+    },
+    "impersonates": { "type": "noul", "noul": 0.63 },
+    "asks_for_secrets": { "type": "noul", "noul": 0.03 }
+  },
+  "sexual-content-minors": {
+    "harm": {
+      "type": "choice",
+      "choice": "sexual_content_minors",
+      "probabilities": { "none": 0.38, "credential_phishing": 0.0, "payment_harvest": 0.0, "wallet_drainer": 0.0, "malware_download": 0.0, "scam": 0.0, "sexual_content_minors": 0.62 }
+    },
+    "impersonates": { "type": "noul", "noul": 0.01 },
+    "asks_for_secrets": { "type": "noul", "noul": 0.0 }
+  },
+  "sexual-content-minors-low": {
+    "harm": {
+      "type": "choice",
+      "choice": "sexual_content_minors",
+      "probabilities": { "none": 0.4, "credential_phishing": 0.0, "payment_harvest": 0.0, "wallet_drainer": 0.0, "malware_download": 0.0, "scam": 0.14, "sexual_content_minors": 0.46 }
+    },
+    "impersonates": { "type": "noul", "noul": 0.01 },
+    "asks_for_secrets": { "type": "noul", "noul": 0.0 }
+  },
+  "impersonating-harvester": {
+    "harm": {
+      "type": "choice",
+      "choice": "none",
+      "probabilities": { "none": 0.55, "credential_phishing": 0.38, "payment_harvest": 0.03, "wallet_drainer": 0.0, "malware_download": 0.0, "scam": 0.04, "sexual_content_minors": 0.0 }
+    },
+    "impersonates": { "type": "noul", "noul": 0.94 },
+    "asks_for_secrets": { "type": "noul", "noul": 0.93 }
+  },
+  "clean-supabase-login": {
+    "harm": {
+      "type": "choice",
+      "choice": "none",
+      "probabilities": { "none": 0.99, "credential_phishing": 0.01, "payment_harvest": 0, "wallet_drainer": 0, "malware_download": 0, "scam": 0, "sexual_content_minors": 0 }
+    },
+    "impersonates": { "type": "noul", "noul": 0.06 },
+    "asks_for_secrets": { "type": "noul", "noul": 0.96 }
+  },
+  "clean-netflix-clone": {
+    "harm": {
+      "type": "choice",
+      "choice": "none",
+      "probabilities": { "none": 0.98, "credential_phishing": 0.02, "payment_harvest": 0, "wallet_drainer": 0, "malware_download": 0, "scam": 0, "sexual_content_minors": 0 }
+    },
+    "impersonates": { "type": "noul", "noul": 0.06 },
+    "asks_for_secrets": { "type": "noul", "noul": 0.96 }
+  },
+  "clean-base64-image": {
+    "harm": {
+      "type": "choice",
+      "choice": "none",
+      "probabilities": { "none": 0.98, "credential_phishing": 0.02, "payment_harvest": 0, "wallet_drainer": 0, "malware_download": 0, "scam": 0, "sexual_content_minors": 0 }
+    },
+    "impersonates": { "type": "noul", "noul": 0.04 },
+    "asks_for_secrets": { "type": "noul", "noul": 0.95 }
+  },
+  "clean-minified": {
+    "harm": {
+      "type": "choice",
+      "choice": "none",
+      "probabilities": { "none": 0.87, "credential_phishing": 0.13, "payment_harvest": 0, "wallet_drainer": 0, "malware_download": 0, "scam": 0, "sexual_content_minors": 0 }
+    },
+    "impersonates": { "type": "noul", "noul": 0.67 },
+    "asks_for_secrets": { "type": "noul", "noul": 0.98 }
+  }
+}

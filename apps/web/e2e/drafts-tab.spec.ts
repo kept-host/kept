@@ -1,6 +1,6 @@
 import { bulkResultSchema, demoteResultSchema, DRAFT_GRACE_DAYS, limitsFor, studioErrorSchema } from "@kept/shared";
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
 import { pointerKey } from "../lib/storage/manifest";
@@ -10,6 +10,7 @@ import {
   draftsDeletedToast,
   draftsKeptToast,
   formatTimestamp,
+  managementRefusal,
   publishedLabel,
 } from "../lib/sites/display";
 
@@ -22,6 +23,7 @@ import {
   publishOwned,
   readSite,
   seedKept,
+  seedOwned,
   signInAs,
   SKIP_OWNER_UI,
 } from "./owner-fixtures";
@@ -33,9 +35,11 @@ import {
  * `POST /api/sites/bulk`, and the past-grace bug (a draft 40 days past its
  * clock was listed with a working Keep).
  *
- * NO MOCKS. Pages an assertion is about are published through `POST /api/sites`
- * by a real magic-link session; rows that only fill an account are real rows
- * inserted into Postgres (`seedKept`, `seedDraft`). Every write is re-read from
+ * NO MOCKS. Pages a delete is about are published through `POST /api/sites`
+ * by a real magic-link session; kept pages the tabs only list are seeded with
+ * their bytes and no manifest (`seedOwned` — dev KV is on the free plan); rows
+ * that only fill an account are real rows inserted into Postgres (`seedKept`,
+ * `seedDraft`). Every write is re-read from
  * Postgres, and a deleted page's edge is probed until it stops serving.
  *
  * SKIPS without dev credentials: CI runs fork PRs with no secrets.
@@ -108,7 +112,7 @@ test.describe("the drafts tab", () => {
     baseURL,
   }) => {
     const { userId } = await signInAs(page, baseURL!, scope);
-    const kept = await publishOwned(page, baseURL!, scope, "E06 tabs kept");
+    const kept = await seedOwned(scope, userId, "E06 tabs kept");
     const drafts = [
       await seedDraft(userId, { expiresAt: new Date(Date.now() + 3 * DAY) }),
       await seedDraft(userId, { expiresAt: new Date(Date.now() + 4 * DAY) }),
@@ -397,9 +401,51 @@ test.describe("the drafts tab", () => {
     expect(await readSite(stale.siteId)).toEqual(before);
   });
 
+  test("restricted drafts (E07): no Delete and no checkbox; a removed draft is listed as Removed with no countdown, and its Keep says why", async ({
+    page,
+    baseURL,
+  }) => {
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const live = await seedDraft(userId, { expiresAt: new Date(Date.now() + 3 * DAY) });
+    const flagged = await seedDraft(userId, { expiresAt: new Date(Date.now() + 4 * DAY) });
+    const removed = await seedDraft(userId, { expiresAt: new Date(Date.now() + 5 * DAY) });
+    await db
+      .update(schema.sites)
+      .set({ status: "under_review", moderationReason: "phishing" })
+      .where(eq(schema.sites.id, flagged.siteId));
+    await db
+      .update(schema.sites)
+      .set({ status: "removed", moderationReason: "spam", purgeAfter: new Date(Date.now() + 20 * DAY) })
+      .where(eq(schema.sites.id, removed.siteId));
+
+    await page.goto("/dashboard?tab=drafts");
+    await hydrated(page);
+    await expect.poll(() => order(draftsList(page)).then((ids) => [...ids].sort())).toEqual(
+      [live.siteId, flagged.siteId, removed.siteId].sort(),
+    );
+
+    await expect(card(page, live.siteId).getByTestId("delete-draft")).toBeVisible();
+    for (const site of [flagged, removed]) {
+      await expect(card(page, site.siteId).getByTestId("delete-draft"), site.slug).toHaveCount(0);
+    }
+    await expect(card(page, flagged.siteId)).toContainText("Under review");
+    await expect(card(page, removed.siteId)).toContainText("Removed");
+    await expect(card(page, removed.siteId)).not.toContainText(/days? left/);
+    const keep = card(page, removed.siteId).getByTestId("keep-button");
+    await expect(keep).toBeDisabled();
+    await expect(keep).toHaveAttribute("title", managementRefusal("removed")!);
+
+    await page.getByTestId("select-drafts").click();
+    await expect(card(page, live.siteId).getByTestId("select-draft")).toBeVisible();
+    for (const site of [flagged, removed]) {
+      await expect(card(page, site.siteId).getByTestId("select-draft"), site.slug).toHaveCount(0);
+    }
+    await expect(page.getByRole("button", { name: "Select all (1 shown)" })).toBeVisible();
+  });
+
   test("an account with kept pages and no drafts: the Drafts tab says so calmly — no hero", async ({ page, baseURL }) => {
-    await signInAs(page, baseURL!, scope);
-    await publishOwned(page, baseURL!, scope, "E06 only kept");
+    const { userId } = await signInAs(page, baseURL!, scope);
+    await seedOwned(scope, userId, "E06 only kept");
 
     await page.goto("/dashboard?tab=drafts");
     await expect(page.getByTestId("drafts-empty")).toContainText("No drafts right now.");

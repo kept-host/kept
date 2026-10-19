@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Todo</title></head>
+<body>
+  <ul id="list"></ul>
+  <script>
+    document.getElementById("list").innerHTML = "<li>Nothing yet</li>";
+    fetch("/todos.json").then(function (r) { return r.json(); });
+  </script>
+</body>
+</html>

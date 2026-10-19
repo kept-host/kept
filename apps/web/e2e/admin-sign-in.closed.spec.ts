@@ -44,7 +44,11 @@ const SKIP_AUTH = skipAuth();
 const NEUTRAL = "If this address can sign in, a link is on its way.";
 
 const runId = crypto.randomUUID().slice(0, 8);
-/** `.invalid`: Resend refuses it, so a send would surface as the error panel. */
+/**
+ * `.invalid`, never mailable. The harness runs with `KEPT_EMAIL_DELIVERY=off`,
+ * so here a send to it would not surface as an error; that "nothing was sent"
+ * proof is `lib/auth/closed-sign-in.test.ts`, which runs with delivery on.
+ */
 const stranger = `stranger-${runId}@kept-e06a-003.invalid`;
 
 test.describe("closed deploy — who may sign in", () => {
@@ -113,7 +117,7 @@ test.describe("closed deploy — who may sign in", () => {
       return `/api/auth/magic-link/verify?token=${token}&callbackURL=${encodeURIComponent(callbackURL)}`;
     }
 
-    test("AC4: a stranger and the admin get the same answer; only the admin's is a real send", async ({
+    test("AC4: a stranger and the admin get the same answer; only the admin's is sent", async ({
       page,
     }) => {
       expect(admin, "playwright.config.ts sets KEPT_E2E_ADMIN_EMAIL for a closed run").toBeTruthy();
@@ -130,8 +134,8 @@ test.describe("closed deploy — who may sign in", () => {
         const response = await sent;
         answers.push({ status: response.status(), body: await response.json() });
 
-        // A send Resend refused would be the error panel; this is the panel
-        // for a send that never happened (stranger) or succeeded (admin).
+        // The panel for a send that never happened (stranger) or succeeded
+        // (admin) — the same panel, which is the point.
         await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible({
           timeout: 20_000,
         });

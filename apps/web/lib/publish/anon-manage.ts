@@ -9,15 +9,16 @@
  *
  * THE THREE OPERATIONS, AND THE ONE RULE EACH TURNS ON:
  *
- *   replace   R2 object → writeManifest(pointer → KV → purge), same slug, same
- *             siteId, NEW versionId. The purge is load-bearing here in a way it
+ *   replace   R2 object → syncManifest (pointer → KV → purge, from the row
+ *             under its lock — D18), same slug, same siteId, NEW versionId. The purge is load-bearing here in a way it
  *             is not on publish: a replaced slug ALWAYS has a cached
  *             predecessor, and `LIVE_CACHE_CONTROL` is a year. Without the
  *             purge the product's most visible behaviour — "I re-dropped my
  *             file and nothing changed" — breaks, and stays broken.
  *
  *   delete    removeManifest(delete pointer → delete KV → purge), then archive
- *             the row. POINTER FIRST, NEVER KV FIRST: the Worker probes
+ *             the row (status re-checked under its lock), then syncManifest
+ *             (AC42); a flagged page is the uniform 404. POINTER FIRST, NEVER KV FIRST: the Worker probes
  *             `slugs/{slug}.json` exactly when KV cannot answer, so deleting KV
  *             first opens a window in which a miss finds a live pointer and
  *             RESURRECTS A DELETED PAGE. And it is only visible inside that
@@ -39,26 +40,27 @@ import {
   hashContent,
   publishRequestSchema,
   type PublishChannel,
+  type SiteStatus,
 } from "@kept/shared";
 import { z } from "zod";
 
 import {
   archiveSite,
+  DELETABLE_STATUSES,
   insertReplacementVersion,
-  revertReplacementVersion,
   setReminderEmail,
   type AnonSite,
 } from "../db/queries/publish";
-import { removeManifest } from "../storage/manifest";
+import { removeManifest, syncManifest } from "../storage/manifest";
 import { pageObjectKey } from "../storage/r2";
 import { notFound, resolveAnonToken } from "./anon-token";
-import { checkHeuristics, enqueueScan, verifyTurnstile } from "./hooks";
+import { checkReplaceLimit, enqueueScan, verifyTurnstile } from "./hooks";
 import { extractPageTitle } from "./page-title";
 import {
-  contentRejected,
   fail,
   internalError,
   liveUrl,
+  rateLimited,
   requestError,
   writePageAndManifest,
   type PublishFailure,
@@ -140,9 +142,9 @@ export async function replacePage(
   const { html, turnstileToken } = parsed.data;
 
   // The same seams as publish, for the same reason: a replace is a re-publish,
-  // and a path that stores new bytes without the content check or the scan
-  // enqueue is a hole big enough to publish anything through — publish clean,
-  // then replace with the payload.
+  // and a path that stores new bytes without a governor or the scan enqueue is
+  // a hole big enough to publish anything through — publish clean, then
+  // replace with the payload. The limit is per page (`anon-replace:<siteId>`).
   if (turnstileToken !== undefined) {
     const turnstile = await verifyTurnstile(turnstileToken);
     if (!turnstile.ok) {
@@ -153,8 +155,8 @@ export async function replacePage(
     }
   }
 
-  const heuristics = await checkHeuristics(html);
-  if (!heuristics.allowed) return contentRejected(heuristics.reason);
+  const limit = await checkReplaceLimit(site.id);
+  if (!limit.allowed) return rateLimited(limit);
 
   const contentHash = await hashContent(html);
   const sizeBytes = Buffer.byteLength(html, "utf8");
@@ -194,6 +196,10 @@ export async function replacePage(
     return internalError();
   }
 
+  // The manifest is `syncManifest`'s, read from the row under its lock (D18),
+  // so a flag that committed after `resolveAnonToken` saw `live` is what the
+  // edge serves. A failed write reverts the row to `previous` and syncs again:
+  // the page keeps serving what it served before, never dark.
   const stored = await writePageAndManifest({
     slug: site.slug,
     siteId: site.id,
@@ -201,29 +207,19 @@ export async function replacePage(
     r2Key,
     html,
     ownerId: site.ownerId,
-    // The unwind restores this version's manifest rather than removing it: a
-    // failed replace must leave the page serving what it served before, never
-    // dark.
-    previousVersionId: previous.versionId ?? undefined,
+    previous,
   });
 
   if (!stored.ok) {
     console.error(
       `[kept] replace: store write failed for site ${site.id} (slug "${site.slug}", object "${r2Key}") — ${stored.error}`,
     );
-    try {
-      await revertReplacementVersion({ siteId: site.id, versionId, previous });
-    } catch (err) {
-      console.error(
-        `[kept] ROLLBACK INCOMPLETE — site ${site.id} (slug "${site.slug}") still points at version ${versionId}: ${message(err)}. E07 DIVERGENCE AUDIT: Postgres is the authority, never an R2 list (contract §7.5).`,
-      );
-    }
     return internalError();
   }
 
   // Fire and forget by contract — the new bytes are already live and a scan must
   // never delay or fail the response.
-  void enqueueScan(site.id, versionId);
+  void enqueueScan(site.id, versionId, "replace");
 
   return {
     ok: true,
@@ -238,7 +234,17 @@ export async function replacePage(
 
 /**
  * Stop serving a page. ARCHIVE, NEVER DESTROY — the bytes and the rows stay and
- * E07's grace-end job does the hard delete against `purge_after`.
+ * E07's purge does the hard delete against `purge_after`.
+ *
+ * Only `live` and `expired` pages are deletable (Arun 2026-10-15, decision 2).
+ * `under_review`, `quarantined` and `removed` are the uniform 404, exactly like
+ * a token that names nothing: a delete would launder the flag, and a different
+ * answer would tell a stranger holding a leaked link that the page was flagged.
+ *
+ * Edge first, then the row under its lock with the status re-checked
+ * (`archiveSite`'s guarded `UPDATE`), then — whatever that did — the trailing
+ * `syncManifest` (AC42), which puts back the 451 of a flag that committed after
+ * the edge came down.
  *
  * Idempotent by construction: the token still resolves after the first call
  * (`requireLive: false`), an already-archived page short-circuits to success,
@@ -255,11 +261,12 @@ export async function deletePage(token: string): Promise<AnonOutcome<OkResponse>
     // reaching the state it asked for.
     return { ok: true, status: 200, body: { ok: true } };
   }
+  if (!isDeletable(site.status)) return notFound();
 
   // THE EDGE FIRST, AND POINTER-BEFORE-KV INSIDE IT. `removeManifest` owns that
   // ordering; calling `kv.delete` from here would be both a lint error and the
   // resurrection bug.
-  const removed = await removeManifest(site.slug);
+  const removed = await removeManifest(site.slug, site.id);
   if (!removed.ok) {
     console.error(
       `[kept] delete: manifest removal failed at the "${removed.step}" step for site ${site.id} (slug "${site.slug}") — ${removed.error}. The page is still serving; the row is untouched so the caller can retry.`,
@@ -270,18 +277,38 @@ export async function deletePage(token: string): Promise<AnonOutcome<OkResponse>
   // agree that the slug is gone, and the edge is merely stale until the logged
   // retry lands. `removeManifest` has already logged it.
 
+  let archived: boolean;
   try {
-    await archiveSite(site.id);
+    archived = await archiveSite(site.id);
   } catch (err) {
-    // The page has already stopped serving, which is what the caller asked for,
-    // but the row still says `live`. Loud, because only an audit can see it.
     console.error(
-      `[kept] delete: manifest removed but site ${site.id} (slug "${site.slug}") failed to archive — ${message(err)}. The page is NOT serving; the row disagrees. E07 DIVERGENCE AUDIT: reconcile against Postgres (contract §7.5).`,
+      `[kept] delete: manifest removed but site ${site.id} (slug "${site.slug}") failed to archive — ${message(err)}. Re-syncing the edge to the row.`,
     );
+    await syncDeleted(site.id);
     return internalError();
   }
+  await syncDeleted(site.id);
+  if (archived) return { ok: true, status: 200, body: { ok: true } };
 
-  return { ok: true, status: 200, body: { ok: true } };
+  // The re-check refused: the row moved between the read and the lock. A
+  // concurrent delete that won is still this caller's success; anything else
+  // (a flag, a takedown) is the uniform 404.
+  const now = await resolveAnonToken(token, { requireLive: false });
+  return now?.status === "archived" ? { ok: true, status: 200, body: { ok: true } } : notFound();
+}
+
+function isDeletable(status: SiteStatus): boolean {
+  return (DELETABLE_STATUSES as readonly SiteStatus[]).includes(status);
+}
+
+/** AC42's trailing sync. Never throws; a failure is the repurge job's row. */
+async function syncDeleted(siteId: string): Promise<void> {
+  const synced = await syncManifest(siteId);
+  if (!synced.ok) {
+    console.error(
+      `[kept] delete: trailing manifest sync failed for site ${siteId} — ${synced.error}. Recorded for the repurge job.`,
+    );
+  }
 }
 
 /**

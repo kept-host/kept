@@ -13,9 +13,10 @@
  *     a hard edge a scanner can read.
  *   · **Download page** — the page's own file, `GET /api/sites/{id}/download`.
  *
- * The QR and its two files are offered while the page is reachable at its link
- * (live, or live behind a review notice); a page that is not being served keeps
- * only its own file. States: QR rendered · PNG rasterising · download error.
+ * The QR and its two files are offered while the page is live at its link; a
+ * page that is not being served keeps only its own file — and not even that
+ * when its bytes are withheld (E07 D13). States: QR rendered · PNG
+ * rasterising · download error.
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Download } from "lucide-react";
@@ -76,6 +77,7 @@ export function ShareSection({
   qr,
   qrSvg,
   reachable,
+  downloadable,
 }: {
   siteId: string;
   slug: string;
@@ -85,8 +87,10 @@ export function ShareSection({
   qr: ReactNode;
   /** The same QR as a standalone SVG document (`qrSvg`). */
   qrSvg: string;
-  /** Served at its link (live, or behind a review notice): the QR is offered. */
+  /** Served at its link: the QR is offered. */
   reachable: boolean;
+  /** The owner may download the page's file (`isDownloadable`). */
+  downloadable: boolean;
 }) {
   const [png, setPng] = useState<PngPhase>("idle");
   const cleanups = useRef<(() => void)[]>([]);
@@ -160,14 +164,20 @@ export function ShareSection({
         </div>
       ) : null}
 
-      <div className={reachable ? "border-t border-border pt-3" : undefined}>
-        <Button asChild variant="secondary" size="sm" className="font-body font-medium">
-          <a href={pageDownloadHref(siteId)} data-testid="download-page" download>
-            <Download aria-hidden="true" strokeWidth={1.5} />
-            Download page
-          </a>
-        </Button>
-      </div>
+      {downloadable ? (
+        <div className={reachable ? "border-t border-border pt-3" : undefined}>
+          <Button asChild variant="secondary" size="sm" className="font-body font-medium">
+            <a href={pageDownloadHref(siteId)} data-testid="download-page" download>
+              <Download aria-hidden="true" strokeWidth={1.5} />
+              Download page
+            </a>
+          </Button>
+        </div>
+      ) : (
+        <p data-testid="download-withheld" className="text-[13px] text-text-secondary">
+          This page&rsquo;s file can&rsquo;t be downloaded while it is restricted.
+        </p>
+      )}
     </Section>
   );
 }

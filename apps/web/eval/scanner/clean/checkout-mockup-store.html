@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Checkout · Solecraft Sneakers</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #111;
+    --muted: #6b6b6b;
+    --line: #e7e5e0;
+    --bg: #f7f5f0;
+    --accent: #ff5a1f;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'Space Grotesk', system-ui, sans-serif; background: var(--bg); color: var(--ink); }
+  header { display: flex; justify-content: space-between; align-items: center; padding: 20px 40px; border-bottom: 1px solid var(--line); background: #fff; }
+  header .logo { font-weight: 700; font-size: 22px; letter-spacing: -0.5px; }
+  header .logo span { color: var(--accent); }
+  header .secure { font-size: 13px; color: var(--muted); }
+  main { max-width: 1080px; margin: 40px auto; display: grid; grid-template-columns: 1.3fr 1fr; gap: 32px; padding: 0 20px; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 28px; }
+  h2 { margin: 0 0 18px; font-size: 18px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .row3 { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 14px; }
+  label { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin-bottom: 6px; }
+  input, select { width: 100%; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; font: inherit; font-size: 15px; background: #fcfbf9; }
+  input:focus, select:focus { outline: 2px solid var(--accent); border-color: transparent; }
+  .field { margin-bottom: 14px; }
+  .section + .section { margin-top: 26px; padding-top: 22px; border-top: 1px dashed var(--line); }
+  .item { display: flex; gap: 14px; align-items: center; margin-bottom: 16px; }
+  .thumb { width: 64px; height: 64px; border-radius: 12px; display: grid; place-items: center; font-size: 28px; }
+  .item .meta { flex: 1; }
+  .item .meta small { color: var(--muted); display: block; }
+  .totals div { display: flex; justify-content: space-between; padding: 6px 0; font-size: 15px; }
+  .totals .grand { font-weight: 700; font-size: 20px; border-top: 1px solid var(--line); margin-top: 8px; padding-top: 14px; }
+  button.pay { width: 100%; margin-top: 18px; padding: 16px; border: 0; border-radius: 12px; background: var(--ink); color: #fff; font: inherit; font-size: 16px; font-weight: 700; cursor: pointer; }
+  button.pay:hover { background: var(--accent); }
+  .note { font-size: 12px; color: var(--muted); text-align: center; margin-top: 12px; }
+  #done { display: none; position: fixed; inset: 0; background: rgba(17,17,17,.55); align-items: center; justify-content: center; }
+  #done .box { background: #fff; padding: 36px 40px; border-radius: 18px; text-align: center; max-width: 360px; }
+  #done .box h3 { margin: 10px 0 6px; }
+  @media (max-width: 820px) { main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">sole<span>craft</span></div>
+  <div class="secure">Step 3 of 3 · Payment</div>
+</header>
+
+<main>
+  <form class="card" id="checkout">
+    <div class="section">
+      <h2>Shipping</h2>
+      <div class="row">
+        <div class="field"><label>First name</label><input value="Jordan"></div>
+        <div class="field"><label>Last name</label><input value="Reyes"></div>
+      </div>
+      <div class="field"><label>Address</label><input placeholder="221 Canal Street, Apt 4"></div>
+      <div class="row3">
+        <div class="field"><label>City</label><input placeholder="Portland"></div>
+        <div class="field"><label>State</label><select><option>OR</option><option>WA</option><option>CA</option></select></div>
+        <div class="field"><label>ZIP</label><input placeholder="97205"></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Payment</h2>
+      <div class="field"><label>Name on card</label><input placeholder="Jordan Reyes"></div>
+      <div class="field"><label>Card number</label><input id="cc" inputmode="numeric" placeholder="1234 5678 9012 3456" maxlength="19"></div>
+      <div class="row">
+        <div class="field"><label>Expiry</label><input id="exp" placeholder="MM / YY" maxlength="7"></div>
+        <div class="field"><label>CVC</label><input placeholder="123" maxlength="4"></div>
+      </div>
+    </div>
+  </form>
+
+  <aside class="card">
+    <h2>Order summary</h2>
+    <div class="item">
+      <div class="thumb" style="background:#ffe4d6">👟</div>
+      <div class="meta"><strong>Drift Runner 2</strong><small>Ember / US 10</small></div>
+      <div>$128</div>
+    </div>
+    <div class="item">
+      <div class="thumb" style="background:#e0ecff">🧦</div>
+      <div class="meta"><strong>Crew Socks 3-pack</strong><small>Mixed</small></div>
+      <div>$18</div>
+    </div>
+    <div class="totals">
+      <div><span>Subtotal</span><span>$146.00</span></div>
+      <div><span>Shipping</span><span>Free</span></div>
+      <div><span>Tax</span><span>$0.00</span></div>
+      <div class="grand"><span>Total</span><span>$146.00</span></div>
+    </div>
+    <button class="pay" form="checkout" type="submit">Place order</button>
+    <p class="note">Storefront prototype — no payment is processed.</p>
+  </aside>
+</main>
+
+<div id="done">
+  <div class="box">
+    <div style="font-size:40px">✅</div>
+    <h3>Order placed (demo)</h3>
+    <p style="color:#6b6b6b;font-size:14px">This checkout is a design prototype. Nothing was charged or sent.</p>
+    <button class="pay" id="closeDone" type="button">Back to shop</button>
+  </div>
+</div>
+
+<script>
+  // simple input formatting for the card fields
+  const cc = document.getElementById('cc');
+  cc.addEventListener('input', () => {
+    const digits = cc.value.replace(/\D/g, '').slice(0, 16);
+    cc.value = digits.replace(/(.{4})/g, '$1 ').trim();
+  });
+  const exp = document.getElementById('exp');
+  exp.addEventListener('input', () => {
+    const d = exp.value.replace(/\D/g, '').slice(0, 4);
+    exp.value = d.length > 2 ? d.slice(0, 2) + ' / ' + d.slice(2) : d;
+  });
+
+  const done = document.getElementById('done');
+  document.getElementById('checkout').addEventListener('submit', (e) => {
+    e.preventDefault();
+    e.target.reset();
+    done.style.display = 'flex';
+  });
+  document.getElementById('closeDone').addEventListener('click', () => {
+    done.style.display = 'none';
+  });
+</script>
+</body>
+</html>

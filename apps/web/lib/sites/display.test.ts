@@ -91,14 +91,22 @@ test("every status has a defined presentation, including ones added later", () =
   }
 });
 
-test("the two reviewed statuses refuse management with an explanation", () => {
+test("the three restricted statuses refuse management with an explanation — delete included (E07 decision 2)", () => {
   for (const status of ["quarantined", "under_review"] as const) {
     const refusal = managementRefusal(status);
     assert.ok(refusal, `${status} must explain itself`);
-    // The refusal names what is on hold AND what still works — a dead end is
-    // the failure mode this copy exists to avoid.
+    assert.match(refusal, /hidden/);
     assert.match(refusal, /on hold/);
-    assert.match(refusal, /Deleting still works/);
+    assert.match(refusal, /deleting/);
+    assert.doesNotMatch(refusal, /Deleting still works/);
+  }
+  const removed = managementRefusal("removed");
+  assert.ok(removed, "removed must explain itself (D13: its owner still sees it)");
+  // A dead end is the failure mode this copy exists to avoid: it says what is left.
+  assert.match(removed, /ask for a review/);
+  assert.equal(isManagementRestricted("removed"), true);
+  for (const status of ["live", "expired", "archived"] as const) {
+    assert.equal(isManagementRestricted(status), false, status);
   }
 });
 

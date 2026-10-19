@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IBAN Validator &amp; Formatter</title>
+<style>
+  body {
+    font-family: "IBM Plex Sans", Helvetica, Arial, sans-serif;
+    background: #eef2f6;
+    margin: 0;
+    color: #1f2a37;
+  }
+  .wrap { max-width: 640px; margin: 60px auto; padding: 0 20px; }
+  h1 { font-weight: 600; margin-bottom: 6px; }
+  .lead { color: #5b6878; margin-top: 0; }
+  .panel { background: white; border-radius: 12px; padding: 24px; box-shadow: 0 1px 3px rgba(15,23,42,.08); }
+  input {
+    width: 100%; box-sizing: border-box; font-size: 20px; letter-spacing: 1px;
+    padding: 14px 16px; border: 2px solid #d4dbe4; border-radius: 10px;
+    font-family: "IBM Plex Mono", Menlo, monospace; text-transform: uppercase;
+  }
+  input.ok { border-color: #2f9e6e; }
+  input.bad { border-color: #d64545; }
+  .verdict { margin: 16px 0 0; font-weight: 600; }
+  .verdict.ok { color: #2f9e6e; }
+  .verdict.bad { color: #d64545; }
+  dl { display: grid; grid-template-columns: 160px 1fr; gap: 8px 16px; margin: 20px 0 0; font-size: 14px; }
+  dt { color: #5b6878; }
+  dd { margin: 0; font-family: "IBM Plex Mono", Menlo, monospace; }
+  .examples { margin-top: 20px; font-size: 13px; color: #5b6878; }
+  .examples button { background: #eef2f6; border: 0; border-radius: 6px; padding: 4px 8px; margin: 2px; cursor: pointer; font-family: monospace; }
+  footer { font-size: 12px; color: #8592a3; margin-top: 18px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>IBAN Validator</h1>
+  <p class="lead">Check an IBAN's structure and checksum, and get it nicely formatted.</p>
+
+  <div class="panel">
+    <input id="iban" placeholder="DE89 3704 0044 0532 0130 00" autocomplete="off" spellcheck="false">
+    <p id="verdict" class="verdict"></p>
+    <dl id="details" hidden>
+      <dt>Formatted</dt><dd id="fmt"></dd>
+      <dt>Country</dt><dd id="country"></dd>
+      <dt>Check digits</dt><dd id="check"></dd>
+      <dt>BBAN</dt><dd id="bban"></dd>
+      <dt>Expected length</dt><dd id="len"></dd>
+    </dl>
+    <div class="examples">Try an example:
+      <button data-v="DE89370400440532013000">DE</button>
+      <button data-v="GB82WEST12345698765432">GB</button>
+      <button data-v="FR1420041010050500013M02606">FR</button>
+      <button data-v="NL91ABNA0417164300">NL</button>
+      <button data-v="ES9121000418450200051332">ES</button>
+    </div>
+  </div>
+  <footer>Validation happens on this page only. An IBAN that passes the checksum may still not belong to an open account.</footer>
+</div>
+
+<script>
+  // country code -> [name, total IBAN length]
+  const COUNTRIES = {
+    AT: ["Austria", 20], BE: ["Belgium", 16], CH: ["Switzerland", 21], CY: ["Cyprus", 28],
+    CZ: ["Czechia", 24], DE: ["Germany", 22], DK: ["Denmark", 18], EE: ["Estonia", 20],
+    ES: ["Spain", 24], FI: ["Finland", 18], FR: ["France", 27], GB: ["United Kingdom", 22],
+    GR: ["Greece", 27], HR: ["Croatia", 21], HU: ["Hungary", 28], IE: ["Ireland", 22],
+    IS: ["Iceland", 26], IT: ["Italy", 27], LT: ["Lithuania", 20], LU: ["Luxembourg", 20],
+    LV: ["Latvia", 21], MT: ["Malta", 31], NL: ["Netherlands", 18], NO: ["Norway", 15],
+    PL: ["Poland", 28], PT: ["Portugal", 25], RO: ["Romania", 24], SE: ["Sweden", 24],
+    SI: ["Slovenia", 19], SK: ["Slovakia", 24], TR: ["Türkiye", 26], AE: ["UAE", 23],
+  };
+
+  function mod97(numeric) {
+    // process in chunks so we never exceed Number precision
+    let remainder = 0;
+    for (let i = 0; i < numeric.length; i += 7) {
+      remainder = Number(String(remainder) + numeric.slice(i, i + 7)) % 97;
+    }
+    return remainder;
+  }
+
+  function validate(raw) {
+    const iban = raw.replace(/\s+/g, "").toUpperCase();
+    if (!iban) return null;
+    if (!/^[A-Z]{2}\d{2}[A-Z0-9]+$/.test(iban)) return { iban, ok: false, reason: "Must start with a 2-letter country code and 2 digits." };
+    const cc = iban.slice(0, 2);
+    const info = COUNTRIES[cc];
+    if (!info) return { iban, ok: false, reason: `Unknown or unsupported country code "${cc}".` };
+    if (iban.length !== info[1]) return { iban, cc, info, ok: false, reason: `${info[0]} IBANs are ${info[1]} characters; this one is ${iban.length}.` };
+    const rearranged = iban.slice(4) + iban.slice(0, 4);
+    const numeric = rearranged.replace(/[A-Z]/g, ch => String(ch.charCodeAt(0) - 55));
+    const ok = mod97(numeric) === 1;
+    return { iban, cc, info, ok, reason: ok ? "Valid IBAN — checksum matches." : "Checksum failed — check for a typo." };
+  }
+
+  const input = document.getElementById("iban");
+  const verdict = document.getElementById("verdict");
+  const details = document.getElementById("details");
+
+  function render() {
+    const r = validate(input.value);
+    input.classList.remove("ok", "bad");
+    verdict.className = "verdict";
+    if (!r) { verdict.textContent = ""; details.hidden = true; return; }
+    input.classList.add(r.ok ? "ok" : "bad");
+    verdict.classList.add(r.ok ? "ok" : "bad");
+    verdict.textContent = (r.ok ? "✓ " : "✗ ") + r.reason;
+    details.hidden = !r.info;
+    if (r.info) {
+      document.getElementById("fmt").textContent = r.iban.match(/.{1,4}/g).join(" ");
+      document.getElementById("country").textContent = `${r.info[0]} (${r.cc})`;
+      document.getElementById("check").textContent = r.iban.slice(2, 4);
+      document.getElementById("bban").textContent = r.iban.slice(4);
+      document.getElementById("len").textContent = r.info[1];
+    }
+  }
+
+  input.addEventListener("input", render);
+  document.querySelectorAll(".examples button").forEach(b =>
+    b.addEventListener("click", () => { input.value = b.dataset.v; render(); }));
+</script>
+</body>
+</html>

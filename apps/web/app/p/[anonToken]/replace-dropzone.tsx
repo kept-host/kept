@@ -16,8 +16,8 @@ import { replaceWithFile, replaceWithHtml, type ManageResult } from "./manage-cl
  *
  * TWO WAYS IN, ONE ENDPOINT, because that endpoint already accepts both: a
  * dropped file goes up as `multipart/form-data` and pasted markup as JSON.
- * Nothing here re-validates the document — size, HTML-ness and the content check
- * all live behind the API, which is also what E08's agents call, so a
+ * Nothing here re-validates the document — size, HTML-ness and the replace
+ * limit all live behind the API, which is also what E08's agents call, so a
  * browser-only rule would be a rule that does not exist.
  *
  * KEYBOARD FIRST. The drop target is a real `<input type="file">` inside a

@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Update</title></head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    function Panel() {
+      const [html, setHtml] = React.useState("");
+      React.useEffect(() => {
+        fetch("https://fragments.invalid/panel").then((r) => r.text()).then(setHtml);
+      }, []);
+      return <div dangerouslySetInnerHTML={{ __html: html }} />;
+    }
+    ReactDOM.createRoot(document.getElementById("root")).render(<Panel />);
+  </script>
+</body>
+</html>

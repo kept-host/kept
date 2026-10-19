@@ -100,10 +100,9 @@ after(async () => {
   const { eq, inArray } = await import("drizzle-orm");
   const { db } = await import("../db/index");
   const { siteVersions, sites, user } = await import("../db/schema");
-  const { removeManifest } = await import("../storage/manifest");
   const { pageObjectKey, r2Store } = await import("../storage/r2");
 
-  for (const slug of createdSlugs) await removeManifest(slug).catch(() => undefined);
+  await (await import("../testing/served-manifests")).removeServedManifests(createdSlugs);
   for (const siteId of createdSites) {
     const versions = await db
       .select({ id: siteVersions.id })
@@ -115,6 +114,7 @@ after(async () => {
         .catch(() => undefined);
     }
   }
+  await (await import("../testing/pending-purges")).clearPendingPurges(createdSlugs, createdSites);
   if (createdSites.size > 0) await db.delete(sites).where(inArray(sites.id, [...createdSites]));
   if (createdUsers.size > 0) await db.delete(user).where(inArray(user.id, [...createdUsers]));
   // Release the pool, or `tsx --test` hangs on `idle_timeout`.

@@ -15,6 +15,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { RESERVED_NAMES } from "@kept/shared";
 import { NextRequest } from "next/server";
 
 import { middleware } from "../../middleware";
@@ -588,4 +589,68 @@ test("open middleware: the API the closed rule takes away is untouched", () => {
     assert.equal(response.headers.get("location"), null);
     assert.equal(response.headers.get("x-middleware-request-x-kept-pathname"), null);
   }
+});
+
+// ── E07 AC41: the report form, the reports API and the admin surface ────────
+
+test("E07 AC41: `report` is already a reserved name, so no page can sit at report.<apex>", () => {
+  assert.ok((RESERVED_NAMES as readonly string[]).includes("report"));
+});
+
+test("E07 AC41 open: /report is the apex's; /admin/* and /api/admin/* are the app host's", () => {
+  assert.deepEqual(decide(APEX_HOST, "/report", "?url=x"), { kind: "pass", stampPathname: true });
+  assert.deepEqual(decide(APP_HOST, "/report", "?url=x"), {
+    kind: "redirect",
+    location: `${APEX_URL}/report?url=x`,
+  });
+  assert.deepEqual(decide(APP_HOST, "/admin/moderation"), { kind: "pass", stampPathname: true });
+  assert.deepEqual(decide(APEX_HOST, "/admin/moderation", "?tab=queue"), {
+    kind: "redirect",
+    location: `${APP_URL}/admin/moderation?tab=queue`,
+  });
+  for (const host of [APEX_HOST, APP_HOST]) {
+    for (const pathname of ["/api/reports", "/api/admin/moderation/restore"]) {
+      assert.deepEqual(decide(host, pathname), { kind: "pass", stampPathname: false }, pathname);
+    }
+  }
+});
+
+test("E07 AC41 closed: /api/reports passes on every host; /api/admin/* only on the app host", () => {
+  for (const host of [APEX_HOST, APP_HOST]) {
+    assert.equal(decideClosed(host, "/api/reports"), undefined, `${host}/api/reports`);
+  }
+  // Exact, not a prefix: nothing below it is opened by the entry.
+  assert.deepEqual(decideClosed(APEX_HOST, "/api/reports/x"), NOT_OPEN);
+  assert.equal(decideClosed(APP_HOST, "/api/admin/moderation/restore"), undefined);
+  assert.deepEqual(decideClosed(APEX_HOST, "/api/admin/x"), NOT_OPEN);
+  assert.deepEqual(decideClosed(APEX_HOST, "/api/admin/x", "", APP_URL, true), NOT_OPEN);
+});
+
+test("E07 AC41 closed: /report is served on the apex; /admin/* is the split rule's", () => {
+  assert.equal(decideClosed(APEX_HOST, "/report", "?url=x"), undefined);
+  assert.deepEqual(decideClosed(APP_HOST, "/report", "?url=x"), {
+    kind: "redirect",
+    location: `${APEX_URL}/report?url=x`,
+  });
+  for (const host of [APEX_HOST, APP_HOST]) {
+    assert.equal(decideClosed(host, "/admin/moderation"), undefined, host);
+  }
+});
+
+test("E07 AC41 closed middleware: reports reach their handler; admin is never served on the apex", async () => {
+  const reports = runMiddleware(`https://${APEX_HOST}/api/reports`, APP_URL, false);
+  assert.equal(reports.status, 200);
+  assert.equal(reports.headers.get("x-middleware-next"), "1");
+
+  const adminApi = runMiddleware(`https://${APEX_HOST}/api/admin/x`, APP_URL, false);
+  assert.equal(adminApi.status, 404);
+  assert.deepEqual(await adminApi.json(), NOT_OPEN_BODY);
+
+  const adminPage = runMiddleware(`https://${APEX_HOST}/admin/moderation`, APP_URL, false);
+  assert.equal(adminPage.status, 307);
+  assert.equal(adminPage.headers.get("location"), `${APP_URL}/admin/moderation`);
+
+  const reportPage = runMiddleware(`https://${APEX_HOST}/report`, APP_URL, false);
+  assert.equal(reportPage.status, 200);
+  assert.equal(reportPage.headers.get("location"), null);
 });

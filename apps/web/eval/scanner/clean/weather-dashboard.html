@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Skyline Weather</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-sky-500 via-sky-600 to-indigo-700 text-white">
+  <div class="max-w-4xl mx-auto px-5 py-10">
+    <header class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
+      <h1 class="text-2xl font-bold">☁️ Skyline Weather</h1>
+      <form id="searchForm" class="flex gap-2">
+        <input id="city" type="text" placeholder="Search a city…" value="Lisbon"
+          class="px-4 py-2 rounded-lg text-slate-800 w-56 focus:outline-none focus:ring-2 focus:ring-amber-300">
+        <button class="bg-amber-400 hover:bg-amber-300 text-slate-900 font-semibold px-4 rounded-lg">Go</button>
+      </form>
+    </header>
+
+    <p id="error" class="hidden bg-red-500/80 rounded-lg px-4 py-2 mb-6"></p>
+
+    <section id="current" class="bg-white/15 backdrop-blur rounded-2xl p-6 mb-6 hidden">
+      <div class="flex items-center justify-between flex-wrap gap-4">
+        <div>
+          <h2 id="place" class="text-xl font-semibold"></h2>
+          <p id="desc" class="text-sky-100"></p>
+        </div>
+        <div class="flex items-center gap-3">
+          <span id="icon" class="text-6xl"></span>
+          <span id="temp" class="text-6xl font-light"></span>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-6 text-sm">
+        <div class="bg-white/10 rounded-xl p-3"><p class="text-sky-100">Feels like</p><p id="feels" class="text-lg font-semibold"></p></div>
+        <div class="bg-white/10 rounded-xl p-3"><p class="text-sky-100">Humidity</p><p id="humidity" class="text-lg font-semibold"></p></div>
+        <div class="bg-white/10 rounded-xl p-3"><p class="text-sky-100">Wind</p><p id="wind" class="text-lg font-semibold"></p></div>
+        <div class="bg-white/10 rounded-xl p-3"><p class="text-sky-100">Precipitation</p><p id="precip" class="text-lg font-semibold"></p></div>
+      </div>
+    </section>
+
+    <section id="hourlyWrap" class="bg-white/15 backdrop-blur rounded-2xl p-6 mb-6 hidden">
+      <h3 class="font-semibold mb-3">Next 24 hours</h3>
+      <div id="hourly" class="flex gap-3 overflow-x-auto pb-2"></div>
+    </section>
+
+    <section id="dailyWrap" class="bg-white/15 backdrop-blur rounded-2xl p-6 hidden">
+      <h3 class="font-semibold mb-3">7-day forecast</h3>
+      <div id="daily" class="divide-y divide-white/10"></div>
+    </section>
+
+    <footer class="text-center text-xs text-sky-100 mt-10">Weather data by Open-Meteo.com</footer>
+  </div>
+
+<script>
+  const CODES = {
+    0: ['Clear sky', '☀️'], 1: ['Mainly clear', '🌤️'], 2: ['Partly cloudy', '⛅'], 3: ['Overcast', '☁️'],
+    45: ['Fog', '🌫️'], 48: ['Rime fog', '🌫️'], 51: ['Light drizzle', '🌦️'], 53: ['Drizzle', '🌦️'], 55: ['Heavy drizzle', '🌧️'],
+    61: ['Light rain', '🌦️'], 63: ['Rain', '🌧️'], 65: ['Heavy rain', '🌧️'], 71: ['Light snow', '🌨️'], 73: ['Snow', '❄️'],
+    75: ['Heavy snow', '❄️'], 80: ['Rain showers', '🌦️'], 81: ['Rain showers', '🌧️'], 82: ['Violent showers', '⛈️'],
+    95: ['Thunderstorm', '⛈️'], 96: ['Thunderstorm with hail', '⛈️'], 99: ['Thunderstorm with hail', '⛈️'],
+  };
+  const describe = code => CODES[code] || ['Unknown', '🌡️'];
+  const $ = id => document.getElementById(id);
+
+  async function geocode(name) {
+    const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(name)}&count=1&language=en&format=json`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!data.results || !data.results.length) throw new Error(`Couldn't find "${name}".`);
+    return data.results[0];
+  }
+
+  async function forecast(lat, lon, tz) {
+    const params = new URLSearchParams({
+      latitude: lat, longitude: lon, timezone: tz || 'auto',
+      current: 'temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,precipitation,weather_code',
+      hourly: 'temperature_2m,weather_code',
+      daily: 'weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max',
+      forecast_days: 7,
+    });
+    const res = await fetch(`https://api.open-meteo.com/v1/forecast?${params}`);
+    if (!res.ok) throw new Error('Forecast service is unavailable right now.');
+    return res.json();
+  }
+
+  function show(id) { $(id).classList.remove('hidden'); }
+
+  function render(place, data) {
+    const c = data.current;
+    const [desc, icon] = describe(c.weather_code);
+    $('place').textContent = `${place.name}${place.admin1 ? ', ' + place.admin1 : ''}, ${place.country}`;
+    $('desc').textContent = desc;
+    $('icon').textContent = icon;
+    $('temp').textContent = `${Math.round(c.temperature_2m)}°`;
+    $('feels').textContent = `${Math.round(c.apparent_temperature)}°C`;
+    $('humidity').textContent = `${c.relative_humidity_2m}%`;
+    $('wind').textContent = `${Math.round(c.wind_speed_10m)} km/h`;
+    $('precip').textContent = `${c.precipitation} mm`;
+
+    const nowIdx = data.hourly.time.findIndex(t => new Date(t) >= new Date(c.time));
+    $('hourly').innerHTML = data.hourly.time.slice(nowIdx, nowIdx + 24).map((t, i) => {
+      const idx = nowIdx + i;
+      return `<div class="min-w-[64px] text-center bg-white/10 rounded-xl py-3">
+        <p class="text-xs text-sky-100">${new Date(t).getHours()}:00</p>
+        <p class="text-2xl my-1">${describe(data.hourly.weather_code[idx])[1]}</p>
+        <p class="font-semibold">${Math.round(data.hourly.temperature_2m[idx])}°</p>
+      </div>`;
+    }).join('');
+
+    $('daily').innerHTML = data.daily.time.map((d, i) => `
+      <div class="flex items-center justify-between py-3">
+        <span class="w-24">${i === 0 ? 'Today' : new Date(d).toLocaleDateString('en', { weekday: 'long' })}</span>
+        <span class="text-2xl">${describe(data.daily.weather_code[i])[1]}</span>
+        <span class="text-sky-100 text-sm w-16 text-center">💧 ${data.daily.precipitation_probability_max[i] ?? 0}%</span>
+        <span class="w-24 text-right"><b>${Math.round(data.daily.temperature_2m_max[i])}°</b> <span class="text-sky-200">${Math.round(data.daily.temperature_2m_min[i])}°</span></span>
+      </div>`).join('');
+
+    ['current', 'hourlyWrap', 'dailyWrap'].forEach(show);
+  }
+
+  async function load(name) {
+    $('error').classList.add('hidden');
+    try {
+      const place = await geocode(name);
+      const data = await forecast(place.latitude, place.longitude, place.timezone);
+      render(place, data);
+      localStorage.setItem('skyline.lastCity', name);
+    } catch (err) {
+      $('error').textContent = err.message;
+      $('error').classList.remove('hidden');
+    }
+  }
+
+  $('searchForm').addEventListener('submit', e => {
+    e.preventDefault();
+    const name = $('city').value.trim();
+    if (name) load(name);
+  });
+
+  const last = localStorage.getItem('skyline.lastCity');
+  if (last) $('city').value = last;
+  load($('city').value);
+</script>
+</body>
+</html>

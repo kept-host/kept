@@ -6,6 +6,7 @@
  *   pnpm --filter @kept/web admin:token new
  *   pnpm --filter @kept/web admin:founding add <email> <socialUrl> [--note …]
  *   pnpm --filter @kept/web admin:waitlist stats | export [--confirmed] [--founding approved]
+ *   pnpm --filter @kept/web admin:scan --unscanned | --all-live --dry-run|--apply [--limit <n>]
  */
 import { config } from "dotenv";
 

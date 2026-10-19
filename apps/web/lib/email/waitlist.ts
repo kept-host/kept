@@ -11,13 +11,13 @@
  * `farewellHref`), never from a request. Nothing here logs an address or a token.
  */
 import { WAITLIST_CONSENT_TEXT, WAITLIST_CONFIRM_TTL_DAYS } from "@kept/shared";
-import { Resend } from "resend";
 
 import { farewellHref } from "../routing/host-split";
-import { appOrigin, resendConfig } from "../storage/env";
+import { appOrigin } from "../storage/env";
 import { unsubscribeToken } from "../waitlist/unsubscribe";
 import { emailFooter } from "./footer";
 import { listUnsubscribeHeaders } from "./list-unsubscribe";
+import { sendEmail } from "./send";
 
 /**
  * `path` on the landing's origin — `https://kept.host/…` on prod; the one
@@ -67,15 +67,10 @@ export function buildConfirmationEmail({
 
 /** Send the confirmation. Throws on a Resend refusal; the caller decides. */
 export async function sendConfirmationEmail(email: string, token: string): Promise<void> {
-  const { apiKey, from } = resendConfig();
-  const message = buildConfirmationEmail({ token, from, origin: appOrigin() });
-  const { error } = await new Resend(apiKey).emails.send({
-    from,
+  await sendEmail((from) => ({
     to: email,
-    subject: message.subject,
-    text: message.text,
-  });
-  if (error) throw new Error(`${error.name} — ${error.message}`);
+    ...buildConfirmationEmail({ token, from, origin: appOrigin() }),
+  }));
 }
 
 /**

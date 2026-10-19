@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kanban Board</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Inter, system-ui, sans-serif; background: #eef1f6; color: #1f2937; }
+    header { padding: 20px 28px; display: flex; justify-content: space-between; align-items: center; }
+    header h1 { margin: 0; font-size: 22px; }
+    header button { background: #ef4444; color: white; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+    .board { display: grid; grid-template-columns: repeat(4, minmax(240px, 1fr)); gap: 16px; padding: 0 28px 28px; overflow-x: auto; }
+    .column { background: #e2e7ef; border-radius: 12px; padding: 12px; min-height: 70vh; display: flex; flex-direction: column; }
+    .column h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .5px; margin: 4px 6px 12px; display: flex; justify-content: space-between; }
+    .column h2 .count { background: #cbd3df; border-radius: 999px; padding: 0 8px; font-size: 12px; }
+    .column.over { background: #d3e3fd; outline: 2px dashed #3b82f6; }
+    .cards { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+    .card { background: white; border-radius: 8px; padding: 10px 12px; box-shadow: 0 1px 2px rgba(0,0,0,.08); cursor: grab; font-size: 14px; position: relative; }
+    .card.dragging { opacity: .4; }
+    .card .del { position: absolute; top: 6px; right: 8px; border: none; background: none; color: #9ca3af; cursor: pointer; display: none; }
+    .card:hover .del { display: block; }
+    .card .label { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px; margin-top: 6px; }
+    .add { margin-top: 10px; }
+    .add input { width: 100%; padding: 8px; border: 1px solid #cbd3df; border-radius: 6px; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🗂 Website Redesign</h1>
+    <button id="resetBtn">Reset board</button>
+  </header>
+  <div class="board" id="board"></div>
+
+<script>
+  const KEY = 'kanban-board-v2';
+  const COLUMNS = ['Backlog', 'To do', 'In progress', 'Done'];
+  const LABELS = { design: ['#fde68a', '#92400e'], dev: ['#bfdbfe', '#1e40af'], copy: ['#ddd6fe', '#5b21b6'] };
+
+  const defaults = {
+    'Backlog': [{ id: 1, text: 'Audit current analytics', label: 'dev' }, { id: 2, text: 'Collect customer quotes for homepage', label: 'copy' }],
+    'To do': [{ id: 3, text: 'New pricing page wireframe', label: 'design' }, { id: 4, text: 'Set up staging environment', label: 'dev' }],
+    'In progress': [{ id: 5, text: 'Homepage hero illustration', label: 'design' }],
+    'Done': [{ id: 6, text: 'Agree on brand colours', label: 'design' }],
+  };
+
+  let state = load();
+  let dragId = null;
+
+  function load() {
+    try { return JSON.parse(localStorage.getItem(KEY)) || structuredClone(defaults); }
+    catch { return structuredClone(defaults); }
+  }
+  function save() { localStorage.setItem(KEY, JSON.stringify(state)); }
+
+  function guessLabel(text) {
+    const t = text.toLowerCase();
+    if (/(design|mockup|wireframe|colour|color|illustration)/.test(t)) return 'design';
+    if (/(copy|write|text|blog|quote)/.test(t)) return 'copy';
+    return 'dev';
+  }
+
+  function render() {
+    const board = document.getElementById('board');
+    board.innerHTML = '';
+    COLUMNS.forEach(col => {
+      const column = document.createElement('section');
+      column.className = 'column';
+      column.dataset.col = col;
+      column.innerHTML = `<h2>${col}<span class="count">${state[col].length}</span></h2><div class="cards"></div>
+        <form class="add"><input placeholder="+ Add a card"></form>`;
+      const list = column.querySelector('.cards');
+
+      state[col].forEach(card => {
+        const el = document.createElement('div');
+        el.className = 'card';
+        el.draggable = true;
+        el.dataset.id = card.id;
+        const [bg, fg] = LABELS[card.label];
+        el.innerHTML = `<div></div><span class="label" style="background:${bg};color:${fg}">${card.label}</span><button class="del" title="Delete">✕</button>`;
+        el.firstChild.textContent = card.text;
+        el.addEventListener('dragstart', () => { dragId = card.id; el.classList.add('dragging'); });
+        el.addEventListener('dragend', () => el.classList.remove('dragging'));
+        el.querySelector('.del').onclick = () => {
+          state[col] = state[col].filter(c => c.id !== card.id);
+          save(); render();
+        };
+        list.appendChild(el);
+      });
+
+      column.addEventListener('dragover', e => { e.preventDefault(); column.classList.add('over'); });
+      column.addEventListener('dragleave', () => column.classList.remove('over'));
+      column.addEventListener('drop', e => {
+        e.preventDefault();
+        column.classList.remove('over');
+        let moved;
+        COLUMNS.forEach(c => {
+          const idx = state[c].findIndex(x => x.id === dragId);
+          if (idx > -1) moved = state[c].splice(idx, 1)[0];
+        });
+        if (!moved) return;
+        const after = [...list.querySelectorAll('.card')].find(el => e.clientY < el.getBoundingClientRect().top + el.offsetHeight / 2);
+        const pos = after ? state[col].findIndex(c => c.id === +after.dataset.id) : state[col].length;
+        state[col].splice(pos === -1 ? state[col].length : pos, 0, moved);
+        save(); render();
+      });
+
+      column.querySelector('form').addEventListener('submit', e => {
+        e.preventDefault();
+        const input = e.target.querySelector('input');
+        const text = input.value.trim();
+        if (!text) return;
+        state[col].push({ id: Date.now(), text, label: guessLabel(text) });
+        save(); render();
+      });
+
+      board.appendChild(column);
+    });
+  }
+
+  document.getElementById('resetBtn').onclick = () => {
+    if (confirm('Reset the board to the sample cards?')) { state = structuredClone(defaults); save(); render(); }
+  };
+
+  render();
+</script>
+</body>
+</html>

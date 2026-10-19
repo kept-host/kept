@@ -74,6 +74,44 @@ const GUARDED_FILES = [
   "lib/og/preview.ts",
   "scripts/check-resend-tracking.ts",
   "scripts/smoke-release.ts",
+  // E07 task 002: the governors' alert path.
+  "lib/email/admin-alert.ts",
+  "lib/publish/anon-manage.ts",
+  "lib/publish/pipeline.ts",
+  // E07 task 003: syncManifest and the durable re-purge.
+  "lib/storage/manifest.ts",
+  "lib/storage/repurge.ts",
+  "lib/db/queries/manifest-sync.ts",
+  "app/api/cron/repurge/route.ts",
+  // E07 task 007: the scan runtime, its queries and the scan-retry job.
+  "lib/scan/run.ts",
+  "lib/db/queries/scans.ts",
+  "app/api/cron/scan-retry/route.ts",
+  "app/api/health/route.ts",
+  // E07 task 004: the moderation module, its mail and the appeal routes.
+  "lib/moderation/status.ts",
+  "lib/moderation/appeals.ts",
+  "lib/moderation/appeal-http.ts",
+  "lib/db/queries/moderation.ts",
+  "lib/email/moderation.ts",
+  "app/api/sites/[id]/appeal/route.ts",
+  "app/api/anon/[anonToken]/appeal/route.ts",
+  // E07 task 010: reports — the route, the decisions, the reporter mail.
+  "lib/reports/submit.ts",
+  "lib/reports/http.ts",
+  "lib/reports/url.ts",
+  "lib/reports/client.ts",
+  "lib/db/queries/reports.ts",
+  "lib/email/reports.ts",
+  "app/api/reports/route.ts",
+  "app/(marketing)/report/page.tsx",
+  "components/kept/report-form.tsx",
+  // E07 task 008: the end-of-life jobs (purge clears reporter contacts).
+  "lib/lifecycle/expire.ts",
+  "lib/lifecycle/purge.ts",
+  "lib/db/queries/lifecycle.ts",
+  "app/api/cron/expire/route.ts",
+  "app/api/cron/purge/route.ts",
 ];
 
 /** `email`, `ip`, `token`, or a camelCase name ending in one of them. */

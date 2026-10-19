@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Quillboard — Sign in (UI concept)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'sans-serif'] },
+          colors: {
+            quill: { 50: '#f4f3ff', 100: '#ebe9fe', 500: '#7c6cf2', 600: '#6a55e8', 700: '#5a43d1' }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    .toast-enter { transform: translateY(20px); opacity: 0; }
+    .toast-show { transform: translateY(0); opacity: 1; }
+  </style>
+</head>
+<body class="font-sans bg-gradient-to-br from-quill-50 via-white to-slate-50 min-h-screen flex items-center justify-center p-6">
+
+  <div class="w-full max-w-5xl grid md:grid-cols-2 bg-white rounded-3xl shadow-xl overflow-hidden border border-slate-100">
+    <!-- Left: brand panel -->
+    <div class="hidden md:flex flex-col justify-between bg-quill-600 text-white p-10 relative overflow-hidden">
+      <div class="absolute -top-20 -right-20 w-72 h-72 rounded-full bg-quill-500 opacity-40"></div>
+      <div class="absolute bottom-10 -left-16 w-56 h-56 rounded-full bg-quill-700 opacity-50"></div>
+      <div class="relative flex items-center gap-2">
+        <div class="w-9 h-9 rounded-xl bg-white/20 grid place-items-center font-bold">Q</div>
+        <span class="text-lg font-semibold tracking-tight">Quillboard</span>
+      </div>
+      <div class="relative">
+        <h2 class="text-3xl font-semibold leading-tight">Plan the sprint.<br/>Write the docs.<br/>Ship together.</h2>
+        <p class="mt-4 text-quill-100 max-w-sm">Quillboard keeps your team's boards, specs and standups in one calm workspace.</p>
+      </div>
+      <figure class="relative bg-white/10 rounded-2xl p-5 backdrop-blur">
+        <blockquote class="text-sm leading-relaxed">"We replaced three tools with Quillboard and our Monday planning went from 90 minutes to 25."</blockquote>
+        <figcaption class="mt-3 text-xs text-quill-100">Dana Whitfield — Eng Lead, Northpine Labs</figcaption>
+      </figure>
+    </div>
+
+    <!-- Right: form -->
+    <div class="p-8 sm:p-12">
+      <h1 class="text-2xl font-semibold text-slate-900">Welcome back</h1>
+      <p class="mt-1 text-sm text-slate-500">Sign in to your Quillboard workspace</p>
+
+      <div class="mt-8 grid grid-cols-2 gap-3">
+        <button type="button" class="social flex items-center justify-center gap-2 border border-slate-200 rounded-xl py-2.5 text-sm font-medium hover:bg-slate-50">
+          <svg class="w-4 h-4" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#e2e8f0"/></svg>
+          Google
+        </button>
+        <button type="button" class="social flex items-center justify-center gap-2 border border-slate-200 rounded-xl py-2.5 text-sm font-medium hover:bg-slate-50">
+          <svg class="w-4 h-4" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="4" fill="#e2e8f0"/></svg>
+          SSO
+        </button>
+      </div>
+
+      <div class="my-6 flex items-center gap-3 text-xs text-slate-400">
+        <div class="h-px flex-1 bg-slate-200"></div> or continue with email <div class="h-px flex-1 bg-slate-200"></div>
+      </div>
+
+      <form id="loginForm" class="space-y-5" novalidate>
+        <div>
+          <label for="email" class="block text-sm font-medium text-slate-700">Work email</label>
+          <input id="email" type="email" placeholder="you@company.com"
+            class="mt-1.5 w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-quill-500 focus:border-transparent" />
+        </div>
+        <div>
+          <div class="flex items-center justify-between">
+            <label for="password" class="block text-sm font-medium text-slate-700">Password</label>
+            <a href="#" class="text-xs text-quill-600 hover:underline">Forgot password?</a>
+          </div>
+          <div class="relative mt-1.5">
+            <input id="password" type="password" placeholder="••••••••"
+              class="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm pr-16 focus:outline-none focus:ring-2 focus:ring-quill-500 focus:border-transparent" />
+            <button type="button" id="togglePw" class="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-500 hover:text-slate-800">Show</button>
+          </div>
+        </div>
+        <label class="flex items-center gap-2 text-sm text-slate-600">
+          <input type="checkbox" class="rounded border-slate-300 text-quill-600" /> Keep me signed in
+        </label>
+        <button type="submit" class="w-full rounded-xl bg-quill-600 hover:bg-quill-700 text-white font-medium py-3 transition">Sign in</button>
+      </form>
+
+      <p class="mt-8 text-center text-sm text-slate-500">New to Quillboard? <a href="#" class="text-quill-600 font-medium hover:underline">Start a free trial</a></p>
+      <p class="mt-10 text-center text-[11px] text-slate-400">UI concept by M. Okafor · Dribbble shot #42 · not a live product</p>
+    </div>
+  </div>
+
+  <div id="toast" class="toast-enter fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm px-5 py-3 rounded-xl shadow-lg transition-all duration-300 pointer-events-none">
+    Demo only — this is a design mockup.
+  </div>
+
+  <script>
+    const form = document.getElementById('loginForm');
+    const toast = document.getElementById('toast');
+    const pw = document.getElementById('password');
+    let toastTimer;
+
+    function showToast(msg) {
+      toast.textContent = msg;
+      toast.classList.remove('toast-enter');
+      toast.classList.add('toast-show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        toast.classList.remove('toast-show');
+        toast.classList.add('toast-enter');
+      }, 2400);
+    }
+
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      form.reset();
+      showToast('Demo only — this is a design mockup.');
+    });
+
+    document.querySelectorAll('.social').forEach((btn) => {
+      btn.addEventListener('click', () => showToast('Demo only — social sign-in is not wired up.'));
+    });
+
+    document.getElementById('togglePw').addEventListener('click', (e) => {
+      const showing = pw.type === 'text';
+      pw.type = showing ? 'password' : 'text';
+      e.target.textContent = showing ? 'Show' : 'Hide';
+    });
+  </script>
+</body>
+</html>

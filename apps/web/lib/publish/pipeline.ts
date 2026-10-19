@@ -4,8 +4,12 @@
  * The first request in the product that touches all four stores, and the reason
  * their ordering is written down in `docs/edge-purge-contract.md`:
  *
- *   validate → E07 hooks → content_hash → dedup probe → Postgres tx
- *     → R2 page object → writeManifest(pointer → KV → purge)
+ *   validate → Turnstile → request ceiling → content_hash → dedup probe
+ *     → new-page governors → Postgres tx → R2 page object
+ *     → writeManifest(pointer → KV → purge) → enqueueScan
+ *
+ * (A replace reaches the same store half through `writePageAndManifest`, whose
+ * manifest is `syncManifest`'s — D18.)
  *
  * NO HTTP IN THIS FILE. `publishPage` takes an already-extracted body and a
  * publisher identity and returns an outcome; `app/api/publish/route.ts` is a
@@ -43,7 +47,6 @@ import {
   hashToken,
   publishRequestSchema,
   publishResponseSchema,
-  type KvManifest,
   type PublishError,
   type PublishResponse,
 } from "@kept/shared";
@@ -53,16 +56,19 @@ import {
   claimDedupCandidate,
   deleteSiteCascade,
   insertAnonymousDraft,
+  revertReplacementVersion,
   SlugUnavailableError,
+  type SitePointer,
 } from "../db/queries/publish";
 import { appOrigin, publisherHashSalt, servingBaseDomain } from "../storage/env";
-import { removeManifest, writeManifest } from "../storage/manifest";
+import { pointerKey, removeManifest, syncManifest, writeManifest } from "../storage/manifest";
 import { PAGE_CONTENT_TYPE, pageObjectKey, r2Store } from "../storage/r2";
 import {
-  checkHeuristics,
   checkRateLimit,
+  checkRequestLimit,
   enqueueScan,
   verifyTurnstile,
+  type RateLimitDecision,
 } from "./hooks";
 import { extractPageTitle } from "./page-title";
 
@@ -161,29 +167,33 @@ export type StoreWriteResult =
   | { ok: false; error: string; unwound: boolean };
 
 /**
- * The store half of a publish: **R2 page object → `writeManifest`**, and the
- * exact reverse on failure.
+ * The store half of a publish or a replace: **R2 page object → manifest**, and
+ * the exact reverse on failure.
  *
- * Exported because task 006's replace is this same sequence — a replace is a
- * publish minus the mint and minus the row insert — and E06's rename/demote
- * reach the same ordering through `writeManifest` directly. Re-deriving the
- * order at a second call site is how the delete path ends up backwards, where
- * it is invisible until a KV miss resurrects a deleted page.
+ * Exported because a replace is this same sequence — a publish minus the mint
+ * and minus the row insert. Re-deriving the order at a second call site is how
+ * the delete path ends up backwards, where it is invisible until a KV miss
+ * resurrects a deleted page.
  *
  * The object write MUST precede the manifest write: the manifest is what makes
  * a slug resolvable, so publishing it before the bytes exist is a window in
  * which the Worker serves a 404 for a page the control plane calls live.
  *
  * `unwound` reports whether the reverse path completed. `false` means the edge
- * and Postgres may now disagree and a human (or E07's audit) has to look.
+ * and Postgres may now disagree, and the `pending_purges` row the failed write
+ * left behind is what reconciles them.
  *
- * `previousVersionId` IS WHAT MAKES THIS SAFE FOR REPLACE. On a publish there is
- * nothing behind the new manifest, so a failed write unwinds by REMOVING it. On
- * a replace there is: the slug was already live, and the pointer this call
- * overwrote named the previous version. Removing the manifest there would take a
- * working page dark — a worse outcome than the stale one it replaced — so the
- * unwind RESTORES the previous manifest instead. Same sequence, same file, one
- * expression of the ordering.
+ * ── TWO MANIFEST WRITES, AND ONLY ONE OF THEM IS A LITERAL ─────────────────
+ * A BRAND-NEW PUBLISH (no `previous`) writes `status: "live"` directly: the row
+ * was inserted a moment ago and nobody else can have changed it. A failed write
+ * unwinds by REMOVING the manifest.
+ *
+ * A REPLACE (`previous` set) never does (D18). The caller has committed the new
+ * version; the manifest comes from `syncManifest`, which reads the row under its
+ * lock — so a flag, hide or expiry that committed after the caller's status
+ * check is what the edge serves, never a stale `live`. A failed replace leaves
+ * the page serving what it served before: the row is reverted to `previous`,
+ * then synced again, and only then is the new object deleted.
  */
 export async function writePageAndManifest(args: {
   slug: string;
@@ -192,30 +202,40 @@ export async function writePageAndManifest(args: {
   r2Key: string;
   html: string;
   ownerId: string | null;
-  /** Set by replace only: the version the manifest named before this call. */
-  previousVersionId?: string;
+  /** Set by replace only: the row's pointer before this replacement committed. */
+  previous?: SitePointer;
 }): Promise<StoreWriteResult> {
-  const { slug, siteId, versionId, r2Key, html, ownerId, previousVersionId } = args;
+  const { slug, siteId, versionId, r2Key, html, ownerId, previous } = args;
   const r2 = r2Store();
 
   try {
     await r2.put(r2Key, html, PAGE_CONTENT_TYPE);
   } catch (err) {
-    // Nothing was written. Nothing to unwind on the store side.
-    return { ok: false, error: `page object: ${message(err)}`, unwound: true };
+    // No store was written; a replace still has its committed row to put back.
+    const error = `page object: ${message(err)}`;
+    if (!previous) return { ok: false, error, unwound: true };
+    return { ok: false, error, unwound: await revertReplacement({ siteId, versionId, previous }) };
   }
 
-  const manifest: KvManifest = {
+  if (previous) {
+    const synced = await syncManifest(siteId);
+    // `purge.ok === false` is NOT a failure (contract §3); `syncManifest` only
+    // fails when a store write did, and has already logged it.
+    if (synced.ok) return { ok: true };
+    const unwound = await unwindReplacement({ slug, siteId, versionId, r2Key, previous });
+    return { ok: false, error: `manifest sync: ${synced.error}`, unwound };
+  }
+
+  const written = await writeManifest(slug, {
     siteId,
     versionId,
-    // Drafts are `live`. The clock lives in Postgres and never in the manifest.
+    // A brand-new page — the one literal manifest left (D18). Drafts are `live`;
+    // the clock lives in Postgres and never in the manifest.
     status: "live",
     region: "auto",
     ownerId,
     updatedAt: Date.now(),
-  };
-
-  const written = await writeManifest(slug, manifest);
+  });
   if (written.ok) {
     // `purge.ok === false` is NOT a failure (contract §3). `writeManifest` has
     // already logged it; the stores agree and the page is correct.
@@ -223,38 +243,86 @@ export async function writePageAndManifest(args: {
   }
 
   // Unwind in reverse. `step: "kv"` means the POINTER IS WRITTEN and must be
-  // removed (publish) or rewound to the previous version (replace);
-  // `"validate"` and `"pointer"` mean nothing reached a store.
-  const unwound = await unwindStores({
-    slug,
-    r2Key,
-    pointerWritten: written.step === "kv",
-    restore:
-      previousVersionId === undefined
-        ? undefined
-        : { ...manifest, versionId: previousVersionId, updatedAt: Date.now() },
-  });
+  // removed; `"validate"` and `"pointer"` mean nothing reached a store.
+  const unwound = await unwindStores({ slug, r2Key, pointerWritten: written.step === "kv" });
   return { ok: false, error: `manifest ${written.step}: ${written.error}`, unwound };
+}
+
+/** The row half of a failed replace: point it back at `previous`. True when it landed. */
+async function revertReplacement(args: {
+  siteId: string;
+  versionId: string;
+  previous: SitePointer;
+}): Promise<boolean> {
+  try {
+    await revertReplacementVersion(args);
+    return true;
+  } catch (err) {
+    console.error(
+      `[kept] ROLLBACK INCOMPLETE — site ${args.siteId} still points at version ${args.versionId}: ${message(err)}. Postgres is the authority, never an R2 list (contract §7.5).`,
+    );
+    return false;
+  }
+}
+
+/**
+ * A replace whose manifest sync failed: revert the row, then sync again so the
+ * edge names the previous version, then delete the new object — unless the
+ * slug pointer may still name it, because deleting bytes a pointer names takes
+ * the page dark on the next KV miss. KV itself never named it: a failed sync
+ * failed before KV answered. A second failed sync leaves its `pending_purges`
+ * row for the repurge job.
+ */
+async function unwindReplacement(args: {
+  slug: string;
+  siteId: string;
+  versionId: string;
+  r2Key: string;
+  previous: SitePointer;
+}): Promise<boolean> {
+  if (!(await revertReplacement(args))) return false;
+
+  const rewound = await syncManifest(args.siteId);
+  if (!rewound.ok && (await pointerMayName(args.slug, args.versionId))) {
+    console.error(
+      `[kept] ROLLBACK INCOMPLETE — the pointer for slug "${args.slug}" may still name version ${args.versionId}; its object "${args.r2Key}" is kept until the repurge job re-syncs the row.`,
+    );
+    return false;
+  }
+
+  try {
+    await r2Store().delete(args.r2Key);
+    return rewound.ok;
+  } catch (err) {
+    console.error(
+      `[kept] ROLLBACK INCOMPLETE — orphan R2 object "${args.r2Key}": ${message(err)}. Unreferenced bytes, not a serving fault.`,
+    );
+    return false;
+  }
+}
+
+/** Whether `slug`'s pointer may name `versionId`. Unreadable counts as yes. */
+async function pointerMayName(slug: string, versionId: string): Promise<boolean> {
+  try {
+    const body = await r2Store().get(pointerKey(slug));
+    return body !== null && (JSON.parse(body) as { versionId?: string }).versionId === versionId;
+  } catch {
+    return true;
+  }
 }
 
 async function unwindStores(args: {
   slug: string;
   r2Key: string;
   pointerWritten: boolean;
-  /** Replace only: the manifest to put back. Absent ⇒ remove the manifest. */
-  restore?: KvManifest;
 }): Promise<boolean> {
   let clean = true;
 
   if (args.pointerWritten) {
-    // Publish: `removeManifest` is the inverse of the whole sequence — pointer,
-    // then KV, then purge — and is safe when the KV key was never written: a KV
-    // delete of an absent key is a no-op.
-    // Replace: `writeManifest` with the previous version restores the same
-    // ordering forwards, leaving the slug serving the bytes it served before.
-    const rewound = args.restore
-      ? await writeManifest(args.slug, args.restore)
-      : await removeManifest(args.slug);
+    // `removeManifest` is the inverse of the whole sequence — pointer, then KV,
+    // then purge — and is safe when the KV key was never written: a KV delete of
+    // an absent key is a no-op.
+    const rewound = await removeManifest(args.slug);
     if (!rewound.ok) {
       clean = false;
       console.error(
@@ -315,17 +383,10 @@ export async function publishPage(
     publisherHashSalt(),
   );
 
-  const rate = await checkRateLimit(publisherHash);
-  if (!rate.allowed) {
-    return fail(429, {
-      error: "rate_limited",
-      message: `Too many pages published from here (${rate.reason}). Try again in ${rate.retryAfterSeconds} seconds.`,
-      retry_after_seconds: rate.retryAfterSeconds,
-    });
-  }
-
-  const heuristics = await checkHeuristics(html);
-  if (!heuristics.allowed) return contentRejected(heuristics.reason);
+  // The request ceiling counts every request, deduped or not — a dedup hit
+  // still rotates the token. The new-page governors wait for the probe below.
+  const requests = await checkRequestLimit(publisherHash);
+  if (!requests.allowed) return rateLimited(requests);
 
   // ── 3. content hash ────────────────────────────────────────────────────────
   // Over the exact bytes that will be stored: `hashContent` digests the UTF-8
@@ -353,6 +414,7 @@ export async function publishPage(
     anonTokenHash,
   });
   if (deduped) {
+    // Spends nothing from `publish:<key>` — the governors count NEW pages.
     // Same site, same slug, same version, same bytes, same clock — no new row,
     // no new version, no new object, no store write at all. An agent's retry
     // loop converges on ONE page. The token was rotated inside the probe's
@@ -365,7 +427,11 @@ export async function publishPage(
     });
   }
 
-  // ── 5. Postgres tx ─────────────────────────────────────────────────────────
+  // ── 5. new-page governors ──────────────────────────────────────────────────
+  const rate = await checkRateLimit(publisherHash);
+  if (!rate.allowed) return rateLimited(rate);
+
+  // ── 6. Postgres tx ─────────────────────────────────────────────────────────
   const siteId = crypto.randomUUID();
   const versionId = crypto.randomUUID();
   const r2Key = pageObjectKey(siteId, versionId);
@@ -396,7 +462,7 @@ export async function publishPage(
     return internalError();
   }
 
-  // ── 6–9. object → pointer → KV → purge ─────────────────────────────────────
+  // ── 7–10. object → pointer → KV → purge ────────────────────────────────────
   const stored = await writePageAndManifest({
     slug,
     siteId,
@@ -422,20 +488,23 @@ export async function publishPage(
 
   // Fire and forget by contract: the page is already live and a scan must never
   // delay or fail the response.
-  void enqueueScan(siteId, versionId);
+  void enqueueScan(siteId, versionId, "publish");
 
   return respond({ slug, anonToken, expiresAt, deduped: false });
 }
 
 /**
- * The heuristic content check refused the bytes. One sentence for every path
- * that stores bytes — the keyless publish and replace here, the studio's
- * publish and replace through `lib/sites/owner-routes.ts`.
+ * A governor refused (`./hooks`). One shape for every anonymous path — the
+ * publish here and the replace in `./anon-manage` — so an agent backs off the
+ * same way whichever limit it hit.
  */
-export function contentRejected(reason: string): PublishFailure {
-  return fail(422, {
-    error: "content_rejected",
-    message: `This page was refused by the content check (${reason}).`,
+export function rateLimited(
+  rate: Extract<RateLimitDecision, { allowed: false }>,
+): PublishFailure {
+  return fail(429, {
+    error: "rate_limited",
+    message: `Too many requests from here (${rate.reason}). Try again in ${rate.retryAfterSeconds} seconds.`,
+    retry_after_seconds: rate.retryAfterSeconds,
   });
 }
 

@@ -104,8 +104,16 @@ export type PublishChannel = (typeof PUBLISH_CHANNELS)[number];
  * - `renamed`         — the owner renamed the page away from it.
  * - `purged`          — E07's purge removed the page (`releaseName`).
  * - `account_deleted` — the account was deleted; the hold has no user.
+ * - `removed`         — a moderation removal (E07 D19): an ownerless hold, so
+ *                       neither the publisher nor its owner can take the name back.
  */
-export const NAME_HOLD_REASONS = ["deleted", "renamed", "purged", "account_deleted"] as const;
+export const NAME_HOLD_REASONS = [
+  "deleted",
+  "renamed",
+  "purged",
+  "account_deleted",
+  "removed",
+] as const;
 
 export const nameHoldReasonEnum = /*#__PURE__*/ z.enum(NAME_HOLD_REASONS);
 export type NameHoldReason = (typeof NAME_HOLD_REASONS)[number];

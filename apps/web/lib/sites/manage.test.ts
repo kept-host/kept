@@ -100,12 +100,11 @@ function assertGraceFromNow(purgeAfter: Date | null, label: string) {
 after(async () => {
   if (skip) return;
   const { pageObjectKey, r2Store } = await deps();
-  const { removeManifest } = await import("../storage/manifest");
   const { db, closeDb } = await import("../db");
   const { siteVersions, sites } = await import("../db/schema");
   const { eq, inArray } = await import("drizzle-orm");
 
-  for (const slug of createdSlugs) await removeManifest(slug).catch(() => undefined);
+  await (await import("../testing/served-manifests")).removeServedManifests(createdSlugs);
   for (const id of createdSites) {
     const versions = await db
       .select({ id: siteVersions.id })
@@ -117,6 +116,7 @@ after(async () => {
         .catch(() => undefined);
     }
   }
+  await (await import("../testing/pending-purges")).clearPendingPurges(createdSlugs, createdSites);
   if (createdSites.size > 0) await db.delete(sites).where(inArray(sites.id, [...createdSites]));
   await (await drill()).cleanup();
   await closeDb();

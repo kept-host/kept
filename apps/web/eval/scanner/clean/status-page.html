@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Northwind Cloud Status</title>
+  <style>
+    :root { --ok: #22c55e; --minor: #eab308; --major: #f97316; --outage: #ef4444; --ink: #111827; --muted: #6b7280; --line: #e5e7eb; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f9fafb; color: var(--ink); }
+    .wrap { max-width: 860px; margin: 0 auto; padding: 36px 20px 64px; }
+    header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 28px; }
+    header .logo { font-weight: 700; font-size: 20px; }
+    header .logo span { color: #2563eb; }
+    header a { font-size: 14px; color: #2563eb; text-decoration: none; }
+    .banner { background: var(--ok); color: white; border-radius: 10px; padding: 18px 22px; font-weight: 600; font-size: 18px; display: flex; justify-content: space-between; align-items: center; }
+    .banner small { font-weight: 400; opacity: .85; font-size: 13px; }
+    .card { background: white; border: 1px solid var(--line); border-radius: 10px; margin-top: 24px; }
+    .component { padding: 16px 20px; border-top: 1px solid var(--line); }
+    .component:first-child { border-top: none; }
+    .component .row { display: flex; justify-content: space-between; align-items: center; }
+    .component .name { font-weight: 600; }
+    .component .state { font-size: 13px; }
+    .bars { display: flex; gap: 2px; margin-top: 10px; height: 32px; }
+    .bars i { flex: 1; border-radius: 2px; background: var(--ok); position: relative; cursor: default; }
+    .bars i:hover { opacity: .7; }
+    .scale { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-top: 6px; }
+    h2 { font-size: 18px; margin: 40px 0 12px; }
+    .incident { background: white; border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; margin-bottom: 12px; }
+    .incident h3 { margin: 0 0 4px; font-size: 16px; }
+    .incident .date { font-size: 13px; color: var(--muted); }
+    .update { margin-top: 12px; font-size: 14px; line-height: 1.55; }
+    .update b { text-transform: capitalize; }
+    .update time { display: block; font-size: 12px; color: var(--muted); }
+    #tip { position: fixed; pointer-events: none; background: var(--ink); color: white; font-size: 12px; padding: 6px 8px; border-radius: 6px; display: none; white-space: nowrap; }
+    footer { margin-top: 40px; font-size: 13px; color: var(--muted); text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="logo">Northwind <span>Cloud</span></div>
+      <a href="#subscribe">Subscribe to updates</a>
+    </header>
+
+    <div class="banner" id="banner">All systems operational <small id="checked"></small></div>
+
+    <div class="card" id="components"></div>
+
+    <h2>Past incidents</h2>
+    <div id="incidents"></div>
+
+    <footer id="subscribe">Get notified by email or RSS at status.northwind.example/subscribe · Powered by our own monitoring</footer>
+  </div>
+  <div id="tip"></div>
+
+<script>
+  const DAYS = 90;
+  const COMPONENTS = [
+    { name: 'API Gateway', uptime: 99.98, issues: { 12: 'minor' } },
+    { name: 'Compute Instances', uptime: 99.95, issues: { 41: 'major', 42: 'minor' } },
+    { name: 'Object Storage', uptime: 100, issues: {} },
+    { name: 'Managed Postgres', uptime: 99.91, issues: { 7: 'outage', 63: 'minor' } },
+    { name: 'DNS', uptime: 100, issues: {} },
+    { name: 'Dashboard', uptime: 99.97, issues: { 41: 'minor' } },
+  ];
+  const LABEL = { ok: 'No downtime', minor: 'Degraded performance', major: 'Partial outage', outage: 'Major outage' };
+  const COLOR = { ok: 'var(--ok)', minor: 'var(--minor)', major: 'var(--major)', outage: 'var(--outage)' };
+
+  const INCIDENTS = [
+    {
+      title: 'Elevated error rates on Managed Postgres in eu-central', date: 7, severity: 'outage',
+      updates: [
+        ['resolved', 'All clusters have recovered and replication lag is back to normal. A full post-mortem will follow within 5 business days.', '15:42 UTC'],
+        ['monitoring', 'A faulty storage node was drained. Connection errors have stopped; we are watching replication.', '14:55 UTC'],
+        ['investigating', 'Some customers in eu-central are seeing connection timeouts to Managed Postgres.', '14:10 UTC'],
+      ],
+    },
+    {
+      title: 'Slow instance provisioning in us-east', date: 41, severity: 'major',
+      updates: [
+        ['resolved', 'Provisioning times are back to normal after we added capacity to the scheduler pool.', '09:20 UTC'],
+        ['identified', 'A capacity shortfall in one availability zone is delaying new instance launches by up to 10 minutes.', '07:48 UTC'],
+      ],
+    },
+    {
+      title: 'Intermittent 502s from API Gateway', date: 12, severity: 'minor',
+      updates: [['resolved', 'A misconfigured health check caused a small number of 502 responses for 18 minutes. Fixed and rolled back.', '22:31 UTC']],
+    },
+  ];
+
+  const dayDate = daysAgo => { const d = new Date(); d.setDate(d.getDate() - daysAgo); return d; };
+  const fmtDate = d => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+
+  const root = document.getElementById('components');
+  root.innerHTML = COMPONENTS.map(c => {
+    const bars = Array.from({ length: DAYS }, (_, i) => {
+      const daysAgo = DAYS - 1 - i;
+      const level = c.issues[daysAgo] || 'ok';
+      return `<i style="background:${COLOR[level]}" data-tip="${fmtDate(dayDate(daysAgo))} — ${LABEL[level]}"></i>`;
+    }).join('');
+    return `<div class="component">
+      <div class="row"><span class="name">${c.name}</span><span class="state" style="color:var(--ok)">Operational</span></div>
+      <div class="bars">${bars}</div>
+      <div class="scale"><span>${DAYS} days ago</span><span>${c.uptime.toFixed(2)}% uptime</span><span>Today</span></div>
+    </div>`;
+  }).join('');
+
+  document.getElementById('incidents').innerHTML = INCIDENTS.map(inc => `
+    <div class="incident">
+      <h3 style="color:${COLOR[inc.severity]}">${inc.title}</h3>
+      <div class="date">${fmtDate(dayDate(inc.date))}</div>
+      ${inc.updates.map(([status, text, time]) => `<div class="update"><b>${status}</b> — ${text}<time>${time}</time></div>`).join('')}
+    </div>`).join('');
+
+  document.getElementById('checked').textContent = `Last checked ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+
+  const tip = document.getElementById('tip');
+  root.addEventListener('mousemove', e => {
+    const t = e.target.dataset.tip;
+    if (!t) { tip.style.display = 'none'; return; }
+    tip.textContent = t;
+    tip.style.display = 'block';
+    tip.style.left = e.clientX + 12 + 'px';
+    tip.style.top = e.clientY - 30 + 'px';
+  });
+  root.addEventListener('mouseleave', () => tip.style.display = 'none');
+</script>
+</body>
+</html>

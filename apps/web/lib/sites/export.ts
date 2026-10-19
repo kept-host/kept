@@ -14,18 +14,21 @@
  * streaming `Zip`, whose callback API needs hand-written glue to become a Web
  * stream.
  *
- * What an owner may download: every page that is theirs, in every status but
- * `removed` (E07's takedown — to its owner it does not exist), until its
- * `purge_after` (§5.7). That includes an `archived` page inside its window
- * (D14). The export is the same set without `archived` pages.
+ * What an owner may download: every page that is theirs, in every status,
+ * until its `purge_after` (§5.7) — an `archived` page inside its window (D14)
+ * and, since E07's D13, a `removed` one inside its window too. Never a page
+ * restricted for child sexual abuse material (`withholdsBytes`, D13): nothing
+ * serves those bytes to anyone. The export is the same set without `archived`
+ * pages.
  */
-import type { SiteStatus } from "@kept/shared";
+import type { ModerationReason, SiteStatus } from "@kept/shared";
 import { makeZip } from "client-zip";
-import { and, asc, eq, ne } from "drizzle-orm";
+import { and, asc, eq, isNull, ne, or } from "drizzle-orm";
 
 import { db } from "../db";
 import { findSiteForOwner } from "../db/queries/publish";
 import { sites } from "../db/schema";
+import { withholdsBytes } from "../moderation/restriction";
 import { liveUrl } from "../publish/pipeline";
 import { PAGE_CONTENT_TYPE, pageObjectKey, r2Store } from "../storage/r2";
 
@@ -55,22 +58,22 @@ export interface ExportEntry {
 }
 
 /**
- * Whether an owner may still download this page: anything but `removed`, until
- * `purge_after` — after which the page is E07's to collect, not the owner's.
- * Exported for the page-detail screen (task 012), which shows exactly the pages
- * its Download link can still serve.
+ * Whether an owner may still download this page: any status until
+ * `purge_after` — after which the page is the purge job's to collect, not the
+ * owner's — except a page whose bytes are withheld (D13). Exported for the
+ * page-detail screen, whose Download links follow it.
  */
 export function isDownloadable(
-  site: { status: SiteStatus; purgeAfter: Date | null },
+  site: { purgeAfter: Date | null; moderationReason: ModerationReason | null },
   now: Date,
 ): boolean {
-  return site.status !== "removed" && !isPastGrace(site, now);
+  return !withholdsBytes(site) && !isPastGrace(site, now);
 }
 
 /**
  * One page's current version, as `{name}.html`.
  *
- * @throws {SiteNotFoundError} not this owner's, `removed`, past `purge_after`, or no bytes to give
+ * @throws {SiteNotFoundError} not this owner's, past `purge_after`, withheld (D13), or no bytes to give
  */
 export async function openPageDownload(
   siteId: string,
@@ -108,11 +111,21 @@ export async function openExport(ownerId: string, now = new Date()): Promise<Dow
       currentVersionId: sites.currentVersionId,
       expiresAt: sites.expiresAt,
       purgeAfter: sites.purgeAfter,
+      moderationReason: sites.moderationReason,
       createdAt: sites.createdAt,
       updatedAt: sites.updatedAt,
     })
     .from(sites)
-    .where(and(eq(sites.ownerId, ownerId), ne(sites.status, "archived")))
+    // Withheld bytes (D13) are left out in the SQL as well as by
+    // `isDownloadable`: the predicate sits beside the archived filter, so no
+    // later edit to the JS can put one into a zip (Risk 13).
+    .where(
+      and(
+        eq(sites.ownerId, ownerId),
+        ne(sites.status, "archived"),
+        or(isNull(sites.moderationReason), ne(sites.moderationReason, "child_sexual_abuse")),
+      ),
+    )
     .orderBy(asc(sites.createdAt), asc(sites.id));
   const pages = rows.filter((page) => isDownloadable(page, now));
 

@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Spotify UI Clone — Portfolio Project</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  input[type=range] { accent-color: #1db954; }
+  .scroll::-webkit-scrollbar { width: 8px; }
+  .scroll::-webkit-scrollbar-thumb { background: #3a3a3a; border-radius: 4px; }
+</style>
+</head>
+<body class="bg-black text-white h-screen flex flex-col overflow-hidden">
+
+<div class="flex flex-1 overflow-hidden gap-2 p-2">
+  <!-- Sidebar -->
+  <aside class="w-64 flex flex-col gap-2 shrink-0">
+    <div class="bg-[#121212] rounded-lg p-5 space-y-4">
+      <a class="flex items-center gap-4 font-semibold"><span>🏠</span> Home</a>
+      <a class="flex items-center gap-4 font-semibold text-neutral-400 hover:text-white"><span>🔍</span> Search</a>
+    </div>
+    <div class="bg-[#121212] rounded-lg p-5 flex-1 overflow-y-auto scroll">
+      <p class="font-semibold text-neutral-400 mb-4">📚 Your Library</p>
+      <ul id="playlists" class="space-y-3 text-sm"></ul>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="flex-1 bg-gradient-to-b from-emerald-900 to-[#121212] rounded-lg overflow-y-auto scroll p-6">
+    <div class="flex items-end gap-6">
+      <div class="w-48 h-48 bg-gradient-to-br from-emerald-400 to-sky-700 rounded shadow-2xl grid place-items-center text-6xl">🎧</div>
+      <div>
+        <p class="text-xs uppercase font-semibold">Playlist</p>
+        <h1 class="text-6xl font-extrabold my-3">Late Night Code</h1>
+        <p class="text-sm text-neutral-300">Lo-fi and synthwave for deep focus · <span id="count"></span> songs</p>
+      </div>
+    </div>
+
+    <div class="mt-8 flex items-center gap-6">
+      <button id="bigPlay" class="w-14 h-14 rounded-full bg-[#1db954] text-black text-2xl grid place-items-center hover:scale-105 transition">▶</button>
+      <button class="text-2xl text-neutral-400 hover:text-white">♡</button>
+    </div>
+
+    <table class="w-full mt-6 text-sm">
+      <thead class="text-neutral-400 border-b border-neutral-700">
+        <tr><th class="text-left py-2 w-10">#</th><th class="text-left">Title</th><th class="text-left">Album</th><th class="text-right pr-4">⏱</th></tr>
+      </thead>
+      <tbody id="tracks"></tbody>
+    </table>
+  </main>
+</div>
+
+<!-- Player bar -->
+<footer class="h-20 bg-black px-4 flex items-center justify-between border-t border-neutral-900">
+  <div class="flex items-center gap-3 w-1/4">
+    <div class="w-14 h-14 rounded bg-neutral-800 grid place-items-center">🎵</div>
+    <div>
+      <p id="nowTitle" class="text-sm font-medium">Nothing playing</p>
+      <p id="nowArtist" class="text-xs text-neutral-400">—</p>
+    </div>
+  </div>
+  <div class="flex flex-col items-center w-2/4">
+    <div class="flex items-center gap-6 text-xl">
+      <button id="shuffle" class="text-neutral-400 hover:text-white">🔀</button>
+      <button id="prev" class="text-neutral-300 hover:text-white">⏮</button>
+      <button id="play" class="w-9 h-9 rounded-full bg-white text-black text-base grid place-items-center">▶</button>
+      <button id="next" class="text-neutral-300 hover:text-white">⏭</button>
+      <button class="text-neutral-400 hover:text-white">🔁</button>
+    </div>
+    <div class="flex items-center gap-2 w-full mt-2 text-xs text-neutral-400">
+      <span id="cur">0:00</span>
+      <input id="seek" type="range" min="0" max="100" value="0" class="flex-1">
+      <span id="dur">0:00</span>
+    </div>
+  </div>
+  <div class="flex items-center gap-2 w-1/4 justify-end text-neutral-400">
+    🔈 <input type="range" min="0" max="100" value="70" class="w-24">
+  </div>
+</footer>
+
+<p class="fixed top-3 right-4 text-[11px] text-neutral-500">Portfolio clone by Theo Lindqvist · not affiliated with Spotify</p>
+
+<script>
+  const playlists = ['Liked Songs', 'Late Night Code', 'Morning Run', 'Rainy Sunday', 'Focus Flow', 'Throwback Mix'];
+  const tracks = [
+    { title: 'Neon Rain', artist: 'Kairo Waves', album: 'Afterglow', secs: 194 },
+    { title: 'Midnight Compile', artist: 'Lo Byte', album: 'Stack Trace', secs: 167 },
+    { title: 'Coffee & Commits', artist: 'Juniper Sky', album: 'Daily Standup', secs: 212 },
+    { title: 'Parallax Drift', artist: 'Kairo Waves', album: 'Afterglow', secs: 238 },
+    { title: 'Soft Reboot', artist: 'Mira Hale', album: 'Patch Notes', secs: 181 },
+    { title: 'Window Seat', artist: 'Lo Byte', album: 'Stack Trace', secs: 203 },
+    { title: 'Polaroid Summer', artist: 'Juniper Sky', album: 'Daily Standup', secs: 176 },
+  ];
+
+  const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+  document.getElementById('playlists').innerHTML = playlists.map(p => `<li class="hover:text-white text-neutral-300 cursor-pointer">${p}</li>`).join('');
+  document.getElementById('count').textContent = tracks.length;
+
+  const tbody = document.getElementById('tracks');
+  tbody.innerHTML = tracks.map((t, i) => `
+    <tr data-i="${i}" class="hover:bg-white/10 cursor-pointer rounded">
+      <td class="py-2 pl-1 text-neutral-400">${i + 1}</td>
+      <td><div class="font-medium">${t.title}</div><div class="text-xs text-neutral-400">${t.artist}</div></td>
+      <td class="text-neutral-400">${t.album}</td>
+      <td class="text-right pr-4 text-neutral-400">${fmt(t.secs)}</td>
+    </tr>`).join('');
+
+  let current = -1, pos = 0, playing = false, timer = null;
+  const $ = (id) => document.getElementById(id);
+
+  function load(i) {
+    current = (i + tracks.length) % tracks.length;
+    pos = 0;
+    const t = tracks[current];
+    $('nowTitle').textContent = t.title;
+    $('nowArtist').textContent = t.artist;
+    $('dur').textContent = fmt(t.secs);
+    [...tbody.children].forEach((row, idx) => row.classList.toggle('text-[#1db954]', idx === current));
+    render();
+  }
+  function render() {
+    const t = tracks[current];
+    $('cur').textContent = fmt(pos);
+    $('seek').value = t ? (pos / t.secs) * 100 : 0;
+    $('play').textContent = playing ? '⏸' : '▶';
+    $('bigPlay').textContent = playing ? '⏸' : '▶';
+  }
+  function toggle() {
+    if (current < 0) load(0);
+    playing = !playing;
+    clearInterval(timer);
+    if (playing) timer = setInterval(() => {
+      pos++;
+      if (pos >= tracks[current].secs) load(current + 1);
+      render();
+    }, 1000);
+    render();
+  }
+
+  $('play').onclick = toggle;
+  $('bigPlay').onclick = toggle;
+  $('next').onclick = () => load(current + 1);
+  $('prev').onclick = () => load(current - 1);
+  $('shuffle').onclick = () => load(Math.floor(Math.random() * tracks.length));
+  $('seek').oninput = (e) => { if (current >= 0) { pos = Math.floor(tracks[current].secs * e.target.value / 100); render(); } };
+  tbody.onclick = (e) => { const row = e.target.closest('tr'); if (row) { load(+row.dataset.i); if (!playing) toggle(); } };
+</script>
+</body>
+</html>

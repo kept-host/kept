@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pennywise — Monthly Budget</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body class="bg-stone-100 text-stone-800 min-h-screen">
+  <div class="max-w-5xl mx-auto p-6">
+    <header class="flex items-center justify-between mb-6">
+      <h1 class="text-2xl font-bold">💰 Pennywise</h1>
+      <input type="month" id="month" class="border rounded-lg px-3 py-1.5 bg-white text-sm">
+    </header>
+
+    <div class="grid sm:grid-cols-3 gap-4 mb-6">
+      <div class="bg-white rounded-xl p-4 shadow-sm"><p class="text-xs text-stone-500 uppercase">Income</p><p id="income" class="text-2xl font-bold text-emerald-600">€0</p></div>
+      <div class="bg-white rounded-xl p-4 shadow-sm"><p class="text-xs text-stone-500 uppercase">Spent</p><p id="spent" class="text-2xl font-bold text-rose-600">€0</p></div>
+      <div class="bg-white rounded-xl p-4 shadow-sm"><p class="text-xs text-stone-500 uppercase">Left to spend</p><p id="left" class="text-2xl font-bold">€0</p></div>
+    </div>
+
+    <div class="grid md:grid-cols-2 gap-6">
+      <section class="bg-white rounded-xl p-5 shadow-sm">
+        <h2 class="font-semibold mb-4">Add a transaction</h2>
+        <form id="form" class="grid grid-cols-2 gap-3 text-sm">
+          <input id="desc" required placeholder="Description" class="col-span-2 border rounded-lg px-3 py-2">
+          <input id="amount" required type="number" step="0.01" min="0" placeholder="Amount" class="border rounded-lg px-3 py-2">
+          <select id="category" class="border rounded-lg px-3 py-2"></select>
+          <label class="flex items-center gap-2 col-span-2"><input type="checkbox" id="isIncome"> This is income</label>
+          <button class="col-span-2 bg-stone-800 hover:bg-stone-700 text-white rounded-lg py-2 font-medium">Add</button>
+        </form>
+        <h2 class="font-semibold mt-6 mb-2">Transactions</h2>
+        <ul id="list" class="divide-y text-sm max-h-72 overflow-y-auto"></ul>
+      </section>
+
+      <section class="bg-white rounded-xl p-5 shadow-sm">
+        <h2 class="font-semibold mb-4">Where the money went</h2>
+        <div class="relative h-64"><canvas id="chart"></canvas></div>
+        <div id="budgets" class="mt-6 space-y-3 text-sm"></div>
+      </section>
+    </div>
+  </div>
+
+<script>
+  const CATEGORIES = {
+    Housing: { color: '#6366f1', budget: 950 },
+    Groceries: { color: '#10b981', budget: 350 },
+    Transport: { color: '#f59e0b', budget: 120 },
+    'Eating out': { color: '#ef4444', budget: 150 },
+    Utilities: { color: '#0ea5e9', budget: 140 },
+    Fun: { color: '#a855f7', budget: 100 },
+    Other: { color: '#78716c', budget: 80 },
+  };
+  const KEY = 'pennywise.transactions';
+  const fmt = n => new Intl.NumberFormat('en-IE', { style: 'currency', currency: 'EUR' }).format(n);
+
+  let transactions = JSON.parse(localStorage.getItem(KEY) || '[]');
+  const monthInput = document.getElementById('month');
+  monthInput.value = new Date().toISOString().slice(0, 7);
+
+  if (!transactions.length) {
+    const m = monthInput.value;
+    transactions = [
+      { id: 1, desc: 'Salary', amount: 2850, income: true, category: 'Other', date: `${m}-01` },
+      { id: 2, desc: 'Rent', amount: 950, category: 'Housing', date: `${m}-01` },
+      { id: 3, desc: 'Weekly shop', amount: 82.4, category: 'Groceries', date: `${m}-03` },
+      { id: 4, desc: 'Monthly train pass', amount: 96, category: 'Transport', date: `${m}-02` },
+      { id: 5, desc: 'Dinner with Lena', amount: 46.5, category: 'Eating out', date: `${m}-06` },
+      { id: 6, desc: 'Electricity', amount: 71.2, category: 'Utilities', date: `${m}-08` },
+    ];
+  }
+
+  const select = document.getElementById('category');
+  select.innerHTML = Object.keys(CATEGORIES).map(c => `<option>${c}</option>`).join('');
+
+  const chart = new Chart(document.getElementById('chart'), {
+    type: 'doughnut',
+    data: { labels: [], datasets: [{ data: [], backgroundColor: [], borderWidth: 0 }] },
+    options: { maintainAspectRatio: false, cutout: '65%', plugins: { legend: { position: 'right' } } },
+  });
+
+  function render() {
+    localStorage.setItem(KEY, JSON.stringify(transactions));
+    const month = transactions.filter(t => t.date.startsWith(monthInput.value));
+    const income = month.filter(t => t.income).reduce((s, t) => s + t.amount, 0);
+    const expenses = month.filter(t => !t.income);
+    const spent = expenses.reduce((s, t) => s + t.amount, 0);
+
+    document.getElementById('income').textContent = fmt(income);
+    document.getElementById('spent').textContent = fmt(spent);
+    const left = document.getElementById('left');
+    left.textContent = fmt(income - spent);
+    left.className = `text-2xl font-bold ${income - spent < 0 ? 'text-rose-600' : 'text-stone-800'}`;
+
+    document.getElementById('list').innerHTML = month.slice().reverse().map(t => `
+      <li class="flex justify-between py-2 items-center">
+        <span><span class="inline-block w-2 h-2 rounded-full mr-2" style="background:${CATEGORIES[t.category].color}"></span>${t.desc}
+          <span class="text-stone-400 text-xs ml-1">${t.date.slice(8)}</span></span>
+        <span class="flex gap-3 items-center"><b class="${t.income ? 'text-emerald-600' : ''}">${t.income ? '+' : '−'}${fmt(t.amount)}</b>
+          <button data-id="${t.id}" class="del text-stone-400 hover:text-rose-500">✕</button></span>
+      </li>`).join('') || '<li class="py-4 text-stone-400">No transactions this month.</li>';
+
+    const byCat = {};
+    expenses.forEach(t => byCat[t.category] = (byCat[t.category] || 0) + t.amount);
+    const cats = Object.keys(byCat);
+    chart.data.labels = cats;
+    chart.data.datasets[0].data = cats.map(c => byCat[c]);
+    chart.data.datasets[0].backgroundColor = cats.map(c => CATEGORIES[c].color);
+    chart.update();
+
+    document.getElementById('budgets').innerHTML = Object.entries(CATEGORIES).map(([c, { color, budget }]) => {
+      const used = byCat[c] || 0;
+      const pct = Math.min(100, (used / budget) * 100);
+      return `<div><div class="flex justify-between"><span>${c}</span><span class="text-stone-500">${fmt(used)} / ${fmt(budget)}</span></div>
+        <div class="h-2 bg-stone-100 rounded-full mt-1"><div class="h-2 rounded-full" style="width:${pct}%;background:${used > budget ? '#e11d48' : color}"></div></div></div>`;
+    }).join('');
+
+    document.querySelectorAll('.del').forEach(b => b.onclick = () => {
+      transactions = transactions.filter(t => t.id !== +b.dataset.id);
+      render();
+    });
+  }
+
+  document.getElementById('form').addEventListener('submit', e => {
+    e.preventDefault();
+    const today = new Date().toISOString().slice(0, 10);
+    const date = today.startsWith(monthInput.value) ? today : `${monthInput.value}-01`;
+    transactions.push({
+      id: Date.now(),
+      desc: document.getElementById('desc').value.trim(),
+      amount: parseFloat(document.getElementById('amount').value),
+      category: select.value,
+      income: document.getElementById('isIncome').checked,
+      date,
+    });
+    e.target.reset();
+    render();
+  });
+  monthInput.addEventListener('change', render);
+  render();
+</script>
+</body>
+</html>

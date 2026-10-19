@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Parcelly REST API Reference</title>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono&display=swap" rel="stylesheet">
+  <style>
+    :root { --side: #0b1220; --accent: #ff6a3d; --line: #e6e8ec; --muted: #5b6474; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: 'IBM Plex Sans', sans-serif; color: #121826; display: grid; grid-template-columns: 250px 1fr; min-height: 100vh; }
+    nav { background: var(--side); color: #c7cfdc; padding: 24px 18px; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
+    nav .brand { color: white; font-weight: 600; font-size: 18px; margin-bottom: 4px; }
+    nav .ver { font-size: 12px; color: #7d889c; margin-bottom: 24px; }
+    nav h4 { text-transform: uppercase; font-size: 11px; letter-spacing: 1px; color: #7d889c; margin: 20px 0 8px; }
+    nav a { display: block; color: #c7cfdc; text-decoration: none; font-size: 14px; padding: 4px 0; }
+    nav a:hover { color: white; }
+    main { padding: 40px 56px; max-width: 980px; }
+    h1 { margin-top: 0; font-size: 32px; }
+    h2 { border-top: 1px solid var(--line); padding-top: 32px; margin-top: 40px; }
+    p, li { color: var(--muted); line-height: 1.65; }
+    code { font-family: 'IBM Plex Mono', monospace; font-size: 13px; background: #f3f4f7; padding: 2px 5px; border-radius: 4px; color: #121826; }
+    pre { background: #0f172a; color: #e2e8f0; padding: 18px; border-radius: 8px; overflow-x: auto; font-size: 13px; line-height: 1.55; position: relative; }
+    pre code { background: none; color: inherit; padding: 0; }
+    .endpoint { display: flex; align-items: center; gap: 10px; font-family: 'IBM Plex Mono', monospace; font-size: 15px; margin: 12px 0; }
+    .method { font-size: 12px; font-weight: 600; padding: 3px 8px; border-radius: 4px; color: white; }
+    .get { background: #1f9d55; } .post { background: #2563eb; } .delete { background: #dc2626; } .patch { background: #b7791f; }
+    table { border-collapse: collapse; width: 100%; font-size: 14px; margin: 12px 0; }
+    th, td { text-align: left; border-bottom: 1px solid var(--line); padding: 8px 10px; vertical-align: top; }
+    th { font-weight: 600; background: #fafbfc; }
+    .copy { position: absolute; top: 8px; right: 8px; background: #1e293b; color: #cbd5e1; border: none; border-radius: 4px; font-size: 11px; padding: 4px 8px; cursor: pointer; }
+    .note { background: #fff4ef; border-left: 3px solid var(--accent); padding: 10px 14px; border-radius: 4px; }
+    @media (max-width: 800px) { body { grid-template-columns: 1fr; } nav { position: static; height: auto; } main { padding: 24px; } }
+  </style>
+</head>
+<body>
+  <nav>
+    <div class="brand">📦 Parcelly</div>
+    <div class="ver">REST API · v2</div>
+    <h4>Getting started</h4>
+    <a href="#intro">Introduction</a>
+    <a href="#auth">Authentication</a>
+    <a href="#errors">Errors</a>
+    <h4>Shipments</h4>
+    <a href="#create-shipment">Create a shipment</a>
+    <a href="#get-shipment">Retrieve a shipment</a>
+    <a href="#list-shipments">List shipments</a>
+    <a href="#cancel-shipment">Cancel a shipment</a>
+    <h4>Tracking</h4>
+    <a href="#tracking">Tracking events</a>
+    <a href="#webhooks">Webhooks</a>
+  </nav>
+
+  <main>
+    <h1 id="intro">Parcelly REST API</h1>
+    <p>The Parcelly API lets you create shipping labels, track parcels across 40+ carriers and receive delivery updates in real time. All requests are made to the base URL below and return JSON.</p>
+    <pre><code>https://api.parcelly.dev/v2</code></pre>
+
+    <h2 id="auth">Authentication</h2>
+    <p>Authenticate every request with your secret API key in the <code>Authorization</code> header. You can create and rotate keys from <strong>Dashboard → Developers → API keys</strong>. Test keys start with <code>pk_test_</code>; live keys with <code>pk_live_</code>.</p>
+    <pre><button class="copy">Copy</button><code>curl https://api.parcelly.dev/v2/shipments \
+  -H "Authorization: Bearer &lt;your_api_key&gt;"</code></pre>
+    <p class="note">Keep your secret keys server-side. Never embed them in a mobile app or browser bundle.</p>
+
+    <h2 id="errors">Errors</h2>
+    <table>
+      <tr><th>Status</th><th>Meaning</th></tr>
+      <tr><td><code>400</code></td><td>The request body failed validation. See <code>error.fields</code>.</td></tr>
+      <tr><td><code>401</code></td><td>Missing or invalid API key.</td></tr>
+      <tr><td><code>404</code></td><td>The resource doesn't exist or belongs to another account.</td></tr>
+      <tr><td><code>429</code></td><td>Rate limited. Retry after the number of seconds in <code>Retry-After</code>.</td></tr>
+    </table>
+    <pre><code>{
+  "error": {
+    "type": "invalid_request",
+    "message": "to_address.postal_code is required",
+    "fields": ["to_address.postal_code"]
+  }
+}</code></pre>
+
+    <h2 id="create-shipment">Create a shipment</h2>
+    <div class="endpoint"><span class="method post">POST</span>/v2/shipments</div>
+    <p>Creates a shipment and purchases a label from the cheapest carrier matching your service level.</p>
+    <table>
+      <tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+      <tr><td><code>from_address</code></td><td>object</td><td>Sender address. Required.</td></tr>
+      <tr><td><code>to_address</code></td><td>object</td><td>Recipient address. Required.</td></tr>
+      <tr><td><code>parcel</code></td><td>object</td><td>Weight in grams and dimensions in cm.</td></tr>
+      <tr><td><code>service_level</code></td><td>string</td><td><code>economy</code>, <code>standard</code> or <code>express</code>. Defaults to <code>standard</code>.</td></tr>
+    </table>
+    <pre><button class="copy">Copy</button><code>curl -X POST https://api.parcelly.dev/v2/shipments \
+  -H "Authorization: Bearer &lt;your_api_key&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "from_address": { "name": "Hollow Oak Ceramics", "line1": "12 Mill Lane", "city": "Bristol", "postal_code": "BS1 4DJ", "country": "GB" },
+    "to_address":   { "name": "Jonas Weber", "line1": "Kastanienallee 7", "city": "Berlin", "postal_code": "10435", "country": "DE" },
+    "parcel": { "weight_g": 1200, "length_cm": 30, "width_cm": 20, "height_cm": 12 },
+    "service_level": "standard"
+  }'</code></pre>
+    <p>Response</p>
+    <pre><code>{
+  "id": "shp_8Kq2vXr41",
+  "status": "label_created",
+  "carrier": "dhl",
+  "tracking_number": "JD014600006281234567",
+  "label_url": "https://files.parcelly.dev/labels/shp_8Kq2vXr41.pdf",
+  "rate": { "amount": 1149, "currency": "EUR" },
+  "created_at": "2026-03-04T10:12:44Z"
+}</code></pre>
+
+    <h2 id="get-shipment">Retrieve a shipment</h2>
+    <div class="endpoint"><span class="method get">GET</span>/v2/shipments/{id}</div>
+    <pre><button class="copy">Copy</button><code>curl https://api.parcelly.dev/v2/shipments/shp_8Kq2vXr41 \
+  -H "Authorization: Bearer &lt;your_api_key&gt;"</code></pre>
+
+    <h2 id="list-shipments">List shipments</h2>
+    <div class="endpoint"><span class="method get">GET</span>/v2/shipments?limit=20&amp;status=in_transit</div>
+    <p>Returns a cursor-paginated list, newest first. Pass <code>starting_after</code> with the last ID to fetch the next page.</p>
+
+    <h2 id="cancel-shipment">Cancel a shipment</h2>
+    <div class="endpoint"><span class="method delete">DELETE</span>/v2/shipments/{id}</div>
+    <p>Voids the label and refunds the rate if the carrier hasn't scanned the parcel yet.</p>
+
+    <h2 id="tracking">Tracking events</h2>
+    <div class="endpoint"><span class="method get">GET</span>/v2/shipments/{id}/events</div>
+    <pre><code>[
+  { "status": "in_transit", "location": "Leipzig Hub, DE", "occurred_at": "2026-03-05T06:40:00Z" },
+  { "status": "out_for_delivery", "location": "Berlin, DE", "occurred_at": "2026-03-06T07:15:00Z" }
+]</code></pre>
+
+    <h2 id="webhooks">Webhooks</h2>
+    <p>Register an HTTPS endpoint and we'll POST a <code>shipment.updated</code> event whenever tracking changes. Each request carries a <code>Parcelly-Signature</code> header — verify it with your webhook signing secret before trusting the payload.</p>
+    <pre><code>{
+  "type": "shipment.updated",
+  "data": { "id": "shp_8Kq2vXr41", "status": "delivered" }
+}</code></pre>
+  </main>
+
+  <script>
+    document.querySelectorAll('.copy').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const text = btn.nextElementSibling.innerText;
+        navigator.clipboard.writeText(text).then(() => {
+          btn.textContent = 'Copied!';
+          setTimeout(() => (btn.textContent = 'Copy'), 1500);
+        });
+      });
+    });
+  </script>
+</body>
+</html>

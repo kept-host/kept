@@ -167,37 +167,26 @@ sign in with a provider locally; magic link needs nothing extra.
 
 ## Environment setup
 
-The repo-root [`.env.example`](./.env.example) is the consolidated, documented
-reference for **every** variable across both apps. To run locally:
+There is **one** env file: `apps/web/.env.local`. Its template,
+[`apps/web/.env.example`](./apps/web/.env.example), lists every variable the
+code reads, grouped, with short notes on where to get each value.
 
-1. Copy the web vars into `apps/web/.env.local`
-   (see [`apps/web/.env.example`](./apps/web/.env.example) for the app-scoped copy).
-2. `apps/edge` does **not** use a `.env` file. Non-secret config (R2/KV
-   bindings, routes, and the `KEPT_BASE_DOMAIN` / `KEPT_APEX_ORIGIN` vars) lives
-   in [`apps/edge/wrangler.toml`](./apps/edge/wrangler.toml); secrets are set
-   with `wrangler secret put NAME` or `apps/edge/.dev.vars` (local, gitignored).
+```bash
+cp apps/web/.env.example apps/web/.env.local   # then fill it in
+```
+
+- Next, drizzle-kit, the scripts and every test load `apps/web/.env.local`
+  (run them through `pnpm --filter @kept/web …`, which works from `apps/web`).
+  Nothing reads a repo-root `.env.local`.
+- Deployed values are **Railway service variables**; CI sets its own from
+  GitHub Environments in `.github/workflows/*`. `docs/prod-release.md` §4 has
+  the per-track table.
+- `apps/edge` needs no env file. Its vars (`KEPT_BASE_DOMAIN`,
+  `KEPT_APEX_ORIGIN`) and R2/KV bindings live in
+  [`apps/edge/wrangler.toml`](./apps/edge/wrangler.toml); it holds no secrets.
 
 `*.env.local`, `.env`, `.dev.vars`, `.agent/`, and `.claude/` are gitignored.
-Never commit real secrets — only the placeholder `.env.example` is tracked.
-
-Key variable groups (see `.env.example` for the full set):
-
-- **Neon** — `DATABASE_URL` (pooled, runtime) + `MIGRATION_DATABASE_URL`
-  (direct, for `drizzle-kit`).
-- **Cloudflare** — R2 S3 credentials, `R2_BUCKET_AUTO` / `R2_BUCKET_EU`,
-  `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `KV_NAMESPACE_ID`,
-  `CLOUDFLARE_ZONE_ID` (cache purge, per track).
-- **Serving** — `KEPT_BASE_DOMAIN`, the suffix pages are served from
-  (`kept-dev.xyz` / `kept.host`, bare hostname). Mirrors the Worker var of the
-  same name; distinct from `NEXT_PUBLIC_APP_URL`, which is the control plane's
-  own origin.
-- **App** — `NEXT_PUBLIC_APP_URL`, `NEXT_TELEMETRY_DISABLED`,
-  `PUBLISHER_HASH_SALT`, `NEXT_PUBLIC_KEPT_OPEN` (the launch gate: `true` opens
-  publishing and sign-in; unset is the waitlist — it fails closed).
-- **CI/deploy** — `RAILWAY_TOKEN`, `RAILWAY_SERVICE_ID`, `NEON_API_KEY`,
-  `SMOKE_WEB_URL`, `SMOKE_EDGE_URL`.
-- **Reserved but empty** — `BETTER_AUTH_*`, `GITHUB_CLIENT_*`, `RESEND_API_KEY`,
-  `EMAIL_FROM`. **E05** fills these in.
+Never commit real secrets — only the placeholder `apps/web/.env.example` is tracked.
 
 `sites.region` defaults to `auto`; the EU bucket is wired but dormant until E11.
 

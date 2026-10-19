@@ -40,6 +40,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE_NAME } from "@/lib/auth/cookie";
 import { PATHNAME_HEADER } from "@/lib/auth/return-path";
 import { keptOpen, notOpenResponse } from "@/lib/launch";
+import { adminContentSecurityPolicy, isAdminPath } from "@/lib/routing/admin-csp";
 import { decideClosedAction, decideHostAction } from "@/lib/routing/host-split";
 
 /**
@@ -114,11 +115,20 @@ export function middleware(request: NextRequest) {
   // and a 308 would be permanently cached for a rule this epic may revisit.
   if (action.kind === "redirect") return NextResponse.redirect(action.location, 307);
 
-  if (!action.stampPathname) return NextResponse.next();
+  // `/admin/*` alone carries a CSP (E07 task 011, `lib/routing/admin-csp.ts`):
+  // on the request, where Next finds the nonce for its scripts, and on the
+  // response, where the browser enforces it.
+  const csp = isAdminPath(pathname)
+    ? adminContentSecurityPolicy(btoa(crypto.randomUUID()))
+    : null;
+  if (!action.stampPathname && !csp) return NextResponse.next();
 
   const headers = new Headers(request.headers);
-  headers.set(PATHNAME_HEADER, `${pathname}${search}`);
-  return NextResponse.next({ request: { headers } });
+  if (action.stampPathname) headers.set(PATHNAME_HEADER, `${pathname}${search}`);
+  if (csp) headers.set("content-security-policy", csp);
+  const response = NextResponse.next({ request: { headers } });
+  if (csp) response.headers.set("content-security-policy", csp);
+  return response;
 }
 
 export const config = {

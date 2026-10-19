@@ -17,8 +17,11 @@
  *     Share (QR + downloads) and the Danger zone. No password section.
  *   · on a phone, the page's thumbnail and "Open ↗" instead of the live frame.
  *   · the header's action is **Keep** / **Swap…** on a draft, none otherwise.
- *   · under review / quarantined: the banner, its appeal a `mailto:` to
- *     `ABUSE_CONTACT_EMAIL` naming the page until E07 builds the flow.
+ *   · under review / quarantined: E07's restricted banner (the reason and
+ *     "Ask for a review"), rendered by the server component and passed in as
+ *     `banner`; no Danger zone (Arun 2026-10-15, decision 2) and no QR — a hidden
+ *     page has no link to share. A page restricted for child sexual abuse
+ *     material has no preview and no download (D13).
  *
  * ── WHAT THE STATUS ALLOWS (PRD §5.2 — the server enforces it; this mirrors) ──
  * Disallowed actions are ABSENT, never disabled — except the Explore toggle,
@@ -32,7 +35,7 @@
 import { useState, type ReactNode } from "react";
 import { ArrowUpRight, Monitor, QrCode as QrIcon, Smartphone } from "lucide-react";
 
-import { ABUSE_CONTACT_EMAIL, type KeptQuota, type NameKind, type Plan, type SiteStatus } from "@kept/shared";
+import type { KeptQuota, NameKind, Plan, SiteStatus } from "@kept/shared";
 
 import { draftCountdown } from "@/components/kept/draft-chip";
 import { CopyLinkButton } from "@/components/kept/live-url";
@@ -42,7 +45,7 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { VersionListItem } from "@/lib/db/queries/versions";
-import { effectiveStatus, managementRefusal } from "@/lib/sites/display";
+import { effectiveStatus } from "@/lib/sites/display";
 import type { VisitsView } from "@/lib/sites/visits-view";
 import { cn } from "@/lib/utils";
 
@@ -83,12 +86,6 @@ const LISTING_NOTE = {
   kept: "Only kept pages that passed safety checks can be listed.",
 } as const;
 
-/** Where an appeal goes until E07 builds the flow: the one abuse address, naming the page. */
-function appealHref(host: string): string {
-  const subject = encodeURIComponent(`Review appeal: ${host}`);
-  return `mailto:${ABUSE_CONTACT_EMAIL}?subject=${subject}`;
-}
-
 type Device = "desktop" | "mobile";
 
 export function PageDetail({
@@ -101,6 +98,9 @@ export function PageDetail({
   baseDomain,
   html,
   previewTooLarge,
+  previewWithheld,
+  downloadable,
+  banner,
   thumbnail,
   versions,
   visits,
@@ -120,6 +120,12 @@ export function PageDetail({
   html: string | null;
   /** Why `html` is `null`: over `PREVIEW_MAX_BYTES`, rather than a failed read. */
   previewTooLarge: boolean;
+  /** Why `html` is `null`: the bytes are withheld from every screen (D13). */
+  previewWithheld: boolean;
+  /** Whether the owner's Download page link may be offered (`isDownloadable`). */
+  downloadable: boolean;
+  /** The restricted banner, or `null` on a page that is not restricted. */
+  banner: ReactNode;
   /** The OG card path — the phone's thumbnail. */
   thumbnail: string;
   versions: VersionListItem[];
@@ -141,7 +147,9 @@ export function PageDetail({
     change: live,
     title: live || shown === "under_review",
     keptLive: live && !isDraft,
-    reachable: live || shown === "under_review",
+    // E07 hides an under-review page at the edge too, so only a live page has
+    // a link worth a QR.
+    reachable: live,
   };
   const listingNote = flagged ? LISTING_NOTE.flagged : isDraft ? LISTING_NOTE.draft : LISTING_NOTE.kept;
 
@@ -229,9 +237,11 @@ export function PageDetail({
               </div>
               {html === null ? (
                 <p className="px-1 text-xs leading-relaxed text-text-secondary">
-                  {previewTooLarge
-                    ? "This page is too large to render here. Open it at its link to see it — the page itself is unaffected."
-                    : "kept couldn't read this page's file just now, so there is nothing to render. The page itself is unaffected."}
+                  {previewWithheld
+                    ? "There is no preview of this page while it is restricted."
+                    : previewTooLarge
+                      ? "This page is too large to render here. Open it at its link to see it — the page itself is unaffected."
+                      : "kept couldn't read this page's file just now, so there is nothing to render. The page itself is unaffected."}
                 </p>
               ) : null}
             </div>
@@ -255,23 +265,7 @@ export function PageDetail({
           </div>
 
           <div className="flex min-w-0 flex-col gap-4">
-            {flagged ? (
-              <div
-                role="status"
-                data-testid="review-banner"
-                className="flex flex-col gap-2 rounded-[var(--r-lg)] border border-[color-mix(in_srgb,var(--warning)_45%,var(--surface))] bg-[color-mix(in_srgb,var(--warning)_14%,var(--surface))] px-5 py-4"
-              >
-                <span className="text-[15px] font-medium text-text">This page is under review.</span>
-                <span className="text-sm leading-relaxed text-pretty text-text">{managementRefusal(shown)}</span>
-                <a
-                  href={appealHref(site.host)}
-                  data-testid="appeal-link"
-                  className="self-start font-mono text-xs text-text underline underline-offset-[3px] outline-none hover:text-accent-hover focus-visible:ring-2 focus-visible:ring-accent"
-                >
-                  Appeal this review
-                </a>
-              </div>
-            ) : null}
+            {banner}
 
             <Tabs defaultValue="general" className="gap-4">
               <TabsList
@@ -318,15 +312,20 @@ export function PageDetail({
                   qr={qr}
                   qrSvg={qrSvg}
                   reachable={can.reachable}
+                  downloadable={downloadable}
                 />
-                <DangerZone
-                  siteId={site.id}
-                  slug={site.slug}
-                  name={site.name}
-                  host={site.host}
-                  nameChosen={site.nameKind === "chosen"}
-                  canDemote={can.keptLive}
-                />
+                {/* A restricted page cannot be deleted (Arun 2026-10-15,
+                    decision 2) or demoted, so it has no Danger zone at all. */}
+                {flagged ? null : (
+                  <DangerZone
+                    siteId={site.id}
+                    slug={site.slug}
+                    name={site.name}
+                    host={site.host}
+                    nameChosen={site.nameKind === "chosen"}
+                    canDemote={can.keptLive}
+                  />
+                )}
               </TabsContent>
 
               <TabsContent value="visits">

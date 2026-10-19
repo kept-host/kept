@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "test": "pnpm test:unit && pnpm test:e2e && pnpm test:e2e:closed",
-    "test:unit": "tsx --test \"lib/**/*.test.ts\"",
+    "test:unit": "KEPT_EMAIL_DELIVERY=off tsx --test \"lib/**/*.test.ts\"",
     "test:e2e": "playwright test",
     "test:e2e:closed": "NEXT_PUBLIC_KEPT_OPEN=false playwright test .closed.spec.ts",
     "lint": "eslint .",
@@ -23,9 +23,12 @@
     "resend:tracking": "tsx scripts/check-resend-tracking.ts",
     "admin:token": "tsx scripts/admin.ts token",
     "admin:founding": "tsx scripts/admin.ts founding",
-    "admin:waitlist": "tsx scripts/admin.ts waitlist"
+    "admin:waitlist": "tsx scripts/admin.ts waitlist",
+    "admin:scan": "tsx scripts/admin.ts scan",
+    "eval:scanner": "tsx scripts/eval-scanner.ts"
   },
   "dependencies": {
+    "@babel/parser": "7.29.9",
     "@hookform/resolvers": "^3.10.0",
     "@kept/shared": "workspace:*",
     "@radix-ui/react-avatar": "^1.1.10",
@@ -44,6 +47,7 @@
     "clsx": "^2.1.1",
     "drizzle-orm": "^0.45.2",
     "geist": "^1.7.2",
+    "htmlparser2": "12.0.0",
     "lucide-react": "^0.471.0",
     "marked": "18.0.14",
     "motion": "^12.41.0",
@@ -60,6 +64,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@babel/types": "7.29.8",
     "@eslint/eslintrc": "^3.3.1",
     "@playwright/test": "^1.61.1",
     "@tailwindcss/postcss": "^4.3.1",

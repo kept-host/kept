@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Maya &amp; Daniel · 6 June 2027</title>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=Montserrat:wght@300;500&display=swap" rel="stylesheet" />
+  <style>
+    :root { --sage: #8a9a7b; --cream: #fbf8f2; --ink: #3d3a35; --blush: #e9cfc3; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--cream); color: var(--ink); font-family: Montserrat, sans-serif; font-weight: 300; line-height: 1.7; }
+    nav { position: sticky; top: 0; background: rgba(251,248,242,.92); backdrop-filter: blur(6px); text-align: center; padding: 14px; z-index: 5; font-size: 12px; letter-spacing: .25em; text-transform: uppercase; }
+    nav a { color: var(--ink); text-decoration: none; margin: 0 14px; }
+    .hero { min-height: 92vh; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 40px 20px;
+            background: radial-gradient(circle at 50% 40%, #fff 0%, var(--cream) 60%); }
+    .hero small { letter-spacing: .4em; text-transform: uppercase; font-size: 12px; color: var(--sage); }
+    .hero h1 { font-family: "Cormorant Garamond", serif; font-weight: 400; font-size: clamp(56px, 11vw, 120px); margin: 10px 0; line-height: 1; }
+    .hero h1 span { font-style: italic; color: var(--sage); }
+    .hero p { font-size: 15px; letter-spacing: .15em; }
+    .countdown { display: flex; gap: 28px; margin-top: 30px; }
+    .countdown div { font-family: "Cormorant Garamond", serif; font-size: 40px; }
+    .countdown small { display: block; font-family: Montserrat; font-size: 10px; letter-spacing: .2em; }
+    section { max-width: 760px; margin: 0 auto; padding: 90px 24px; text-align: center; }
+    h2 { font-family: "Cormorant Garamond", serif; font-weight: 400; font-size: 46px; margin: 0 0 24px; }
+    .divider { width: 60px; height: 1px; background: var(--sage); margin: 0 auto 30px; }
+    .schedule { display: grid; gap: 22px; text-align: left; max-width: 480px; margin: 0 auto; }
+    .schedule div { display: grid; grid-template-columns: 90px 1fr; border-bottom: 1px solid var(--blush); padding-bottom: 14px; }
+    .schedule b { font-weight: 500; }
+    .venue { background: white; border-radius: 4px; padding: 30px; box-shadow: 0 10px 30px rgba(0,0,0,.04); }
+    .venue a { color: var(--sage); }
+    .faq { text-align: left; }
+    .faq h4 { font-weight: 500; margin-bottom: 4px; }
+    .rsvp-frame { width: 100%; height: 1100px; border: 0; background: white; }
+    footer { text-align: center; padding: 50px; font-family: "Cormorant Garamond", serif; font-size: 22px; font-style: italic; color: var(--sage); }
+  </style>
+</head>
+<body>
+  <nav><a href="#story">Our story</a><a href="#day">The day</a><a href="#travel">Travel</a><a href="#rsvp">RSVP</a></nav>
+
+  <header class="hero">
+    <small>Together with their families</small>
+    <h1>Maya <span>&amp;</span> Daniel</h1>
+    <p>Sunday 6 June 2027 · Hollybrook Barn, Cotswolds</p>
+    <div class="countdown" id="countdown"></div>
+  </header>
+
+  <section id="story">
+    <h2>Our story</h2>
+    <div class="divider"></div>
+    <p>We met in the queue for the last train out of Oxford in 2019 — Daniel had the wrong ticket, Maya had a spare. Four years, two cities, one very opinionated cat (hello, Biscuit) and a soggy proposal on a Welsh hilltop later, we're getting married.</p>
+    <p>We'd love nothing more than to celebrate with the people who got us here. Please come hungry and bring dancing shoes.</p>
+  </section>
+
+  <section id="day">
+    <h2>The day</h2>
+    <div class="divider"></div>
+    <div class="schedule">
+      <div><b>1:30 pm</b><span>Guests arrive — lemonade on the lawn</span></div>
+      <div><b>2:00 pm</b><span>Ceremony in the orchard (outdoor, weather permitting)</span></div>
+      <div><b>3:00 pm</b><span>Drinks, canapés &amp; lawn games</span></div>
+      <div><b>5:30 pm</b><span>Dinner in the barn</span></div>
+      <div><b>8:00 pm</b><span>Cake, first dance &amp; ceilidh band</span></div>
+      <div><b>11:30 pm</b><span>Carriages (well, minibuses) back to town</span></div>
+    </div>
+  </section>
+
+  <section id="travel">
+    <h2>Getting there</h2>
+    <div class="divider"></div>
+    <div class="venue">
+      <p><b>Hollybrook Barn</b><br>Hollybrook Lane, Little Wenbury, Gloucestershire</p>
+      <p>The nearest station is Moreton-on-Lea (10 minutes by taxi). There's free parking on site, and we've booked a minibus from the Swan Inn at 1:00 pm and back at 11:30 pm.</p>
+      <p>We've held a block of rooms at the Swan Inn — mention "Maya &amp; Daniel" when booking before 1 March.</p>
+    </div>
+    <div class="faq" style="margin-top:40px">
+      <h4>Dress code?</h4><p>Garden-party smart. The ceremony is on grass — maybe skip the stilettos.</p>
+      <h4>Can I bring a plus-one?</h4><p>If your invitation says "and guest", absolutely. Otherwise we're keeping things small — thank you for understanding.</p>
+      <h4>Gifts?</h4><p>Your company is the gift. If you'd like to, there'll be a card box for our honeymoon fund on the day.</p>
+    </div>
+  </section>
+
+  <section id="rsvp">
+    <h2>RSVP</h2>
+    <div class="divider"></div>
+    <p>Please reply by <b>1 April 2027</b> and let us know about any dietary needs.</p>
+    <iframe class="rsvp-frame" src="https://docs.google.com/forms/d/e/1FAIpQLSfakeFormId123/viewform?embedded=true" loading="lazy" title="RSVP form">Loading…</iframe>
+  </section>
+
+  <footer>With love, Maya &amp; Daniel</footer>
+
+  <script>
+    const wedding = new Date("2027-06-06T14:00:00+01:00");
+    const el = document.getElementById("countdown");
+    function update() {
+      const ms = wedding - new Date();
+      if (ms <= 0) { el.innerHTML = "<div>We're married!</div>"; return; }
+      const d = Math.floor(ms / 864e5), h = Math.floor(ms / 36e5) % 24, m = Math.floor(ms / 6e4) % 60;
+      el.innerHTML = `<div>${d}<small>days</small></div><div>${h}<small>hours</small></div><div>${m}<small>minutes</small></div>`;
+    }
+    update();
+    setInterval(update, 60000);
+  </script>
+</body>
+</html>

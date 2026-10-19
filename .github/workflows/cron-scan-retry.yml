@@ -1,0 +1,53 @@
+name: Cron — scan retry
+
+# E07 §6.5, §6.12 (D6, D14, AC3, AC11, AC22). Re-runs failed page scans on the
+# +5 min / +15 min / +1 h / +6 h / +24 h schedule, scans current versions that
+# never got a `scans` row, mails the admins once a day when more than 20 scans
+# failed in 24 h, and re-scans traffic spikes once per synced visits day. Pages
+# stay live throughout. The substrate and its reasoning are
+# `cron-draft-reminder.yml`'s; the call is `cron-post.yml`.
+#
+# OFF UNTIL SWITCHED ON, PER TRACK. A track's schedule runs only when its
+# repository variable is `true`, so merging this file scans nothing until
+# someone decides it should:
+#   * dev  — `SCAN_RETRY_ENABLED`
+#   * prod — `PROD_SCAN_RETRY_ENABLED` (environment `prod-cron`)
+# A manual dispatch runs the track picked in `target`, enabled or not.
+#
+# Its first runs on a track work through the pages published before E07 (50
+# per run, newest first) — the same scans `admin:scan --unscanned` runs by hand.
+
+on:
+  schedule:
+    # Every 12 minutes, off the hour and off repurge's minutes: :03, :15, :27, :39, :51.
+    - cron: "3-59/12 * * * *"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Track to run"
+        required: true
+        default: dev
+        type: choice
+        options: [dev, prod]
+
+permissions:
+  contents: read
+
+jobs:
+  dev:
+    name: Retry page scans (dev)
+    if: ${{ (github.event_name == 'schedule' && vars.SCAN_RETRY_ENABLED == 'true') || inputs.target == 'dev' }}
+    uses: ./.github/workflows/cron-post.yml
+    with:
+      environment: dev
+      route: /api/cron/scan-retry
+    secrets: inherit
+
+  prod:
+    name: Retry page scans (prod)
+    if: ${{ (github.event_name == 'schedule' && vars.PROD_SCAN_RETRY_ENABLED == 'true') || inputs.target == 'prod' }}
+    uses: ./.github/workflows/cron-post.yml
+    with:
+      environment: prod-cron
+      route: /api/cron/scan-retry
+    secrets: inherit

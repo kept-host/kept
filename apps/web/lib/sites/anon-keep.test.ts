@@ -250,10 +250,9 @@ after(async () => {
   const { profiles, sites, user } = await schema();
 
   if (createdManifests.size > 0) {
-    const { removeManifest } = await import("../storage/manifest");
     const { pageObjectKey, r2Store } = await import("../storage/r2");
+    await (await import("../testing/served-manifests")).removeServedManifests(createdManifests);
     for (const slug of createdManifests) {
-      await removeManifest(slug).catch(() => undefined);
       const [row] = await db.select().from(sites).where(eq(sites.slug, slug));
       if (row?.currentVersionId) {
         await r2Store()
@@ -262,6 +261,7 @@ after(async () => {
       }
     }
   }
+  await (await import("../testing/pending-purges")).clearPendingPurges(createdManifests, createdSites);
   if (createdSites.size > 0) {
     await db.delete(sites).where(inArray(sites.id, [...createdSites]));
   }

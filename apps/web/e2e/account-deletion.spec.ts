@@ -10,8 +10,11 @@ import { config } from "dotenv";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
-import { pointerKey } from "../lib/storage/manifest";
+import { holdName } from "../lib/names/holds";
+import { pointerKey, syncManifest } from "../lib/storage/manifest";
 import { pageObjectKey, r2Store } from "../lib/storage/r2";
+import { clearPendingPurges } from "../lib/testing/pending-purges";
+import { removeServedManifests } from "../lib/testing/served-manifests";
 
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
 import {
@@ -44,7 +47,9 @@ import { jarlessContext, sessionHeaders } from "./session-request";
  *     ownership query can reach.
  *  2. **Every page is `archived`, ownerless, with E07's deadline** —
  *     `purge_after = now + DRAFT_GRACE_DAYS` for the pages taken offline now.
- *     Owners reach `archived`; `removed` is E07's.
+ *     Owners reach `archived`; `removed` is E07's. A flagged page goes too
+ *     (D-68); a `removed` one, already off the edge, stays `removed` with its
+ *     own deadline and its D19 hold, ownerless. Its moderation record stays.
  *  3. **The pages stop serving**, inside the architectural window, with the
  *     pointer gone for every affected slug.
  *  4. **R2 objects are still present** — E07's purge collects them.
@@ -87,10 +92,8 @@ test.describe("account deletion", () => {
 
   test.afterAll(async () => {
     if (SKIP) return;
-    const { removeManifest } = await import("../lib/storage/manifest");
-    for (const slug of createdSlugs) {
-      await removeManifest(slug).catch(() => undefined);
-    }
+    await removeServedManifests(createdSlugs);
+    await clearPendingPurges(createdSlugs, createdSiteIds);
     for (const id of createdSiteIds) {
       const versions = await db
         .select({ id: schema.siteVersions.id })
@@ -105,6 +108,11 @@ test.describe("account deletion", () => {
     // The deleted account's rows SURVIVE the teardown — that is the point — and
     // their `owner_id` is null by now, so cleanup goes by id, never by owner.
     if (createdSiteIds.length) {
+      // The moderation record outlives a page by design (`SET NULL`); a drill's
+      // own record does not outlive the drill.
+      await db
+        .delete(schema.moderationActions)
+        .where(inArray(schema.moderationActions.siteId, createdSiteIds));
       await db.delete(schema.nameHolds).where(inArray(schema.nameHolds.siteId, createdSiteIds));
       await db.delete(schema.sites).where(inArray(schema.sites.id, createdSiteIds));
     }
@@ -213,13 +221,14 @@ test.describe("account deletion", () => {
     test.setTimeout(LIVE_STACK_TIMEOUT + STALE_EDGE_WINDOW_MS + 120_000);
 
     const { cookie, userId, email } = await signIn(baseURL!);
-    // The four shapes an account can be holding when its owner presses delete:
+    // The five shapes an account can be holding when its owner presses delete:
     // pages[0] archived, pages[1] quarantined, pages[2] kept, pages[3] an owned
-    // DRAFT. All four are real publishes with bytes and a manifest to unwind;
-    // the draft is a kept page demoted through the real route, so the shape
-    // does not depend on filling the account to its kept limit first.
+    // DRAFT, pages[4] removed by moderation. All five are real publishes with
+    // bytes and a manifest; the draft is a kept page demoted through the real
+    // route, so the shape does not depend on filling the account to its kept
+    // limit first.
     const pages: OwnedPage[] = [];
-    for (let i = 0; i < 4; i += 1) {
+    for (let i = 0; i < 5; i += 1) {
       pages.push(await ownedPage(request, baseURL!, cookie));
     }
     const draft = pages[3]!;
@@ -237,10 +246,55 @@ test.describe("account deletion", () => {
     });
     expect(archived.status(), await archived.text()).toBe(200);
     const archivedBefore = await readSite(pages[0]!.siteId);
-    await db
-      .update(schema.sites)
-      .set({ status: "quarantined" })
-      .where(eq(schema.sites.id, pages[1]!.siteId));
+    // D-68 (Q10, Arun 2026-10-16): flagged pages go with the account. The
+    // flags are SEEDED rows, as `lib/moderation`'s own drill writes them
+    // (`setStatus` reaches `next/server` through the publish hooks, which this
+    // runner cannot load): status, reason, a removal's deadline and ownerless
+    // D19 hold, one action row each — then the real `syncManifest`, so the edge
+    // says what the row says (a 451, or nothing) before the account goes.
+    const removedPage = pages[4]!;
+    for (const [page, to] of [
+      [pages[1]!, "quarantined"],
+      [removedPage, "removed"],
+    ] as const) {
+      const removal = to === "removed";
+      await db
+        .update(schema.sites)
+        .set({
+          status: to,
+          moderationReason: "phishing",
+          ...(removal ? { purgeAfter: new Date(Date.now() + DRAFT_GRACE_DAYS * MS_PER_DAY) } : {}),
+        })
+        .where(eq(schema.sites.id, page.siteId));
+      if (removal) await holdName(page.slug, null, "removed", page.siteId);
+      await db.insert(schema.moderationActions).values({
+        siteId: page.siteId,
+        slug: page.slug,
+        actor: "admin",
+        action: removal ? "remove" : "hide",
+        fromStatus: "live",
+        toStatus: to,
+        reason: "phishing",
+        automated: false,
+      });
+      expect((await syncManifest(page.siteId)).ok, `${page.slug}: the edge on the row`).toBe(true);
+    }
+    const removedBefore = await readSite(removedPage.siteId);
+    const removedHold = async () =>
+      (await db.select().from(schema.nameHolds).where(eq(schema.nameHolds.name, removedPage.slug)))[0];
+    const removedHoldBefore = await removedHold();
+    expect(removedHoldBefore?.reason, "precondition: the D19 hold").toBe("removed");
+    const actionsOf = async () =>
+      (
+        await db
+          .select({ id: schema.moderationActions.id })
+          .from(schema.moderationActions)
+          .where(inArray(schema.moderationActions.siteId, [pages[1]!.siteId, removedPage.siteId]))
+      )
+        .map((row) => row.id)
+        .sort();
+    const actionsBefore = await actionsOf();
+    expect(actionsBefore, "precondition: one action row per flag").toHaveLength(2);
 
     // The kept page takes a CHOSEN name, which must end held with no owner.
     const chosen = `e06-008a-${crypto.randomUUID().slice(0, 8)}`;
@@ -259,15 +313,16 @@ test.describe("account deletion", () => {
     const theirsBefore = await readSite(theirs.siteId);
 
     // Warm the edge, so the deletion is unwinding pages Cloudflare has cached.
-    for (const page of pages.slice(2)) {
+    for (const page of pages.slice(2, 4)) {
       expect((await probeEdge(urlsFor(page.slug)[0]!)).status).toBe(200);
     }
 
     const response = await destroy(request, baseURL!, cookie, email);
     expect(response.status(), await response.text()).toBe(200);
     const body = accountDeletionResultSchema.parse(await response.json());
-    // The three still claiming their names went offline now; pages[0] already had.
-    expect(body.pagesArchived).toBe(pages.length - 1);
+    // The three still claiming their names went offline now; pages[0] and the
+    // removed pages[4] already had.
+    expect(body.pagesArchived).toBe(pages.length - 2);
     // ── CLAIM 6: this browser's session cookie is cleared by the response.
     const cleared = response
       .headersArray()
@@ -278,9 +333,9 @@ test.describe("account deletion", () => {
       cleared.join(" | "),
     ).toBe(true);
 
-    for (const page of pages) {
+    for (const page of pages.slice(0, 4)) {
       const row = await readSite(page.siteId);
-      expect(row.status, `${page.slug}: owners reach archived`).toBe("archived");
+      expect(row.status, `${page.slug}: owners reach archived, flagged or not (D-68)`).toBe("archived");
       expect(row.purgeAfter, `${page.slug} must be sweepable by E07`).not.toBeNull();
       expect(row.ownerId, `${page.slug}: no owner left`).toBeNull();
       expect(row.reminderEmail).toBeNull();
@@ -302,7 +357,19 @@ test.describe("account deletion", () => {
       "a page deleted earlier keeps its own deadline",
     ).toEqual(archivedBefore.purgeAfter);
 
-    for (const page of pages.slice(2)) {
+    // D-68: the removed page was already off the edge with its own deadline. It
+    // loses its owner and stays `removed`, so purge keeps its D19 hold (D-63).
+    const removedAfter = await readSite(removedPage.siteId);
+    expect(removedAfter.status).toBe("removed");
+    expect(removedAfter.ownerId, "no owner left").toBeNull();
+    expect(removedAfter.purgeAfter, "its own purge deadline").toEqual(removedBefore.purgeAfter);
+    expect(await r2Store().get(pointerKey(removedPage.slug))).toBeNull();
+    expect(await r2Store().get(removedPage.objectKey), "bytes are purge's to collect").toBe(removedPage.html);
+    expect(await removedHold(), "the removal's hold is untouched").toEqual(removedHoldBefore);
+    // The moderation record is audit, not account data: every row survives.
+    expect(await actionsOf()).toEqual(actionsBefore);
+
+    for (const page of pages.slice(2, 4)) {
       for (const url of urlsFor(page.slug)) await waitUntilGone(url);
     }
 

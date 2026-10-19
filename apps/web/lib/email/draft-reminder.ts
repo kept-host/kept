@@ -32,7 +32,6 @@ import {
   hashToken,
   KEPT_PAGE_LIMIT,
 } from "@kept/shared";
-import { Resend } from "resend";
 
 import {
   claimReminder,
@@ -45,6 +44,7 @@ import {
 import { appOrigin, resendConfig, servingBaseDomain } from "../storage/env";
 import { emailFooter } from "./footer";
 import { listUnsubscribeHeaders } from "./list-unsubscribe";
+import { sendEmail } from "./send";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -69,7 +69,8 @@ export interface DraftReminderEmail {
   headers: Record<string, string>;
 }
 
-function formatUtcDate(date: Date): string {
+/** "15 October 2026" — the one date format kept mail prints (UTC). */
+export function formatUtcDate(date: Date): string {
   return new Intl.DateTimeFormat("en-GB", {
     dateStyle: "long",
     timeZone: "UTC",
@@ -161,27 +162,22 @@ export async function runDraftReminderSweep(
 
   if (batch.length === 0) return result;
 
-  // Constructed once per run, and only once there is something to send, so a
-  // sweep on an empty window costs no credential read. `resendConfig()` is the
-  // ONE accessor for the shared 100/day budget — `RESEND_API_KEY` is never read
-  // directly here. (`lib/auth/index.ts` keeps its own instance private to the
-  // magic-link plugin; there is no exported client to reuse, and reaching into
-  // that module to make one would couple mail delivery to auth configuration.)
-  const { apiKey, from } = resendConfig();
-  const mailer = new Resend(apiKey);
+  // Checked once per run, and only once there is something to send, so a sweep
+  // on an empty window costs no credential read and a missing credential fails
+  // the run before any row is claimed. `resendConfig()` is the ONE accessor for
+  // the shared 100/day budget; `sendEmail` reads it again per send.
+  resendConfig();
   const origin = appOrigin();
   const baseDomain = servingBaseDomain();
 
   for (const draft of batch) {
-    await sendOne(mailer, from, origin, baseDomain, draft, now, result);
+    await sendOne(origin, baseDomain, draft, now, result);
   }
 
   return result;
 }
 
 async function sendOne(
-  mailer: Resend,
-  from: string,
   origin: string,
   baseDomain: string,
   draft: DueReminder,
@@ -207,14 +203,12 @@ async function sendOne(
   });
 
   try {
-    const { error } = await mailer.emails.send({
-      from,
+    await sendEmail((from) => ({
       to: draft.reminderEmail,
       subject: message.subject,
       text: `${message.text}\n${emailFooter({ from, origin }).text}`,
       headers: message.headers,
-    });
-    if (error) throw new Error(`${error.name} — ${error.message}`);
+    }));
     result.sent += 1;
   } catch (err) {
     // ONE FAILURE DOES NOT ABORT THE BATCH. Release the claim so the next run

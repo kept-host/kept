@@ -26,8 +26,8 @@
  *      every refusal later tasks add. `studioFailure` maps it through ONE table,
  *      `STUDIO_ERROR_STATUS`, so a new refusal is a `throw` in its lib module and
  *      never a new branch in the functions below.
- *   2. The shared publish pipeline REFUSED (`requestError`, `contentRejected`,
- *      `slugUnavailable` — flat `PublishError`s, because `/api/publish` and
+ *   2. The shared publish pipeline REFUSED (`requestError`, `slugUnavailable`
+ *      — flat `PublishError`s, because `/api/publish` and
  *      `/api/anon/*` answer agents and their bodies are frozen).
  *      `fromPublishFailure` translates them here, at the boundary, and never by
  *      changing what the pipeline emits.
@@ -104,9 +104,7 @@ import { z } from "zod";
 import { SlugUnavailableError } from "../db/queries/publish";
 import { allowNameCheck, checkName } from "../names/check";
 import { renameSite } from "../names/rename";
-import { checkHeuristics } from "../publish/hooks";
 import {
-  contentRejected,
   requestError,
   slugUnavailable,
   type PublishFailure,
@@ -152,7 +150,6 @@ const STUDIO_ERROR_STATUS = {
   name_reserved: 400,
   name_inappropriate: 400,
   file_too_large: 413,
-  content_rejected: 422,
   name_taken: 409,
   name_quota: 409,
   not_allowed_in_status: 409,
@@ -177,7 +174,6 @@ const STUDIO_CODE_FOR: Record<PublishErrorCode, StudioErrorCode> = {
   page_too_large: "file_too_large",
   turnstile_failed: "invalid_request",
   rate_limited: "rate_limited",
-  content_rejected: "content_rejected",
   slug_unavailable: "slug_unavailable",
   internal_error: "internal_error",
 };
@@ -295,9 +291,10 @@ export function ownerResponse<T>(outcome: OwnerOutcome<T>): NextResponse {
  *
  * TURNSTILE AND `checkRateLimit` ARE NOT RUN and must not be added "for
  * symmetry": the caller is authenticated by a `__Host-` session cookie and an
- * origin check (see `./publish.ts`). The heuristic content check DOES run, in
- * the same position as every other path that stores bytes — being signed in is
- * not a content policy.
+ * origin check (see `./publish.ts`), and the volume governors are the anonymous
+ * path's alone (E07 D15). Content is judged after the fact by the scan
+ * `./publish.ts` enqueues, as on every other path that stores bytes — being
+ * signed in is not a content policy.
  */
 export async function publishOwnedSite(
   raw: unknown,
@@ -306,9 +303,6 @@ export async function publishOwnedSite(
 ): Promise<OwnerOutcome<OwnedPublishResult>> {
   const parsed = ownerPageBodySchema.safeParse(raw);
   if (!parsed.success) return fromPublishFailure(requestError(parsed.error));
-
-  const heuristics = await checkHeuristics(parsed.data.html);
-  if (!heuristics.allowed) return fromPublishFailure(contentRejected(heuristics.reason));
 
   try {
     const result = await publishOwnedPage({ profileId, html: parsed.data.html, publisher });
@@ -553,13 +547,6 @@ export async function replaceOwnedSite(
   const parsed = ownerPageBodySchema.safeParse(raw);
   if (!parsed.success) return fromPublishFailure(requestError(parsed.error));
 
-  // The same E07 seam the anonymous replace runs, in the same position: before
-  // anything is stored. A replace is a re-publish, and a path that stores new
-  // bytes without the content check is a hole big enough to publish anything
-  // through — publish clean, then replace with the payload.
-  const heuristics = await checkHeuristics(parsed.data.html);
-  if (!heuristics.allowed) return fromPublishFailure(contentRejected(heuristics.reason));
-
   try {
     const result = await replaceSite(parsedId.data, profileId, parsed.data.html);
     return { ok: true, status: 200, body: replaceResultSchema.parse(result) };
@@ -609,8 +596,9 @@ export async function restoreOwnedVersion(
  * Idempotent: a second delete is the same 200.
  *
  * The freed slot rides back on the response so the studio can repaint its
- * quota without a second request, and a `quarantined` page is deletable on
- * purpose — delete is one of the two affordances a flagged page keeps.
+ * quota without a second request. A flagged page is NOT deletable (E07
+ * decision 2 — a delete would launder the flag): `under_review` / `quarantined`
+ * are `409 not_allowed_in_status`, `removed` is the 404.
  */
 export async function deleteOwnedSite(
   rawSiteId: string,

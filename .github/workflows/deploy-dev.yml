@@ -219,6 +219,7 @@ jobs:
           SMOKE_WEB_URL: ${{ vars.SMOKE_WEB_URL }}
           SMOKE_EDGE_URL: ${{ vars.SMOKE_EDGE_URL }}
           # E06a AC19 — dev keeps the DRAFT banner, so placeholders only warn.
+          # E07 AC12 — an open dev deploy with the scanner off only warns too.
           SMOKE_LEGAL_PLACEHOLDERS: warn
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

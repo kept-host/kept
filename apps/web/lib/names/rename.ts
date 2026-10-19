@@ -2,7 +2,7 @@
  * Rename an owned page — `PATCH /api/sites/:id/name` (PRD §5.4). E06 task 006,
  * reworked from E06's first `lib/sites/rename.ts`, whose store ordering it keeps.
  *
- * ── ONE TRANSACTION, THEN THE OLD NAME ───────────────────────────────────────
+ * ── ONE TRANSACTION, THEN THE NEW NAME, THEN THE OLD ─────────────────────────
  *
  *   lockOwner                          ← the owner's profile row: quota + 24 h count
  *   lock the page row, check it        ← kept and `live`, or refused
@@ -12,8 +12,8 @@
  *   UPDATE sites SET slug, name_kind = 'chosen'
  *   INSERT name_events
  *   [old name chosen → holdName(old, 'renamed')]
- *   writeManifest(new)                 ← pointer → KV → purge
  *   COMMIT
+ *   syncManifest(site)                 ← the new name: pointer → KV → purge (D18)
  *   removeManifest(old)                ← pointer → KV → purge
  *
  * **New first, old second, never the reverse** (`docs/edge-purge-contract.md`,
@@ -21,29 +21,31 @@
  * harmless and self-healing. Old-first's is "neither resolves", an outage on a
  * page somebody may have linked to.
  *
- * **The UPDATE runs before `writeManifest`, inside the transaction,** because
- * `sites_slug_key` answers "is it free" for active pages only by refusing the
- * UPDATE, and `writeManifest` overwrites whatever manifest sits at a key: a
- * manifest written before the index had spoken would briefly serve this page at
- * a stranger's name, and the unwind would take theirs dark. The uncommitted
- * UPDATE reserves the name without publishing it. A refusal or a failed
- * manifest write rolls the WHOLE transaction back — slug, event and hold — so a
- * refused rename leaves no row, no pointer, no KV key and no purge behind.
+ * **The manifest is written AFTER the commit, by `syncManifest`** (E07 D18),
+ * from the row read under its lock — so a flag that commits while the rename is
+ * in flight is what the new name serves, never a stale `live`. The committed
+ * UPDATE is also what makes the name this page's: `sites_slug_key` refused any
+ * other page inside the transaction, so the sync can never write over a
+ * stranger's name. A refusal rolls the WHOLE transaction back — slug, event and
+ * hold — and leaves no pointer, no KV key and no purge behind.
+ *
+ * A sync that fails after the commit leaves the page renamed in Postgres and
+ * still live at its OLD name (the old manifest is not removed until the new one
+ * is written); its `pending_purges` row is replayed by the repurge job.
  *
  * ⚠️ A RENAME IS FOUR PURGES, TWO OF THEM DELAYED 125 s (`writeManifest` and
  * `removeManifest` each own theirs). That is the cost; do not optimise it away.
  *
  * ⚠️ R2 PAGE OBJECTS ARE UNTOUCHED. They are keyed by `siteId`, never by name.
  *
- * ⚠️ A CRASH BETWEEN COMMIT AND `removeManifest(old)` LEAVES A STALE ALIAS: the
- * old name still resolves to the same page. Not an outage and not a takeover —
- * the old name is held (or was generated, which nobody can choose by accident).
- * E07 owns the divergence audit; there is deliberately no sweep here.
+ * ⚠️ A CRASH BETWEEN COMMIT AND `removeManifest(old)` — OR A FAILED SYNC — LEAVES
+ * A STALE ALIAS: the old name still resolves to the same page. Not an outage and
+ * not a takeover — the old name is held (or was generated, which nobody can
+ * choose by accident). There is deliberately no sweep here.
  */
 import type {
   NameCheckResult,
   NameCheckStatus,
-  Region,
   SiteStatus,
   StudioErrorCode,
   StudioSite,
@@ -57,7 +59,7 @@ import { lockOwner, SiteNotFoundError } from "../sites/keep";
 import { StudioRefusal } from "../sites/studio-refusal";
 import { readStudioSite } from "../sites/studio-site";
 import { servingBaseDomain } from "../storage/env";
-import { removeManifest, writeManifest } from "../storage/manifest";
+import { removeManifest, syncManifest } from "../storage/manifest";
 
 import { claimsItsName, lockNames } from "./availability";
 import { nameRuleVerdict, namespaceVerdict } from "./check";
@@ -129,14 +131,16 @@ function explainState(state: SiteStatus | "draft"): string {
 }
 
 /**
- * The new manifest could not be written. The transaction rolled back, so
- * nothing changed and "retry" is the truth; the failed step is the log's.
+ * The new name is committed, but its manifest could not be written. The page
+ * is still live at its OLD name (that manifest is only removed once the new one
+ * is written), and the repurge job replays the sync — so the answer says that,
+ * never "nothing changed"; the failed step is the log's.
  */
 class RenameStoreError extends StudioRefusal {
   constructor(detail: string) {
     super(
       "internal_error",
-      "kept could not move this page to the new address just now. Nothing changed — the page is still live at its current one. Try again in a moment.",
+      "kept saved the new address but could not put the page online there just now. It is still live at its old address, and the new one will start working shortly.",
       `The rename could not be published to the edge: ${detail}`,
     );
     this.name = "RenameStoreError";
@@ -149,8 +153,6 @@ export interface AppliedRename {
   site: StudioSite;
   /** The name it left, or `null` for the no-op (renamed to the name it has). */
   previousSlug: string | null;
-  versionId: string;
-  region: Region;
 }
 
 /**
@@ -177,7 +179,6 @@ export async function applyRename(
       status: sites.status,
       expiresAt: sites.expiresAt,
       nameKind: sites.nameKind,
-      region: sites.region,
       currentVersionId: sites.currentVersionId,
     })
     .from(sites)
@@ -199,14 +200,9 @@ export async function applyRename(
     throw new Error(`Site ${siteId} is live with no current version; its manifest cannot be rewritten.`);
   }
 
-  const unchanged = {
-    versionId: site.currentVersionId,
-    region: site.region,
-  };
-
   // The name it already has: a no-op success — no event, no hold, no purge.
   if (newName === site.slug) {
-    return { site: await readStudioSite(tx, siteId), previousSlug: null, ...unchanged };
+    return { site: await readStudioSite(tx, siteId), previousSlug: null };
   }
 
   // The pure rule first, so a junk name takes no lock.
@@ -244,7 +240,7 @@ export async function applyRename(
     await holdName(site.slug, userId, "renamed", siteId, tx);
   }
 
-  return { site: await readStudioSite(tx, siteId), previousSlug: site.slug, ...unchanged };
+  return { site: await readStudioSite(tx, siteId), previousSlug: site.slug };
 }
 
 function message(err: unknown): string {
@@ -255,60 +251,37 @@ function message(err: unknown): string {
  * Move a kept page to a name its owner chose. Returns the page as it now is.
  *
  * @throws everything `applyRename` throws
- * @throws {RenameStoreError} the new manifest could not be written; nothing changed
+ * @throws {RenameStoreError} committed, but the new name's manifest could not be
+ *   written; the page is still live at its old name until the replay lands
  */
 export async function renameSite(
   siteId: string,
   userId: string,
   newName: string,
 ): Promise<StudioSite> {
-  const applied = await db.transaction(async (tx) => {
-    const result = await applyRename(tx, siteId, userId, newName);
-    if (result.previousSlug === null) return result;
+  const { site, previousSlug } = await db.transaction((tx) =>
+    applyRename(tx, siteId, userId, newName),
+  );
+  if (previousSlug === null) return site;
 
-    const written = await writeManifest(result.site.slug, {
-      siteId,
-      versionId: result.versionId,
-      // `live` by `applyRename`'s guard. The clock lives in Postgres, never here.
-      status: "live",
-      region: result.region,
-      ownerId: userId,
-      updatedAt: Date.now(),
-    });
+  // COMMITTED. The new name's manifest is the row's, read under its lock (D18).
+  // A failure keeps the old manifest — the page stays live there — and leaves a
+  // `pending_purges` row the repurge job replays.
+  const synced = await syncManifest(siteId);
+  if (!synced.ok) throw new RenameStoreError(synced.error);
 
-    if (!written.ok) {
-      // `kv` means the POINTER landed and must come back out; `validate` and
-      // `pointer` mean nothing reached a store. Safe: the new name is reserved by
-      // this uncommitted UPDATE, so no other page can own what is deleted here.
-      if (written.step === "kv") {
-        const unwound = await removeManifest(result.site.slug);
-        if (!unwound.ok) {
-          console.error(
-            `[kept] rename: ROLLBACK INCOMPLETE — name "${result.site.slug}" kept a pointer after a failed manifest write (${unwound.step}: ${unwound.error}). The row is rolled back, so a pointer may resolve a name no row claims. E07 DIVERGENCE AUDIT: reconcile against Postgres (contract §7.5).`,
-          );
-        }
-      }
-      // Throwing rolls back the slug, the event and the hold together.
-      throw new RenameStoreError(`${written.step}: ${written.error}`);
-    }
-    return result;
-  });
-
-  // COMMITTED. From here a failure costs nothing but a stale alias.
-  const { site, previousSlug } = applied;
-  if (previousSlug !== null) {
-    try {
-      const removed = await removeManifest(previousSlug);
-      if (!removed.ok) {
-        console.error(
-          `[kept] rename: site ${siteId} moved to "${site.slug}" but the old name "${previousSlug}" failed to unpublish at the "${removed.step}" step — ${removed.error}. Both names resolve to the same page; the rename itself succeeded. Replay this removal (contract §3).`,
-        );
-      }
-    } catch (err) {
+  // From here a failure costs nothing but a stale alias.
+  try {
+    const removed = await removeManifest(previousSlug);
+    if (!removed.ok) {
       console.error(
-        `[kept] rename: site ${siteId} moved to "${site.slug}" but removing the old name "${previousSlug}" threw — ${message(err)}. Both names resolve to the same page; the rename itself succeeded.`,
+        `[kept] rename: site ${siteId} moved to "${site.slug}" but the old name "${previousSlug}" failed to unpublish at the "${removed.step}" step — ${removed.error}. Both names resolve to the same page; the rename itself succeeded. Replay this removal (contract §3).`,
       );
     }
+  } catch (err) {
+    console.error(
+      `[kept] rename: site ${siteId} moved to "${site.slug}" but removing the old name "${previousSlug}" threw — ${message(err)}. Both names resolve to the same page; the rename itself succeeded.`,
+    );
   }
   return site;
 }

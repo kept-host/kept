@@ -144,15 +144,16 @@ test("policy pins: the outcomes the old substring list gave, under the new filte
   assert.equal(validateName("classic", "free"), "ok");
 });
 
-test("⚠️ the E07 deferral, asserted so it is a decision and not a surprise", () => {
-  // Impersonation, typosquatting and homoglyph tricks are NOT covered by this
-  // rule and are explicitly E07's. If a future change starts refusing these,
-  // this expectation is where that policy's arrival is recorded — not a bug to
-  // fix by loosening it back.
+test("E07 §6.16: the brand and phishing rule arrived — impersonation reads `reserved`", () => {
+  // This was E06's recorded deferral ("these are `ok` until E07"). E07's matcher
+  // (`@kept/shared/names` → `./brand-terms`, cases in
+  // `lib/names/brand-terms.test.ts`) now refuses them with the existing status.
+  // A word brand without a security word beside it is still a fine name.
   for (const plan of PLANS) {
-    for (const unpoliced of ["paypal-verify", "signin-microsoft", "paypa1-secure", "g00gle-docs"]) {
-      assert.equal(validateName(unpoliced, plan), "ok", `${plan}: ${unpoliced}`);
+    for (const impersonating of ["paypal-verify", "signin-microsoft", "paypa1-secure"]) {
+      assert.equal(validateName(impersonating, plan), "reserved", `${plan}: ${impersonating}`);
     }
+    assert.equal(validateName("g00gle-docs", plan), "ok", `${plan}: g00gle-docs`);
   }
 });
 

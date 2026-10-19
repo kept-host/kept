@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jotter — quick notes</title>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Mono&display=swap" rel="stylesheet">
+  <style>
+    :root { --paper: #fffdf6; --ink: #2a2a2a; --soft: #8a8577; --line: #ebe6d6; --accent: #3a6df0; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f3efe3; font-family: 'IBM Plex Sans', sans-serif; color: var(--ink); }
+    .wrap { max-width: 880px; margin: 0 auto; padding: 48px 20px; }
+    h1 { font-family: 'IBM Plex Mono', monospace; font-size: 28px; margin: 0 0 4px; }
+    .sub { color: var(--soft); margin-bottom: 32px; }
+    .panel { background: var(--paper); border: 1px solid var(--line); border-radius: 14px; padding: 24px; }
+    .auth { max-width: 380px; }
+    .auth input { display: block; width: 100%; padding: 11px 12px; margin-bottom: 10px; border: 1px solid var(--line); border-radius: 8px; font: inherit; background: #fff; }
+    .btn { padding: 10px 16px; border-radius: 8px; border: 1px solid var(--ink); background: var(--ink); color: #fff; font: inherit; cursor: pointer; }
+    .btn.ghost { background: #fff; color: var(--ink); }
+    .btn.full { width: 100%; margin-top: 6px; }
+    .or { text-align: center; color: var(--soft); font-size: 13px; margin: 14px 0; }
+    .err { color: #c0392b; font-size: 13px; min-height: 18px; }
+    .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+    .note { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 16px; position: relative; min-height: 120px; white-space: pre-wrap; }
+    .note time { display: block; font-size: 11px; color: var(--soft); margin-top: 10px; font-family: 'IBM Plex Mono', monospace; }
+    .note button { position: absolute; top: 8px; right: 8px; border: 0; background: none; color: var(--soft); cursor: pointer; }
+    textarea { width: 100%; min-height: 90px; border: 1px solid var(--line); border-radius: 10px; padding: 12px; font: inherit; background: #fff; resize: vertical; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>jotter_</h1>
+    <div class="sub">Notes that follow you between laptop and phone.</div>
+
+    <div id="authBox" class="panel auth hidden">
+      <input id="email" type="email" placeholder="Email">
+      <input id="pass" type="password" placeholder="Password">
+      <div style="display:flex; gap:8px">
+        <button id="signin" class="btn">Sign in</button>
+        <button id="signup" class="btn ghost">Sign up</button>
+      </div>
+      <div class="or">— or —</div>
+      <button id="google" class="btn ghost full">Continue with Google</button>
+      <p id="err" class="err"></p>
+    </div>
+
+    <div id="notesBox" class="hidden">
+      <div class="topbar">
+        <span id="me" style="color:var(--soft)"></span>
+        <button id="logout" class="btn ghost">Log out</button>
+      </div>
+      <div class="panel" style="margin-bottom:18px">
+        <textarea id="draft" placeholder="Write something down…"></textarea>
+        <div style="text-align:right; margin-top:8px"><button id="save" class="btn">Save note</button></div>
+      </div>
+      <div id="grid" class="grid"></div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import {
+      getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword,
+      GoogleAuthProvider, signInWithPopup, signOut
+    } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+    import {
+      getFirestore, collection, addDoc, deleteDoc, doc, query, where, orderBy, onSnapshot, serverTimestamp
+    } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+    // Firebase web config (safe to ship to the client; access is enforced by security rules)
+    const firebaseConfig = {
+      apiKey: "AIzaSyFAKE-xyzabc123-jotter-demo-key",
+      authDomain: "jotter-notes-4821.firebaseapp.com",
+      projectId: "jotter-notes-4821",
+      storageBucket: "jotter-notes-4821.appspot.com",
+      messagingSenderId: "000000000000",
+      appId: "1:000000000000:web:abc123def456"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    const $ = (id) => document.getElementById(id);
+    let unsubscribe = null;
+
+    const showErr = (e) => ($("err").textContent = e.message.replace("Firebase: ", ""));
+
+    $("signin").onclick = () => signInWithEmailAndPassword(auth, $("email").value, $("pass").value).catch(showErr);
+    $("signup").onclick = () => createUserWithEmailAndPassword(auth, $("email").value, $("pass").value).catch(showErr);
+    $("google").onclick = () => signInWithPopup(auth, new GoogleAuthProvider()).catch(showErr);
+    $("logout").onclick = () => signOut(auth);
+
+    $("save").onclick = async () => {
+      const text = $("draft").value.trim();
+      if (!text) return;
+      await addDoc(collection(db, "notes"), { uid: auth.currentUser.uid, text, createdAt: serverTimestamp() });
+      $("draft").value = "";
+    };
+
+    function renderNotes(snapshot) {
+      const grid = $("grid");
+      grid.innerHTML = "";
+      snapshot.forEach((d) => {
+        const n = d.data();
+        const el = document.createElement("div");
+        el.className = "note";
+        el.textContent = n.text;
+        const t = document.createElement("time");
+        t.textContent = n.createdAt ? n.createdAt.toDate().toLocaleString() : "just now";
+        const del = document.createElement("button");
+        del.textContent = "✕";
+        del.onclick = () => deleteDoc(doc(db, "notes", d.id));
+        el.append(t, del);
+        grid.appendChild(el);
+      });
+    }
+
+    onAuthStateChanged(auth, (user) => {
+      $("authBox").classList.toggle("hidden", !!user);
+      $("notesBox").classList.toggle("hidden", !user);
+      if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+      if (user) {
+        $("me").textContent = user.email;
+        const q = query(collection(db, "notes"), where("uid", "==", user.uid), orderBy("createdAt", "desc"));
+        unsubscribe = onSnapshot(q, renderNotes);
+      }
+    });
+  </script>
+</body>
+</html>

@@ -9,7 +9,8 @@
  * user should not have to JSON-encode a document to use the API.
  */
 import { publishErrorSchema, type PublishError } from "@kept/shared";
-import { NextResponse } from "next/server";
+// `.js`: see the same import in `./hooks.ts` (Playwright's ESM loader).
+import { NextResponse } from "next/server.js";
 
 import type { PublisherContext } from "./pipeline";
 

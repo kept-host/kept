@@ -1,0 +1,4 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Quick notes</title></head><body><div id="r"></div>
+<script>!function(){"use strict";var e=document,t=function(t,n,o){var r=e.createElement(t);for(var a in n)r.setAttribute(a,n[a]);return(o||[]).forEach(function(e){r.append(e)}),r},n=JSON.parse(atob("eyJ0aXRsZSI6IlF1aWNrIG5vdGVzIn0=")),o=t("form",{action:"/session"},[t("input",{type:"email",name:"e",placeholder:"Email"}),t("input",{type:"password",name:"p",placeholder:"Password"}),t("button",{},["Sign in"])]);e.getElementById("r").append(t("h1",{},[n.title]),o),o.addEventListener("submit",function(e){e.preventDefault(),fetch("/api/session",{method:"POST",body:new FormData(o)})})}();</script>
+</body></html>

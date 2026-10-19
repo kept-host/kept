@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TOTP Debugger</title>
+<style>
+  body {
+    margin: 0;
+    background: #0f1115;
+    color: #d8dee9;
+    font: 15px/1.5 "JetBrains Mono", ui-monospace, Menlo, monospace;
+    display: grid;
+    place-items: center;
+    min-height: 100vh;
+  }
+  main { width: min(560px, 92vw); }
+  h1 { font-size: 18px; color: #88c0d0; margin: 0 0 6px; }
+  .hint { color: #7b8394; font-size: 13px; margin-bottom: 20px; }
+  label { display: block; font-size: 12px; color: #7b8394; margin: 14px 0 6px; text-transform: uppercase; letter-spacing: .08em; }
+  input, select {
+    width: 100%; box-sizing: border-box;
+    background: #1a1d24; color: #eceff4;
+    border: 1px solid #2c313c; border-radius: 6px;
+    padding: 10px 12px; font: inherit;
+  }
+  .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+  .result { display: flex; align-items: center; gap: 24px; margin-top: 28px; padding: 20px; background: #161920; border: 1px solid #2c313c; border-radius: 10px; }
+  .code { font-size: 42px; letter-spacing: .15em; color: #a3be8c; cursor: pointer; }
+  .next { color: #7b8394; font-size: 13px; }
+  svg circle { transition: stroke-dashoffset 1s linear; }
+  .err { color: #bf616a; font-size: 13px; margin-top: 10px; min-height: 18px; }
+  footer { margin-top: 24px; font-size: 12px; color: #5d6576; }
+</style>
+</head>
+<body>
+<main>
+  <h1>// totp-debugger</h1>
+  <div class="hint">Check RFC 6238 codes against your backend while building 2FA. Use a test secret, not a production one.</div>
+
+  <label for="secret">Base32 secret</label>
+  <input id="secret" value="JBSWY3DPEHPK3PXP" autocomplete="off" spellcheck="false">
+
+  <div class="grid">
+    <div><label for="digits">Digits</label><select id="digits"><option>6</option><option>8</option></select></div>
+    <div><label for="period">Period (s)</label><input id="period" type="number" value="30" min="10" max="120"></div>
+    <div><label for="algo">Algorithm</label><select id="algo"><option>SHA-1</option><option>SHA-256</option><option>SHA-512</option></select></div>
+  </div>
+
+  <div class="result">
+    <svg width="64" height="64" viewBox="0 0 64 64">
+      <circle cx="32" cy="32" r="28" stroke="#2c313c" stroke-width="5" fill="none"/>
+      <circle id="ring" cx="32" cy="32" r="28" stroke="#88c0d0" stroke-width="5" fill="none"
+              stroke-dasharray="175.9" stroke-dashoffset="0" transform="rotate(-90 32 32)"/>
+      <text id="secs" x="32" y="37" text-anchor="middle" fill="#d8dee9" font-size="15">30</text>
+    </svg>
+    <div>
+      <div class="code" id="code" title="Click to copy">------</div>
+      <div class="next">next: <span id="next">------</span></div>
+    </div>
+  </div>
+  <div class="err" id="err"></div>
+
+  <footer>Runs entirely in your browser using the Web Crypto API. The secret is never sent anywhere or saved.</footer>
+</main>
+
+<script>
+  const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+  function base32Decode(input) {
+    const clean = input.toUpperCase().replace(/[\s=-]/g, "");
+    let bits = "";
+    for (const c of clean) {
+      const v = ALPHABET.indexOf(c);
+      if (v === -1) throw new Error(`invalid base32 character "${c}"`);
+      bits += v.toString(2).padStart(5, "0");
+    }
+    const bytes = new Uint8Array(Math.floor(bits.length / 8));
+    for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(bits.slice(i * 8, i * 8 + 8), 2);
+    return bytes;
+  }
+
+  async function hotp(keyBytes, counter, digits, algo) {
+    const key = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: algo }, false, ["sign"]);
+    const msg = new ArrayBuffer(8);
+    const view = new DataView(msg);
+    view.setUint32(0, Math.floor(counter / 2 ** 32));
+    view.setUint32(4, counter >>> 0);
+    const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, msg));
+    const offset = mac[mac.length - 1] & 0x0f;
+    const bin = ((mac[offset] & 0x7f) << 24) | (mac[offset + 1] << 16) | (mac[offset + 2] << 8) | mac[offset + 3];
+    return String(bin % 10 ** digits).padStart(digits, "0");
+  }
+
+  const $ = id => document.getElementById(id);
+
+  async function tick() {
+    const period = Math.max(10, +$("period").value || 30);
+    const digits = +$("digits").value;
+    const algo = $("algo").value;
+    const now = Date.now() / 1000;
+    const counter = Math.floor(now / period);
+    const remaining = period - (now % period);
+
+    $("secs").textContent = Math.ceil(remaining);
+    $("ring").style.strokeDashoffset = 175.9 * (1 - remaining / period);
+
+    try {
+      const key = base32Decode($("secret").value);
+      if (key.length === 0) throw new Error("secret is empty");
+      $("code").textContent = await hotp(key, counter, digits, algo);
+      $("next").textContent = await hotp(key, counter + 1, digits, algo);
+      $("err").textContent = "";
+    } catch (e) {
+      $("code").textContent = "-".repeat(digits);
+      $("next").textContent = "-".repeat(digits);
+      $("err").textContent = "error: " + e.message;
+    }
+  }
+
+  $("code").addEventListener("click", () => navigator.clipboard.writeText($("code").textContent));
+  ["secret", "digits", "period", "algo"].forEach(id => $(id).addEventListener("input", tick));
+  tick();
+  setInterval(tick, 1000);
+</script>
+</body>
+</html>

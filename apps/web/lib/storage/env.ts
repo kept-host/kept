@@ -267,6 +267,30 @@ export function resendConfig(): { apiKey: string; from: string } {
 }
 
 /**
+ * `KEPT_EMAIL_DELIVERY=off` (Arun 2026-10-16): `lib/email/send.ts` composes and
+ * addresses every mail as usual but skips the Resend call, so a test run spends
+ * none of the 100/day budget. The test scripts and the Playwright harness set
+ * it; unset (or `on`) delivers.
+ *
+ * LOCAL ONLY. Honoured only when `appOrigin()` — configuration, never a
+ * request — is a `localhost` origin. Set on any other origin it THROWS, so a
+ * deployed track can never quietly stop mailing: every send fails loudly,
+ * naming the variable. The one hostname literal in this module, and it picks
+ * no domain — it only refuses one.
+ */
+export function emailDeliveryOff(): boolean {
+  const env = read({ KEPT_EMAIL_DELIVERY: blankAsAbsent(z.enum(["on", "off"]).optional()) });
+  if (env.KEPT_EMAIL_DELIVERY !== "off") return false;
+  if (new URL(appOrigin()).hostname !== "localhost") {
+    throw new Error(
+      "Invalid environment: KEPT_EMAIL_DELIVERY — `off` is honoured only when NEXT_PUBLIC_APP_URL " +
+        "is a localhost origin. Unset it on every deployed track.",
+    );
+  }
+  return true;
+}
+
+/**
  * The shared secret every scheduled job authenticates with (E05 task 011).
  *
  * ONE secret for the whole `/api/cron/*` namespace, which E07 extends with the
@@ -379,4 +403,15 @@ export function turnstileConfig(): { secretKey: string; siteKey: string } {
     NEXT_PUBLIC_TURNSTILE_SITE_KEY: blankAsAbsent(nonEmpty),
   });
   return { secretKey: env.TURNSTILE_SECRET_KEY, siteKey: env.NEXT_PUBLIC_TURNSTILE_SITE_KEY };
+}
+
+/**
+ * `OPENROUTER_API_KEY` (E07 D17): the abuse scanner's classifier credential.
+ * OPTIONAL — absent (or blank) means the scanner is off: scans are recorded as
+ * `skipped`, only the deterministic rule runs, and `/api/health` reports
+ * `scanner: "off"`. Never logged, never echoed into an error, never
+ * `NEXT_PUBLIC_`. Per track; the account carries a monthly credit limit.
+ */
+export function openRouterApiKey(): string | null {
+  return read({ OPENROUTER_API_KEY: blankAsAbsent(nonEmpty.optional()) }).OPENROUTER_API_KEY ?? null;
 }

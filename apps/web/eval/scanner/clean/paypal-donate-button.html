@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Paws &amp; Whiskers Rescue — Help us help them</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;800&family=Mulish:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Mulish', sans-serif; }
+    .display { font-family: 'Baloo 2', cursive; }
+  </style>
+</head>
+<body class="bg-amber-50 text-stone-800">
+  <nav class="max-w-6xl mx-auto px-6 py-5 flex items-center justify-between">
+    <div class="display text-2xl text-teal-700">🐾 Paws &amp; Whiskers Rescue</div>
+    <div class="hidden md:flex gap-6 text-sm font-semibold">
+      <a href="#adopt" class="hover:text-teal-700">Adopt</a>
+      <a href="#volunteer" class="hover:text-teal-700">Volunteer</a>
+      <a href="#donate" class="hover:text-teal-700">Donate</a>
+    </div>
+  </nav>
+
+  <header class="max-w-6xl mx-auto px-6 py-12 grid md:grid-cols-2 gap-10 items-center">
+    <div>
+      <h1 class="display text-5xl leading-tight">Every animal deserves a second chance.</h1>
+      <p class="mt-4 text-lg text-stone-600">We're a volunteer-run, foster-based rescue in the Willamette Valley. Since 2016 we've placed more than 1,400 cats and dogs in loving homes.</p>
+      <a href="#donate" class="inline-block mt-6 bg-teal-600 hover:bg-teal-700 text-white font-bold px-6 py-3 rounded-full">Donate today</a>
+    </div>
+    <div class="grid grid-cols-3 gap-3 text-center">
+      <div class="bg-white rounded-2xl p-5 shadow-sm"><p class="display text-3xl text-teal-700">1,412</p><p class="text-xs text-stone-500">adoptions</p></div>
+      <div class="bg-white rounded-2xl p-5 shadow-sm"><p class="display text-3xl text-teal-700">63</p><p class="text-xs text-stone-500">foster homes</p></div>
+      <div class="bg-white rounded-2xl p-5 shadow-sm"><p class="display text-3xl text-teal-700">100%</p><p class="text-xs text-stone-500">volunteer-run</p></div>
+    </div>
+  </header>
+
+  <section id="adopt" class="max-w-6xl mx-auto px-6 py-10">
+    <h2 class="display text-3xl mb-6">Looking for a home</h2>
+    <div class="grid sm:grid-cols-2 md:grid-cols-4 gap-5">
+      <div class="bg-white rounded-2xl overflow-hidden shadow-sm"><div class="h-36 bg-orange-100 grid place-items-center text-6xl">🐕</div><div class="p-4"><p class="font-bold">Biscuit</p><p class="text-sm text-stone-500">3 yr · lab mix · loves fetch</p></div></div>
+      <div class="bg-white rounded-2xl overflow-hidden shadow-sm"><div class="h-36 bg-stone-200 grid place-items-center text-6xl">🐈</div><div class="p-4"><p class="font-bold">Juniper</p><p class="text-sm text-stone-500">1 yr · tabby · lap cat</p></div></div>
+      <div class="bg-white rounded-2xl overflow-hidden shadow-sm"><div class="h-36 bg-amber-100 grid place-items-center text-6xl">🐶</div><div class="p-4"><p class="font-bold">Pickles</p><p class="text-sm text-stone-500">8 yr · beagle · gentle senior</p></div></div>
+      <div class="bg-white rounded-2xl overflow-hidden shadow-sm"><div class="h-36 bg-teal-100 grid place-items-center text-6xl">🐈‍⬛</div><div class="p-4"><p class="font-bold">Ozzy</p><p class="text-sm text-stone-500">5 yr · black cat · shy but sweet</p></div></div>
+    </div>
+  </section>
+
+  <section id="donate" class="bg-teal-700 text-white mt-10">
+    <div class="max-w-4xl mx-auto px-6 py-16 text-center">
+      <h2 class="display text-4xl">Your gift goes straight to the animals</h2>
+      <p class="mt-3 text-teal-100 max-w-2xl mx-auto">We have no paid staff and no office. Donations pay for vet bills, vaccines, spay/neuter surgeries and food for our foster homes.</p>
+
+      <div class="grid sm:grid-cols-3 gap-4 mt-10 text-left">
+        <div class="bg-teal-800/60 rounded-2xl p-5"><p class="display text-2xl">$25</p><p class="text-sm text-teal-100">vaccinates one kitten</p></div>
+        <div class="bg-teal-800/60 rounded-2xl p-5"><p class="display text-2xl">$75</p><p class="text-sm text-teal-100">feeds a foster dog for a month</p></div>
+        <div class="bg-teal-800/60 rounded-2xl p-5"><p class="display text-2xl">$250</p><p class="text-sm text-teal-100">covers a spay/neuter surgery</p></div>
+      </div>
+
+      <form action="https://www.paypal.com/donate" method="post" target="_top" class="mt-10">
+        <input type="hidden" name="hosted_button_id" value="XYZ7ABC123QWE" />
+        <input type="hidden" name="no_recurring" value="0" />
+        <input type="hidden" name="currency_code" value="USD" />
+        <button type="submit" class="bg-amber-400 hover:bg-amber-300 text-stone-900 font-extrabold text-lg px-10 py-4 rounded-full shadow-lg">
+          Donate with PayPal
+        </button>
+      </form>
+      <p class="text-xs text-teal-200 mt-4">Paws &amp; Whiskers Rescue is a registered 501(c)(3) nonprofit. EIN 00-0000000. Donations are tax-deductible.</p>
+    </div>
+  </section>
+
+  <section id="volunteer" class="max-w-4xl mx-auto px-6 py-16 text-center">
+    <h2 class="display text-3xl">Can't donate? Foster!</h2>
+    <p class="mt-3 text-stone-600">Fostering saves two lives: the animal you take in, and the one who gets their spot in our program. We cover all costs. Email <span class="font-semibold">foster@pawswhiskers.org</span> to get started.</p>
+  </section>
+
+  <footer class="border-t border-amber-200 text-center text-sm text-stone-500 py-8">
+    © 2026 Paws &amp; Whiskers Rescue · PO Box 812, Corvallis, OR
+  </footer>
+</body>
+</html>

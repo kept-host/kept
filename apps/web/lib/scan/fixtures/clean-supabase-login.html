@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Habit tracker — sign in</title></head>
+<body>
+  <div id="root"></div>
+  <script type="module">
+    const SUPABASE_URL = "https://abcd1234.supabase.invalid";
+    const form = document.createElement("form");
+    form.innerHTML = '<h1>Habit tracker</h1><input type="email" name="email" placeholder="Email"><input type="password" name="password" placeholder="Password"><button>Sign in</button>';
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const data = new FormData(form);
+      await fetch(SUPABASE_URL + "/auth/v1/token?grant_type=password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", apikey: "public-anon-key" },
+        body: JSON.stringify({ email: data.get("email"), password: data.get("password") }),
+      });
+    });
+    document.getElementById("root").append(form);
+  </script>
+</body>
+</html>

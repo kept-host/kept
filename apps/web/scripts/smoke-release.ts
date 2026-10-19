@@ -44,12 +44,18 @@
  * with no cookie → no session and no `Set-Cookie`; the draft-reminder cron
  * without its secret → 401 (the gate passes `/api/cron/*`).
  *
- * THE LEGAL PAGES (E06a AC19), on every deploy, open or closed: `/legal/impressum`
- * and `/legal/privacy` must answer 200, and while either still carries a `[[`
+ * THE LEGAL PAGES (E06a AC19, E07 AC29), on every deploy, open or closed: every
+ * `LEGAL_DOCS` page must answer 200, and while any still carries a `[[`
  * placeholder the run FAILS or WARNS per `--legal-placeholders` /
  * `SMOKE_LEGAL_PLACEHOLDERS` (`fail` | `warn`, default `fail`). The workflow
  * hands the value in — `release.yml` `fail`, `deploy-dev.yml` `warn` — so the
  * track is never guessed from the host and a forgotten setting fails safe.
+ *
+ * THE SCANNER (E07 D17, AC12): `/api/health` reports `scanner: "on" | "off"`.
+ * An OPEN deploy with the scanner off has nothing but P4 between the public and
+ * kept, so the same explicit track option decides it: a `fail` run (the prod
+ * release) FAILS, a `warn` run (dev) warns. A closed deploy passes either way —
+ * nobody can publish to it. Never decided from the host.
  *
  * There is deliberately NO hostname literal in either half. The canary's slug is
  * derived from `--edge-url`; the published page's host comes back in the API
@@ -129,6 +135,10 @@ function legalPlaceholderPolicy(): LegalPlaceholderPolicy {
   return policy;
 }
 
+/** `/api/health`'s `scanner` (E07 D17). */
+const SCANNER_STATES = ["on", "off"] as const;
+type Scanner = (typeof SCANNER_STATES)[number];
+
 function fail(name: string, detail: string): StoreResult {
   return { name, pass: false, detail };
 }
@@ -185,7 +195,7 @@ function errText(err: unknown): string {
 async function smokeWeb(
   baseUrl: string,
   deadline: number,
-): Promise<StoreResult & { open?: boolean }> {
+): Promise<StoreResult & { open?: boolean; scanner?: Scanner }> {
   const url = new URL("/api/health", baseUrl).toString();
   const name = "web";
 
@@ -221,6 +231,7 @@ async function smokeWeb(
     const body = (await res.json().catch(() => null)) as {
       status?: string;
       open?: unknown;
+      scanner?: unknown;
     } | null;
     if (body?.status !== "ok") {
       return fail(name, `GET ${url} → 200 but body.status !== "ok"`);
@@ -228,10 +239,15 @@ async function smokeWeb(
     if (typeof body.open !== "boolean") {
       return fail(name, `GET ${url} → 200 but body.open is not a boolean — is this build older than the launch gate?`);
     }
+    const scanner = SCANNER_STATES.find((state) => state === body.scanner);
+    if (!scanner) {
+      return fail(name, `GET ${url} → 200 but body.scanner is not "on" or "off" — is this build older than E07?`);
+    }
     const warmed = attempt > 0 ? ` (after ${attempt} warm retr${attempt === 1 ? "y" : "ies"})` : "";
     return {
-      ...pass(name, `GET ${url} → 200 {status:"ok", open:${body.open}}${warmed}`),
+      ...pass(name, `GET ${url} → 200 {status:"ok", open:${body.open}, scanner:"${scanner}"}${warmed}`),
       open: body.open,
+      scanner,
     };
   }
 }
@@ -672,9 +688,28 @@ async function smokeLegal(
   }
 
   if (withPlaceholders.length === 0) {
-    return pass(name, "/legal/impressum and /legal/privacy → 200, no [[ placeholders");
+    return pass(name, `${LEGAL_DOCS.map((doc) => `/legal/${doc}`).join(", ")} → 200, no [[ placeholders`);
   }
-  const detail = `${withPlaceholders.join(" and ")} still contain [[ placeholders — fill content/legal/*.md (and the sha256 pins in lib/legal/legal.test.ts)`;
+  const detail = `${withPlaceholders.join(", ")} still contain [[ placeholders — fill content/legal/*.md (and the sha256 pins in lib/legal/legal.test.ts)`;
+  return policy === "fail" ? fail(name, detail) : { ...pass(name, `${detail} (warn on this track)`), warn: true };
+}
+
+/**
+ * The scanner gate (AC12): an open deploy with the scanner off fails a `fail`
+ * run and warns a `warn` one. Read from the deploy's own health answer, so it
+ * cannot disagree with what is running; an unreadable health has already
+ * failed `web`.
+ */
+function smokeScanner(
+  web: { open?: boolean; scanner?: Scanner },
+  policy: LegalPlaceholderPolicy,
+): StoreResult {
+  const name = "scanner";
+  if (web.scanner === undefined) return fail(name, "no scanner state — /api/health did not answer it (see web)");
+  if (web.scanner === "on") return pass(name, `scanner on (open:${web.open})`);
+  if (web.open !== true) return pass(name, "scanner off on a closed deploy — nobody can publish to it");
+  const detail =
+    "the deploy is OPEN and the scanner is OFF — set OPENROUTER_API_KEY on this track (E07 D17); only P4 is flagging pages";
   return policy === "fail" ? fail(name, detail) : { ...pass(name, `${detail} (warn on this track)`), warn: true };
 }
 
@@ -725,7 +760,7 @@ async function main(): Promise<void> {
   console.log("kept · release smoke test\n");
   console.log(`      web:  ${webUrl}`);
   console.log(`      edge: ${edgeUrl}`);
-  console.log(`      legal placeholders: ${legalPolicy}\n`);
+  console.log(`      legal placeholders / scanner off: ${legalPolicy}\n`);
 
   const [web, ...stores] = await Promise.all([
     smokeWeb(webUrl, deadline),
@@ -735,7 +770,7 @@ async function main(): Promise<void> {
     smokeNeon(),
     smokeLegal(webUrl, deadline, legalPolicy),
   ]);
-  const results: StoreResult[] = [web, ...stores];
+  const results: StoreResult[] = [web, ...stores, smokeScanner(web, legalPolicy)];
 
   // Sequential, and last: it publishes a real page, and it wants the control
   // plane already warmed by `smokeWeb` because its POST must not be retried.

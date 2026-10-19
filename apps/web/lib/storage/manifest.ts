@@ -16,13 +16,24 @@
  *
  * THE FULL CHAIN, so the ordering is readable without opening the contract:
  *
- *   publish / replace:  R2 object → slugs/{slug}.json → KV {slug} → purge
+ *   new publish:        R2 object → slugs/{slug}.json → KV {slug} → purge
  *   delete:                        delete pointer     → delete KV  → purge
- *   rename (E06):       writeManifest(new) → removeManifest(old)
- *   status flip (E07):  writeManifest(slug, { ...manifest, status })
+ *   every later write:  commit the row → syncManifest(siteId)
+ *                       (replace, restore, rename, late keep, status flips)
+ *   rename (E06):       syncManifest(site) → removeManifest(old)
  *
  * …where "purge" is TWO purges, the second one delayed. One is not enough and
- * the reason is not obvious — see `repurgeAfterKvPropagation`.
+ * the reason is not obvious — see `repurgeAfterKvPropagation`. The delayed one
+ * is DURABLE (E07 §6.14): a `pending_purges` row is written before it is
+ * scheduled and deleted when it lands, so a restart that loses the timer leaves
+ * a row the `repurge` job replays (`./repurge.ts`).
+ *
+ * ── D18: THE MANIFEST ENDS UP MATCHING THE ROW ─────────────────────────────
+ * A writer that checks `status` early and writes `status: "live"` late undoes
+ * any flag, hide or expiry that committed in between. So every write after a
+ * page's first publish goes through `syncManifest`, which reads the row UNDER
+ * ITS LOCK and holds that lock until KV has answered. Only a brand-new publish
+ * writes a literal manifest — no row exists yet for anyone else to change.
  *
  * The R2 *page object* write is the caller's (E04 task 005) and happens BEFORE
  * `writeManifest`; this helper never touches `sites/{siteId}/{versionId}/…`.
@@ -45,7 +56,17 @@ import {
   kvManifestSchema,
   MANIFEST_KV_CACHE_TTL_SECONDS,
   type KvManifest,
+  type SiteStatus,
 } from "@kept/shared";
+import { z } from "zod";
+
+import { db, type Tx } from "../db";
+import {
+  deletePendingPurge,
+  insertPendingPurge,
+  lockSiteForSync,
+  type PendingPurgeInput,
+} from "../db/queries/manifest-sync";
 
 import { servingBaseDomain } from "./env";
 import { kvStore } from "./kv";
@@ -99,8 +120,18 @@ export type ManifestRemoveResult =
   | { ok: true; purge: PurgeResult }
   | { ok: false; step: ManifestRemoveStep; error: string };
 
+/**
+ * A loggable sentence for `err`. Drizzle wraps every database failure as
+ * `Failed query: <sql>\nparams: <params>` with the Postgres error on `cause`, so
+ * the first line is kept (never the params) and the cause's own message and
+ * SQLSTATE are appended — without them the log says which query failed, never why.
+ */
 function message(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  if (!(err instanceof Error)) return String(err);
+  const cause = err.cause as { message?: unknown; code?: unknown } | undefined;
+  if (typeof cause?.message !== "string") return err.message;
+  const code = typeof cause.code === "string" ? ` [${cause.code}]` : "";
+  return `${err.message.split("\n")[0]} — cause: ${cause.message}${code}`;
 }
 
 /**
@@ -140,8 +171,8 @@ export const KV_REPURGE_DELAY_MS = (2 * MANIFEST_KV_CACHE_TTL_SECONDS + 5) * 100
  *
  * Exported for the drill in `./manifest.test.ts`, which calls it with a zero
  * delay. `ref: false` so a pending re-purge never holds a process open. It does
- * NOT survive a restart or a redeploy — the durable, queue-backed retry contract
- * §3 asks for is E07's.
+ * NOT survive a restart or a redeploy on its own: `purgeSlug` writes the
+ * `pending_purges` row that makes it durable before scheduling it.
  */
 export async function repurgeAfterKvPropagation(
   slug: string,
@@ -160,13 +191,57 @@ export async function repurgeAfterKvPropagation(
 }
 
 /**
+ * Where a purge still owed after a store write is recorded. `{ siteId }`: a
+ * `pending_purges` row (`siteId` null when no site is known). `null`: nowhere —
+ * the caller IS the record. Only the repurge replay passes `null`: its own row
+ * carries the attempt count, and a second row per failed replay would multiply
+ * every outage into more rows each run.
+ *
+ * `tx`: the caller's open transaction — `syncManifest`'s, which holds the site
+ * row lock across the store write. The row is written ON that connection (in a
+ * savepoint), never on a second one from the pool: a sync that held one
+ * connection and waited for another would starve the pool (`max: 5`) as soon as
+ * five syncs ran at once — a bulk delete's four trailing syncs plus any other
+ * request was enough to hang the control plane (E07 task 008).
+ */
+type PurgeLedger = { siteId: string | null; tx?: Tx } | null;
+
+/**
+ * Record a purge that is still owed, and NEVER throw: the write it follows has
+ * already succeeded, and a database hiccup here must not turn it into a
+ * failure. Returns the row id, or `null` when nothing was written (no ledger, or
+ * logged — the in-process timer, if any, is then the only retry).
+ */
+async function recordPendingPurge(
+  ledger: PurgeLedger,
+  input: Omit<PendingPurgeInput, "siteId">,
+): Promise<string | null> {
+  if (ledger === null) return null;
+  try {
+    const row = { ...input, siteId: ledger.siteId };
+    const { tx } = ledger;
+    // A savepoint, so a failed insert cannot abort the sync's transaction.
+    return await (tx ? tx.transaction((savepoint) => insertPendingPurge(row, savepoint)) : insertPendingPurge(row));
+  } catch (err) {
+    console.error(
+      `[kept] pending_purges row NOT recorded for slug "${input.slug}" — ${message(err)}. URLs: ${input.urls.join(", ")}. Replay this purge by hand if the process restarts (contract §3).`,
+    );
+    return null;
+  }
+}
+
+/**
  * Purge both URL forms of a slug, and NEVER throw. By the time this runs the
  * stores already agree; only the edge is stale, and contract §3 is explicit that
  * a failed purge is logged, alerted and retried — not rolled back and not
- * surfaced as a publish failure. The log carries the slug and both URLs so a
- * retry can be replayed from it.
+ * surfaced as a publish failure. A failure leaves a `pending_purges` row due
+ * now, which the `repurge` job replays.
+ *
+ * `ledger.siteId` goes on that row when the caller knows the site: the replay
+ * re-runs `syncManifest` for it before purging, so the edge converges on the
+ * row as it stands then, not as it stood here.
  */
-async function purgeSlug(slug: string): Promise<PurgeResult> {
+async function purgeSlug(slug: string, ledger: PurgeLedger): Promise<PurgeResult> {
   let urls: string[];
   try {
     urls = slugPurgeUrls(slug);
@@ -175,31 +250,56 @@ async function purgeSlug(slug: string): Promise<PurgeResult> {
     console.error(
       `[kept] purge SKIPPED for slug "${slug}" — ${error}. The stores are correct; the edge may serve a stale copy until this is configured and the purge replayed.`,
     );
+    // No URLs to record: the replay derives them from the slug once configured.
+    await recordPendingPurge(ledger, { slug, urls: [], dueAt: new Date() });
     return { ok: false, error };
   }
 
   const result = await purgeUrls(urls);
   if (!result.ok) {
     console.error(
-      `[kept] purge FAILED for slug "${slug}" — ${result.error}. URLs: ${urls.join(", ")}. The write succeeded; the edge stays stale until this is retried (contract §3).`,
+      `[kept] purge FAILED for slug "${slug}" — ${result.error}. URLs: ${urls.join(", ")}. The write succeeded; the edge stays stale until the repurge job replays it (contract §3).`,
     );
-    // No re-purge: the first call never reached Cloudflare, so a second on the
-    // same broken configuration would only log the same failure twice. Contract
-    // §3's retry is the operator's, and E07 owns making it durable.
+    // No in-process re-purge: the first call never reached Cloudflare, so a
+    // second on the same broken configuration would only log the same failure
+    // twice. The row, due now, is the retry.
+    await recordPendingPurge(ledger, { slug, urls, dueAt: new Date() });
     return result;
   }
+
+  // Durable FIRST, then the fast path: a restart between here and the timer
+  // leaves a row the `repurge` job replays once it is due.
+  const pendingId = await recordPendingPurge(ledger, {
+    slug,
+    urls,
+    dueAt: new Date(Date.now() + KV_REPURGE_DELAY_MS),
+  });
 
   // Floating BY DESIGN — see `repurgeAfterKvPropagation`. A delete must not
   // block for two minutes, and contract §3 forbids a purge from failing the
   // operation it follows. The `.catch` is not decoration: this promise is
   // unawaited, `purgeUrls` re-reads the environment on every call, and an
-  // unhandled rejection takes the whole Node process down.
-  void repurgeAfterKvPropagation(slug, urls).catch((err: unknown) => {
-    console.error(
-      `[kept] re-purge THREW for slug "${slug}" — ${message(err)}. The edge may be serving a response re-cached from a stale KV read; replay this purge (contract §6).`,
-    );
-  });
+  // unhandled rejection takes the whole Node process down. A failed re-purge
+  // keeps its row, so the job retries it.
+  void repurgeAfterKvPropagation(slug, urls)
+    .then(async (second) => {
+      if (second.ok && pendingId !== null) await deletePendingPurge(pendingId);
+    })
+    .catch((err: unknown) => {
+      console.error(
+        `[kept] re-purge THREW for slug "${slug}" — ${message(err)}. The edge may be serving a response re-cached from a stale KV read; the repurge job replays it (contract §6).`,
+      );
+    });
   return result;
+}
+
+/**
+ * The site a manifest belongs to, for its `pending_purges` row — only when it
+ * is one. Drills and the edge canary write manifests for labels that name no
+ * row (`e04-drill-…`), which a uuid column would refuse.
+ */
+function knownSiteId(siteId: string): string | null {
+  return z.string().uuid().safeParse(siteId).success ? siteId : null;
 }
 
 /**
@@ -214,9 +314,14 @@ async function purgeSlug(slug: string): Promise<PurgeResult> {
  * an unparseable one as a branded 404, so validating here is what keeps that
  * impossible.
  */
-export async function writeManifest(
+export function writeManifest(slug: string, manifest: KvManifest): Promise<ManifestWriteResult> {
+  return storeManifest(slug, manifest, { siteId: knownSiteId(manifest.siteId) });
+}
+
+async function storeManifest(
   slug: string,
   manifest: KvManifest,
+  ledger: PurgeLedger,
 ): Promise<ManifestWriteResult> {
   const parsed = kvManifestSchema.safeParse(manifest);
   if (!parsed.success) {
@@ -244,7 +349,7 @@ export async function writeManifest(
     return { ok: false, step: "kv", error: message(err) };
   }
 
-  return { ok: true, value, purge: await purgeSlug(slug) };
+  return { ok: true, value, purge: await purgeSlug(slug, ledger) };
 }
 
 /**
@@ -259,8 +364,19 @@ export async function writeManifest(
  *
  * The R2 page object is the caller's to remove (or, per the pivot, to archive
  * rather than delete) and is untouched here.
+ *
+ * `siteId`, when the caller has one, goes on the `pending_purges` row so a
+ * replay re-syncs that site (`syncManifest` does). Rename's removal of the OLD
+ * name passes none: re-syncing would only rewrite the new one.
  */
-export async function removeManifest(slug: string): Promise<ManifestRemoveResult> {
+export function removeManifest(
+  slug: string,
+  siteId: string | null = null,
+): Promise<ManifestRemoveResult> {
+  return unstoreManifest(slug, { siteId });
+}
+
+async function unstoreManifest(slug: string, ledger: PurgeLedger): Promise<ManifestRemoveResult> {
   try {
     await r2Store().delete(pointerKey(slug));
   } catch (err) {
@@ -273,5 +389,114 @@ export async function removeManifest(slug: string): Promise<ManifestRemoveResult
     return { ok: false, step: "kv", error: message(err) };
   }
 
-  return { ok: true, purge: await purgeSlug(slug) };
+  return { ok: true, purge: await purgeSlug(slug, ledger) };
+}
+
+/**
+ * The statuses with no manifest: the page has left the edge (D18). Every other
+ * status — `live`, `under_review`, `quarantined`, `expired` — is served by the
+ * Worker from its manifest (a page, the 451, the 410).
+ */
+const UNSERVED_STATUSES = ["removed", "archived"] as const satisfies readonly SiteStatus[];
+
+function isUnserved(status: SiteStatus): status is (typeof UNSERVED_STATUSES)[number] {
+  return (UNSERVED_STATUSES as readonly SiteStatus[]).includes(status);
+}
+
+export type SyncManifestResult =
+  | {
+      ok: true;
+      /** `missing`: no row — nothing to say at the edge, nothing written. */
+      outcome: "written" | "removed" | "missing";
+      /** The slug the edge now answers for (absent when `missing`). */
+      slug?: string;
+    }
+  | { ok: false; slug: string; error: string };
+
+/**
+ * D18 — make the edge say what the row says. THE ONE MANIFEST WRITE FOR EVERY
+ * PAGE THAT ALREADY EXISTS: replace, restore, rename (the new name), the late
+ * keep, every moderation status change and the expiry sweep.
+ *
+ * In ONE transaction: lock the site row → read `slug, status,
+ * current_version_id, owner_id, region` → `writeManifest` with exactly those
+ * values (`live`, `under_review`, `quarantined`, `expired`) or `removeManifest`
+ * (`removed`, `archived`) → commit only after KV has answered. Whoever commits a
+ * row change and then calls this — in any order, from any writer — leaves the
+ * edge on the row's state: a later sync waits on the lock and reads the later
+ * row, so a stale `live` can never land after a flag.
+ *
+ * ⚠️ CALL IT AFTER YOUR OWN COMMIT, never inside your transaction: the lock it
+ * takes is the site row's, and a caller still holding that row (or `lockOwner`
+ * for a batch — Risk 12) would hold it across a KV round-trip for every page.
+ *
+ * NEVER THROWS. A failed store write is a value; it leaves a `pending_purges`
+ * row due now whose replay is this function again. Callers log it and decide
+ * what their own answer is — they never throw past their own commit.
+ */
+export async function syncManifest(siteId: string): Promise<SyncManifestResult> {
+  const synced = await syncSite(siteId, true);
+  if (!synced.ok) {
+    console.error(
+      `[kept] syncManifest FAILED for site ${siteId} (slug "${synced.slug}") — ${synced.error}. The row is the authority; the repurge job replays this sync.`,
+    );
+    // No URLs: the replay re-syncs the site, which purges whatever it writes.
+    await recordPendingPurge({ siteId }, { slug: synced.slug, urls: [], dueAt: new Date() });
+  }
+  return synced;
+}
+
+/**
+ * `syncManifest` for the repurge replay (`./repurge.ts`) ONLY: the same locked
+ * sync, but it records no `pending_purges` row of its own — neither for its
+ * failure nor for the purges its write owes. The replayed row is the record and
+ * the replay updates it; anything else turns each failed replay into one more
+ * row to replay.
+ */
+export function syncManifestForReplay(siteId: string): Promise<SyncManifestResult> {
+  return syncSite(siteId, false);
+}
+
+async function syncSite(siteId: string, durable: boolean): Promise<SyncManifestResult> {
+  try {
+    return await db.transaction(async (tx): Promise<SyncManifestResult> => {
+      const site = await lockSiteForSync(tx, siteId);
+      if (!site) return { ok: true, outcome: "missing" };
+      const ledger: PurgeLedger = durable ? { siteId: site.id, tx } : null;
+
+      if (isUnserved(site.status)) {
+        const removed = await unstoreManifest(site.slug, ledger);
+        return removed.ok
+          ? { ok: true, outcome: "removed", slug: site.slug }
+          : { ok: false, slug: site.slug, error: `${removed.step}: ${removed.error}` };
+      }
+
+      if (!site.currentVersionId) {
+        // Unexpressible: `kvManifestSchema.versionId` is required. Every publish
+        // sets one; a row without it is an anomaly for a human, so the replay
+        // fails until one looks (then alerts).
+        return { ok: false, slug: site.slug, error: `site ${site.id} is ${site.status} with no current version` };
+      }
+
+      const written = await storeManifest(
+        site.slug,
+        {
+          siteId: site.id,
+          versionId: site.currentVersionId,
+          status: site.status,
+          region: site.region,
+          ownerId: site.ownerId,
+          updatedAt: Date.now(),
+        },
+        ledger,
+      );
+      return written.ok
+        ? { ok: true, outcome: "written", slug: site.slug }
+        : { ok: false, slug: site.slug, error: `${written.step}: ${written.error}` };
+    });
+  } catch (err) {
+    // The lock or the read itself failed. No slug is known; the row is the
+    // site's, so the replay re-syncs it by id.
+    return { ok: false, slug: "", error: message(err) };
+  }
 }

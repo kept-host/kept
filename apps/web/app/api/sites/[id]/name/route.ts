@@ -4,8 +4,9 @@
  *
  * Body: `{ name }`. Success is `{ site }` — the page as it now is. Every rule
  * (kept-and-`live` only, the name rule, the namespace under a per-name lock, the
- * quota, `RENAMES_PER_DAY`) and the store ordering — `writeManifest(new)` →
- * commit → `removeManifest(old)` — live in `lib/names/rename.ts`; nothing about
+ * quota, `RENAMES_PER_DAY`) and the store ordering — commit →
+ * `syncManifest` (the new name) → `removeManifest(old)` — live in
+ * `lib/names/rename.ts`; nothing about
  * either belongs here. R2 is untouched: objects are keyed by `siteId`.
  *
  * PATCH: it changes one field of an existing resource, and each call that moves

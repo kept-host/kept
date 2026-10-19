@@ -1,6 +1,8 @@
 import { SOURCE_REPO_URL } from "@kept/shared";
 import { test, expect } from "@playwright/test";
 
+import { LEGAL_DOCS } from "../lib/legal/links";
+
 import { gotoWithTokensApplied } from "./tokens-applied";
 
 /**
@@ -197,9 +199,10 @@ test.describe("landing smoke", () => {
     const footer = page.locator("footer");
 
     // Labels without a destination render as <span>, never a dead <a>. The
-    // anchors: GitHub repo, Stats, License, The forever promise, and the
-    // bottom row Impressum · Privacy · GitHub (E06a §7).
-    await expect(footer.locator("a")).toHaveCount(7);
+    // anchors: GitHub repo, Stats, License; The forever promise, Report a page,
+    // Acceptable use (E07); and the bottom row — every `LEGAL_DOCS` page, then
+    // GitHub (E06a §7).
+    await expect(footer.locator("a")).toHaveCount(6 + LEGAL_DOCS.length + 1);
     await expect(footer.getByRole("link", { name: "Stats" })).toHaveAttribute(
       "href",
       "/stats",

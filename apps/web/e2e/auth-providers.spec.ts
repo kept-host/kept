@@ -63,12 +63,11 @@ const SKIP: string | false =
     : false;
 
 /**
- * Resend's own always-deliverable address. A real send to a real service —
- * `example.com` is refused by Resend at request time (that refusal is what
- * `auth-screen.spec.ts` asserts the error copy for), so it cannot double as a
- * success case. A per-run label (Resend delivers `delivered+…@resend.dev`
- * alike) keeps the magic-link limit of 3 an hour per address (E06a §5) from
- * carrying over between runs.
+ * Resend's own always-deliverable address. The harness runs with
+ * `KEPT_EMAIL_DELIVERY=off`, so the send is composed and accepted but never
+ * handed to Resend (no test spends the 100/day budget); unset it to make this
+ * a real send. A per-run label keeps the magic-link limit of 3 an hour per
+ * address (E06a §5) from carrying over between runs.
  */
 const DELIVERABLE = `delivered+e05-012-${crypto.randomUUID().slice(0, 8)}@resend.dev`;
 
@@ -294,13 +293,14 @@ test.describe("the provider boundary", () => {
     });
   }
 
-  test("a real magic link is really sent, and the screen says so", async ({ page }) => {
+  test("a magic link is sent, and the screen says so", async ({ page }) => {
     // Its own network for the per-IP limit (`lib/testing/drill-ip.ts`).
     await page.setExtraHTTPHeaders({ "cf-connecting-ip": drillIp() });
-    // THE ONE SEND THIS FILE SPENDS. It goes through `sendMagicLink` to the
-    // real Resend API with the real verified domain — the leg that no unit test
-    // and no mock can stand in for. `sendMagicLink` throws on a refusal, so a
-    // "Check your email" panel is only reachable if Resend accepted the message.
+    // The one send this file makes, through `sendMagicLink` and `sendEmail`.
+    // With `KEPT_EMAIL_DELIVERY=off` (the harness default) the Resend call is
+    // the one step skipped; unset it and this is a real send to the verified
+    // domain. `sendMagicLink` throws on a refusal, so a "Check your email"
+    // panel is only reachable if the send succeeded.
     await page.goto("/auth");
     await page.getByLabel("Email").fill(DELIVERABLE);
     await page.getByRole("button", { name: "Email me a magic link" }).click();

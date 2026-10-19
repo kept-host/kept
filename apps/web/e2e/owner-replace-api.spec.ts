@@ -10,10 +10,14 @@ import { config } from "dotenv";
 import { eq, inArray } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
+import { managementRefusal } from "../lib/sites/display";
 import { pointerKey } from "../lib/storage/manifest";
 import { pageObjectKey, r2Store } from "../lib/storage/r2";
+import { clearPendingPurges } from "../lib/testing/pending-purges";
+import { removeServedManifests } from "../lib/testing/served-manifests";
 
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
+import { seedOwned } from "./owner-fixtures";
 import {
   pageHtml,
   probeEdge,
@@ -34,7 +38,9 @@ import { jarlessContext, sessionHeaders } from "./session-request";
  * `POST /api/anon/:token/keep`, so by the time a replace runs there is a genuine
  * R2 object, a genuine slug pointer, a genuine KV manifest and a genuine cached
  * response to overwrite. A hand-inserted row would prove nothing about any of
- * them.
+ * them — except to the refusals that are decided before any store call and
+ * assert nothing at the edge (under review, 401, not-found), which run on pages
+ * seeded with their bytes (`seedOwned`): dev KV is on the free plan.
  *
  * WHAT THIS FILE IS FOR, that no unit drill can reach:
  *
@@ -93,10 +99,8 @@ test.describe("owner replace", () => {
 
   test.afterAll(async () => {
     if (SKIP) return;
-    const { removeManifest } = await import("../lib/storage/manifest");
-    for (const slug of createdSlugs) {
-      await removeManifest(slug).catch(() => undefined);
-    }
+    await removeServedManifests(createdSlugs);
+    await clearPendingPurges(createdSlugs, createdSiteIds);
     for (const id of createdSiteIds) {
       const versions = await db
         .select({ id: schema.siteVersions.id })
@@ -118,7 +122,7 @@ test.describe("owner replace", () => {
   });
 
   /** A real session cookie, minted through the real magic-link verify endpoint. */
-  async function signIn(baseURL: string): Promise<string> {
+  async function signIn(baseURL: string): Promise<{ cookie: string; profileId: string }> {
     const { auth } = await import("../lib/auth");
     const ctx = await auth.$context;
     const token = crypto.randomUUID().replace(/-/g, "");
@@ -139,11 +143,13 @@ test.describe("owner replace", () => {
       const body = (await response.json()) as { user: { id: string } };
       createdUserIds.push(body.user.id);
 
-      return response
+      const cookie = response
         .headersArray()
         .filter((header) => header.name.toLowerCase() === "set-cookie")
         .map((header) => header.value.split(";", 1)[0])
         .join("; ");
+      // `profiles.id` IS the auth user id (E05 D1) — no second lookup needed.
+      return { cookie, profileId: body.user.id };
     } finally {
       await requestCtx.dispose();
     }
@@ -222,7 +228,7 @@ test.describe("owner replace", () => {
   }) => {
     test.setTimeout(LIVE_STACK_TIMEOUT + STALE_EDGE_WINDOW_MS + 30_000);
 
-    const cookie = await signIn(baseURL!);
+    const { cookie } = await signIn(baseURL!);
     const page = await ownedPage(request, baseURL!, cookie);
     const firstKey = pageObjectKey(page.siteId, page.versionId);
 
@@ -292,7 +298,7 @@ test.describe("owner replace", () => {
     request,
     baseURL,
   }) => {
-    const cookie = await signIn(baseURL!);
+    const { cookie } = await signIn(baseURL!);
     const page = await ownedPage(request, baseURL!, cookie);
     const before = await readSite(page.siteId);
     // The pointer carries `updatedAt: Date.now()`, so ANY manifest write would
@@ -312,7 +318,7 @@ test.describe("owner replace", () => {
     request,
     baseURL,
   }) => {
-    const cookie = await signIn(baseURL!);
+    const { cookie } = await signIn(baseURL!);
     const page = await ownedPage(request, baseURL!, cookie);
     const keep = 1 + limitsFor("free").previousVersions;
 
@@ -348,7 +354,7 @@ test.describe("owner replace", () => {
     request,
     baseURL,
   }) => {
-    const cookie = await signIn(baseURL!);
+    const { cookie } = await signIn(baseURL!);
     const page = await ownedPage(request, baseURL!, cookie);
 
     // Demote through the real endpoint to get an OWNED DRAFT with a live clock.
@@ -382,8 +388,8 @@ test.describe("owner replace", () => {
     request,
     baseURL,
   }) => {
-    const cookie = await signIn(baseURL!);
-    const page = await ownedPage(request, baseURL!, cookie);
+    const { cookie, profileId } = await signIn(baseURL!);
+    const page = await seedOwned({ siteIds: createdSiteIds }, profileId, "e06-006r flagged");
 
     // E06 RENDERS these states and writes none of them, so the fixture sets it
     // directly — there is no product path that could. AC29 names `under_review`;
@@ -399,7 +405,7 @@ test.describe("owner replace", () => {
       baseURL!,
       cookie,
       page.siteId,
-      pageHtml(`${page.marker}-flagged`),
+      pageHtml(`${page.slug}-flagged`),
     );
 
     expect(response.status()).toBe(409);
@@ -408,7 +414,7 @@ test.describe("owner replace", () => {
     // An explanation, not a bare refusal: swapping the contents of a flagged
     // page is the evasion the flag exists to stop, and the owner deserves to
     // know that is what happened.
-    expect(error.message.toLowerCase()).toContain("review");
+    expect(error.message).toBe(managementRefusal("under_review"));
 
     expect(await readSite(page.siteId)).toEqual(before);
     expect(await versionRows(page.siteId), "a refused replace writes no version").toHaveLength(1);
@@ -418,7 +424,7 @@ test.describe("owner replace", () => {
     request,
     baseURL,
   }) => {
-    const cookie = await signIn(baseURL!);
+    const { cookie } = await signIn(baseURL!);
     const page = await ownedPage(request, baseURL!, cookie);
     const before = await readSite(page.siteId);
 
@@ -446,18 +452,20 @@ test.describe("owner replace", () => {
     request,
     baseURL,
   }) => {
-    const cookie = await signIn(baseURL!);
-    const mine = await ownedPage(request, baseURL!, cookie);
+    const { cookie, profileId } = await signIn(baseURL!);
+    const mine = await seedOwned({ siteIds: createdSiteIds }, profileId, "e06-006r mine");
+    const mineVersion = (await readSite(mine.siteId)).currentVersionId;
 
     const signedOut = await request.post(`${baseURL}/api/sites/${mine.siteId}/replace`, {
       data: { html: pageHtml("e06-006r-signed-out") },
     });
     expect(signedOut.status(), "the gate must hold before any store work").toBe(401);
     studioErrorSchema.parse(await signedOut.json());
-    expect((await readSite(mine.siteId)).currentVersionId).toBe(mine.versionId);
+    expect((await readSite(mine.siteId)).currentVersionId).toBe(mineVersion);
 
-    const otherCookie = await signIn(baseURL!);
-    const theirs = await ownedPage(request, baseURL!, otherCookie);
+    const other = await signIn(baseURL!);
+    const theirs = await seedOwned({ siteIds: createdSiteIds }, other.profileId, "e06-006r theirs");
+    const theirVersion = (await readSite(theirs.siteId)).currentVersionId;
 
     const refused = await replace(
       request,
@@ -478,14 +486,14 @@ test.describe("owner replace", () => {
     // Byte-identical: "not yours" must not be an existence oracle.
     expect(await refused.text()).toBe(await absent.text());
     expect(studioErrorSchema.parse(await refused.json()).error.code).toBe("not_found");
-    expect((await readSite(theirs.siteId)).currentVersionId).toBe(theirs.versionId);
+    expect((await readSite(theirs.siteId)).currentVersionId).toBe(theirVersion);
   });
 
   test("a replace from a hosted page's origin is refused and changes nothing", async ({
     request,
     baseURL,
   }) => {
-    const cookie = await signIn(baseURL!);
+    const { cookie } = await signIn(baseURL!);
     const page = await ownedPage(request, baseURL!, cookie);
     const before = await readSite(page.siteId);
 

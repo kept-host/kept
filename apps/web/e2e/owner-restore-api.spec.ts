@@ -18,6 +18,7 @@ import {
   newScope,
   publishOwned,
   readSite,
+  seedOwned,
   signInAs,
   SKIP_OWNER_UI,
   titledHtml,
@@ -31,7 +32,10 @@ import { jarlessContext } from "./session-request";
  * NO MOCKS AND NO FIXTURE BYTES. Every page is published through
  * `POST /api/sites` and replaced through `POST /api/sites/:id/replace`, so the
  * versions a restore moves between are genuine R2 objects behind a genuine
- * pointer, KV manifest and edge cache.
+ * pointer, KV manifest and edge cache. The one exception is the refusal
+ * test's neighbour, whose version is only ever named and never served: it is
+ * seeded with its bytes and no manifest (`seedOwned`) — dev KV is on the free
+ * plan.
  *
  * WHAT THIS FILE IS FOR:
  *
@@ -183,7 +187,7 @@ test.describe("owner restore", () => {
     baseURL,
     browser,
   }) => {
-    await signInAs(page, baseURL!, scope);
+    const { userId } = await signInAs(page, baseURL!, scope);
     const owned = await publishOwned(page, baseURL!, scope, "Restore refusals");
     const original = (await readSite(owned.siteId)).currentVersionId!;
     const replacement = await replaced(
@@ -192,7 +196,7 @@ test.describe("owner restore", () => {
       owned.siteId,
       titledHtml(`Restore refusals v2 ${crypto.randomUUID().slice(0, 8)}`),
     );
-    const otherPage = await publishOwned(page, baseURL!, scope, "Restore neighbour");
+    const otherPage = await seedOwned(scope, userId, "Restore neighbour");
     const otherVersion = (await readSite(otherPage.siteId)).currentVersionId!;
     const before = await readSite(owned.siteId);
     const pointerBefore = await pointer(owned.slug);

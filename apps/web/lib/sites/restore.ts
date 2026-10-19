@@ -4,8 +4,10 @@
  * restore of the version that was current before the replace.
  *
  *   PG tx (lock site; current = v; v.activated_at = now())
- *     → writeManifest(slug, v)   — a REPLACE EVENT in edge-purge-contract terms
- *     → enqueueScan(site, v)
+ *     → syncManifest(site)      — a REPLACE EVENT in edge-purge-contract terms,
+ *                                 written from the row under its lock (D18)
+ *     → setStatus(under_review) — only when v's last scan flagged (E07 edge case 4)
+ *     → enqueueScan(site, v, "restore")
  *
  * ── NO PAGE BYTES ARE WRITTEN, AND THIS FILE IS WHERE THAT IS PROVEN (AC28) ──
  * The restored version's object has sat in R2 since the replace that stored it,
@@ -13,7 +15,7 @@
  * module is kept apart from `./manage.ts` (which deletes pruned objects) so
  * `versions.test.ts` can assert, over this file's source, that it never puts,
  * deletes or re-publishes an object: its one R2 call is a read. The slug pointer
- * `writeManifest` rewrites is the MANIFEST (contract §7), rewritten on every
+ * `syncManifest` rewrites is the MANIFEST (contract §7), rewritten on every
  * replace event, not page bytes. No pruning either — the count is unchanged.
  *
  * ── WHY IT READS THE BYTES ANYWAY: ONE READ, TWO REASONS ──────────────────────
@@ -29,15 +31,16 @@
  * The read happens under the site-row lock a prune takes too, so a concurrent
  * prune either finished first (the row is gone: not found) or waits for this.
  */
-import type { KvManifest, RestoreResult } from "@kept/shared";
+import type { RestoreResult } from "@kept/shared";
 
 import { db } from "../db";
+import { lastVerdictFor, setStatus } from "../moderation/status";
 import { lockSiteForOwner, pointSiteAt, type SitePointer } from "../db/queries/publish";
 import { findSiteVersion, stampActivated } from "../db/queries/versions";
 import { enqueueScan } from "../publish/hooks";
 import { extractPageTitle } from "../publish/page-title";
 import { liveUrl } from "../publish/pipeline";
-import { writeManifest } from "../storage/manifest";
+import { syncManifest } from "../storage/manifest";
 import { r2Store } from "../storage/r2";
 
 import { SiteNotFoundError } from "./keep";
@@ -115,31 +118,15 @@ export async function restoreVersion(
     contentHash: site.contentHash,
     sizeBytes: site.sizeBytes,
   };
-  const manifestFor = (servedVersionId: string): KvManifest => ({
-    siteId: site.id,
-    versionId: servedVersionId,
-    // Only a `live` page is restored, and the clock lives in Postgres.
-    status: "live",
-    region: site.region,
-    ownerId: profileId,
-    updatedAt: Date.now(),
-  });
 
-  const written = await writeManifest(site.slug, manifestFor(version.id));
-  if (!written.ok) {
+  // D18: the manifest is the row's, read under its lock AFTER this commit — so a
+  // flag that committed since the status check above is what the edge serves.
+  const synced = await syncManifest(site.id);
+  if (!synced.ok) {
     console.error(
-      `[kept] restore: manifest write failed at the "${written.step}" step for site ${site.id} (slug "${site.slug}", version ${version.id}) — ${written.error}`,
+      `[kept] restore: manifest sync failed for site ${site.id} (slug "${site.slug}", version ${version.id}) — ${synced.error}`,
     );
-    // `kv` means the pointer already names the restored version, so it is put
-    // back; at `validate` or `pointer` nothing reached a store.
-    if (written.step === "kv" && previous.versionId) {
-      const rewound = await writeManifest(site.slug, manifestFor(previous.versionId));
-      if (!rewound.ok) {
-        console.error(
-          `[kept] ROLLBACK INCOMPLETE — slug "${site.slug}" pointer may still name version ${version.id}: "${rewound.step}" — ${rewound.error}. E07 DIVERGENCE AUDIT: reconcile against Postgres (contract §7.5).`,
-        );
-      }
-    }
+    // Revert the row, then sync again: the edge names the version it named before.
     try {
       await db.transaction(async (tx) => {
         await pointSiteAt(tx, site.id, previous);
@@ -147,15 +134,32 @@ export async function restoreVersion(
       });
     } catch (err) {
       console.error(
-        `[kept] ROLLBACK INCOMPLETE — site ${site.id} (slug "${site.slug}") still points at version ${version.id}: ${message(err)}. E07 DIVERGENCE AUDIT: Postgres is the authority (contract §7.5).`,
+        `[kept] ROLLBACK INCOMPLETE — site ${site.id} (slug "${site.slug}") still points at version ${version.id}: ${message(err)}. Postgres is the authority (contract §7.5).`,
       );
     }
-    throw new ManageStoreError("restore", `${written.step}: ${written.error}`);
+    // A second failure leaves its `pending_purges` row; the repurge job converges
+    // the edge on whichever version the row names.
+    await syncManifest(site.id);
+    throw new ManageStoreError("restore", synced.error);
+  }
+
+  // Edge case 4: a version whose last scan flagged goes straight back to
+  // `under_review` — the scanner's own edge, with the verdict it already gave —
+  // unless an admin restored that version (D-72), which `setStatus` refuses.
+  const last = await lastVerdictFor(version.id);
+  if (last?.verdict === "flag") {
+    await setStatus(site.id, "under_review", {
+      actor: "scanner",
+      versionId: version.id,
+      reason: last.reason ?? "other",
+      automated: true,
+      scanId: last.scanId,
+    });
   }
 
   // The bytes are not new, but the served version is: the scan contract is
   // keyed by (site, version) and a restore is a replace event.
-  void enqueueScan(site.id, version.id);
+  void enqueueScan(site.id, version.id, "restore");
 
   return {
     unchanged: false,

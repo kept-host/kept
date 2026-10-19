@@ -3,6 +3,7 @@ import { expect, test, type Locator, type Page, type Route } from "@playwright/t
 import { and, eq } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
+import { draftClocks } from "../lib/publish/pipeline";
 import {
   JUST_PUBLISHED,
   KEPT_TOAST,
@@ -17,8 +18,8 @@ import {
   drop,
   hydrated,
   newScope,
-  publishOwned,
   seedKept,
+  seedOwned,
   signInAs,
   titledHtml,
   SKIP_OWNER_UI,
@@ -31,7 +32,9 @@ import { waitForTokensApplied } from "./tokens-applied";
  * the new card's arrival timed from its mount, the toast's Copy link, the keep
  * moment, the card hover, and reduced-motion parity.
  *
- * NO MOCKS. Every publish is a real `POST /api/sites` against the dev stack.
+ * NO MOCKS. Every publish is a real `POST /api/sites` against the dev stack;
+ * the pages already on the home are seeded with their bytes and no manifest
+ * (`seedOwned` — dev KV is on the free plan).
  * To SEE the in-between states, the real request (or the real RSC refresh that
  * follows it) is HELD in `page.route` until the test lets it go, then
  * continued unchanged — a delay on the real call, never a fabricated answer.
@@ -153,7 +156,7 @@ test.describe("the publish moment", () => {
     baseURL,
   }) => {
     const { userId } = await signInAs(page, baseURL!, scope);
-    await publishOwned(page, baseURL!, scope, "E06-015 neighbour");
+    await seedOwned(scope, userId, "E06-015 neighbour");
     await page.goto("/dashboard");
     await waitForTokensApplied(page);
     await hydrated(page);
@@ -229,7 +232,7 @@ test.describe("the publish moment", () => {
     await page.context().grantPermissions(["clipboard-read", "clipboard-write"], {
       origin: new URL(baseURL!).origin,
     });
-    await publishOwned(page, baseURL!, scope, "E06-015 toast neighbour");
+    await seedOwned(scope, userId, "E06-015 toast neighbour");
     await page.goto("/dashboard");
     await waitForTokensApplied(page);
     await hydrated(page);
@@ -299,7 +302,7 @@ test.describe("the publish moment", () => {
     baseURL,
   }) => {
     const { userId } = await signInAs(page, baseURL!, scope);
-    await publishOwned(page, baseURL!, scope, "E06-015 failure neighbour");
+    await seedOwned(scope, userId, "E06-015 failure neighbour");
     await page.goto("/dashboard");
     await waitForTokensApplied(page);
     await hydrated(page);
@@ -341,12 +344,8 @@ test.describe("the publish moment", () => {
     page,
     baseURL,
   }) => {
-    await signInAs(page, baseURL!, scope);
-    const draft = await publishOwned(page, baseURL!, scope, "E06-015 keep me");
-    const demoted = await page.request.post(`${baseURL}/api/sites/${draft.siteId}/demote`, {
-      headers: { origin: new URL(baseURL!).origin },
-    });
-    expect(demoted.status(), await demoted.text()).toBe(200);
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const draft = await seedOwned(scope, userId, "E06-015 keep me", { expiresAt: draftClocks(new Date()).expiresAt });
 
     await page.goto("/dashboard?tab=drafts");
     await waitForTokensApplied(page);
@@ -380,14 +379,9 @@ test.describe("the publish moment", () => {
     page,
     baseURL,
   }) => {
-    await signInAs(page, baseURL!, scope);
-    const kept = await publishOwned(page, baseURL!, scope, "E06-015 hover kept");
-    const draft = await publishOwned(page, baseURL!, scope, "E06-015 hover draft");
-    expect(draft.outcome).toBe("kept");
-    const demoted = await page.request.post(`${baseURL}/api/sites/${draft.siteId}/demote`, {
-      headers: { origin: new URL(baseURL!).origin },
-    });
-    expect(demoted.status()).toBe(200);
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const kept = await seedOwned(scope, userId, "E06-015 hover kept");
+    const draft = await seedOwned(scope, userId, "E06-015 hover draft", { expiresAt: draftClocks(new Date()).expiresAt });
 
     const motion = (article: Locator) =>
       article.evaluate((node) => {
@@ -433,7 +427,7 @@ test.describe("the publish moment", () => {
   }) => {
     const { userId } = await signInAs(page, baseURL!, scope);
     await seedKept(scope, userId, FREE.keptPages - 1);
-    await publishOwned(page, baseURL!, scope, "E06-015 reduced last slot");
+    await seedOwned(scope, userId, "E06-015 reduced last slot");
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.goto("/dashboard");
     await waitForTokensApplied(page);

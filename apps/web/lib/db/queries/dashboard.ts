@@ -18,6 +18,10 @@
  *   the one spelling of that rule) — an expired one inside it can still be kept
  *   late (§5.3). Flagged pages are shown, labelled, never hidden: a page that
  *   vanishes when it is flagged is indistinguishable from data loss.
+ * - **Removed** pages (E07 D13) are listed too, labelled, under Kept or Drafts
+ *   by their clock, until their `purge_after` — exactly the set `/site/[id]`
+ *   still opens for them. They hold no slot (`isKeptCondition` excludes them),
+ *   so the counter does not count them.
  *
  * `isDraft = expires_at != null` is the split and nothing more. Whether a draft
  * has already run out is the clock's business — never `status`'s, because an
@@ -28,7 +32,7 @@
  * function the keep primitives refuse with, so the screen and the server cannot
  * disagree about which drafts exist.
  */
-import { type KeptQuota, type NameKind, type SiteStatus } from "@kept/shared";
+import { type KeptQuota, type ModerationReason, type NameKind, type SiteStatus } from "@kept/shared";
 import { and, desc, eq, inArray, isNotNull, or } from "drizzle-orm";
 
 import { chosenNameCount } from "../../names/check";
@@ -129,6 +133,11 @@ function homeDraftCondition(profileId: string) {
   );
 }
 
+/** The owner's removed pages (D13) — listed until `purge_after`, which `isPastGrace` drops after. */
+function removedCondition(profileId: string) {
+  return and(eq(sites.ownerId, profileId), eq(sites.status, "removed"));
+}
+
 /**
  * Everything the home needs for one owner.
  *
@@ -150,7 +159,7 @@ export async function getDashboardSites(profileId: string): Promise<DashboardSit
       .select(OWNED_SITE_COLUMNS)
       .from(sites)
       .leftJoin(siteVersions, eq(siteVersions.id, sites.currentVersionId))
-      .where(or(isKeptCondition(profileId), homeDraftCondition(profileId)))
+      .where(or(isKeptCondition(profileId), homeDraftCondition(profileId), removedCondition(profileId)))
       .orderBy(desc(sites.updatedAt)),
     keptQuotaFor(profileId),
     chosenNameCount(profileId),
@@ -194,6 +203,8 @@ export async function getDashboardSites(profileId: string): Promise<DashboardSit
 export interface OwnedSiteDetail extends OwnedSite {
   listedPublic: boolean;
   nameKind: NameKind;
+  /** Why E07 restricted the page; `null` unless it is (the banner, D13's byte rule). */
+  moderationReason: ModerationReason | null;
 }
 
 /**
@@ -218,7 +229,12 @@ export async function getOwnedSiteById(
   siteId: string,
 ): Promise<OwnedSiteDetail | null> {
   const [row] = await db
-    .select({ ...OWNED_SITE_COLUMNS, listedPublic: sites.listedPublic, nameKind: sites.nameKind })
+    .select({
+      ...OWNED_SITE_COLUMNS,
+      listedPublic: sites.listedPublic,
+      nameKind: sites.nameKind,
+      moderationReason: sites.moderationReason,
+    })
     .from(sites)
     .leftJoin(siteVersions, eq(siteVersions.id, sites.currentVersionId))
     .where(and(eq(sites.ownerId, profileId), eq(sites.id, siteId)))

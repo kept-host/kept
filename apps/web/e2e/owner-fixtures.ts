@@ -7,6 +7,11 @@ import { config } from "dotenv";
 import { eq, inArray } from "drizzle-orm";
 
 import { db, schema } from "../lib/db";
+import { extractPageTitle } from "../lib/publish/page-title";
+import { graceEnds, liveUrl } from "../lib/publish/pipeline";
+import { clearPendingPurges } from "../lib/testing/pending-purges";
+import { insertPage } from "../lib/testing/scan-drill";
+import { removeServedManifests } from "../lib/testing/served-manifests";
 
 import { SKIP_LIVE_PUBLISH } from "./live-publish";
 
@@ -115,6 +120,12 @@ export async function signInAs(
 export const titledHtml = (title: string, body = title): string =>
   `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${title}</title></head><body><h1>${body}</h1></body></html>\n`;
 
+/** `title` with a fresh suffix, so no two pages share bytes; `body` (raw HTML) replaces the heading. */
+function suffixedHtml(title: string, body?: string): string {
+  const suffixed = `${title} ${crypto.randomUUID().slice(0, 8)}`;
+  return titledHtml(suffixed, body ?? suffixed);
+}
+
 export interface OwnedPage {
   siteId: string;
   slug: string;
@@ -146,8 +157,7 @@ export async function publishOwned(
   title: string,
   body?: string,
 ): Promise<OwnedPage> {
-  const suffixed = `${title} ${crypto.randomUUID().slice(0, 8)}`;
-  const html = titledHtml(suffixed, body ?? suffixed);
+  const html = suffixedHtml(title, body);
   const response = await page.request.post(`${baseURL}/api/sites`, {
     headers: { origin: new URL(baseURL).origin, "content-type": "text/html" },
     data: html,
@@ -171,24 +181,41 @@ export async function publishOwned(
   };
 }
 
-/** A kept row `seedKept` wrote straight into Postgres. `name` is the slug: no title. */
+/** A row `seedKept` wrote straight into Postgres. `name` is `title ?? slug`, as on every surface. */
 export interface SeededPage {
   siteId: string;
   slug: string;
   name: string;
 }
 
+/** Every seeded row's publisher — how `cleanup` knows it never reached the edge. */
+const SEED_PUBLISHER = "e06-e2e-seed";
+
+export interface SeedOptions {
+  /**
+   * The page's bytes: each row also gets a current `site_versions` row and the
+   * R2 object it names (`insertPage`), and the title a publish would extract,
+   * so the owner's download, export and hover preview read real HTML. Still no
+   * manifest.
+   */
+  html?: string;
+  /** A clock (and its grace, as a publish sets it): the rows are drafts, not kept. */
+  expiresAt?: Date;
+}
+
 /**
- * `n` kept pages in ONE insert, straight into Postgres — for specs that need an
- * account AT or NEAR its kept limit, not for specs about publishing.
+ * `n` owned pages straight into Postgres — for specs that need an account AT
+ * or NEAR its kept limit, or a page to render, download or export, never for
+ * specs about publishing or the edge.
  *
  * ⚠️ REAL ROWS, NOT A MOCK — AND NOT A PUBLISH. The cap counts these exactly as
- * it counts a published page (`owner_id` set, no clock, `live`), and the screens
- * list them. What they do not have is bytes: no R2 object, no slug pointer, no
- * KV manifest, so nothing serves at their slug. Use them to FILL the limit and
- * publish the pages a spec actually asserts about through `publishOwned`.
- * Publishing `limitsFor(plan).keptPages` real pages per test would multiply this
- * suite's runtime by the limit and prove nothing these rows do not.
+ * it counts a published page (`owner_id` set, `live`), and the screens list
+ * them. What they never have is a slug pointer or a KV manifest, so nothing
+ * serves at their slug — dev KV is on the free plan, and a publish spends a
+ * write now and a delete at teardown. Without `html` they have no bytes either:
+ * use those to FILL the limit. A spec that asserts on the live URL, or calls a
+ * route that writes the manifest (rename, replace, keep, delete), publishes
+ * through `publishOwned` — `cleanup` never unwinds a seeded row's edge.
  *
  * Takes any `{ siteIds }` sink so a spec with its own teardown list can use it;
  * every id is recorded there, so `cleanup` (or that spec's own `afterAll`)
@@ -198,23 +225,57 @@ export async function seedKept(
   scope: Pick<OwnerScope, "siteIds">,
   ownerId: string,
   n: number,
+  { html, expiresAt }: SeedOptions = {},
 ): Promise<SeededPage[]> {
+  const title = html === undefined ? null : extractPageTitle(html);
   const rows = Array.from({ length: n }, () => {
     const id = crypto.randomUUID();
     return {
       id,
       slug: `e06-seed-${id.slice(0, 8)}${id.slice(9, 13)}`,
+      title,
       ownerId,
-      publisherHash: "e06-e2e-seed",
+      publisherHash: SEED_PUBLISHER,
       claimedAt: new Date(),
-      contentHash: "e06-e2e-seed",
-      sizeBytes: 128,
+      expiresAt: expiresAt ?? null,
+      purgeAfter: expiresAt ? graceEnds(expiresAt) : null,
     };
   });
   if (rows.length === 0) return [];
-  await db.insert(schema.sites).values(rows);
-  scope.siteIds.push(...rows.map((row) => row.id));
-  return rows.map(({ id, slug }) => ({ siteId: id, slug, name: slug }));
+  if (html === undefined) {
+    await db.insert(schema.sites).values(rows.map((row) => ({ ...row, contentHash: SEED_PUBLISHER, sizeBytes: 128 })));
+    scope.siteIds.push(...rows.map((row) => row.id));
+  } else {
+    for (const row of rows) {
+      scope.siteIds.push(row.id);
+      await insertPage(html, row);
+    }
+  }
+  return rows.map(({ id, slug }) => ({ siteId: id, slug, name: title ?? slug }));
+}
+
+/**
+ * `publishOwned`'s page without the publish: one `seedKept` row with its bytes
+ * and no manifest, for a spec that renders, previews, downloads or exports it
+ * and never asks the edge. `expiresAt` makes it a draft.
+ */
+export async function seedOwned(
+  scope: Pick<OwnerScope, "siteIds">,
+  ownerId: string,
+  title: string,
+  { body, expiresAt }: { body?: string; expiresAt?: Date } = {},
+): Promise<OwnedPage> {
+  const html = suffixedHtml(title, body);
+  const [site] = await seedKept(scope, ownerId, 1, { html, expiresAt });
+  return {
+    siteId: site!.siteId,
+    slug: site!.slug,
+    liveUrl: liveUrl(site!.slug),
+    name: site!.name,
+    title: site!.name,
+    outcome: expiresAt ? "owned_draft" : "kept",
+    html,
+  };
 }
 
 /** The row as Postgres holds it right now. The authority every assertion re-reads. */
@@ -326,7 +387,6 @@ export async function drop(page: Page, target: Locator, file: DroppedFile): Prom
  * is `set null`) and leaves a live page serving that no authority can reach.
  */
 export async function cleanup(scope: OwnerScope): Promise<void> {
-  const { removeManifest } = await import("../lib/storage/manifest");
   const { pageObjectKey, r2Store } = await import("../lib/storage/r2");
 
   if (scope.userIds.length) {
@@ -334,23 +394,22 @@ export async function cleanup(scope: OwnerScope): Promise<void> {
       .select({
         id: schema.sites.id,
         slug: schema.sites.slug,
-        currentVersionId: schema.sites.currentVersionId,
+        publisherHash: schema.sites.publisherHash,
       })
       .from(schema.sites)
       .where(inArray(schema.sites.ownerId, scope.userIds));
-    for (const { id, slug, currentVersionId } of owned) {
+    for (const { id, slug, publisherHash } of owned) {
       if (!scope.siteIds.includes(id)) scope.siteIds.push(id);
-      // A row with no version never had bytes, so never had a manifest — the
-      // rows `seedKept` fills a cap with. Unwinding an edge for each of those
-      // (a pointer delete, a KV delete and a purge apiece) is what ran a
-      // cap-filling spec's `afterAll` past its 30 s.
-      if (currentVersionId !== null) scope.slugs.add(slug);
+      // A `seedKept` row never had a manifest. Unwinding an edge for each of
+      // those (a pointer delete, a KV delete and a purge apiece) is what ran a
+      // cap-filling spec's `afterAll` past its 30 s — and spent dev KV's deletes.
+      if (publisherHash !== SEED_PUBLISHER) scope.slugs.add(slug);
     }
   }
 
-  for (const slug of scope.slugs) {
-    await removeManifest(slug).catch(() => undefined);
-  }
+  // Only the slugs still served: a page the spec deleted or renamed away from
+  // already left the edge.
+  await removeServedManifests(scope.slugs);
 
   for (const id of scope.siteIds) {
     const versions = await db
@@ -372,6 +431,11 @@ export async function cleanup(scope: OwnerScope): Promise<void> {
     // with no FK, so they outlive the row unless they are collected here.
     await db.delete(schema.nameEvents).where(inArray(schema.nameEvents.siteId, scope.siteIds));
     await db.delete(schema.nameHolds).where(inArray(schema.nameHolds.siteId, scope.siteIds));
+    // E07: the moderation log only NULLs its `site_id` when the row goes, and a
+    // re-purge row has no FK at all — both would outlive the drill. (Appeals
+    // cascade with the site.)
+    await db.delete(schema.moderationActions).where(inArray(schema.moderationActions.siteId, scope.siteIds));
+    await clearPendingPurges(scope.slugs, scope.siteIds);
     await db.delete(schema.sites).where(inArray(schema.sites.id, scope.siteIds));
   }
   if (scope.userIds.length) {

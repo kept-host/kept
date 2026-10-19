@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kai Lindgren · Software Engineer</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;600;800&display=swap" rel="stylesheet" />
+  <style>
+    body { font-family: Inter, sans-serif; }
+    .mono { font-family: "JetBrains Mono", monospace; }
+    .cursor::after { content: "▋"; animation: blink 1s steps(1) infinite; color: #4ade80; }
+    @keyframes blink { 50% { opacity: 0; } }
+  </style>
+</head>
+<body class="bg-zinc-950 text-zinc-200">
+  <nav class="max-w-5xl mx-auto px-6 py-6 flex justify-between items-center mono text-sm">
+    <span class="text-green-400">~/kai</span>
+    <div class="space-x-6 text-zinc-400">
+      <a href="#projects" class="hover:text-white">projects</a>
+      <a href="#skills" class="hover:text-white">skills</a>
+      <a href="#contact" class="hover:text-white">contact</a>
+    </div>
+  </nav>
+
+  <header class="max-w-5xl mx-auto px-6 pt-12 pb-20">
+    <div class="rounded-xl border border-zinc-800 bg-zinc-900 shadow-2xl overflow-hidden">
+      <div class="flex gap-2 px-4 py-3 border-b border-zinc-800">
+        <span class="w-3 h-3 rounded-full bg-zinc-700"></span><span class="w-3 h-3 rounded-full bg-zinc-700"></span><span class="w-3 h-3 rounded-full bg-zinc-700"></span>
+        <span class="mono text-xs text-zinc-500 ml-3">kai@devbox: ~</span>
+      </div>
+      <pre id="term" class="mono text-sm p-6 min-h-[260px] whitespace-pre-wrap leading-relaxed"></pre>
+    </div>
+  </header>
+
+  <main class="max-w-5xl mx-auto px-6">
+    <section id="projects" class="pb-24">
+      <h2 class="mono text-green-400 text-sm mb-2">// projects</h2>
+      <p class="text-3xl font-extrabold mb-10">Things I've built and maintain</p>
+      <div class="grid md:grid-cols-2 gap-5" id="projectGrid"></div>
+    </section>
+
+    <section id="skills" class="pb-24">
+      <h2 class="mono text-green-400 text-sm mb-2">// skills</h2>
+      <p class="text-3xl font-extrabold mb-10">Day-to-day toolbox</p>
+      <div class="grid sm:grid-cols-3 gap-6 mono text-sm">
+        <div><div class="text-zinc-500 mb-2">languages</div><p>TypeScript, Go, Rust, SQL, a little Elixir</p></div>
+        <div><div class="text-zinc-500 mb-2">backend</div><p>Postgres, Redis, gRPC, Kafka, Temporal</p></div>
+        <div><div class="text-zinc-500 mb-2">infra</div><p>Kubernetes, Terraform, Cloudflare Workers, GitHub Actions</p></div>
+        <div><div class="text-zinc-500 mb-2">frontend</div><p>React, Svelte, Tailwind, Vite</p></div>
+        <div><div class="text-zinc-500 mb-2">practices</div><p>Observability, load testing, writing RFCs</p></div>
+        <div><div class="text-zinc-500 mb-2">currently learning</div><p>Zig, and patience</p></div>
+      </div>
+    </section>
+
+    <section id="contact" class="pb-24">
+      <h2 class="mono text-green-400 text-sm mb-2">// contact</h2>
+      <p class="text-3xl font-extrabold mb-4">Let's talk.</p>
+      <p class="text-zinc-400 max-w-xl">I'm open to senior backend / platform roles (remote, EU time zones) and the occasional consulting gig on Postgres performance.</p>
+      <div class="mono text-sm mt-6 space-y-1">
+        <p><span class="text-zinc-500">email   </span> <a class="text-green-400 hover:underline" href="mailto:kai@lindgren.dev">kai@lindgren.dev</a></p>
+        <p><span class="text-zinc-500">github  </span> <a class="text-green-400 hover:underline" href="https://github.com/kailindgren">github.com/kailindgren</a></p>
+        <p><span class="text-zinc-500">mastodon</span> <a class="text-green-400 hover:underline" href="https://hachyderm.io/@kai">@kai@hachyderm.io</a></p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="text-center mono text-xs text-zinc-600 pb-10">built with one html file and too much coffee · 2026</footer>
+
+  <script>
+    const projects = [
+      { name: "pgwatchdog", desc: "Tiny Go daemon that alerts on long-running Postgres queries and lock waits.", stars: "1.2k", lang: "Go", url: "https://github.com/kailindgren/pgwatchdog" },
+      { name: "tinyqueue", desc: "A durable job queue on top of SQLite with at-least-once delivery.", stars: "640", lang: "Rust", url: "https://github.com/kailindgren/tinyqueue" },
+      { name: "edge-flags", desc: "Feature flags evaluated at the edge with sub-millisecond reads.", stars: "410", lang: "TypeScript", url: "https://github.com/kailindgren/edge-flags" },
+      { name: "dotfiles", desc: "Neovim, tmux and zsh config, with a bootstrap script for new machines.", stars: "95", lang: "Shell", url: "https://github.com/kailindgren/dotfiles" },
+    ];
+    const colors = { Go: "bg-cyan-400", Rust: "bg-orange-400", TypeScript: "bg-blue-400", Shell: "bg-lime-400" };
+    document.getElementById("projectGrid").innerHTML = projects.map(p => `
+      <a href="${p.url}" target="_blank" rel="noopener" class="block rounded-xl border border-zinc-800 p-6 hover:border-green-500 transition">
+        <div class="flex justify-between items-center">
+          <span class="mono font-bold text-lg">${p.name}</span><span class="text-xs text-zinc-500">★ ${p.stars}</span>
+        </div>
+        <p class="text-zinc-400 mt-2 text-sm">${p.desc}</p>
+        <div class="flex items-center gap-2 mt-4 text-xs text-zinc-500"><span class="w-2.5 h-2.5 rounded-full ${colors[p.lang]}"></span>${p.lang}</div>
+      </a>`).join("");
+
+    // typewriter terminal
+    const lines = [
+      ["$ ", "whoami"],
+      ["", "Kai Lindgren — backend & platform engineer, Stockholm"],
+      ["$ ", "cat now.txt"],
+      ["", "Making boring infrastructure reliably boring at a logistics startup."],
+      ["", "Previously: payments platform at a fintech, SRE at a game studio."],
+      ["$ ", "ls ~/projects"],
+      ["", "pgwatchdog  tinyqueue  edge-flags  dotfiles"],
+      ["$ ", ""],
+    ];
+    const term = document.getElementById("term");
+    let li = 0, ci = 0, out = "";
+    function type() {
+      if (li >= lines.length) { term.classList.add("cursor"); return; }
+      const [prompt, text] = lines[li];
+      if (ci === 0) out += `<span class="text-green-400">${prompt}</span>`;
+      if (ci < text.length) {
+        out += text[ci++];
+        term.innerHTML = out;
+        setTimeout(type, prompt ? 55 : 12);
+      } else {
+        if (li < lines.length - 1) out += "\n";
+        li++; ci = 0;
+        term.innerHTML = out;
+        setTimeout(type, prompt ? 350 : 120);
+      }
+    }
+    type();
+  </script>
+</body>
+</html>

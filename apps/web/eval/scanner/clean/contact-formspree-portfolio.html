@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Marisol Vega Photography</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;1,400&family=Karla:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'Karla', sans-serif; color: #1f1d1a; background: #faf8f5; }
+  a { color: inherit; }
+  nav { display: flex; justify-content: space-between; align-items: center; padding: 28px 6vw; }
+  nav .name { font-family: 'Cormorant Garamond', serif; font-size: 26px; letter-spacing: 1px; }
+  nav ul { list-style: none; display: flex; gap: 28px; margin: 0; padding: 0; font-size: 14px; text-transform: uppercase; letter-spacing: 2px; }
+  nav a { text-decoration: none; }
+  .intro { padding: 60px 6vw 40px; max-width: 900px; }
+  .intro h1 { font-family: 'Cormorant Garamond', serif; font-weight: 500; font-size: clamp(40px, 6vw, 72px); line-height: 1.05; margin: 0; }
+  .intro h1 em { font-weight: 400; color: #9a6b4b; }
+  .intro p { font-size: 18px; color: #5b5650; max-width: 560px; line-height: 1.6; }
+  .gallery { display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px; padding: 20px 6vw 80px; }
+  .tile { border-radius: 4px; min-height: 260px; display: flex; align-items: flex-end; padding: 14px; color: #fff; font-size: 13px; letter-spacing: 1px; text-transform: uppercase; }
+  .t1 { grid-column: span 7; min-height: 420px; background: linear-gradient(160deg, #c9a27e, #6b4a33); }
+  .t2 { grid-column: span 5; background: linear-gradient(200deg, #9fb4c7, #3f5368); }
+  .t3 { grid-column: span 4; background: linear-gradient(120deg, #d8c3a5, #8e7f6a); }
+  .t4 { grid-column: span 4; background: linear-gradient(140deg, #e3b5a4, #a05c4a); }
+  .t5 { grid-column: span 4; background: linear-gradient(180deg, #7d8f69, #3b4a2f); }
+  .services { display: grid; grid-template-columns: repeat(3, 1fr); gap: 30px; padding: 60px 6vw; background: #f1ece5; }
+  .services h3 { font-family: 'Cormorant Garamond', serif; font-size: 28px; margin: 0 0 8px; }
+  .services p { color: #5b5650; line-height: 1.6; }
+  .services .price { font-weight: 600; margin-top: 10px; }
+  .contact { display: grid; grid-template-columns: 1fr 1.2fr; gap: 60px; padding: 80px 6vw; }
+  .contact h2 { font-family: 'Cormorant Garamond', serif; font-size: 48px; font-weight: 500; margin: 0 0 16px; }
+  .contact .aside p { color: #5b5650; line-height: 1.7; }
+  form label { display: block; font-size: 12px; letter-spacing: 2px; text-transform: uppercase; margin: 18px 0 6px; color: #7a746c; }
+  form input, form textarea, form select { width: 100%; border: none; border-bottom: 1px solid #c8c0b5; background: transparent; padding: 10px 0; font: inherit; font-size: 17px; }
+  form input:focus, form textarea:focus { outline: none; border-color: #9a6b4b; }
+  form textarea { min-height: 120px; resize: vertical; }
+  form button { margin-top: 28px; padding: 14px 34px; border: 1px solid #1f1d1a; background: #1f1d1a; color: #faf8f5; letter-spacing: 2px; text-transform: uppercase; font-size: 13px; cursor: pointer; }
+  form button:hover { background: transparent; color: #1f1d1a; }
+  footer { padding: 30px 6vw; font-size: 13px; color: #8a847b; display: flex; justify-content: space-between; border-top: 1px solid #e6e0d8; }
+  @media (max-width: 760px) { .tile { grid-column: span 12 !important; } .services, .contact { grid-template-columns: 1fr; } nav ul { display: none; } }
+</style>
+</head>
+<body>
+  <nav>
+    <div class="name">Marisol Vega</div>
+    <ul><li><a href="#work">Work</a></li><li><a href="#services">Services</a></li><li><a href="#contact">Contact</a></li></ul>
+  </nav>
+
+  <section class="intro">
+    <h1>Quiet light, <em>honest</em> moments.</h1>
+    <p>I'm a wedding and portrait photographer based in Santa Fe, working across New Mexico and anywhere with good weather and kind people.</p>
+  </section>
+
+  <section class="gallery" id="work">
+    <div class="tile t1">Elena &amp; Marco · Taos</div>
+    <div class="tile t2">Winter portraits</div>
+    <div class="tile t3">The Okafors</div>
+    <div class="tile t4">Desert elopement</div>
+    <div class="tile t5">Farm to table · editorial</div>
+  </section>
+
+  <section class="services" id="services">
+    <div><h3>Weddings</h3><p>Full-day coverage, a second shooter, and a hand-finished online gallery delivered within six weeks.</p><div class="price">from $3,400</div></div>
+    <div><h3>Portraits</h3><p>Ninety minutes, one or two locations, twenty-five edited images. Families, couples, solo.</p><div class="price">from $450</div></div>
+    <div><h3>Editorial</h3><p>Restaurants, makers and small brands who want photos that feel like them, not like stock.</p><div class="price">by quote</div></div>
+  </section>
+
+  <section class="contact" id="contact">
+    <div class="aside">
+      <h2>Let's talk.</h2>
+      <p>Tell me a little about what you're planning — the date, the place, the people. I reply to every message within two working days.</p>
+      <p>hello@marisolvega.photo<br>Santa Fe, NM</p>
+    </div>
+    <form action="https://formspree.io/f/xyzqwert" method="POST">
+      <label for="name">Your name</label>
+      <input id="name" name="name" type="text" required>
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" required>
+      <label for="kind">I'm interested in</label>
+      <select id="kind" name="kind">
+        <option>Wedding</option><option>Portrait session</option><option>Editorial / brand</option><option>Something else</option>
+      </select>
+      <label for="message">Message</label>
+      <textarea id="message" name="message" required></textarea>
+      <input type="hidden" name="_subject" value="New inquiry from marisolvega.photo">
+      <button type="submit">Send message</button>
+    </form>
+  </section>
+
+  <footer>
+    <span>© 2026 Marisol Vega Photography</span>
+    <span>Instagram · Pinterest</span>
+  </footer>
+</body>
+</html>

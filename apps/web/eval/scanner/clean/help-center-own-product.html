@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Brightside Notes — Help Center</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-white text-gray-800">
+  <header class="bg-gradient-to-br from-amber-300 via-orange-300 to-rose-300">
+    <div class="max-w-4xl mx-auto px-6 pt-6 pb-16">
+      <nav class="flex justify-between items-center">
+        <a href="/" class="font-bold text-lg">☀️ Brightside Notes</a>
+        <div class="flex gap-5 text-sm">
+          <a href="/" class="hover:underline">Home</a>
+          <a href="/changelog" class="hover:underline">Changelog</a>
+          <a href="https://status.brightsidenotes.app" class="hover:underline">Status</a>
+        </div>
+      </nav>
+      <h1 class="text-4xl font-bold mt-14">How can we help?</h1>
+      <input id="q" type="search" placeholder="Search help articles — e.g. sync, export, widgets"
+        class="mt-6 w-full rounded-xl px-5 py-4 shadow-lg outline-none text-base" />
+    </div>
+  </header>
+
+  <main class="max-w-4xl mx-auto px-6 py-12">
+    <section class="grid sm:grid-cols-3 gap-4 -mt-20 mb-14">
+      <a href="#sync" class="bg-white rounded-xl shadow p-5 hover:shadow-md"><div class="text-2xl">🔄</div><div class="font-semibold mt-2">Sync & devices</div><p class="text-sm text-gray-500">iPhone, Android, Mac, web</p></a>
+      <a href="#troubleshoot" class="bg-white rounded-xl shadow p-5 hover:shadow-md"><div class="text-2xl">🛠️</div><div class="font-semibold mt-2">Troubleshooting</div><p class="text-sm text-gray-500">Missing notes, crashes</p></a>
+      <a href="#contact" class="bg-white rounded-xl shadow p-5 hover:shadow-md"><div class="text-2xl">💬</div><div class="font-semibold mt-2">Contact us</div><p class="text-sm text-gray-500">Real humans, usually within a day</p></a>
+    </section>
+
+    <section>
+      <h2 class="text-2xl font-bold mb-4">Frequently asked questions</h2>
+      <div id="faq" class="divide-y border rounded-xl"></div>
+      <p id="nores" class="hidden text-gray-500 mt-4">No articles match that search. Try different words, or <a class="text-orange-600 underline" href="#contact">write to us</a>.</p>
+    </section>
+
+    <section id="troubleshoot" class="mt-14">
+      <h2 class="text-2xl font-bold mb-4">My notes aren't syncing</h2>
+      <ol class="list-decimal pl-6 space-y-3 text-gray-700">
+        <li>Check <a class="text-orange-600 underline" href="https://status.brightsidenotes.app">status.brightsidenotes.app</a> for any ongoing incident.</li>
+        <li>Make sure you're signed in to the same Brightside account on each device (<em>Settings → Account</em>).</li>
+        <li>Pull down on the notes list to force a sync. The small cloud icon turns solid when it's done.</li>
+        <li>Update to the latest version — sync fixes ship often. Current version is 4.8.2.</li>
+        <li>Still stuck? Go to <em>Settings → Help → Send diagnostics</em>. It sends an anonymous sync log (never note contents) and gives you a reference code to include in your email.</li>
+      </ol>
+    </section>
+
+    <section id="contact" class="mt-14 bg-orange-50 rounded-2xl p-8 grid sm:grid-cols-2 gap-8">
+      <div>
+        <h2 class="text-2xl font-bold">Still need help?</h2>
+        <p class="text-gray-600 mt-2">We're a team of five in Bristol. We answer every message ourselves, Monday to Friday, 9:00–17:30 UK time.</p>
+      </div>
+      <div class="space-y-3 text-sm">
+        <p>📧 <a class="font-medium text-orange-700 underline" href="mailto:help@brightsidenotes.app">help@brightsidenotes.app</a></p>
+        <p>📞 <a class="font-medium text-orange-700" href="tel:+441179460123">+44 117 946 0123</a> (billing questions)</p>
+        <p class="text-gray-500 text-xs">We'll never ask for your password. If you get a message claiming to be from us that does, please forward it to the address above.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="text-center text-xs text-gray-400 py-10">© 2026 Brightside Software Ltd · <a href="/privacy" class="underline">Privacy</a></footer>
+
+  <script>
+    const FAQ = [
+      { id: "sync", q: "How do I sync notes between my phone and computer?", a: "Sign in with the same account on each device. Notes sync automatically over Wi-Fi or mobile data. On the web, visit app.brightsidenotes.app." },
+      { q: "Can I export all my notes?", a: "Yes. Settings → Data → Export creates a ZIP of Markdown files with your images in a folder. It works on the free plan too." },
+      { q: "Is there an offline mode?", a: "Everything works offline. Changes are queued and synced the next time you're connected." },
+      { q: "How do I restore a deleted note?", a: "Deleted notes stay in Recently Deleted for 30 days. Open the sidebar, tap Recently Deleted, then Restore." },
+      { q: "How do I cancel Brightside Plus?", a: "On iPhone, subscriptions are managed in Settings → Apple ID → Subscriptions. On Android, use the Play Store. On web, Settings → Plan → Cancel." },
+      { q: "Do you read my notes?", a: "No. Notes are encrypted in transit and at rest, and staff can't open them. Our privacy page explains the details." },
+      { q: "How do I add the home-screen widget?", a: "Long-press your home screen, tap +, search for Brightside, and choose the Today or Pinned widget." },
+    ];
+
+    const faqEl = document.getElementById("faq");
+    function render(filter = "") {
+      const f = filter.toLowerCase();
+      const items = FAQ.filter(x => (x.q + x.a).toLowerCase().includes(f));
+      document.getElementById("nores").classList.toggle("hidden", items.length > 0);
+      faqEl.innerHTML = items.map((x, i) => `
+        <details ${x.id ? `id="${x.id}"` : ""} class="group p-5" ${f && i === 0 ? "open" : ""}>
+          <summary class="flex justify-between cursor-pointer font-medium list-none">
+            ${x.q}<span class="transition group-open:rotate-45 text-xl leading-none">+</span>
+          </summary>
+          <p class="text-gray-600 mt-3">${x.a}</p>
+        </details>`).join("");
+    }
+    document.getElementById("q").addEventListener("input", e => render(e.target.value));
+    render();
+  </script>
+</body>
+</html>
