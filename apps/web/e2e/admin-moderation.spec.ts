@@ -232,8 +232,9 @@ test.describe("the moderation screen (open)", () => {
     const actioned = await seedReport(flagged.siteId, flagged.slug, `e07-011 ${RUN}: the second report, actioned by Hide.`);
     const { page: admin } = await signedIn(browser, baseURL!, ADMIN);
 
-    // Queue → item.
+    // Queue → item. The row names the owner.
     await admin.goto("/admin/moderation");
+    await expect(admin.getByTestId(`queue-${flagged.siteId}`).getByTestId("row-owner")).toHaveText(ownerEmail(owner.userId));
     await admin.getByTestId(`queue-${flagged.siteId}`).click();
     await expect(admin).toHaveURL(`/admin/moderation/site/${flagged.siteId}`);
     await expect(admin.getByTestId("item-slug")).toHaveText(flagged.slug);
@@ -294,10 +295,12 @@ test.describe("the moderation screen (open)", () => {
     const [hidden] = await db.select().from(schema.abuseReports).where(eq(schema.abuseReports.id, forHide));
     expect(hidden!.status).toBe("actioned");
 
-    // Restore: back to live, reason cleared.
-    await decide(admin, "action-restore", { note: "e07-011: checked, it is a harmless demo." });
+    // Restore: back to live, reason cleared — and no note needed (Arun 2026-10-19).
+    await decide(admin, "action-restore", {});
     await expect.poll(async () => (await readSite(flagged.siteId)).status).toBe("live");
     expect((await readSite(flagged.siteId)).moderationReason).toBeNull();
+    const restored = (await actionsOf(flagged.siteId)).find((a) => a.action === "restore");
+    expect(restored?.note, "an empty note is stored as none").toBeNull();
 
     // Remove: confirmation required on top of the reason.
     await admin.getByTestId("action-remove").click();

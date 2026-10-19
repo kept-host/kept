@@ -114,6 +114,21 @@ test("a restore after an appeal says so and offers no appeal", () => {
   assert.doesNotMatch(email.text, /What you can do/);
 });
 
+test("a restore without a note reads whole: no empty note line (Arun 2026-10-19)", () => {
+  const restore = { ...base, to: "live" as const, actor: "admin" as const, automated: false };
+  const bare = buildStatementOfReasons(restore);
+  console.log(`[sor] ${JSON.stringify(bare)}`);
+  assert.match(bare.text, /^Your page https:\/\/k7f3q2xa\.kept\.host is back online\.\n\nHow we decided: a person reviewed it\.\n\n/);
+  assert.doesNotMatch(bare.text, /note/i);
+  for (const blank of ["", null]) {
+    assert.equal(buildStatementOfReasons({ ...restore, note: blank }).text, bare.text);
+  }
+  assert.match(
+    buildStatementOfReasons({ ...restore, note: "Checked: a harmless demo." }).text,
+    /A note from the person who reviewed it: Checked: a harmless demo\./,
+  );
+});
+
 test("`other` cites no single rule and carries the note", () => {
   const email = buildStatementOfReasons({ ...base, actor: "admin", automated: false, reason: "other", note: "Impersonates a bank." });
   assert.match(email.text, /Our acceptable-use rules: /);

@@ -95,7 +95,7 @@ export default async function ModerationItemPage({ params }: { params: Promise<{
             ) : null}
           </Fact>
           <Fact term="Kind">{site.expiresAt ? `Draft (clock ${formatTimestamp(site.expiresAt)})` : "Kept"}</Fact>
-          <Fact term="Owner">{site.ownerId ? (site.ownerEmail ?? "account without an address") : "anonymous"}</Fact>
+          <Fact term="Owner">{site.owner}</Fact>
           <Fact term="Channel">{site.channel ? `${CHANNEL_LABEL[site.channel]} (${site.channel})` : "no version"}</Fact>
           <Fact term="Created">{formatTimestamp(site.createdAt)}</Fact>
           {site.purgeAfter ? <Fact term="Purge after">{formatTimestamp(site.purgeAfter)}</Fact> : null}

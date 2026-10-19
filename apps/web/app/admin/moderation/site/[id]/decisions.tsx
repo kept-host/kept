@@ -4,8 +4,8 @@
  * The item view's actions (E07 §6.11, AC21): Restore · Hide · Remove on the
  * page, Dismiss on its open reports, Grant / Reject on its open appeal. Each
  * opens one dialog that asks for the reason (`lib/moderation/admin-rules.ts`
- * says which kind) and an optional note; Remove also asks for an explicit
- * confirmation. Nothing is written before the dialog's confirm button, and the
+ * says which kind, and that Restore and Grant need none) and an optional note;
+ * Remove also asks for an explicit confirmation. Nothing is written before the dialog's confirm button, and the
  * server re-validates every body — the browser only shapes it.
  */
 import { MODERATION_REASONS, type ModerationReason } from "@kept/shared";
@@ -26,13 +26,19 @@ interface Decision {
   url: string;
   /** The JSON body, given the dialog's fields. */
   body: (fields: { reason: ModerationReason | null; note: string }) => Record<string, unknown>;
-  /** A restriction takes a listed reason; every other decision a written one. */
-  kind: "restriction" | "written";
+  /** A restriction takes a listed reason; a refusal a written one; lifting a restriction neither. */
+  kind: "restriction" | "written" | "lift";
   description: string;
   destructive?: boolean;
   /** Remove: an extra "I understand" before the confirm button unlocks. */
   confirmation?: string;
 }
+
+const NOTE_LABEL: Record<Decision["kind"], string> = {
+  restriction: "Note (optional, sent to the owner)",
+  written: "Reason (sent to the people affected)",
+  lift: "Note to the owner (optional)",
+};
 
 const FIELD = "flex flex-col gap-1.5";
 const SELECT =
@@ -48,7 +54,7 @@ function DecisionButton({ decision, initialReason }: { decision: Decision; initi
   const [error, setError] = useState<string | null>(null);
 
   const ready =
-    (decision.kind === "restriction" ? reason !== null : note.trim().length > 0) &&
+    (decision.kind === "restriction" ? reason !== null : decision.kind === "lift" || note.trim().length > 0) &&
     (!decision.confirmation || understood);
 
   async function confirm() {
@@ -122,7 +128,7 @@ function DecisionButton({ decision, initialReason }: { decision: Decision; initi
         ) : null}
         <div className={FIELD}>
           <Label htmlFor={`${decision.testId}-note`}>
-            {decision.kind === "written" ? "Reason (sent to the people affected)" : "Note (optional, sent to the owner)"}
+            {NOTE_LABEL[decision.kind]}
           </Label>
           <Textarea
             id={`${decision.testId}-note`}
@@ -170,9 +176,9 @@ export function SiteActions({
       label: "Restore",
       testId: "action-restore",
       url: siteUrl(siteId),
-      kind: "written",
+      kind: "lift",
       body: ({ note }) => ({ action: "restore", note }),
-      description: "The page goes live again and the owner is told why. An open appeal is granted with it.",
+      description: "The page goes live again and the owner is told. An open appeal is granted with it.",
     });
   }
   if (allowed.hide) {
@@ -235,7 +241,7 @@ export function AppealDecision({ appealId }: { appealId: string }) {
           label: "Grant appeal",
           testId: "action-grant",
           url,
-          kind: "written",
+          kind: "lift",
           body: ({ note }) => ({ decision: "grant", note }),
           description: "The page is restored and the owner is told.",
         }}

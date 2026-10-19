@@ -121,7 +121,7 @@ export type AppealDecisionResult =
 /** Grant (restore the page) or reject an open appeal. */
 export async function decideAppeal(
   appealId: string,
-  body: { decision: "grant" | "reject"; note: string },
+  body: { decision: "grant"; note?: string } | { decision: "reject"; note: string },
   adminUserId: string,
 ): Promise<AppealDecisionResult> {
   return body.decision === "grant"

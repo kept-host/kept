@@ -17,13 +17,14 @@ import {
   sourcePreview,
 } from "./admin-rules";
 
-test("AC21: every action requires a reason — a listed one to restrict, a written one otherwise", () => {
+test("AC21: a listed reason to restrict, a written one to refuse, none to lift a restriction", () => {
   assert.ok(siteActionSchema.safeParse({ action: "hide", reason: "phishing" }).success);
   assert.ok(siteActionSchema.safeParse({ action: "remove", reason: "spam", note: "" }).success);
   assert.ok(!siteActionSchema.safeParse({ action: "hide" }).success, "hide without a reason");
   assert.ok(!siteActionSchema.safeParse({ action: "remove", reason: "nonsense" }).success, "an unlisted reason");
-  assert.ok(!siteActionSchema.safeParse({ action: "restore" }).success, "restore without a written reason");
-  assert.ok(!siteActionSchema.safeParse({ action: "restore", note: "   " }).success, "a blank one");
+  // Restore owes nobody a reason (Arun 2026-10-19): a missing or blank note is no note.
+  assert.ok(siteActionSchema.safeParse({ action: "restore" }).success, "restore without a note");
+  assert.equal(siteActionSchema.parse({ action: "restore", note: "   " }).note, undefined);
   assert.ok(siteActionSchema.safeParse({ action: "restore", note: "checked" }).success);
   assert.ok(!siteActionSchema.safeParse({ action: "delete", reason: "spam" }).success, "no such action");
 
@@ -31,7 +32,11 @@ test("AC21: every action requires a reason — a listed one to restrict, a writt
   assert.ok(!dismissReportsSchema.safeParse({ reportIds: [id] }).success);
   assert.ok(!dismissReportsSchema.safeParse({ reportIds: [], note: "x" }).success);
   assert.ok(dismissReportsSchema.safeParse({ reportIds: [id], note: "x" }).success);
-  assert.ok(!appealDecisionSchema.safeParse({ decision: "grant" }).success);
+  // Grant restores the page, so it shares Restore's optional note; Reject still owes the owner one.
+  assert.equal(appealDecisionSchema.parse({ decision: "grant", note: "" }).note, undefined);
+  assert.ok(appealDecisionSchema.safeParse({ decision: "grant", note: "fine" }).success);
+  assert.ok(!appealDecisionSchema.safeParse({ decision: "reject" }).success, "reject without a reason");
+  assert.ok(!appealDecisionSchema.safeParse({ decision: "reject", note: "  " }).success, "a blank one");
   assert.ok(appealDecisionSchema.safeParse({ decision: "reject", note: "stands" }).success);
 
   // An optional note left empty is no note; a written one is trimmed.

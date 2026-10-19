@@ -34,6 +34,23 @@ const hasOpenAppeal = sql<boolean>`exists (
 )`.mapWith(Boolean);
 
 /**
+ * Whose page it is, as every row and the item view name it: the owner's
+ * address; `no owner` for a page that was an account's until the account was
+ * deleted (D-68 — `claimed_at` outlives `owner_id`); else `anonymous`, with the
+ * draft's reminder address when the publisher left one. Needs `user`
+ * left-joined on `sites.owner_id` (`withOwner`). `null` only where the page
+ * itself is gone (a report's purged page).
+ */
+const owner = sql<string | null>`case
+  when ${sites.id} is null then null
+  when ${sites.ownerId} is not null then coalesce(${user.email}, 'account without an address')
+  when ${sites.claimedAt} is not null then 'no owner'
+  when ${sites.reminderEmail} is not null then 'anonymous · ' || ${sites.reminderEmail}
+  else 'anonymous'
+end`;
+const withOwner = eq(user.id, sites.ownerId);
+
+/**
  * Queue: every `under_review` and `quarantined` page, child sexual abuse
  * material pinned on top, then oldest first (by when it entered the status).
  */
@@ -48,8 +65,10 @@ export async function queueItems() {
       flaggedAt,
       openReports: openReportCount,
       openAppeal: hasOpenAppeal,
+      owner,
     })
     .from(sites)
+    .leftJoin(user, withOwner)
     .where(inArray(sites.status, ["under_review", "quarantined"]))
     .orderBy(
       sql`${sites.moderationReason} = 'child_sexual_abuse' is true desc`,
@@ -70,9 +89,11 @@ export async function openReports() {
       details: abuseReports.details,
       createdAt: abuseReports.createdAt,
       siteStatus: sites.status,
+      owner,
     })
     .from(abuseReports)
     .leftJoin(sites, eq(sites.id, abuseReports.siteId))
+    .leftJoin(user, withOwner)
     .where(eq(abuseReports.status, "open"))
     .orderBy(asc(abuseReports.createdAt))
     .limit(TAB_LIMIT);
@@ -90,9 +111,11 @@ export async function openAppeals() {
       message: appeals.message,
       anonymous: sql<boolean>`${appeals.submittedByUserId} is null`.mapWith(Boolean),
       createdAt: appeals.createdAt,
+      owner,
     })
     .from(appeals)
     .innerJoin(sites, eq(sites.id, appeals.siteId))
+    .leftJoin(user, withOwner)
     .where(eq(appeals.status, "open"))
     .orderBy(asc(appeals.createdAt))
     .limit(TAB_LIMIT);
@@ -110,9 +133,11 @@ export async function spikeScans(days: number) {
       verdict: scans.verdict,
       reason: scans.reason,
       createdAt: scans.createdAt,
+      owner,
     })
     .from(scans)
     .innerJoin(sites, eq(sites.id, scans.siteId))
+    .leftJoin(user, withOwner)
     .where(
       and(eq(scans.trigger, "traffic_spike"), gt(scans.createdAt, sql`now() - make_interval(days => ${days})`)),
     )
@@ -172,12 +197,11 @@ export async function moderationItem(siteId: string) {
       createdAt: sites.createdAt,
       currentVersionId: sites.currentVersionId,
       sizeBytes: sites.sizeBytes,
-      ownerEmail: user.email,
-      ownerId: sites.ownerId,
+      owner,
       channel: siteVersions.publishedVia,
     })
     .from(sites)
-    .leftJoin(user, eq(user.id, sites.ownerId))
+    .leftJoin(user, withOwner)
     .leftJoin(siteVersions, eq(siteVersions.id, sites.currentVersionId))
     .where(eq(sites.id, siteId));
   if (!site) return null;

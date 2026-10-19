@@ -7,9 +7,11 @@
  * ── "EACH REQUIRES A REASON" (AC21) ────────────────────────────────────────
  * A restriction (Hide, Remove) takes a reason from `MODERATION_REASONS` — it
  * is what the statement of reasons names — and an optional note. A decision
- * that restricts nothing (Restore, Dismiss, Grant, Reject) has no reason in
- * that list to give, so its reason is the written one: the note is required,
- * and it is what the owner or the reporter reads.
+ * that refuses someone (Dismiss, Reject) has no reason in that list to give,
+ * so its reason is the written one: the note is required, and it is what the
+ * reporter or the owner reads. Lifting a restriction (Restore, Grant — the
+ * same `setStatus` → `live`) owes nobody a reason (Arun 2026-10-19): its note
+ * is optional, and the owner's mail leaves the note line out without one.
  */
 import { ADMIN_SOURCE_PREVIEW_BYTES, moderationReasonEnum } from "@kept/shared";
 import { z } from "zod";
@@ -26,7 +28,7 @@ const optionalNote = note.optional().transform((value) => (value ? value : undef
 
 /** `POST /api/admin/moderation/sites/:id`. */
 export const siteActionSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("restore"), note: requiredNote }),
+  z.object({ action: z.literal("restore"), note: optionalNote }),
   z.object({ action: z.literal("hide"), reason: moderationReasonEnum, note: optionalNote }),
   z.object({ action: z.literal("remove"), reason: moderationReasonEnum, note: optionalNote }),
 ]);
@@ -39,10 +41,10 @@ export const dismissReportsSchema = z.object({
 });
 
 /** `POST /api/admin/moderation/appeals/:id`. */
-export const appealDecisionSchema = z.object({
-  decision: z.enum(["grant", "reject"]),
-  note: requiredNote,
-});
+export const appealDecisionSchema = z.discriminatedUnion("decision", [
+  z.object({ decision: z.literal("grant"), note: optionalNote }),
+  z.object({ decision: z.literal("reject"), note: requiredNote }),
+]);
 
 /**
  * The Source tab's text: the first `ADMIN_SOURCE_PREVIEW_BYTES` bytes of the

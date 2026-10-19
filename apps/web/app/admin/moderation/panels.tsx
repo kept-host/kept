@@ -76,6 +76,15 @@ function Slug({ slug }: { slug: string }) {
   return <span className="font-mono text-sm font-medium text-text">{slug}</span>;
 }
 
+/** Whose page it is (`owner` in the queries). An address keeps its case and truncates rather than widen the row. */
+function Owner({ owner }: { owner: string | null }) {
+  return owner ? (
+    <span data-testid="row-owner" title={owner} className="min-w-0 max-w-full truncate font-mono text-xs text-text-secondary">
+      {owner}
+    </span>
+  ) : null;
+}
+
 function When({ at }: { at: Date | null }) {
   return at ? <span className="text-xs text-text-muted">{formatTimestamp(at)}</span> : null;
 }
@@ -93,6 +102,7 @@ async function QueuePanel() {
             <Code>{item.status}</Code>
             <Code>{item.reason ?? "no reason"}</Code>
             <Code>{item.draft ? "draft" : "kept"}</Code>
+            <Owner owner={item.owner} />
           </Line>
           <Line>
             <When at={item.flaggedAt} />
@@ -116,6 +126,7 @@ async function ReportsPanel() {
             <Slug slug={report.slug} />
             <Code>{report.category}</Code>
             <Code>{report.siteStatus ?? "purged"}</Code>
+            <Owner owner={report.owner} />
             <When at={report.createdAt} />
           </Line>
           <p className="line-clamp-2 text-sm text-text-secondary">{report.details}</p>
@@ -137,6 +148,7 @@ async function AppealsPanel() {
             <Code>{appeal.siteStatus}</Code>
             <Code>{appeal.reason ?? "no reason"}</Code>
             <Code>{appeal.anonymous ? "anonymous" : "owner"}</Code>
+            <Owner owner={appeal.owner} />
             <When at={appeal.createdAt} />
           </Line>
           <p className="line-clamp-2 text-sm text-text-secondary">{appeal.message}</p>
@@ -161,6 +173,7 @@ async function WatchPanel() {
               {scan.verdict ? ` · ${scan.verdict}` : ""}
               {scan.reason ? ` · ${scan.reason}` : ""}
             </Code>
+            <Owner owner={scan.owner} />
             <When at={scan.createdAt} />
           </Line>
         </Row>

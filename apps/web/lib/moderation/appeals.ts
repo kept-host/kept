@@ -114,13 +114,13 @@ function refusal(refusal: "not_found" | "not_restricted" | "appeal_open") {
 /**
  * Grant an open appeal: restore the page (`setStatus` → `live`, actor admin),
  * which marks the appeal granted in the same transaction and mails the owner
- * the restore statement. Refused (nothing written) when the appeal is not open
+ * the restore statement; the note is optional. Refused (nothing written) when the appeal is not open
  * or the page cannot be restored.
  */
 export async function grantAppeal(
   appealId: string,
   adminUserId: string,
-  note: string,
+  note?: string,
 ): Promise<SetStatusResult> {
   const appeal = await findAppeal(appealId);
   // Checked again under the lock, inside `setStatus`.
