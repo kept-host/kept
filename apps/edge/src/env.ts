@@ -4,7 +4,7 @@
 //   - KEPT_R2: R2 bucket with `sites/{siteId}/{versionId}/{path}` objects.
 //   - KEPT_KV: KV namespace mapping `slug` → KV manifest (see @kept/shared).
 // Binding names are a soft contract with task 005 (Cloudflare resources) and
-// task 008 (`.env.example`); keep them in sync with `wrangler.toml`.
+// task 008 (`apps/web/.env.example`); keep them in sync with `wrangler.toml`.
 //
 // Everything else is plain per-environment config strings from `[env.*.vars]`.
 // Dev serves `*.kept-dev.xyz` and prod `*.kept.host` from one code path: the

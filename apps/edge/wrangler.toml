@@ -11,7 +11,8 @@
 # with no `--env` therefore cannot reach *any* store — that failure is deliberate.
 # Always deploy with an explicit `--env dev` or `--env prod`.
 #
-# BINDING CONTRACT (shared with `.env.example` and the smoke scripts):
+# BINDING CONTRACT (shared with `apps/web/.env.example` — R2_BUCKET_AUTO,
+# KV_NAMESPACE_ID — and the smoke scripts):
 #   - R2 bucket binding:    KEPT_R2  → auto-kept-sites-dev | auto-kept-sites
 #   - KV namespace binding: KEPT_KV  → kept-manifest-dev   | kept-manifest
 # EU-residency buckets (`eu-kept-sites-dev` / `eu-kept-sites`) exist but stay
