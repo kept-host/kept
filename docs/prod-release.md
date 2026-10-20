@@ -65,7 +65,9 @@ Neon restore, tags, canary) and [`edge-purge-contract.md`](./edge-purge-contract
     confirmations and reminders. The app's global cap is 300 confirmations an
     hour, so plan a paid tier before the waitlist is promoted publicly.
 - [ ] **GitHub**: repo `kept-host/kept` (public).
-  - `main` is protected (required check `Typecheck / Lint / Build / Test`).
+  - `main` and `develop` are protected. `main` requires `Typecheck / Lint / Build / Test`
+    and `Main PR source` (`main-pr-source.yml`: a PR into `main` must come from `develop`).
+  - The default branch is `develop` until launch, then `main` (§8, Crons).
   - The `prod` environment exists with **required reviewers** and a deployment
     policy limited to branch `main` and tags `prod-v*`. Nothing to add there.
 - [ ] **Google Cloud** (OAuth client) and **GitHub OAuth app**: new prod ones (§3.6).
@@ -264,15 +266,30 @@ dispatch (`target: dev | prod`) always runs the chosen track.
 
 | Name | Track | Turns on | Set to `true` when | Present |
 |---|---|---|---|---|
+| `REPURGE_ENABLED` | dev | `cron-repurge.yml` | proven on dev | ✅ `true` (2026-10-20) |
+| `EXPIRE_ENABLED` | dev | `cron-expire.yml` | proven on dev (1 KV write per expired draft) | ✅ `true` (2026-10-20) |
+| `PURGE_ENABLED` | dev | `cron-purge.yml` | proven on dev (1 KV delete per purged page; it deletes for good) | ✅ `false` (2026-10-20) |
+| `SCAN_RETRY_ENABLED` | dev | `cron-scan-retry.yml` | dev Railway has `OPENROUTER_API_KEY` | ✅ `false` (2026-10-20) |
+| `DRAFT_REMINDER_ENABLED` | dev | `cron-draft-reminder.yml` | you want dev reminders mailed (Resend quota) | ❌ (unset = off) |
 | `VISITS_SYNC_ENABLED` | dev | `cron-visits-sync.yml` | dev token has Zone → Analytics → Read | ❌ |
 | `WAITLIST_PRUNE_ENABLED` | dev | `cron-waitlist-prune.yml` | dev Resend tracking is off | ❌ |
 | `PROD_DRAFT_REMINDER_ENABLED` | prod | `cron-draft-reminder.yml` | prod is deployed and `prod-cron` is set (§4.5) | ❌ |
 | `PROD_VISITS_SYNC_ENABLED` | prod | `cron-visits-sync.yml` | prod token has Analytics Read | ❌ |
+| `PROD_REPURGE_ENABLED` | prod | `cron-repurge.yml` | prod is deployed and `prod-cron` is set (§4.5) | ❌ |
+| `PROD_EXPIRE_ENABLED` | prod | `cron-expire.yml` | prod is deployed and `prod-cron` is set | ❌ |
+| `PROD_PURGE_ENABLED` | prod | `cron-purge.yml` | prod is deployed and `prod-cron` is set | ❌ |
+| `PROD_SCAN_RETRY_ENABLED` | prod | `cron-scan-retry.yml` | prod Railway has `OPENROUTER_API_KEY` | ❌ |
 | `PROD_WAITLIST_PRUNE_ENABLED` | prod | `cron-waitlist-prune.yml` | prod Resend tracking check passed (§5) | ❌ |
 
-The dev draft reminder has no switch; it runs daily, as since E05. Scheduled
-runs fire only from the default branch (`main`), so no cron runs on schedule
-before the first promotion.
+Every job has a switch, the dev draft reminder included. Once a dev cron is
+proven, its dev switch can stay off; dispatch it by hand when testing.
+
+**Scheduled runs fire only from the default branch's workflow files.** The
+branch decides a cron's *definition* (schedule, route, whether a prod job
+exists); the job's environment decides its *target* (`dev` → app.kept-dev.xyz,
+`prod-cron` → app.kept.host). Until launch the default branch is `develop`, so
+the dev schedules run from `develop`. At launch the default becomes `main`
+(§8), so prod cron definitions change only with a release.
 
 ```bash
 gh variable set PROD_WAITLIST_PRUNE_ENABLED --body true   # repo-level, not --env
@@ -286,7 +303,10 @@ a cron call needs, with **no** required reviewer.
 
 - [ ] Create it (Settings → Environments → New), or let the first prod cron run
   create it. Either way, set **Deployment branches and tags → Selected → `main`**
-  so no other branch can reach the prod `CRON_SECRET`.
+  so no other branch can reach the prod `CRON_SECRET`. This is why the default
+  branch must be `main` before any `PROD_*_ENABLED` switch is on: scheduled runs
+  use the default branch, and a `develop` run cannot enter `prod-cron`. Manual
+  prod dispatches need `--ref main` (`gh workflow run cron-repurge.yml --ref main -f target=prod`).
 
 | Name | Kind | Value | Present |
 |---|---|---|---|
@@ -434,7 +454,11 @@ No secrets. The vars `KEPT_BASE_DOMAIN` and `KEPT_APEX_ORIGIN` are committed in
 - [ ] **Legal:** `/legal/impressum`, `/legal/privacy`, and `/impressum` (308). No DRAFT banner.
 - [ ] **Previews:** `/og.png`, `/founding/og.png`, `/favicon.ico`, `/icon.svg`, `/apple-touch-icon.png` → 200. Paste `https://kept.host` into a link-preview debugger.
 - [ ] **Serve independence (optional):** with the control plane stopped, the canary still serves (`rollback-and-release.md` §8; dev drill only, so do not stop prod casually).
-- [ ] **Crons (prod track).** Set up `prod-cron` (§4.5), then dispatch each by hand with `target: prod`:
+- [ ] **Crons (prod track).** Switch the default branch to `main` (Settings → General → Default branch;
+  `main` now holds the cron workflows after the promotion). Set up `prod-cron` (§4.5), then dispatch
+  each by hand from `main` with `target: prod`:
+  - `cron-repurge.yml`, `cron-expire.yml`, `cron-purge.yml` → HTTP 200 with counts;
+  - `cron-scan-retry.yml` → HTTP 200 with counts, once prod has `OPENROUTER_API_KEY`;
   - `cron-draft-reminder.yml` → HTTP 200 with counts;
   - `cron-waitlist-prune.yml` → `{ deleted }`, after the Resend tracking check (§5);
   - `cron-visits-sync.yml` with `days=30`, once the prod token has Analytics Read.

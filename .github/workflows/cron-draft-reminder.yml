@@ -46,7 +46,9 @@ name: Cron — draft reminder
 #
 # TRACKS — one job per track, each switched on independently, both calling
 # `cron-post.yml`:
-#   * dev  — scheduled runs always, as since E05.
+#   * dev  — scheduled runs only when the repository variable
+#     `DRAFT_REMINDER_ENABLED` is `true` (off by default: dev reminders mail
+#     test pages' owners and spend the shared Resend quota).
 #   * prod — scheduled runs only when the repository variable
 #     `PROD_DRAFT_REMINDER_ENABLED` is `true`, so the schedule stays grey (not
 #     red) until prod is deployed and its `prod-cron` environment holds
@@ -77,7 +79,7 @@ permissions:
 jobs:
   dev:
     name: Send draft reminders (dev)
-    if: ${{ github.event_name == 'schedule' || inputs.target == 'dev' }}
+    if: ${{ (github.event_name == 'schedule' && vars.DRAFT_REMINDER_ENABLED == 'true') || inputs.target == 'dev' }}
     uses: ./.github/workflows/cron-post.yml
     with:
       environment: dev
