@@ -14,7 +14,9 @@ Amended 2026-10-16 by E07: every write to an existing page goes through
 Amended 2026-10-22 by E08 (multi-file sites, D14): every purge covers the whole
 file set from `site_version_files` (§4), 100 URLs a request with one
 `pending_purges` row per batch (§3), replace and restore purge old ∪ new (§5);
-§2 corrected for Cloudflare's 2025-04-01 change — URL purge is still the method.
+§2 corrected for Cloudflare's 2025-04-01 change — URL purge is still the method;
+§4 names the short-cached URLs no purge covers (SPA routes, the `/about` 301);
+the purge job deletes at most 2,000 objects a run (§5).
 Secret **values** never appear here; names refer to the GitHub Environment keys
 defined in E02 task 004.
 
@@ -116,10 +118,11 @@ records every purge it still owes as a `pending_purges` row (`site_id`, `slug`,
   first batch's row names the site, so one failed sync of a big set is one
   re-sync, not one per batch.
 - A refusal on batch *k* moves batches *k…n* to due-now — they never reached the
-  edge — and stops; the batches before *k* keep their second purge. A purge that
-  cannot run at all (the zone or base domain is not configured) writes one row
-  due now with no URLs; its replay derives them from the site's current set.
-  There is no in-process retry.
+  edge — and stops; the batches before *k* keep their second purge. An unset
+  `CLOUDFLARE_ZONE_ID` is such a refusal (every batch's row, URLs included, goes
+  due now). A purge whose URLs cannot be built at all (`KEPT_BASE_DOMAIN` unset
+  or malformed) writes one row due now with no URLs; its replay derives them
+  from the site's current set. There is no in-process retry.
 - A `syncManifest` whose store write **fails** writes a row due now with no
   URLs; its replay is the sync itself.
 - Inside `syncManifest` the row is written on the sync's own transaction (in a
@@ -172,6 +175,17 @@ exactly what it did before E08. Never enumerate by listing R2 — the previous
 version's objects are still present and the list is unbounded. The database row
 is the authority on what URLs exist.
 
+Two URL families are **not** in that list, because no file row names them; the
+Worker caches both for 60 s (`SHORT_EDGE_CACHE_CONTROL`) instead of a year, so a
+replace reaches them within a minute without a purge:
+
+- an SPA's rewritten routes (`/dashboard/settings` served from the root
+  `index.html`, E08 D12, Q-new-1);
+- the `301` from `/about` to `/about/` on a non-SPA site that has
+  `about/index.html` (Q-new-6).
+
+A miss (branded or custom `404.html`, D13) was already short-cached.
+
 ## 5. Which events must purge
 
 | Event | Epic | Purge |
@@ -185,7 +199,7 @@ is the authority on what URLs exist.
 | Keep draft → kept | E06 | **No, as built** — same reason; the manifest's `ownerId` is knowingly left stale because nothing in `apps/edge` reads it (`apps/web/lib/sites/keep.ts` header). The exception is a **late keep** (`expired` within grace → `live`), which rewrites the manifest through `syncManifest` and so purges |
 | Status flip to `under_review` / `quarantined` / `removed` / back to `live` | E07 | Yes — **mandatory**, this is a moderation action; see §6. `setStatus` (`apps/web/lib/moderation/status.ts`) commits, then `syncManifest`: a written manifest for `under_review` / `quarantined` (451), a removed one for `removed` |
 | Draft expiry (`live` → `expired`) | E07 | Yes — the hourly `expire` job commits `expired`, then `syncManifest` writes the `expired` manifest (410) |
-| Grace-period purge / hard delete | E07 | Yes — the daily `purge` job calls `removeManifest` (skipped when another page now claims the slug), deletes every version's R2 object, then the row |
+| Grace-period purge / hard delete | E07 | Yes — the daily `purge` job calls `removeManifest` (skipped when another page now claims the slug), deletes every file of every version (from `site_version_files`, `deleteMany`), then the row. At most `PURGE_DELETES_PER_RUN` (2,000) objects a run (E08 Q2): a site cut off part-way deletes what it took and keeps its row, name and manifest — it is in a status the edge serves no bytes for — and the next run finishes it |
 
 **The rule as built (E07 D18).** For any page that already exists, the only
 manifest write is `syncManifest(siteId)` (`apps/web/lib/storage/manifest.ts`). In

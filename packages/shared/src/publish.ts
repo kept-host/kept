@@ -154,6 +154,9 @@ export type HtmlPublishRequest = z.infer<typeof htmlPublishRequestSchema>;
  *   basename unless the third argument is given — or as one `archive` part
  *   holding a `.zip`.
  * - `spa: true` opts in to the SPA fallback (D12).
+ * - Link to a folder's page as `/about/`, not `/about`. Without `spa`, the
+ *   Worker answers `/about` with a 301 to `/about/` when `about/index.html`
+ *   exists (Q-new-6), which costs the visitor a redirect and an extra read.
  * - The response is `publishResponseSchema`, unchanged; failures are
  *   `publishErrorSchema` with a `PUBLISH_ERROR_CODES` code.
  *
