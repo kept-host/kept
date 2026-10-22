@@ -38,6 +38,8 @@ import {
   siteUpdateResultSchema,
   studioErrorSchema,
   swapResultSchema,
+  UPLOAD_CONTENT_TYPE,
+  uploadResponseSchema,
   type AccountDeletionRequest,
   type AccountDeletionResult,
   type BulkAction,
@@ -48,16 +50,17 @@ import {
   type NameChangeRequest,
   type NameCheckResult,
   type OwnedPublishResult,
-  type HtmlPublishRequest,
   type ReplaceResult,
   type RestoreResult,
   type SiteUpdateRequest,
   type StudioError,
   type StudioSite,
   type SwapResult,
+  type UploadResponse,
 } from "@kept/shared";
 import type { z } from "zod";
 
+import { archiveForm } from "../publish/pack";
 import { pageDownloadHref } from "./display";
 
 /**
@@ -140,6 +143,29 @@ function jsonInit(method: string, body: unknown, signal?: AbortSignal): RequestI
   };
 }
 
+/**
+ * What a studio publish or replace sends (E08 D3, D5) — one of the three bodies
+ * the owner routes read, each with the "Serve as a single-page app" choice:
+ *
+ *   · `html`      — one page, `application/json` `{ html, spa }`, exactly as
+ *                   before E08;
+ *   · `archive`   — a zip (packed by `lib/publish/pack.ts`, or dropped as one),
+ *                   multipart, at most `INLINE_BODY_MAX_BYTES` on the wire;
+ *   · `upload_id` — a zip already PUT through `requestUpload` / `putUpload`.
+ *
+ * Built by `lib/sites/owner-upload.ts`, which decides which one a drop becomes.
+ */
+export type OwnedBody =
+  | { html: string; spa: boolean }
+  | { archive: Blob; spa: boolean }
+  | { upload_id: string; spa: boolean };
+
+/** `body` as a POST: multipart for an archive (the browser writes the boundary), JSON otherwise. */
+function bodyInit(body: OwnedBody, signal?: AbortSignal): RequestInit {
+  if ("archive" in body) return { method: "POST", body: archiveForm(body.archive, body.spa), signal };
+  return jsonInit("POST", body, signal);
+}
+
 /** An owned publish: the page the account now has, or why it never landed. */
 export type OwnedPublishOutcome =
   | { ok: true; page: OwnedPublishResult }
@@ -180,19 +206,18 @@ export function renameNotice(site: Pick<StudioSite, "liveUrl">): string {
  * page; nothing new was made. `ok: false` here means the request genuinely did
  * not land.
  *
- * `application/json` with `{ html }`, like every other browser caller; the route
- * accepts multipart and raw `text/html` for callers that cannot build JSON.
+ * `body` is one of the three `OwnedBody` forms. `page.ignored` lists the OS
+ * junk the server dropped from a set (D7), for the toast.
  *
  * Never throws, including on abort.
  */
-export async function publishOwnedHtml(
-  html: string,
+export async function publishOwned(
+  body: OwnedBody,
   signal?: AbortSignal,
 ): Promise<OwnedPublishOutcome> {
-  const body: Pick<HtmlPublishRequest, "html"> = { html };
   const sent = await send(
     "/api/sites",
-    jsonInit("POST", body, signal),
+    bodyInit(body, signal),
     ownedPublishResultSchema,
     [200, 201],
   );
@@ -406,11 +431,8 @@ export function replaceNotice(page: ReplaceResult): string {
 /**
  * `POST /api/sites/:id/replace` — swap a page's bytes, keeping its URL.
  *
- * `application/json` with `{ html }`: the route accepts multipart and raw
- * `text/html` too, for callers that cannot build JSON, which a browser can. The
- * file has already been read to a string by the caller — a drop target reads it
- * once, and handing a `File` down here would make this module know about the DOM
- * it is deliberately kept away from.
+ * `body` is one of the three `OwnedBody` forms, built by the caller
+ * (`lib/sites/owner-upload.ts`) — this module never reads a `File`.
  *
  * `page.unchanged` means the bytes were identical to the served version and
  * nothing was written. Otherwise `page.previousVersionId` is what an Undo hands
@@ -426,16 +448,73 @@ export function replaceNotice(page: ReplaceResult): string {
  */
 export async function replacePage(
   siteId: string,
-  html: string,
+  body: OwnedBody,
   signal?: AbortSignal,
 ): Promise<ReplaceOutcome> {
-  const body: Pick<HtmlPublishRequest, "html"> = { html };
   const sent = await send(
     `/api/sites/${encodeURIComponent(siteId)}/replace`,
-    jsonInit("POST", body, signal),
+    bodyInit(body, signal),
     replaceResultSchema,
   );
   return sent.ok ? { ok: true, page: sent.body } : { ok: false, error: sent.error };
+}
+
+/** A presigned upload: where to PUT the zip and the ID to publish it by, or why not. */
+export type UploadOutcome =
+  | { ok: true; upload: UploadResponse }
+  | { ok: false; error: StudioError };
+
+/**
+ * `POST /api/uploads` — a presigned PUT for a zip of exactly `sizeBytes` (E08
+ * D5), for a set past what one inline request carries. The server's refusals
+ * arrive as the envelope: `site_too_large` (over the plan's ceiling, with the
+ * §8 sentence) and `rate_limited`.
+ *
+ * ⚠️ `upload.upload_url` IS A BEARER CREDENTIAL until it expires. Hand it to
+ * `putUpload` and nowhere else — never log it, never put it in state a screen
+ * renders.
+ *
+ * Never throws, including on abort.
+ */
+export async function requestUpload(sizeBytes: number, signal?: AbortSignal): Promise<UploadOutcome> {
+  const sent = await send("/api/uploads", jsonInit("POST", { size_bytes: sizeBytes }, signal), uploadResponseSchema);
+  return sent.ok ? { ok: true, upload: sent.body } : { ok: false, error: sent.error };
+}
+
+/**
+ * PUT `zip` to a presigned `url`, reporting bytes sent — an `XMLHttpRequest`,
+ * because `fetch` reports no upload progress. Resolves to the HTTP status, or
+ * `null` when no answer came (a network or CORS failure, or an abort).
+ *
+ * The signature binds `content-type` (`UPLOAD_CONTENT_TYPE`) and the length
+ * declared to `requestUpload`; the browser sets `Content-Length` from the Blob,
+ * so `zip` must be the very Blob that was measured. An expired URL answers 403.
+ *
+ * An abort releases the request and its listeners. Never throws.
+ */
+export function putUpload(
+  url: string,
+  zip: Blob,
+  onProgress: (sent: number) => void,
+  signal?: AbortSignal,
+): Promise<number | null> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve(null);
+    const xhr = new XMLHttpRequest();
+    const abort = () => xhr.abort();
+    const settle = (status: number | null) => {
+      signal?.removeEventListener("abort", abort);
+      resolve(status);
+    };
+    xhr.upload.onprogress = (event) => onProgress(event.loaded);
+    xhr.onload = () => settle(xhr.status);
+    xhr.onerror = () => settle(null);
+    xhr.onabort = () => settle(null);
+    signal?.addEventListener("abort", abort, { once: true });
+    xhr.open("PUT", url);
+    xhr.setRequestHeader("content-type", UPLOAD_CONTENT_TYPE);
+    xhr.send(zip);
+  });
 }
 
 /** A restore attempt: the version now served (or `unchanged`), or why not. */

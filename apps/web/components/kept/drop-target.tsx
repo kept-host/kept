@@ -39,25 +39,37 @@
  * users could not use.
  *
  * ── REFUSED BEFORE ANY REQUEST (AC7, client half; edge case 11) ─────────────
- * Every file — dropped or chosen — goes through `checkPageFile`, the same
- * pre-flight the landing and the anonymous replace read: a `.png` gets "That's
- * a .png. kept publishes HTML pages — drop an .html file.", an oversize page
- * gets the `MAX_PAGE_BYTES` sentence, and `onFile` is never called, so the
- * caller never sends anything. The server re-validates every byte regardless;
- * this is a courtesy, not a gate.
+ * Whatever arrives — one file, several, a folder (dragged, or through the
+ * zone's "Browse folder"), a `.zip` — becomes ONE `UploadIntent`
+ * (`lib/publish/pack.ts`, E08 §5.7): one HTML page, a zip sent as it is, or a
+ * set of files at their relative paths. A single file that is neither a page
+ * nor a zip goes through `checkPageFile`, the same pre-flight the landing and
+ * the anonymous replace read: a `.png` gets "That's a .png. kept publishes HTML
+ * pages — drop an .html file.", an oversize page gets the `MAX_PAGE_BYTES`
+ * sentence, and `onUpload` is never called, so the caller never sends anything.
+ * The server re-validates every byte regardless; this is a courtesy, not a
+ * gate.
  *
- * The component validates and hands over a `File`; it does not publish, does
- * not replace and holds no request. What happens next — and where a refusal is
- * shown — is the caller's (`onFile`, `onRefuse`).
+ * The component hands over an intent; it does not pack, publish or replace and
+ * holds no request. What happens next — the plan's size pre-flight, packing,
+ * the upload, and where a refusal is shown — is the caller's (`onUpload`,
+ * `onRefuse`; `lib/sites/owner-upload.ts`).
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Upload } from "lucide-react";
 
-import { checkPageFile, publishErrorText } from "@/lib/publish/client";
+import { FILE_UNREADABLE, publishErrorText } from "@/lib/publish/client";
+import { DROP_HINT } from "@/lib/publish/fileset/copy";
+import {
+  collectDrop,
+  collectInput,
+  isRefusal,
+  toIntent,
+  UPLOAD_ACCEPT,
+  type PackEntry,
+  type UploadIntent,
+} from "@/lib/publish/pack";
 import { cn } from "@/lib/utils";
-
-/** What the file pickers offer. `checkPageFile` is the actual rule. */
-const ACCEPT = "text/html,.html,.htm";
 
 /** Whether a drag is carrying files at all, rather than selected text. */
 function draggingFiles(transfer: DataTransfer | null): boolean {
@@ -68,8 +80,8 @@ function draggingFiles(transfer: DataTransfer | null): boolean {
 export type Browse = () => void;
 
 type DropTargetProps = {
-  /** A file that passed the pre-flight. Never called for a refused one. */
-  onFile: (file: File) => void;
+  /** What was dropped or chosen, as one upload. Never called for a refused drop. */
+  onUpload: (intent: UploadIntent) => void;
   /** The sentence for a refused file, for the caller to show where it belongs. */
   onRefuse: (message: string) => void;
   /** Ignore drops and the picker — while a publish or replace is in flight. */
@@ -87,18 +99,27 @@ type DropTargetProps = {
 );
 
 export function DropTarget(props: DropTargetProps) {
-  const { onFile, onRefuse, disabled = false } = props;
+  const { onUpload, onRefuse, disabled = false } = props;
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const folderRef = useRef<HTMLInputElement | null>(null);
 
+  // `collectDrop` is called synchronously by each drop handler (the item list
+  // empties when the handler returns); only its walk of folders is awaited here.
   const take = useCallback(
-    (file: File | null | undefined) => {
-      if (!file || disabled) return;
-      const refusal = checkPageFile(file);
-      if (refusal) onRefuse(publishErrorText(refusal));
-      else onFile(file);
+    async (collected: Promise<PackEntry[]> | PackEntry[]) => {
+      let entries: PackEntry[];
+      try {
+        entries = await collected;
+      } catch {
+        onRefuse(FILE_UNREADABLE);
+        return;
+      }
+      const intent = toIntent(entries);
+      if (isRefusal(intent)) onRefuse(publishErrorText(intent));
+      else onUpload(intent);
     },
-    [disabled, onFile, onRefuse],
+    [onUpload, onRefuse],
   );
 
   const browse = useCallback(() => {
@@ -127,8 +148,8 @@ export function DropTarget(props: DropTargetProps) {
       event.preventDefault();
       setDragging(false);
       // A card or a zone owns this one; its own handler has already taken it.
-      if (claimed) return;
-      take(event.dataTransfer?.files.item(0));
+      if (claimed || disabled || !event.dataTransfer) return;
+      void take(collectDrop(event.dataTransfer));
     }
 
     // `relatedTarget === null` is the drag leaving the window rather than moving
@@ -168,24 +189,28 @@ export function DropTarget(props: DropTargetProps) {
       if (!draggingFiles(event.dataTransfer)) return;
       event.preventDefault();
       setDragging(false);
-      take(event.dataTransfer.files.item(0));
+      if (!disabled) void take(collectDrop(event.dataTransfer));
     },
   };
+
+  /** The picked files, read before the input is cleared. */
+  function onPicked(event: React.ChangeEvent<HTMLInputElement>) {
+    const entries = collectInput(event.target.files ?? []);
+    // Cleared so choosing the SAME file twice fires `change` again — a second
+    // attempt after a refusal is the common case.
+    event.target.value = "";
+    if (entries.length > 0 && !disabled) void take(entries);
+  }
 
   const input = (
     <input
       ref={inputRef}
       type="file"
-      accept={ACCEPT}
+      accept={UPLOAD_ACCEPT}
+      multiple
       hidden
       disabled={disabled}
-      onChange={(event) => {
-        const file = event.target.files?.item(0);
-        // Cleared so choosing the SAME file twice fires `change` again — a
-        // second attempt after a refusal is the common case.
-        event.target.value = "";
-        take(file);
-      }}
+      onChange={onPicked}
     />
   );
 
@@ -200,11 +225,7 @@ export function DropTarget(props: DropTargetProps) {
             data-testid="drop-overlay-window"
             className="pointer-events-none fixed inset-0 z-50 flex p-4"
           >
-            <DropMessage
-              className="flex-1 rounded-[var(--r-xl)]"
-              title="Drop to publish"
-              note="It's live the moment it lands."
-            />
+            <DropMessage className="flex-1 rounded-[var(--r-xl)]" title="Drop to publish" note={DROP_HINT} />
           </div>
         ) : null}
       </>
@@ -249,10 +270,31 @@ export function DropTarget(props: DropTargetProps) {
         )}
       >
         <Upload aria-hidden="true" className="size-6 text-accent" strokeWidth={1.5} />
-        <span className="text-[15px] font-medium">Drop an .html file</span>
-        <span className="text-[13px] text-text-secondary">or click to choose a file</span>
+        <span className="text-[15px] font-medium">{DROP_HINT}</span>
+        <span className="text-[13px] text-text-secondary">or click to choose files</span>
       </button>
       {input}
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => folderRef.current?.click()}
+        className="self-start rounded-[var(--r-sm)] font-mono text-xs text-text underline underline-offset-[3px] outline-none hover:text-accent-hover focus-visible:ring-2 focus-visible:ring-accent disabled:pointer-events-none disabled:opacity-50"
+      >
+        Browse folder
+      </button>
+      <input
+        // `webkitdirectory` is not in React's attribute types; every current
+        // browser supports it, and each chosen file carries `webkitRelativePath`.
+        ref={(element) => {
+          folderRef.current = element;
+          element?.setAttribute("webkitdirectory", "");
+        }}
+        type="file"
+        data-testid="folder-input"
+        hidden
+        disabled={disabled}
+        onChange={onPicked}
+      />
     </>
   );
 }

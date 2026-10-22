@@ -25,7 +25,12 @@ export interface VersionListItem {
   id: string;
   createdAt: Date;
   activatedAt: Date;
+  /** The version's set total (E08). */
   sizeBytes: number;
+  /** How many files the version holds (E08) — "{n} files · {size}". */
+  fileCount: number;
+  /** Its "single-page app" flag (D12): the replace checkbox starts from the current one's. */
+  spa: boolean;
   publishedVia: PublishChannel;
   isCurrent: boolean;
 }
@@ -45,6 +50,8 @@ export async function listVersions(siteId: string, ownerId: string): Promise<Ver
       createdAt: siteVersions.createdAt,
       activatedAt: siteVersions.activatedAt,
       sizeBytes: siteVersions.sizeBytes,
+      fileCount: siteVersions.fileCount,
+      spa: siteVersions.spa,
       publishedVia: siteVersions.publishedVia,
       currentVersionId: sites.currentVersionId,
     })

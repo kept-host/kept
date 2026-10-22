@@ -87,6 +87,9 @@ export function checkPageFile(file: Pick<File, "name" | "type" | "size">): Publi
   return null;
 }
 
+/** A chosen or dropped file the browser could not read back. */
+export const FILE_UNREADABLE = "That file could not be read. Try choosing it again.";
+
 /** The same pre-flight for markup that arrived as text (paste, text drop). */
 export function checkPageHtml(html: string): PublishError | null {
   const bytes = byteLength(html);

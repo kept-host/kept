@@ -482,7 +482,7 @@ test("preview (D13): withheld bytes are never read for any screen; other restric
     ...(await seed(owner, 1, { status: "under_review", moderationReason: "child_sexual_abuse" })),
   ];
   const [phishing] = await seed(owner, 1, { status: "under_review", moderationReason: "phishing" });
-  const { db, eq, sites } = await deps();
+  const { db, eq, sites, siteVersions } = await deps();
   const read = async (siteId: string) => {
     const [row] = await db
       .select({
@@ -490,9 +490,11 @@ test("preview (D13): withheld bytes are never read for any screen; other restric
         slug: sites.slug,
         currentVersionId: sites.currentVersionId,
         sizeBytes: sites.sizeBytes,
+        fileCount: siteVersions.fileCount,
         moderationReason: sites.moderationReason,
       })
       .from(sites)
+      .leftJoin(siteVersions, eq(siteVersions.id, sites.currentVersionId))
       .where(eq(sites.id, siteId));
     return row!;
   };

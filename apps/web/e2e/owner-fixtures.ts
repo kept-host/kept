@@ -343,7 +343,15 @@ export async function hold(page: Page, target: Locator, file: DroppedFile): Prom
   const path = test.info().outputPath(`drop-${crypto.randomUUID()}`, file.name);
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, file.body);
+  return holdPath(page, target, path);
+}
 
+/**
+ * `hold` for something already on disk — a binary file, or a whole folder
+ * (E08: Chromium hands a dropped directory to `webkitGetAsEntry` as a
+ * directory entry, exactly as a drag from the desktop does).
+ */
+export async function holdPath(page: Page, target: Locator, path: string): Promise<HeldFile> {
   await target.scrollIntoViewIfNeeded();
   const box = await target.boundingBox();
   expect(box, "the drop target is on screen").not.toBeNull();
@@ -388,6 +396,7 @@ export async function drop(page: Page, target: Locator, file: DroppedFile): Prom
  */
 export async function cleanup(scope: OwnerScope): Promise<void> {
   const { pageObjectKey, r2Store } = await import("../lib/storage/r2");
+  const { siteObjectKeys } = await import("../lib/db/queries/version-files");
 
   if (scope.userIds.length) {
     const owned = await db
@@ -416,11 +425,15 @@ export async function cleanup(scope: OwnerScope): Promise<void> {
       .select({ id: schema.siteVersions.id })
       .from(schema.siteVersions)
       .where(eq(schema.siteVersions.siteId, id));
-    for (const version of versions) {
-      await r2Store()
-        .delete(pageObjectKey(id, version.id))
-        .catch(() => undefined);
-    }
+    // Every file of every version (E08: a set is many objects); `index.html`
+    // by name too, for a seeded version that has no file rows.
+    const keys = new Set([
+      ...versions.map((version) => pageObjectKey(id, version.id)),
+      ...(await siteObjectKeys(db, id).catch(() => [])),
+    ]);
+    await r2Store()
+      .deleteMany([...keys])
+      .catch(() => undefined);
   }
 
   // By id, never by owner: a spec that deleted its own account leaves rows whose

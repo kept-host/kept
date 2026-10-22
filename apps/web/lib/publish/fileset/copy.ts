@@ -128,3 +128,20 @@ export function skipped(n: number, list: readonly string[]): string {
   const more = list.length > SKIPPED_LISTED ? `, ${ELLIPSIS}` : "";
   return `Published. Skipped ${files(n)} (${named}${more}).`;
 }
+
+/** §8: the studio packing a folder in the browser. */
+export function packing(n: number): string {
+  return `Packing ${files(n)}…`;
+}
+
+/** §8: the presigned PUT, under its progress bar. */
+export function uploading(bytes: number): string {
+  return `Uploading ${formatBytes(bytes)}…`;
+}
+
+/** §8: the SPA checkbox (D12) under every studio drop zone, and its helper line. */
+export const SPA_LABEL = "Serve as a single-page app";
+export const SPA_HELPER = "Send every page address to index.html — for React, Vue and other single-page apps.";
+
+/** §8: the studio's drop hint — the zone and the window's drag overlay. */
+export const DROP_HINT = "Drop an HTML file, a folder or a .zip";

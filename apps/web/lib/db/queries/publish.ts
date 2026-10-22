@@ -464,6 +464,8 @@ export interface AnonSite {
   title: string | null;
   contentHash: string | null;
   sizeBytes: number | null;
+  /** The current version's file count (E08) — a preview needs exactly one. `null` with no version. */
+  fileCount: number | null;
   /** Why E07 restricted the page; `null` unless it is. Read for D13's byte rule. */
   moderationReason: ModerationReason | null;
 }
@@ -486,6 +488,9 @@ const MANAGED_SITE_COLUMNS = {
   title: sites.title,
   contentHash: sites.contentHash,
   sizeBytes: sites.sizeBytes,
+  // A scalar subquery, not a join: `lockSiteForOwner` reads these columns
+  // `FOR UPDATE`, which Postgres refuses on the nullable side of an outer join.
+  fileCount: sql<number | null>`(select ${siteVersions.fileCount} from ${siteVersions} where ${siteVersions.id} = ${sites.currentVersionId})`,
   moderationReason: sites.moderationReason,
 } as const;
 

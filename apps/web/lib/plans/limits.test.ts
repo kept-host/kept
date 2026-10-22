@@ -149,8 +149,8 @@ const NOT_A_LIMIT: Record<string, { occurrences: number; reason: string }> = {
     reason: "1000 ms per second, inside MS_PER_HOUR",
   },
   "components/kept/drop-target.tsx": {
-    occurrences: 2,
-    reason: "Tailwind `z-50` / `opacity-50`",
+    occurrences: 3,
+    reason: "Tailwind `z-50` / `opacity-50` (the zone and its Browse folder link)",
   },
   "components/kept/kept-engine.ts": {
     occurrences: 7,
@@ -161,6 +161,7 @@ const NOT_A_LIMIT: Record<string, { occurrences: number; reason: string }> = {
     reason: "ms → s conversion on the rAF clock",
   },
   "components/kept/site-card.tsx": { occurrences: 1, reason: "Tailwind `opacity-50`" },
+  "components/kept/spa-checkbox.tsx": { occurrences: 1, reason: "Tailwind `opacity-50`" },
   "components/ui/button.tsx": { occurrences: 1, reason: "Tailwind `opacity-50`" },
   "components/ui/dialog.tsx": { occurrences: 2, reason: "Tailwind `z-50`" },
   "components/ui/dropdown-menu.tsx": {

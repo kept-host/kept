@@ -15,7 +15,10 @@
  *     the tree (AC10). General holds the PRD's Details (title + the Explore
  *     flag — the design's Explore card), Name and link (its Address card),
  *     Share (QR + downloads) and the Danger zone. No password section.
- *   · on a phone, the page's thumbnail and "Open ↗" instead of the live frame.
+ *   · on a phone, the page's thumbnail and "Open ↗" instead of the live frame —
+ *     and on every width for a multi-file page (E08 §5.7, §8: its `index.html`
+ *     in a `srcdoc` frame would have none of its assets), with "{n} files ·
+ *     {size}".
  *   · the header's action is **Keep** / **Swap…** on a draft, none otherwise.
  *   · under review / quarantined: E07's restricted banner (the reason and
  *     "Ask for a review"), rendered by the server component and passed in as
@@ -45,7 +48,7 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { VersionListItem } from "@/lib/db/queries/versions";
-import { effectiveStatus } from "@/lib/sites/display";
+import { effectiveStatus, fileSetSummary } from "@/lib/sites/display";
 import type { VisitsView } from "@/lib/sites/visits-view";
 import { cn } from "@/lib/utils";
 
@@ -77,6 +80,10 @@ export interface DetailSite {
   liveUrl: string;
   /** `{slug}.{base}`. */
   host: string;
+  /** The current version's file count (E08); `null` only with no version. */
+  fileCount: number | null;
+  /** The current version's set total. */
+  sizeBytes: number | null;
 }
 
 /** The design's three listing helpers (`exploreNote`), by what the page is. */
@@ -152,6 +159,11 @@ export function PageDetail({
     reachable: live,
   };
   const listingNote = flagged ? LISTING_NOTE.flagged : isDraft ? LISTING_NOTE.draft : LISTING_NOTE.kept;
+  const multiFile = (site.fileCount ?? 1) > 1;
+  const summary =
+    multiFile && site.fileCount !== null && site.sizeBytes !== null
+      ? fileSetSummary(site.fileCount, site.sizeBytes)
+      : null;
 
   return (
     <>
@@ -196,57 +208,67 @@ export function PageDetail({
           <div className="flex min-w-0 flex-col gap-3 @min-[860px]:sticky @min-[860px]:top-[88px]">
             <LinkBar site={site} shown={shown} qr={qr} />
 
-            <div className="hidden flex-col gap-3 rounded-[var(--r-lg)] border border-border bg-sunken p-3 md:flex">
-              <div className="flex items-center justify-between gap-3">
-                <span className="pl-1 font-mono text-xs font-medium uppercase tracking-[0.08em] text-text-secondary">
-                  Live preview
-                </span>
-                <div role="group" aria-label="Preview width" className="flex gap-0.5 rounded-[var(--r-sm)] bg-border p-0.5">
-                  {(
-                    [
-                      ["desktop", "Desktop width", Monitor],
-                      ["mobile", "Mobile width", Smartphone],
-                    ] as const
-                  ).map(([value, label, Icon]) => (
-                    <button
-                      key={value}
-                      type="button"
-                      aria-pressed={device === value}
-                      aria-label={label}
-                      onClick={() => setDevice(value)}
-                      className={cn(
-                        "flex h-7 w-9 items-center justify-center rounded-[6px] text-text outline-none focus-visible:ring-2 focus-visible:ring-accent",
-                        device === value && "bg-surface",
-                      )}
-                    >
-                      <Icon aria-hidden="true" className="size-4" strokeWidth={1.5} />
-                    </button>
-                  ))}
+            {multiFile ? null : (
+              <div className="hidden flex-col gap-3 rounded-[var(--r-lg)] border border-border bg-sunken p-3 md:flex">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="pl-1 font-mono text-xs font-medium uppercase tracking-[0.08em] text-text-secondary">
+                    Live preview
+                  </span>
+                  <div role="group" aria-label="Preview width" className="flex gap-0.5 rounded-[var(--r-sm)] bg-border p-0.5">
+                    {(
+                      [
+                        ["desktop", "Desktop width", Monitor],
+                        ["mobile", "Mobile width", Smartphone],
+                      ] as const
+                    ).map(([value, label, Icon]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        aria-pressed={device === value}
+                        aria-label={label}
+                        onClick={() => setDevice(value)}
+                        className={cn(
+                          "flex h-7 w-9 items-center justify-center rounded-[6px] text-text outline-none focus-visible:ring-2 focus-visible:ring-accent",
+                          device === value && "bg-surface",
+                        )}
+                      >
+                        <Icon aria-hidden="true" className="size-4" strokeWidth={1.5} />
+                      </button>
+                    ))}
+                  </div>
                 </div>
+                <div className="flex justify-center">
+                  <PagePreview
+                    liveUrl={site.liveUrl}
+                    html={html}
+                    className={cn(
+                      "rounded-[var(--r-md)] shadow-[var(--shadow-md)] motion-safe:transition-[width] motion-safe:duration-200",
+                      device === "mobile" ? "w-[300px] max-w-full" : "w-full",
+                    )}
+                    frameClassName={device === "mobile" ? "h-[540px] w-full" : "h-[420px] w-full"}
+                  />
+                </div>
+                {html === null ? (
+                  <p className="px-1 text-xs leading-relaxed text-text-secondary">
+                    {previewWithheld
+                      ? "There is no preview of this page while it is restricted."
+                      : previewTooLarge
+                        ? "This page is too large to render here. Open it at its link to see it — the page itself is unaffected."
+                        : "kept couldn't read this page's file just now, so there is nothing to render. The page itself is unaffected."}
+                  </p>
+                ) : null}
               </div>
-              <div className="flex justify-center">
-                <PagePreview
-                  liveUrl={site.liveUrl}
-                  html={html}
-                  className={cn(
-                    "rounded-[var(--r-md)] shadow-[var(--shadow-md)] motion-safe:transition-[width] motion-safe:duration-200",
-                    device === "mobile" ? "w-[300px] max-w-full" : "w-full",
-                  )}
-                  frameClassName={device === "mobile" ? "h-[540px] w-full" : "h-[420px] w-full"}
-                />
-              </div>
-              {html === null ? (
-                <p className="px-1 text-xs leading-relaxed text-text-secondary">
-                  {previewWithheld
-                    ? "There is no preview of this page while it is restricted."
-                    : previewTooLarge
-                      ? "This page is too large to render here. Open it at its link to see it — the page itself is unaffected."
-                      : "kept couldn't read this page's file just now, so there is nothing to render. The page itself is unaffected."}
+            )}
+
+            <div
+              data-testid="thumbnail-preview"
+              className={cn("flex flex-col gap-3", !multiFile && "md:hidden")}
+            >
+              {summary ? (
+                <p data-testid="file-summary" className="font-mono text-xs text-text-secondary">
+                  {summary}
                 </p>
               ) : null}
-            </div>
-
-            <div className="flex flex-col gap-3 md:hidden">
               {/* eslint-disable-next-line @next/next/no-img-element -- the OG
                   card is our own immutable route, sized by its own dimensions. */}
               <img
