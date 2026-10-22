@@ -14,6 +14,8 @@ import { DRAFT_TTL_DAYS, SOURCE_REPO_URL } from "@kept/shared";
 import { Button } from "@/components/ui/button";
 import { keptOpen } from "@/lib/launch";
 import { infraCostMonth, keptCount, uptime } from "@/lib/landing-stats";
+import { DROP_HINT } from "@/lib/publish/fileset/copy";
+import { UPLOAD_ACCEPT } from "@/lib/publish/pack";
 
 import {
   KeptEngine,
@@ -558,7 +560,7 @@ export default function KeptLanding() {
                     textShadow: "0 2px 30px rgba(250,248,244,.85)",
                   }}
                 >
-                  Drop an HTML file.
+                  {DROP_HINT}.
                   <br />
                   Get a link.
                   <br />
@@ -1886,8 +1888,8 @@ export default function KeptLanding() {
                         onClick={() => e()?.browse()}
                         aria-label={
                           keptNow === 0
-                            ? "Drop an HTML file to keep your first page"
-                            : "Drop an HTML file to keep another page"
+                            ? `${DROP_HINT} to keep your first page`
+                            : `${DROP_HINT} to keep another page`
                         }
                         style={{
                           width: "100%",
@@ -2951,7 +2953,8 @@ export default function KeptLanding() {
       <input
         ref={bind(refs.fileRef)}
         type="file"
-        accept=".html,text/html"
+        accept={UPLOAD_ACCEPT}
+        multiple
         onChange={() => e()?.onFile()}
         style={{ display: "none" }}
       />

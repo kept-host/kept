@@ -12,13 +12,14 @@ import { test } from "node:test";
 
 import { INLINE_BODY_MAX_BYTES } from "@kept/shared";
 
-import { missingIndex } from "./fileset/copy";
+import { inlineTooLarge, missingIndex } from "./fileset/copy";
 import { readZipStream } from "./fileset/zip";
 import { isFailure } from "./fileset/types";
 import {
   archiveForm,
   collectInput,
   fitsInline,
+  inlineArchiveForm,
   isRefusal,
   packEntries,
   setBytes,
@@ -141,4 +142,33 @@ test("archiveForm: one `archive` part named *.zip, and `spa` only when it is on"
   assert.ok(part instanceof File && part.name.endsWith(".zip"));
   assert.equal(on.get("spa"), "true");
   assert.equal(archiveForm(zip, false).get("spa"), null);
+});
+
+test("inlineArchiveForm (011, anonymous): a zip passes as it is, a set is packed after its count is told, and anything over the inline ceiling is refused with the server's sentence before packing", async () => {
+  const zip = file("site.zip", PNG, "application/zip");
+  const passed = await inlineArchiveForm({ kind: "zip", file: zip, label: zip.name });
+  assert.ok(passed instanceof FormData);
+  assert.equal(((passed as FormData).get("archive") as File).size, zip.size);
+  assert.equal((passed as FormData).get("spa"), null);
+
+  const told: number[] = [];
+  const entries = viteDist();
+  const packed = await inlineArchiveForm({ kind: "files", entries, label: "dist" }, (n) => told.push(n));
+  console.log("[pack] inlineArchiveForm packing told:", told);
+  assert.deepEqual(told, [entries.length]);
+  assert.ok(packed instanceof FormData);
+  assert.ok(((packed as FormData).get("archive") as File).size >= setBytes(entries));
+
+  const refusal = { error: "site_too_large", message: inlineTooLarge(INLINE_BODY_MAX_BYTES) };
+  const bigZip = file("big.zip", new Uint8Array(INLINE_BODY_MAX_BYTES), "application/zip");
+  assert.deepEqual(await inlineArchiveForm({ kind: "zip", file: bigZip, label: bigZip.name }), refusal);
+
+  const bigSet = [...entries, { path: "dist/big.png", file: file("big.png", new Uint8Array(INLINE_BODY_MAX_BYTES)) }];
+  const untold: number[] = [];
+  assert.deepEqual(
+    await inlineArchiveForm({ kind: "files", entries: bigSet, label: "dist" }, (n) => untold.push(n)),
+    refusal,
+  );
+  assert.deepEqual(untold, [], "an oversize set is refused before it is packed");
+  console.log("[pack] inlineArchiveForm refusal:", refusal.message);
 });

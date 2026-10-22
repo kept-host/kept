@@ -19,7 +19,8 @@
  * Nothing here decides whether a set is acceptable — file count, per-file size,
  * types and paths are the server's (`lib/publish/fileset/`), which answers with
  * its own sentence. The studio's one size pre-flight is
- * `lib/sites/owner-upload.ts`'s, because it needs the caller's plan.
+ * `lib/sites/owner-upload.ts`'s, because it needs the caller's plan; an
+ * anonymous caller's is the inline ceiling, in `inlineArchiveForm`.
  *
  * ⚠️ BROWSER-ONLY. `DataTransfer`, `FileSystemEntry` and `File` — no `node:*`,
  * nothing that reaches a store. `packEntries` and `toIntent` also run under
@@ -30,8 +31,8 @@ import { downloadZip } from "client-zip";
 
 import { INLINE_BODY_MAX_BYTES, type PublishError } from "@kept/shared";
 
-import { checkPageFile } from "./client";
-import { missingIndex } from "./fileset/copy";
+import { checkPageFile, FILE_UNREADABLE } from "./client";
+import { inlineTooLarge, missingIndex } from "./fileset/copy";
 
 /** One file of a set, at its path relative to the folder (or list) it came in. */
 export interface PackEntry {
@@ -44,6 +45,9 @@ export type UploadIntent =
   | { kind: "html"; file: File; label: string }
   | { kind: "zip"; file: File; label: string }
   | { kind: "files"; entries: PackEntry[]; label: string };
+
+/** An upload that travels as a zip: a dropped `.zip`, or a set to pack. */
+export type ArchiveIntent = Exclude<UploadIntent, { kind: "html" }>;
 
 /** What the pickers offer. `toIntent` is the actual rule. */
 export const UPLOAD_ACCEPT = "text/html,.html,.htm,.zip,application/zip";
@@ -186,4 +190,35 @@ export function archiveForm(zip: Blob, spa: boolean): FormData {
   form.append("archive", zip, ARCHIVE_NAME);
   if (spa) form.append("spa", "true");
   return form;
+}
+
+/**
+ * The inline body an anonymous caller sends for a zip or a set — the landing
+ * hero and the `/p` replace (task 011). Anonymous callers never get the
+ * presigned path (D5), so their one ceiling is the inline one (Q-new-2): a zip,
+ * or a set whose files already add up past it, is refused here with the
+ * server's own `site_too_large` sentence, before any packing or request.
+ * `onPacking` hears the file count as a set starts packing.
+ */
+export async function inlineArchiveForm(
+  intent: ArchiveIntent,
+  onPacking?: (files: number) => void,
+): Promise<FormData | PublishError> {
+  const tooLarge: PublishError = {
+    error: "site_too_large",
+    message: inlineTooLarge(INLINE_BODY_MAX_BYTES),
+  };
+  let zip: Blob;
+  if (intent.kind === "zip") zip = intent.file;
+  else {
+    // A store-only zip is never smaller than its files, so this set cannot fit.
+    if (!fitsInline(setBytes(intent.entries))) return tooLarge;
+    onPacking?.(intent.entries.length);
+    try {
+      zip = await packEntries(intent.entries);
+    } catch {
+      return { error: "invalid_request", message: FILE_UNREADABLE };
+    }
+  }
+  return fitsInline(zip.size) ? archiveForm(zip, false) : tooLarge;
 }

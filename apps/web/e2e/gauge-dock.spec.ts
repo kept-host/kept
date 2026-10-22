@@ -25,7 +25,7 @@ import { gotoWithTokensApplied } from "./tokens-applied";
  */
 
 /** Accessible name of the slot control at the zero baseline. */
-const SLOT_LABEL = "Drop an HTML file to keep your first page";
+const SLOT_LABEL = "Drop an HTML file, a folder or a .zip to keep your first page";
 
 /** One frame-accurate read of everything the dock choreography drives. */
 async function dockState(page: Page) {

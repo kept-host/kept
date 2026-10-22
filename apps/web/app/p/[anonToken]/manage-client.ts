@@ -86,6 +86,18 @@ export function replaceWithFile(
   return send(`${base(anonToken)}/replace`, { method: "POST", body: form }, REPLACE_FAILED);
 }
 
+/**
+ * Replace with a folder or a `.zip` — the one multipart `archive` part
+ * `inlineArchiveForm` (`lib/publish/pack.ts`) built. Inline only: the
+ * anonymous route never takes an `upload_id`.
+ */
+export function replaceWithArchive(
+  anonToken: string,
+  form: FormData,
+): Promise<ManageResult> {
+  return send(`${base(anonToken)}/replace`, { method: "POST", body: form }, REPLACE_FAILED);
+}
+
 /** Replace with pasted markup — JSON, the route's canonical body. */
 export function replaceWithHtml(
   anonToken: string,

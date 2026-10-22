@@ -19,15 +19,32 @@ import type { PublishError, PublishResponse } from "@kept/shared";
 
 import { keptOpen } from "@/lib/launch";
 import {
-  checkPageFile,
   checkPageHtml,
+  FILE_UNREADABLE,
   LOOKS_LIKE_MARKUP,
+  publishArchive,
   publishErrorText,
   publishHtml,
   type PublishOutcome,
 } from "@/lib/publish/client";
+import { packing } from "@/lib/publish/fileset/copy";
+import {
+  collectDrop,
+  collectInput,
+  inlineArchiveForm,
+  isRefusal,
+  toIntent,
+  type ArchiveIntent,
+  type PackEntry,
+} from "@/lib/publish/pack";
 
 type Ref<T extends HTMLElement = HTMLElement> = { current: T | null };
+
+/** The minting face's mono line while the request is in flight. */
+const MINTING_NOTE = "minting link…";
+
+/** A dropped or chosen file the browser could not read back. */
+const UNREADABLE: PublishError = { error: "invalid_request", message: FILE_UNREADABLE };
 
 /**
  * The tile's visual state machine. `minting` lasts exactly as long as the
@@ -588,7 +605,8 @@ export class KeptEngine {
       this._dragDepth = 0;
       const data = e.dataTransfer;
       if (data && data.files.length > 0) {
-        void this.publishFiles([...data.files]);
+        // Synchronously, here: the item list empties when this handler returns.
+        void this.publishFiles(collectDrop(data));
         return;
       }
       // A dragged text selection is markup often enough to be worth honouring —
@@ -775,9 +793,9 @@ export class KeptEngine {
     // Copy before clearing: `input.files` is live, and the reset below empties
     // it. Clearing at all is what makes choosing the SAME file twice fire
     // `change` twice — which a retry after an error is.
-    const files = input?.files ? [...input.files] : [];
+    const entries = input?.files ? collectInput(input.files) : [];
     if (input) input.value = "";
-    void this.publishFiles(files);
+    void this.publishFiles(entries);
   };
   /**
    * Keep the draft that was just published. `/keep/{token}` is E05's one and
@@ -1094,40 +1112,76 @@ export class KeptEngine {
 
   // ---------- publish ----------
   /**
-   * A drop or a file chooser hands over a list. kept hosts one document per
-   * page, so more than one file is a question the product cannot answer —
-   * say so rather than silently publishing the first.
+   * A drop or a file chooser hands over files (E08 §5.8): one HTML file takes
+   * today's path unchanged — `checkPageFile` (inside `toIntent`), its text, then
+   * `publish` — while a folder, several files or a `.zip` become one inline
+   * `archive` (`publishSet`). The same `UploadIntent` the studio reads.
    */
-  async publishFiles(files: File[]) {
-    if (files.length === 0) {
+  async publishFiles(collected: Promise<PackEntry[]> | PackEntry[]) {
+    let entries: PackEntry[];
+    try {
+      entries = await collected;
+    } catch {
+      this.applyError(UNREADABLE);
+      return;
+    }
+    if (entries.length === 0) {
       if (this.getState().phase === "dragover") this.applyPhase("idle");
       return;
     }
-    if (files.length > 1) {
-      this.applyError({
-        error: "invalid_request",
-        message:
-          "Drop one HTML file — kept hosts a single document per page. Publish the others separately.",
-      });
+    const intent = toIntent(entries);
+    if (isRefusal(intent)) {
+      this.applyError(intent);
       return;
     }
-    const file = files[0]!;
-    const invalid = checkPageFile(file);
-    if (invalid) {
-      this.applyError(invalid);
+    if (intent.kind !== "html") {
+      await this.publishSet(intent);
       return;
     }
     let html: string;
     try {
-      html = await file.text();
+      html = await intent.file.text();
     } catch {
-      this.applyError({
-        error: "invalid_request",
-        message: "That file could not be read. Try choosing it again.",
-      });
+      this.applyError(UNREADABLE);
       return;
     }
     await this.publish(html);
+  }
+
+  /** A publish already in flight, or a page already live, owns the tile. */
+  private tileTaken() {
+    const p = this.getState().phase;
+    return p === "minting" || p === "live";
+  }
+
+  /**
+   * Pasted, dropped or chosen markup. Reset ("publish another") or dismiss the
+   * error before another.
+   */
+  async publish(html: string) {
+    if (this.tileTaken()) return;
+    const invalid = checkPageHtml(html);
+    if (invalid) {
+      this.applyError(invalid);
+      return;
+    }
+    await this.mint((signal) => publishHtml(html, signal));
+  }
+
+  /**
+   * A folder or a `.zip`, sent inline — anonymous callers never get the
+   * presigned path, so `inlineArchiveForm` refuses anything over the inline
+   * ceiling before a request. A folder is packed first, under the minting
+   * face's "Packing {n} files…" line.
+   */
+  async publishSet(intent: ArchiveIntent) {
+    if (this.tileTaken()) return;
+    await this.mint(async (signal) => {
+      const form = await inlineArchiveForm(intent, (files) => this.mintNote(packing(files)));
+      if (!(form instanceof FormData)) return { ok: false, error: form };
+      this.mintNote(MINTING_NOTE);
+      return publishArchive(form, signal);
+    });
   }
 
   /**
@@ -1138,31 +1192,21 @@ export class KeptEngine {
    * failure the tile lands on `error` with the API's own message and nothing
    * has been published, so there is nothing to lose.
    */
-  async publish(html: string) {
-    const p = this.getState().phase;
-    // A publish already in flight, or a page already live, owns the tile. Reset
-    // ("publish another") or dismiss the error first.
-    if (p === "minting" || p === "live") return;
-    const invalid = checkPageHtml(html);
-    if (invalid) {
-      this.applyError(invalid);
-      return;
-    }
-    // Closed (`lib/launch.ts`): the page was a valid one and nothing is sent.
-    // The waitlist takes the drop instead, and the tile goes back to idle
-    // behind it, so closing the dialog leaves the drop box as it was.
+  private async mint(request: (signal: AbortSignal) => Promise<PublishOutcome>) {
+    // Closed (`lib/launch.ts`): nothing is packed or sent. The waitlist takes
+    // the drop instead, and the tile goes back to idle behind it, so closing
+    // the dialog leaves the drop box as it was.
     if (!keptOpen()) {
       this.applyPhase("idle");
       this.setState({ waitlist: true });
       return;
     }
-    const r = this.refs;
-    if (r.mintSlugRef.current) r.mintSlugRef.current.textContent = "minting link…";
+    this.mintNote(MINTING_NOTE);
     this.applyPhase("minting");
     this.publishAbort?.abort();
     const abort = new AbortController();
     this.publishAbort = abort;
-    const outcome: PublishOutcome = await publishHtml(html, abort.signal);
+    const outcome = await request(abort.signal);
     // Unmounted, or superseded by a newer publish: this response is no longer
     // anyone's. Painting it would write into a tile that has moved on.
     if (abort.signal.aborted) return;
@@ -1171,6 +1215,12 @@ export class KeptEngine {
       return;
     }
     this.applyLive(outcome.page);
+  }
+
+  /** The minting face's mono line. */
+  private mintNote(text: string) {
+    const el = this.refs.mintSlugRef.current;
+    if (el) el.textContent = text;
   }
 
   /** The `live` face, resolved entirely from the response. */

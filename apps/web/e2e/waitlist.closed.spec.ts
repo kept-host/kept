@@ -1,4 +1,7 @@
 import { generateAnonToken, hashToken } from "@kept/shared";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
 import { test, expect, type Page } from "@playwright/test";
 import { config } from "dotenv";
 import { eq } from "drizzle-orm";
@@ -11,6 +14,7 @@ import { TURNSTILE_TEST_KEYS } from "../lib/testing/turnstile";
 import { unsubscribeToken } from "../lib/waitlist/unsubscribe";
 
 import { LIVE_STACK_TIMEOUT, skipAuth, warmDb } from "./live-stack";
+import { holdPath } from "./owner-fixtures";
 
 /**
  * A CLOSED deploy — the waitlist (`lib/launch.ts`). Run with
@@ -23,8 +27,9 @@ import { LIVE_STACK_TIMEOUT, skipAuth, warmDb } from "./live-stack";
  * — the `not_open` 404, the access token, cron — is `closed-access.closed.spec.ts`.
  *
  * What a closed deploy promises, each asserted against the real server:
- *   - a valid page dropped, chosen or pasted opens the waitlist and sends
- *     NOTHING to `/api/publish` — counted off the wire, not intercepted;
+ *   - a valid page dropped, chosen or pasted — or a folder or a `.zip` (E08
+ *     §5.8) — opens the waitlist and sends NOTHING to `/api/publish`, counted
+ *     off the wire, not intercepted;
  *   - a file that is not a page still gets the drop box's own refusal;
  *   - the nav offers the waitlist where sign-in was;
  *   - the control-plane pages stay reachable (E06a §1: only admins can have a
@@ -109,6 +114,36 @@ test.describe("closed deploy — the waitlist", () => {
     await expect(dialog(page)).toContainText("kept isn’t open yet");
     // The tile went back to the drop box behind the dialog.
     await expect(face(page, "idle")).toHaveCSS("opacity", "1");
+    await expect(face(page, "error")).toHaveCSS("opacity", "0");
+    expect(publishes()).toBe(0);
+  });
+
+  test("a dropped folder and a chosen .zip open it too, and nothing is packed or sent", async ({
+    page,
+  }) => {
+    const publishes = countPublishes(page);
+    await openLanding(page);
+
+    // A real folder through Chromium's drag pipeline, walked with
+    // `webkitGetAsEntry` exactly as a drag from the desktop is.
+    const folder = test.info().outputPath("closed-site");
+    await mkdir(join(folder, "assets"), { recursive: true });
+    await writeFile(join(folder, "index.html"), PAGE);
+    await writeFile(join(folder, "assets", "site.css"), "h1 { font: 600 32px system-ui; }\n");
+    await (await holdPath(page, face(page, "idle"), folder)).drop();
+
+    await expect(dialog(page)).toBeVisible();
+    await expect(face(page, "idle")).toHaveCSS("opacity", "1");
+    await page.keyboard.press("Escape");
+    await expect(dialog(page)).toHaveCount(0);
+
+    // Its bytes are never read in a closed deploy, so any `.zip` will do.
+    await page.setInputFiles('input[type="file"]', {
+      name: "site.zip",
+      mimeType: "application/zip",
+      buffer: Buffer.from("PK"),
+    });
+    await expect(dialog(page)).toBeVisible();
     await expect(face(page, "error")).toHaveCSS("opacity", "0");
     expect(publishes()).toBe(0);
   });
