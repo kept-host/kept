@@ -114,6 +114,14 @@ export function uploadNotFound(): string {
   return "That upload wasn't found. It may have expired or already been used — upload it again.";
 }
 
+/**
+ * D5: an uploaded zip ran past the plan's upload ceiling as it was read back
+ * (the plan changed after the URL was signed). Only the ceiling is known.
+ */
+export function uploadTooLarge(max: number): string {
+  return `This upload is over ${formatBytes(max)}, the most your plan can upload.`;
+}
+
 /** "Published. Skipped {n} files ({list})." — the first few names, then `…`. */
 export function skipped(n: number, list: readonly string[]): string {
   const named = list.slice(0, SKIPPED_LISTED).map(printablePath).join(", ");

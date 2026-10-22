@@ -6,7 +6,7 @@
  * `POST /api/sites/swap` · `PATCH /api/sites/:id/name` · `GET /api/names/check`
  * `POST /api/sites/:id/replace` · `POST /api/sites/:id/versions/:versionId/restore`
  * `DELETE /api/sites/:id` · `POST /api/sites/bulk` · `DELETE /api/account`
- * `GET /api/sites/:id/download` · `GET /api/export`
+ * `GET /api/sites/:id/download` · `GET /api/export` · `POST /api/uploads`
  *
  * ── WHAT THIS MODULE IS FOR ────────────────────────────────────────────────
  * Validation and result→response mapping, and nothing else. Every database
@@ -82,6 +82,8 @@ import {
   siteUpdateResultSchema,
   studioErrorSchema,
   swapResultSchema,
+  uploadRequestSchema,
+  uploadResponseSchema,
   type AccountDeletionResult,
   type BulkItemResult,
   type BulkResult,
@@ -91,12 +93,14 @@ import {
   type NameChangeResult,
   type NameCheckResult,
   type OwnedPublishResult,
+  type Plan,
   type PublishErrorCode,
   type ReplaceResult,
   type RestoreResult,
   type SiteUpdateResult,
   type StudioErrorCode,
   type SwapResult,
+  type UploadResponse,
 } from "@kept/shared";
 import { NextResponse } from "next/server";
 import { z } from "zod";
@@ -106,6 +110,7 @@ import { allowNameCheck, checkName } from "../names/check";
 import { renameSite } from "../names/rename";
 import { isFailure, type FileSet } from "../publish/fileset/types";
 import { slugUnavailable, type PublishFailure, type PublisherContext } from "../publish/pipeline";
+import { consumeUpload, createUpload } from "../uploads/upload";
 import { deleteAccount } from "./account-deletion";
 import { updateSiteDetails } from "./details";
 import { openExport, openPageDownload, type Download } from "./export";
@@ -326,6 +331,9 @@ export async function publishOwnedSite(
 
   try {
     const result = await publishOwnedPage({ profileId, set, publisher });
+    // D5, used once: the upload is deleted only after the publish landed, so a
+    // failed one can be retried with the same ID inside its window.
+    if (set.uploadKey) await consumeUpload(set.uploadKey);
     // Parse our own output: the studio repaints its card from this body without
     // a second request, so a silent shape change here is a broken screen rather
     // than a failed test.
@@ -342,6 +350,33 @@ export async function publishOwnedSite(
       return fromPublishFailure(slugUnavailable());
     }
     return studioFailure(err, "publish");
+  }
+}
+
+/**
+ * `POST /api/uploads` — a presigned PUT for a zip larger than one inline
+ * request carries (E08 D5). `{ size_bytes }` → `{ upload_id, upload_url,
+ * expires_at, max_bytes }`; the zip is then published or replaced with
+ * `{ upload_id }`. Every rule is `../uploads/upload.ts`'s: the plan's
+ * `siteBytes × 1.1` ceiling (`413 site_too_large`) and 20 an hour per profile
+ * (`429 rate_limited`). Never log the body — `upload_url` is a bearer
+ * credential until it expires.
+ */
+export async function requestOwnedUpload(
+  raw: unknown,
+  profileId: string,
+  plan: Plan,
+): Promise<OwnerOutcome<UploadResponse>> {
+  const parsed = uploadRequestSchema.safeParse(raw);
+  if (!parsed.success) {
+    return refuse("invalid_request", "Send `{ size_bytes }`: the size of the .zip you are about to upload, in bytes.");
+  }
+
+  try {
+    const result = await createUpload(profileId, plan, parsed.data.size_bytes);
+    return { ok: true, status: 200, body: uploadResponseSchema.parse(result) };
+  } catch (err) {
+    return studioFailure(err, "upload", "kept could not prepare that upload just now. Try again.");
   }
 }
 
@@ -568,6 +603,7 @@ export async function replaceOwnedSite(
 
   try {
     const result = await replaceSite(parsedId.data, profileId, set);
+    if (set.uploadKey) await consumeUpload(set.uploadKey);
     return { ok: true, status: 200, body: replaceResultSchema.parse(withIgnored(result, set)) };
   } catch (err) {
     // A page that is not `live` is `409 not_allowed_in_status`, with the

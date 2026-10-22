@@ -5,23 +5,68 @@
  *
  * The ONLY test file that drives the reader's zip spool, so its
  * `kept-fileset-*` temp-directory counts are not raced by another file (node's
- * runner runs files in parallel, tests within a file in order). Touches no
- * store: no KV or R2 quota is spent.
+ * runner runs files in parallel, tests within a file in order). Touches no KV.
+ * The presigned `upload_id` leg (task 009) reads real dev R2: its tests PUT
+ * zips under `uploads/e08-test-{uuid}/` through a real presigned URL, delete
+ * them in `after`, and SKIP without R2 credentials.
  */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { test } from "node:test";
+import { after, test } from "node:test";
 
-import { INLINE_BODY_MAX_BYTES, MAX_PAGE_BYTES, SITE_FILE_TYPES, hashContent } from "@kept/shared";
+import {
+  INLINE_BODY_MAX_BYTES,
+  MAX_PAGE_BYTES,
+  SITE_FILE_TYPES,
+  UPLOAD_CONTENT_TYPE,
+  hashContent,
+} from "@kept/shared";
 import { downloadZip } from "client-zip";
+import { config } from "dotenv";
 
 import { buildZip } from "../../testing/zip-fixture";
 import type { PublishFailure } from "../pipeline";
+import { uploadTooLarge } from "./copy";
 import { readFileSet } from "./read";
 import { isFailure, type FileSet, type FileSetCaller } from "./types";
 import { TEMP_PREFIX } from "./zip";
+
+config({ path: ".env.local", quiet: true });
+
+const R2_VARS = ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET_AUTO"] as const;
+const r2Missing = R2_VARS.filter((name) => !process.env[name]?.trim());
+const SKIP_R2: string | false =
+  r2Missing.length > 0 ? `R2 credentials absent (${r2Missing.join(", ")}) — run locally with apps/web/.env.local` : false;
+
+/** Scratch uploaders: real-shaped profile ids nobody has, so their prefixes are ours alone. */
+const UPLOADER = `e08-test-${crypto.randomUUID()}`;
+const OTHER_UPLOADER = `e08-test-${crypto.randomUUID()}`;
+const uploadedKeys = new Set<string>();
+
+async function store() {
+  const { r2Store } = await import("../../storage/r2");
+  return r2Store();
+}
+
+/** PUT `bytes` as `uploaderId`'s upload through a real presigned URL; the upload's id. */
+async function upload(uploaderId: string, bytes: Uint8Array<ArrayBuffer>): Promise<string> {
+  const { uploadObjectKey } = await import("../../uploads/upload");
+  const id = crypto.randomUUID();
+  const key = uploadObjectKey(uploaderId, id);
+  uploadedKeys.add(key);
+  const url = await (await store()).presignPut(key, bytes.length, UPLOAD_CONTENT_TYPE, 60);
+  const res = await fetch(url, { method: "PUT", headers: { "content-type": UPLOAD_CONTENT_TYPE }, body: bytes });
+  await res.body?.cancel();
+  assert.equal(res.status, 200, "the presigned PUT is accepted");
+  return id;
+}
+
+after(async () => {
+  if (SKIP_R2 || uploadedKeys.size === 0) return;
+  await (await store()).deleteMany([...uploadedKeys]);
+});
 
 const URL_ = "https://app.kept.test/api/publish";
 const ANON: FileSetCaller = { plan: "free", uploaderId: null };
@@ -107,9 +152,11 @@ test("AC17 through the reader: the legacy forms hash exactly as hashContent(html
   }
 });
 
+/** AC1's three-file fixture. */
+const index = "<!doctype html><script src=assets/app.js></script><img src=assets/logo.png>";
+const app = "console.log('kept');";
+
 test("AC1 (reader half): files, archive and JSON files[] yield identical entries and hash", async () => {
-  const index = "<!doctype html><script src=assets/app.js></script><img src=assets/logo.png>";
-  const app = "console.log('kept');";
   const fromFiles = ok(
     await readFileSet(
       multipart([
@@ -279,12 +326,61 @@ test("an unsupported content type or unparseable JSON is invalid_request", async
   refused(await readFileSet(broken, ANON), "invalid_request", 400);
 });
 
-test("D5: upload_id is upload_not_found for anonymous callers (and, until task 009, for everyone)", async () => {
-  const body = { upload_id: "00000000-0000-4000-8000-0000000000aa" };
-  const anon = refused(await readFileSet(json(body), ANON), "upload_not_found", 404);
-  const signedIn = refused(await readFileSet(json(body), SIGNED_IN), "upload_not_found", 404);
-  assert.equal(anon, signedIn, "one sentence: never reveals whether the upload exists");
+test("D5: a malformed upload_id is invalid_request", async () => {
   refused(await readFileSet(json({ upload_id: "nope" }), ANON), "invalid_request", 400);
+});
+
+test("AC1 (reader, fourth input): upload_id yields the same entries and hash as an inline file list; temp file gone", { skip: SKIP_R2 }, async () => {
+  const before = tempDirs();
+  const id = await upload(UPLOADER, new Uint8Array(await (await zip({ "index.html": index, "assets/app.js": app, "assets/logo.png": PNG })).arrayBuffer()));
+  const fromUpload = ok(await readFileSet(json({ upload_id: id, spa: true }), { plan: "free", uploaderId: UPLOADER }));
+  const fromFiles = ok(
+    await readFileSet(
+      multipart([
+        ["files", new Blob([index]), "index.html"],
+        ["files", new Blob([app]), "assets/app.js"],
+        ["files", new Blob([PNG]), "assets/logo.png"],
+      ]),
+      ANON,
+    ),
+  );
+  assert.deepEqual(shape(fromUpload), shape(fromFiles));
+  assert.deepEqual(fromUpload.entries.map((e) => Buffer.from(e.bytes)), fromFiles.entries.map((e) => Buffer.from(e.bytes)), "byte-equal");
+  assert.equal(fromUpload.contentHash, fromFiles.contentHash);
+  assert.equal(fromUpload.spa, true, "the envelope's spa rides along");
+  assert.equal(fromUpload.uploadKey, `uploads/${UPLOADER}/${id}.zip`, "the set names its upload, for consume-once");
+  assert.equal(fromFiles.uploadKey, undefined);
+  assert.equal(tempDirs(), before, "the spool directory is removed");
+
+  // Reading does not consume — only a landed publish does (owner-routes).
+  ok(await readFileSet(json({ upload_id: id }), { plan: "free", uploaderId: UPLOADER }));
+});
+
+test("edge case 13: foreign, never-uploaded and anonymous upload_ids are one upload_not_found", { skip: SKIP_R2 }, async () => {
+  const id = await upload(OTHER_UPLOADER, new Uint8Array(await (await zip({ "index.html": index })).arrayBuffer()));
+  const messages = [
+    refused(await readFileSet(json({ upload_id: id }), { plan: "premium", uploaderId: UPLOADER }), "upload_not_found", 404),
+    refused(await readFileSet(json({ upload_id: crypto.randomUUID() }), { plan: "free", uploaderId: UPLOADER }), "upload_not_found", 404),
+    refused(await readFileSet(json({ upload_id: id }), ANON), "upload_not_found", 404),
+    refused(await readFileSet(json({ upload_id: id }), { plan: "free", uploaderId: null }), "upload_not_found", 404),
+  ];
+  assert.equal(new Set(messages).size, 1, "one sentence: never reveals whether the upload exists");
+  // The owner can still read it: the refusals above were the binding, not a missing object.
+  ok(await readFileSet(json({ upload_id: id }), { plan: "free", uploaderId: OTHER_UPLOADER }));
+});
+
+test("D5: an upload past the plan's ceiling is counted as it streams and refused; temp file gone", { skip: SKIP_R2 }, async () => {
+  const { uploadMaxBytes } = await import("../../uploads/upload");
+  const before = tempDirs();
+  // Signed for premium, read back on free (a downgrade after the URL was minted).
+  const id = await upload(UPLOADER, new Uint8Array(uploadMaxBytes("free") + 1));
+  const message = refused(
+    await readFileSet(json({ upload_id: id }), { plan: "free", uploaderId: UPLOADER }),
+    "site_too_large",
+    413,
+  );
+  assert.equal(message, uploadTooLarge(uploadMaxBytes("free")));
+  assert.equal(tempDirs(), before);
 });
 
 test("AC9: Content-Length over INLINE_BODY_MAX_BYTES is refused before any parse — no temp file", async () => {

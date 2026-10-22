@@ -145,7 +145,8 @@ const CREDENTIAL_API_PATHS: PathSet = {
  * can have.
  */
 const APP_API_PATHS: PathSet = {
-  exact: new Set(["/api/auth", "/api/sites", "/api/export", "/api/names/check", "/api/account"]),
+  // `/api/uploads` (E08 D5): the presigned large-upload path; 401 without a session.
+  exact: new Set(["/api/auth", "/api/sites", "/api/export", "/api/names/check", "/api/account", "/api/uploads"]),
   // `/api/admin/` (E07): the moderation actions; the handlers 404 non-admins.
   prefixes: ["/api/auth/", "/api/sites/", "/api/og/", "/api/admin/"],
 };

@@ -104,6 +104,14 @@ export interface R2Store {
    * An empty list sends nothing.
    */
   deleteMany(keys: readonly string[]): Promise<void>;
+  /**
+   * A SigV4 query-signed PUT URL for `key`, valid `expiresSeconds` (E08 D5).
+   * `content-length` and `content-type` are SIGNED: a PUT of any other length
+   * or type is refused by R2. The origin is this store's endpoint, built from
+   * `r2Config()` — never from a request. The URL is a bearer credential until
+   * it expires: never log it.
+   */
+  presignPut(key: string, sizeBytes: number, contentType: string, expiresSeconds: number): Promise<string>;
   // No `list`. The authority on what objects should exist is Postgres
   // (contract §7.5 / the E07 divergence audit): a previous version's objects are
   // still present after a replace, so a listing is unbounded and answers a
@@ -147,6 +155,15 @@ export function r2Store(): R2Store {
    * The bug is invisible to `tsx`-run scripts and unit tests — there is no
    * patched fetch there — and appears only in the deployed control plane, which
    * is exactly why it is written down here.
+   *
+   * ⚠️ AND A SIGNAL IS ALWAYS PASSED, for the same patched fetch (E08 task 009).
+   * Next de-duplicates every signal-less GET by `tee()`ing its body and parking
+   * the second branch in a cache nobody reads: the whole object is buffered in
+   * memory beside the stream the caller reads, and cancelling the caller's
+   * branch never resolves (a tee's cancel waits for both branches) — so a 404's
+   * `body.cancel()`, or abandoning an over-size upload mid-read, hung the
+   * request. A signal is Next's documented opt-out of that de-duplication; one
+   * that never fires changes nothing else.
    */
   const send = async (
     target: string,
@@ -158,7 +175,7 @@ export function r2Store(): R2Store {
       method: init.method,
       headers: signed.headers,
       body: init.body,
-      signal,
+      signal: signal ?? new AbortController().signal,
     });
   };
 
@@ -228,6 +245,18 @@ export function r2Store(): R2Store {
           throw new Error(`R2 DELETE ${key} → ${code} on "${bucket}"`);
         }
       }
+    },
+    async presignPut(key, sizeBytes, contentType, expiresSeconds) {
+      const target = new URL(url(key));
+      // aws4fetch defaults a query signature to 24 h unless this is set first.
+      target.searchParams.set("X-Amz-Expires", String(expiresSeconds));
+      const signed = await aws.sign(target.toString(), {
+        method: "PUT",
+        headers: { "content-length": String(sizeBytes), "content-type": contentType },
+        // `allHeaders`: aws4fetch leaves content-length/-type unsigned by default.
+        aws: { signQuery: true, allHeaders: true },
+      });
+      return signed.url;
     },
   };
 }

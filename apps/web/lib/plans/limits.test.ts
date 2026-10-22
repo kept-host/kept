@@ -198,6 +198,7 @@ const NOT_A_LIMIT: Record<string, { occurrences: number; reason: string }> = {
   "lib/storage/manifest.ts": { occurrences: 1, reason: "s → ms for the KV re-purge delay" },
   "lib/storage/r2.ts": { occurrences: 1, reason: "S3 DeleteObjects takes at most 1000 keys" },
   "lib/testing/names-drill.ts": { occurrences: 1, reason: "1000 ms per second, inside MS_PER_DAY" },
+  "lib/uploads/upload.ts": { occurrences: 1, reason: "1000 ms per second: the upload URL's expiry" },
   "scripts/smoke-release.ts": { occurrences: 1, reason: "ms → s for a log line" },
 };
 

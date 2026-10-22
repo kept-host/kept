@@ -27,6 +27,12 @@
  * `INLINE_BODY_MAX_BYTES` on the wire: a larger `Content-Length` is refused
  * unread, and a body without one is counted as it streams and dropped at the
  * cap. The bounded copy is what every parser reads.
+ *
+ * THE PRESIGNED LEG (D5, task 009) reads `uploads/{uploaderId}/{id}.zip` —
+ * only under the caller's own prefix (Q-new-3) — from R2 through the same
+ * spool and zip reader as the `archive` part, counting bytes against the plan's
+ * upload ceiling. The set carries the object's key so the studio route can
+ * delete it once the publish lands.
  */
 import {
   INLINE_BODY_MAX_BYTES,
@@ -49,8 +55,10 @@ import {
   unsupportedContentType,
 } from "../http";
 import { fail, requestError, type PublishFailure } from "../pipeline";
+import { r2Store } from "../../storage/r2";
+import { uploadMaxBytes, uploadObjectKey } from "../../uploads/upload";
 import { checkSet, extensionOf, siteFileType } from "./checks";
-import { inlineTooLarge, printablePath, uploadNotFound } from "./copy";
+import { inlineTooLarge, printablePath, uploadNotFound, uploadTooLarge } from "./copy";
 import { hashSet } from "./hash";
 import { normalise } from "./normalise";
 import { isFailure, type FileSet, type FileSetCaller, type RawFile } from "./types";
@@ -62,6 +70,7 @@ interface RawInput {
   spa: boolean;
   turnstileToken?: string;
   reminderEmail?: string;
+  uploadKey?: string;
 }
 
 /** The options every non-legacy form validates the same way the JSON envelope does. */
@@ -103,6 +112,7 @@ export async function readFileSet(
     ignored: normalised.ignored,
     turnstileToken: input.turnstileToken,
     reminderEmail: input.reminderEmail,
+    uploadKey: input.uploadKey,
   };
 }
 
@@ -118,7 +128,7 @@ async function readInput(request: Request, caller: FileSetCaller): Promise<RawIn
     headers: { "content-type": request.headers.get("content-type") ?? "" },
   });
 
-  if (contentType === JSON_TYPE) return readJsonInput(await readJson(copy));
+  if (contentType === JSON_TYPE) return readJsonInput(await readJson(copy), caller);
   if (contentType === MULTIPART_TYPE) return readMultipartInput(copy, caller.plan);
   if (contentType === HTML_TYPE) return legacy({ html: await copy.text() }, false);
   throw unsupportedContentType(contentType);
@@ -180,7 +190,7 @@ function legacy(raw: unknown, spa: boolean): RawInput | PublishFailure {
   };
 }
 
-function readJsonInput(raw: unknown): RawInput | PublishFailure {
+async function readJsonInput(raw: unknown, caller: FileSetCaller): Promise<RawInput | PublishFailure> {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return legacy(raw, false);
   const body = raw as Record<string, unknown>;
   const forms = ["html", "files", "upload_id"].filter((key) => body[key] !== undefined);
@@ -205,13 +215,55 @@ function readJsonInput(raw: unknown): RawInput | PublishFailure {
     const parsed = uploadPublishRequestSchema.safeParse(body);
     if (!parsed.success) return requestError(parsed.error);
     // D5: anonymous and keyless callers (`caller.uploaderId === null`) never
-    // have an upload. The signed-in leg — reading `uploads/{uploaderId}/{id}.zip`
-    // — is task 009's; until it lands every ID is refused the same way, which
-    // never reveals whether one exists.
-    return fail(404, { error: "upload_not_found", message: uploadNotFound() });
+    // have an upload — the same refusal as an ID that names nothing.
+    if (caller.uploaderId === null) return uploadNotFoundFailure();
+    const uploadKey = uploadObjectKey(caller.uploaderId, parsed.data.upload_id);
+    const files = await readUpload(uploadKey, caller.plan);
+    if (isFailure(files)) return files;
+    return {
+      files,
+      spa: parsed.data.spa ?? false,
+      turnstileToken: parsed.data.turnstileToken,
+      reminderEmail: parsed.data.reminderEmail,
+      uploadKey,
+    };
   }
 
   return legacy(body, body.spa === true);
+}
+
+/** Edge case 13: unknown, foreign, expired and used all read the same. */
+function uploadNotFoundFailure(): PublishFailure {
+  return fail(404, { error: "upload_not_found", message: uploadNotFound() });
+}
+
+/**
+ * The uploaded zip at `key`, through the D6 reader. Streamed from R2 to the
+ * reader's temp file, counted on the way: past `uploadMaxBytes(plan)` the read
+ * is abandoned (the R2 body is cancelled) — the signed `content-length` already
+ * bounds it, so this only bites when the plan shrank after the URL was signed.
+ */
+async function readUpload(key: string, plan: Plan): Promise<RawFile[] | PublishFailure> {
+  const stream = await r2Store().getStream(key);
+  if (stream === null) return uploadNotFoundFailure();
+
+  const max = uploadMaxBytes(plan);
+  let size = 0;
+  const counted = stream.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        size += chunk.length;
+        if (size > max) controller.error(new Error("upload over the plan's ceiling"));
+        else controller.enqueue(chunk);
+      },
+    }),
+  );
+  try {
+    return await readZipStream(counted, plan);
+  } catch (error) {
+    if (size > max) return fail(413, { error: "site_too_large", message: uploadTooLarge(max) });
+    throw error;
+  }
 }
 
 /**

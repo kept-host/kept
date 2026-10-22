@@ -209,6 +209,13 @@ export const uploadRequestSchema = z.object({
 
 export type UploadRequest = z.infer<typeof uploadRequestSchema>;
 
+/**
+ * The `Content-Type` the presigned PUT is signed with. The PUT must send exactly
+ * this header and a `Content-Length` of exactly the declared `size_bytes`, or R2
+ * refuses it (both are signed).
+ */
+export const UPLOAD_CONTENT_TYPE = "application/zip";
+
 /** `POST /api/uploads`'s answer: a presigned PUT, its ID for the publish, its expiry and the signed size ceiling. */
 export const uploadResponseSchema = z.object({
   upload_id: z.string().uuid(),

@@ -42,6 +42,7 @@ const APEX_PASS_PATHS = [
   "/api/anon/tok_abc123/replace",
   "/api/cron/draft-reminder",
   "/api/sites/swap",
+  "/api/uploads",
   "/api/health",
   "/_next/static/chunks/main.js",
 ];
@@ -326,9 +327,10 @@ const APP_APIS = [
   "/api/names/check",
   "/api/og/123",
   "/api/account",
+  "/api/uploads",
 ];
 /** Allowed by no rule: `not-open` on every host. */
-const CLOSED_APIS = ["/api", "/api/unknown", "/api/cronx", "/api/publishx", "/api/accounts"];
+const CLOSED_APIS = ["/api", "/api/unknown", "/api/cronx", "/api/publishx", "/api/accounts", "/api/uploads/x"];
 /** The control plane's pages: the split rule's, on any host, closed or not. */
 const APP_PAGES = [
   "/auth",

@@ -40,6 +40,8 @@ export interface FileSet {
   ignored: string[];
   turnstileToken?: string;
   reminderEmail?: string;
+  /** D5: the upload object this set was read from — deleted once the publish lands (used once). */
+  uploadKey?: string;
 }
 
 /** Who is publishing: the plan whose caps apply, and the profile that may own an `upload_id`. */
