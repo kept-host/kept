@@ -5,9 +5,9 @@
  * and kept here so no SQL lives in a store helper or a route handler:
  *
  *   - `lockSiteForSync` — the site row, locked `FOR UPDATE`, with exactly the
- *     columns a manifest is built from. Not owner-scoped: the sync serves every
- *     writer (owner, token holder, moderation, expiry) and decides nothing but
- *     what the edge must say.
+ *     columns a manifest is built from (the current version's `spa`/`has_404`
+ *     included). Not owner-scoped: the sync serves every writer (owner, token
+ *     holder, moderation, expiry) and decides nothing but what the edge must say.
  *   - `pending_purges` — the durable half of the double purge. A row is written
  *     before the in-process re-purge is scheduled and deleted when it lands; a
  *     failed purge or a failed manifest write leaves one due now.
@@ -16,11 +16,17 @@ import { REPURGE_MAX_ATTEMPTS } from "@kept/shared";
 import { and, asc, eq, inArray, lt, lte, sql } from "drizzle-orm";
 
 import { db, type Tx } from "../index";
-import { pendingPurges, sites } from "../schema";
+import { pendingPurges, sites, siteVersions } from "../schema";
+
+import { versionPaths } from "./version-files";
 
 /**
  * The site row as a manifest needs it, locked until `tx` ends. `null` when the
  * row does not exist (a hard-deleted page — the sync has nothing to say).
+ *
+ * `spa` / `has404` are the current version's (E08 D12, D13), `false` when it has
+ * no row. Only the site row is locked (`OF sites`): Postgres refuses `FOR UPDATE`
+ * on the nullable side of an outer join, and a version row never changes.
  */
 export async function lockSiteForSync(tx: Tx, siteId: string) {
   const [site] = await tx
@@ -31,11 +37,27 @@ export async function lockSiteForSync(tx: Tx, siteId: string) {
       currentVersionId: sites.currentVersionId,
       ownerId: sites.ownerId,
       region: sites.region,
+      spa: siteVersions.spa,
+      has404: siteVersions.has404,
     })
     .from(sites)
+    .leftJoin(siteVersions, eq(siteVersions.id, sites.currentVersionId))
     .where(eq(sites.id, siteId))
-    .for("update");
-  return site ?? null;
+    .for("update", { of: sites });
+  return site ? { ...site, spa: site.spa === true, has404: site.has404 === true } : null;
+}
+
+/**
+ * The paths of the version `siteId` serves now, from `site_version_files` (E08
+ * D1, never an R2 list). `[]` when the site or its current version is gone.
+ */
+export async function currentVersionPaths(siteId: string, handle: Tx | typeof db = db): Promise<string[]> {
+  const [site] = await handle
+    .select({ versionId: sites.currentVersionId })
+    .from(sites)
+    .where(eq(sites.id, siteId));
+  if (!site?.versionId) return [];
+  return (await versionPaths(handle, [site.versionId])).get(site.versionId) ?? [];
 }
 
 export type PendingPurge = typeof pendingPurges.$inferSelect;
@@ -99,9 +121,17 @@ export async function owePurgeOnly(id: string, urls: readonly string[], dueAt: D
     .where(eq(pendingPurges.id, id));
 }
 
-/** Not yet: move the row's due time without counting an attempt. */
-export async function deferPendingPurge(id: string, dueAt: Date): Promise<void> {
-  await db.update(pendingPurges).set({ dueAt }).where(eq(pendingPurges.id, id));
+/**
+ * Not yet, or now: move the rows' due time without counting an attempt — on `tx`
+ * when given (rows `syncManifest` wrote in its own, still-open transaction).
+ */
+export async function deferPendingPurges(
+  ids: readonly string[],
+  dueAt: Date,
+  tx: Tx | typeof db = db,
+): Promise<void> {
+  if (ids.length === 0) return;
+  await tx.update(pendingPurges).set({ dueAt }).where(inArray(pendingPurges.id, [...ids]));
 }
 
 /**

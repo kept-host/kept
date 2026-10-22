@@ -5,9 +5,11 @@
  *
  * A row that names a site is re-synced FIRST (`syncManifestForReplay`), so the
  * edge converges on the row as it stands now — not on whatever state the failed
- * write was carrying — and then purged. That sync is a fresh KV write, which
- * owes its own delayed second purge, so the row is kept for exactly that
- * (`owePurgeOnly`) instead of deleted. A row that names no site is a purge:
+ * write was carrying — and then its own batch is purged. That sync is a fresh KV
+ * write, which owes its own delayed second purge of the site's whole set, so the
+ * row is kept for exactly that (`owePurgeOnly`, the batch ∪ the set) instead of
+ * deleted. Only the first batch of a sync names the site (`purgeOwedUrls`), so
+ * one failed sync is one re-sync however many batches it owed. A row that names no site is a purge:
  * deleted once it lands, unless the KV write it follows is too recent for one
  * purge to be enough (then it waits until it is).
  *
@@ -25,7 +27,8 @@ import {
 } from "@kept/shared";
 
 import {
-  deferPendingPurge,
+  currentVersionPaths,
+  deferPendingPurges,
   deletePendingPurge,
   duePendingPurges,
   owePurgeOnly,
@@ -36,7 +39,7 @@ import { sendAdminAlert, type AdminAlertOutcome } from "../email/admin-alert";
 import { MS_PER_SECOND } from "../sites/display";
 import { withJobRun } from "../visits/sync";
 
-import { KV_REPURGE_DELAY_MS, slugPurgeUrls, syncManifestForReplay } from "./manifest";
+import { KV_REPURGE_DELAY_MS, setPurgeUrls, slugPurgeUrls, syncManifestForReplay } from "./manifest";
 import { purgeUrls } from "./purge";
 
 export type ReplayOutcome = "synced" | "purged" | "deferred" | "failed" | "gave_up";
@@ -47,11 +50,20 @@ function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** The row's URLs, or — recorded without them — the slug's two forms. */
-function urlsOf(row: PendingPurge): string[] {
+/** `siteId`'s current file set under `slug`, from `site_version_files` (never R2). */
+async function servedUrls(siteId: string, slug: string): Promise<string[]> {
+  return setPurgeUrls(slug, await currentVersionPaths(siteId));
+}
+
+/**
+ * The row's URLs, or — recorded without them — the site's current set under the
+ * row's slug (the old name, for a rename), or the slug's root forms when the
+ * row names no site.
+ */
+async function urlsOf(row: PendingPurge): Promise<string[]> {
   const urls = row.urls as string[];
   if (urls.length > 0 || row.slug === "") return urls;
-  return slugPurgeUrls(row.slug);
+  return row.siteId ? servedUrls(row.siteId, row.slug) : slugPurgeUrls(row.slug);
 }
 
 /** One more failed attempt: retried after the propagation window, or given up. */
@@ -68,23 +80,22 @@ async function failed(row: PendingPurge, error: string): Promise<ReplayOutcome> 
 /** Replay one due row. Never throws: a failure is counted on the row. */
 export async function replayPendingPurge(row: PendingPurge): Promise<ReplayOutcome> {
   try {
-    let urls = urlsOf(row);
-    let resynced = false;
+    const urls = await urlsOf(row);
+    let owed: string[] | null = null;
 
     if (row.siteId) {
       const synced = await syncManifestForReplay(row.siteId);
       if (!synced.ok) return await failed(row, `sync: ${synced.error}`);
       if (synced.slug !== undefined) {
-        urls = [...new Set([...urls, ...slugPurgeUrls(synced.slug)])];
-        resynced = true;
+        owed = [...new Set([...urls, ...(await servedUrls(row.siteId, synced.slug))])];
       }
     }
 
     const purged = await purgeUrls(urls);
     if (!purged.ok) return await failed(row, `purge: ${purged.error}`);
 
-    if (resynced) {
-      await owePurgeOnly(row.id, urls, new Date(Date.now() + KV_REPURGE_DELAY_MS));
+    if (owed) {
+      await owePurgeOnly(row.id, owed, new Date(Date.now() + KV_REPURGE_DELAY_MS));
       return "synced";
     }
 
@@ -92,7 +103,7 @@ export async function replayPendingPurge(row: PendingPurge): Promise<ReplayOutco
     // the manifest from before the write this row follows.
     const settledAt = row.createdAt.getTime() + KV_REPURGE_DELAY_MS;
     if (Date.now() < settledAt) {
-      await deferPendingPurge(row.id, new Date(settledAt));
+      await deferPendingPurges([row.id], new Date(settledAt));
       return "deferred";
     }
     await deletePendingPurge(row.id);

@@ -4,15 +4,16 @@
  *   POST https://api.cloudflare.com/client/v4/zones/{zone_id}/purge_cache
  *   {"files": ["https://foo.kept.host/", "https://foo.kept.host/index.html"]}
  *
- * PURGE BY URL ONLY. Cloudflare's cache-tag purge (`{"tags": [...]}`) requires
- * an Enterprise zone plan and is NOT available on this account (§2). Do not add
- * a tags branch here and do not emit `Cache-Tag` headers at the edge expecting
- * one to become possible later — it forces the Worker's cache key to stay the
- * bare public request URL, which is why `apps/edge/src/cache.ts` mixes nothing
- * manifest-derived into it.
+ * PURGE BY URL ONLY (§2, E08 D14). Tag, prefix and hostname purge have been on
+ * every plan since 2025-04-01, and are still not used: the Free plan allows five
+ * such requests a minute, and nothing shows they reach the Worker's Cache API
+ * store (`caches.default`), which URL purge is proven against. Do not add a tags
+ * branch here and do not emit `Cache-Tag` headers at the edge — the Worker's
+ * cache key stays the bare public request URL, which is why
+ * `apps/edge/src/cache.ts` mixes nothing manifest-derived into it.
  *
- * THIS CLIENT TAKES URLs, NOT A SLUG. Building the two URL forms (`/` and
- * `/index.html`) belongs to the manifest write helper (task 004), so that the
+ * THIS CLIENT TAKES URLs, NOT A SLUG. Building a slug's URLs (`/`, every file
+ * of the set, every `dir/`) belongs to the manifest write helper, so that the
  * §5 rule — "if the KV manifest for a slug is written, purge that slug" — has
  * exactly one owner. A purge client that knew about slugs would invite a second
  * caller that purges without writing a pointer, which is the §7.3 failure.
@@ -29,8 +30,25 @@
  */
 import { CF_API, purgeConfig } from "./env";
 
-/** Cloudflare's documented per-request cap on `files` (§3). */
-export const PURGE_MAX_URLS_PER_REQUEST = 30;
+/**
+ * Cloudflare's per-request cap on `files` (§3): 100 URLs on Free, Pro and
+ * Business — checked 2026-10-21 against developers.cloudflare.com/cache/how-to/
+ * purge-cache (the contract's old "30" predates it). The rate limit is separate:
+ * 800 URLs a second on Free, 1,500 on Pro.
+ */
+export const PURGE_MAX_URLS_PER_REQUEST = 100;
+
+/**
+ * `urls` in request-sized batches — the one place a purge is split. The manifest
+ * helper gives each batch its own `pending_purges` row; `purgeUrls` sends them.
+ */
+export function purgeBatches(urls: readonly string[]): string[][] {
+  const batches: string[][] = [];
+  for (let i = 0; i < urls.length; i += PURGE_MAX_URLS_PER_REQUEST) {
+    batches.push(urls.slice(i, i + PURGE_MAX_URLS_PER_REQUEST));
+  }
+  return batches;
+}
 
 export type PurgeResult = { ok: true } | { ok: false; error: string };
 
@@ -69,8 +87,8 @@ async function readFailure(res: Response): Promise<string | null> {
  * Purge the exact URLs given. `purge_cache` matches the URL string literally,
  * so every form the Worker can serve a page under must be listed (§4).
  *
- * Batched at the API's 30-URL limit; every batch must succeed for the result to
- * be `ok`. v1 is single-HTML-file, so a real call carries two URLs.
+ * Batched at the API's per-request limit; every batch must succeed for the
+ * result to be `ok`, and the first refusal stops the rest.
  */
 export async function purgeUrls(urls: readonly string[]): Promise<PurgeResult> {
   // A no-op purge is not a failure — there is nothing at the edge to invalidate.
@@ -80,8 +98,7 @@ export async function purgeUrls(urls: readonly string[]): Promise<PurgeResult> {
     const { zoneId, apiToken } = purgeConfig();
     const endpoint = `${CF_API}/zones/${zoneId}/purge_cache`;
 
-    for (let i = 0; i < urls.length; i += PURGE_MAX_URLS_PER_REQUEST) {
-      const files = urls.slice(i, i + PURGE_MAX_URLS_PER_REQUEST);
+    for (const files of purgeBatches(urls)) {
       const res = await fetch(endpoint, {
         method: "POST",
         headers: {

@@ -33,11 +33,12 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { generateAnonToken, hashToken, REPURGE_MAX_ATTEMPTS, type SiteStatus } from "@kept/shared";
 import { config } from "dotenv";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, gte, inArray } from "drizzle-orm";
 import postgres from "postgres";
 
 import { closeDb, db } from "../db";
 import { insertPendingPurge } from "../db/queries/manifest-sync";
+import { insertVersionFiles, siteObjectKeys } from "../db/queries/version-files";
 import { pendingPurges, sites, siteVersions } from "../db/schema";
 import { renameSite } from "../names/rename";
 import { replacePage } from "../publish/anon-manage";
@@ -47,8 +48,15 @@ import { restoreVersion } from "../sites/restore";
 import { NamesDrill } from "../testing/names-drill";
 import { clearPendingPurges } from "../testing/pending-purges";
 
-import { KV_REPURGE_DELAY_MS, pointerKey, removeManifest, syncManifest } from "./manifest";
-import { pageObjectKey, r2Store } from "./r2";
+import {
+  KV_REPURGE_DELAY_MS,
+  pointerKey,
+  purgeOwedUrls,
+  removeManifest,
+  setPurgeUrls,
+  syncManifest,
+} from "./manifest";
+import { pageObjectKey, r2Store, siteObjectKey } from "./r2";
 import { replayDue, replayPendingPurge } from "./repurge";
 
 config({ path: ".env.local", quiet: true });
@@ -89,7 +97,9 @@ after(async () => {
       .select({ r2Key: siteVersions.r2Key })
       .from(siteVersions)
       .where(inArray(siteVersions.siteId, [...siteIds]));
-    for (const { r2Key } of objects) await r2Store().delete(r2Key).catch(() => undefined);
+    const keys = new Set(objects.map((object) => object.r2Key));
+    for (const id of siteIds) for (const key of await siteObjectKeys(db, id)) keys.add(key);
+    await r2Store().deleteMany([...keys]).catch(() => undefined);
     await clearPendingPurges(slugs, siteIds);
   }
   await drill.cleanup();
@@ -401,5 +411,260 @@ test("AC35 (batch): one replay run purges, defers and gives up row by row, sends
   assert.match(gaveUp.lastError ?? "", /^sync: kv/);
 
   // Idempotent: nothing it touched is due again, and nothing gave up twice.
+  assert.deepEqual(await replayDue(scope), { synced: 0, purged: 0, deferred: 0, failed: 0, gave_up: 0, alert: null });
+});
+
+// ── E08 D14: the file set ──────────────────────────────────────────────────────
+// ONE scratch page walks through every sync case in order (KV budget: five
+// manifest writes and three deletes for the lot). Each step's `pending_purges`
+// rows are the record of what it purged: written before the first call and
+// still there for 125 s, so a step reads the rows it created.
+
+type SetFiles = Record<string, string>;
+
+const multi = {
+  page: null as null | { id: string; slug: string; ownerId: string },
+  /** The name the page answered at before the rename step. */
+  formerSlug: "",
+  /** `version name → id`, and the paths each holds. */
+  versions: new Map<string, { id: string; paths: string[] }>(),
+};
+
+/** A version of the scratch page: every file in R2, the rows in Postgres. No KV. */
+async function setVersion(name: string, files: SetFiles, flags: { spa?: boolean; has404?: boolean } = {}) {
+  const page = multi.page!;
+  const id = crypto.randomUUID();
+  const entries = Object.entries(files);
+  for (const [path, body] of entries) {
+    await r2Store().put(siteObjectKey(page.id, id, path), body, path.endsWith(".html") ? "text/html; charset=utf-8" : "text/plain");
+  }
+  const sha = async (body: string) =>
+    Buffer.from(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body))).toString("hex");
+  await db.insert(siteVersions).values({
+    id,
+    siteId: page.id,
+    r2Key: siteObjectKey(page.id, id, "index.html"),
+    contentHash: `e08-005-${id}`,
+    sizeBytes: entries.reduce((n, [, body]) => n + body.length, 0),
+    publishedVia: "studio",
+    fileCount: entries.length,
+    spa: flags.spa ?? false,
+    has404: flags.has404 ?? false,
+  });
+  await insertVersionFiles(
+    db,
+    id,
+    await Promise.all(entries.map(async ([path, body]) => ({ path, sizeBytes: body.length, sha256: await sha(body) }))),
+  );
+  const paths = entries.map(([path]) => path).sort();
+  multi.versions.set(name, { id, paths });
+  return { id, paths };
+}
+
+/** Point the page at a version, as a replace's commit does. */
+async function pointAt(versionId: string): Promise<void> {
+  await db.update(sites).set({ currentVersionId: versionId }).where(eq(sites.id, multi.page!.id));
+}
+
+/** The `pending_purges` rows `slug` gained since `since`, oldest first. */
+async function rowsSince(slug: string, since: Date) {
+  const rows = await db
+    .select()
+    .from(pendingPurges)
+    .where(and(eq(pendingPurges.slug, slug), gte(pendingPurges.createdAt, since)));
+  return rows.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+}
+
+const sorted = (urls: unknown) => [...(urls as string[])].sort();
+
+/** Poll one URL of the scratch page until `done(status, body, cacheControl)` or the window closes. */
+async function pollEdge(
+  path: string,
+  done: (seen: { status: number; body: string; cacheControl: string }) => boolean,
+  windowMs = KV_REPURGE_DELAY_MS + 30_000,
+) {
+  const url = `https://${multi.page!.slug}.${process.env.KEPT_BASE_DOMAIN}/${path}`;
+  const deadline = Date.now() + windowMs;
+  for (;;) {
+    const res = await fetch(url, { redirect: "manual" });
+    const seen = { status: res.status, body: await res.text(), cacheControl: res.headers.get("cache-control") ?? "" };
+    if (done(seen) || Date.now() > deadline) return seen;
+    await sleep(PROBE_INTERVAL_MS);
+  }
+}
+
+test("E08: a single-file sync writes the dev-v0.8.0 manifest, byte for byte, and purges only / and /index.html", { skip }, async () => {
+  const ownerId = await drill.profile();
+  const page = await drill.site({ ownerId, kept: true });
+  slugs.add(page.slug);
+  siteIds.add(page.id);
+  multi.page = { ...page, ownerId };
+
+  const v1 = await setVersion("v1", { "index.html": html("e08-005 v1") });
+  await pointAt(v1.id);
+  const since = new Date();
+  const synced = await syncManifest(page.id);
+  assert.equal(synced.ok, true, JSON.stringify(synced));
+
+  const body = (await r2Store().get(pointerKey(page.slug)))!;
+  const { updatedAt } = JSON.parse(body) as { updatedAt: number };
+  // The literal dev-v0.8.0 wrote, in its key order: no `spa`, no `has404`.
+  assert.equal(
+    body,
+    JSON.stringify({ siteId: page.id, versionId: v1.id, status: "live", region: "auto", ownerId, updatedAt }),
+  );
+
+  const rows = await rowsSince(page.slug, since);
+  assert.equal(rows.length, 1, "one batch, one row");
+  assert.deepEqual(rows[0]!.urls, setPurgeUrls(page.slug, []), "the dev-v0.8.0 purge list");
+  assert.equal(rows[0]!.siteId, page.id);
+});
+
+test("E08 AC25: replacing a 3-file set with a 2-file set — the removed path stops serving, a changed file serves new bytes, one manifest write", { skip }, async () => {
+  const page = multi.page;
+  assert.ok(page, "runs after the single-file step");
+
+  const v1 = multi.versions.get("v1")!;
+  const v2 = await setVersion("v2", {
+    "index.html": html("e08-005 v2"),
+    "a.css": "/* e08-005 v2 css */",
+    "old.js": "/* e08-005 v2 old */",
+  });
+  await pointAt(v2.id);
+  assert.equal((await syncManifest(page.id, { alsoPurgeVersionId: v1.id })).ok, true);
+
+  // Arm the drill: every file of v2 served FROM KV, so it sits in the Cache API for a year.
+  for (const [path, marker] of [["a.css", "v2 css"], ["old.js", "v2 old"]] as const) {
+    const seen = await pollEdge(path, (s) => s.status === 200 && s.body.includes(marker) && s.cacheControl.includes("s-maxage=31536000"));
+    assert.equal(seen.status, 200, `${path} must serve before the replace`);
+    assert.match(seen.body, new RegExp(marker));
+    assert.match(seen.cacheControl, /s-maxage=31536000\b/, `${path} must be cached from the KV path`);
+  }
+
+  // THE REPLACE (hand-pointed — the public route lands in task 004).
+  const v3 = await setVersion("v3", { "index.html": html("e08-005 v3"), "a.css": "/* e08-005 v3 css */" }, { spa: true, has404: true });
+  await pointAt(v3.id);
+  const since = new Date();
+  assert.equal((await syncManifest(page.id, { alsoPurgeVersionId: v2.id })).ok, true);
+
+  const rows = await rowsSince(page.slug, since);
+  assert.equal(rows.length, 1, "ONE manifest write, one batch of purges");
+  assert.deepEqual(sorted(rows[0]!.urls), sorted(setPurgeUrls(page.slug, [...v2.paths, ...v3.paths])), "old ∪ new");
+  assert.ok((rows[0]!.urls as string[]).some((url) => url.endsWith("/old.js")), "the removed path is purged");
+
+  const manifest = JSON.parse((await r2Store().get(pointerKey(page.slug)))!) as Record<string, unknown>;
+  assert.equal(manifest.versionId, v3.id);
+  assert.equal(manifest.spa, true, "the flags are the new version's");
+  assert.equal(manifest.has404, true);
+
+  const gone = await pollEdge("old.js", (s) => s.status !== 200);
+  assert.notEqual(gone.status, 200, `old.js still served ${gone.status} after the purge window — the removed path was not purged`);
+  assert.doesNotMatch(gone.body, /v2 old/);
+  const changed = await pollEdge("a.css", (s) => s.status === 200 && s.body.includes("v3 css"));
+  assert.match(changed.body, /v3 css/, "the changed file serves its new bytes");
+});
+
+test("E08 AC27: restore re-serves a multi-file version with ITS flags, purging both sets", { skip }, async () => {
+  const page = multi.page!;
+  const v2 = multi.versions.get("v2")!;
+  const v3 = multi.versions.get("v3")!;
+
+  const since = new Date();
+  const restored = await restoreVersion(page.id, v2.id, page.ownerId);
+  assert.equal(restored.unchanged, false);
+
+  const manifest = JSON.parse((await r2Store().get(pointerKey(page.slug)))!) as Record<string, unknown>;
+  assert.equal(manifest.versionId, v2.id);
+  assert.equal("spa" in manifest, false, "v2 has no SPA flag — omitted, not false");
+  assert.equal("has404" in manifest, false);
+
+  const rows = await rowsSince(page.slug, since);
+  assert.equal(rows.length, 1);
+  assert.deepEqual(sorted(rows[0]!.urls), sorted(setPurgeUrls(page.slug, [...v2.paths, ...v3.paths])), "restored ∪ replaced");
+});
+
+test("E08: rename purges the OLD hostname's whole set", { skip }, async () => {
+  const page = multi.page!;
+  const v2 = multi.versions.get("v2")!;
+  const newName = drill.name();
+  slugs.add(newName);
+
+  const since = new Date();
+  await renameSite(page.id, page.ownerId, newName);
+  const old = await rowsSince(page.slug, since);
+  assert.equal(old.length, 1);
+  assert.deepEqual(old[0]!.urls, setPurgeUrls(page.slug, v2.paths), "every path of the set, at the old host");
+  assert.equal(old[0]!.siteId, page.id, "the replay re-syncs the page");
+  assert.equal(await r2Store().get(pointerKey(page.slug)), null, "the old name is unpublished");
+  const renamed = await rowsSince(newName, since);
+  assert.deepEqual(renamed[0]!.urls, setPurgeUrls(newName, v2.paths));
+  multi.formerSlug = page.slug;
+  multi.page = { ...page, slug: newName };
+});
+
+test("E08: the unserve branch purges the set, and a replayed row with no URLs derives them from site_version_files", { skip }, async () => {
+  const page = multi.page!;
+  const v2 = multi.versions.get("v2")!;
+  await db.update(sites).set({ status: "archived" }).where(eq(sites.id, page.id));
+
+  const since = new Date();
+  const synced = await syncManifest(page.id);
+  assert.deepEqual(synced, { ok: true, outcome: "removed", slug: page.slug });
+  const rows = await rowsSince(page.slug, since);
+  assert.equal(rows.length, 1);
+  assert.deepEqual(rows[0]!.urls, setPurgeUrls(page.slug, v2.paths), "archived: the whole set leaves the edge");
+
+  // A row recorded without URLs (the zone was unconfigured) under a name the
+  // page USED to answer at: the replay derives that host's set from Postgres.
+  const { formerSlug } = multi;
+  const id = await insertPendingPurge({ siteId: page.id, slug: formerSlug, urls: [], dueAt: new Date() });
+  const [row] = await db.select().from(pendingPurges).where(eq(pendingPurges.id, id));
+  assert.equal(await replayPendingPurge(row!), "synced");
+  const [owed] = await db.select().from(pendingPurges).where(eq(pendingPurges.id, id));
+  for (const url of setPurgeUrls(formerSlug, v2.paths)) {
+    assert.ok((owed!.urls as string[]).includes(url), `derived from site_version_files, not the root forms: ${url}`);
+  }
+  assert.equal(owed!.siteId, null);
+});
+
+test("E08 Verification 3: 250 files → 3 rows before the first call; a refusal on batch 2 leaves 2–3 due; replayDue converges", { skip }, async () => {
+  // No manifest: only rows and purge calls (no KV). A slug nothing serves.
+  const slug = drill.name();
+  slugs.add(slug);
+  const paths = [
+    "index.html",
+    ...Array.from({ length: 9 }, (_, i) => `d${i}/index.html`),
+    ...Array.from({ length: 240 }, (_, i) => `assets/f${String(i).padStart(3, "0")}.js`),
+  ];
+  assert.equal(paths.length, 250);
+  const urls = setPurgeUrls(slug, paths);
+  assert.equal(urls.length, 260, "250 paths + / + nine dir/ forms");
+
+  // THE SEAM: a URL Cloudflare refuses, placed in batch 2. A real refusal, not a stub.
+  const bad = [...urls];
+  bad[150] = "not a url";
+  const result = await purgeOwedUrls(slug, bad, { siteId: null });
+  assert.equal(result.ok, false, "Cloudflare must refuse batch 2");
+  console.log(`[e08-005] batch 2 refusal → ${result.ok ? "" : result.error}`);
+
+  const rows = (await db.select().from(pendingPurges).where(eq(pendingPurges.slug, slug))).sort(
+    (a, b) => urls.indexOf((a.urls as string[])[0]!) - urls.indexOf((b.urls as string[])[0]!),
+  );
+  assert.deepEqual(rows.map((row) => (row.urls as string[]).length), [100, 100, 60], "one row per batch");
+  const now = Date.now();
+  assert.ok(rows[0]!.dueAt.getTime() > now, "batch 1 landed: due for its second purge only");
+  assert.ok(rows[1]!.dueAt.getTime() <= now, "batch 2 was refused: due now");
+  assert.ok(rows[2]!.dueAt.getTime() <= now, "batch 3 was never sent: due now");
+  const scope = rows.map((row) => row.id);
+
+  // Fix the cause (the bad URL), then replay: 2 and 3 purge and wait out the window.
+  await db.update(pendingPurges).set({ urls: urls.slice(100, 200) }).where(eq(pendingPurges.id, rows[1]!.id));
+  assert.deepEqual(await replayDue(scope), { synced: 0, purged: 0, deferred: 2, failed: 0, gave_up: 0, alert: null });
+
+  // Past the window, every row purges and leaves.
+  const settled = new Date(Date.now() - KV_REPURGE_DELAY_MS - 1_000);
+  await db.update(pendingPurges).set({ createdAt: settled, dueAt: settled }).where(inArray(pendingPurges.id, scope));
+  assert.deepEqual(await replayDue(scope), { synced: 0, purged: 3, deferred: 0, failed: 0, gave_up: 0, alert: null });
+  assert.equal((await db.select().from(pendingPurges).where(inArray(pendingPurges.id, scope))).length, 0);
   assert.deepEqual(await replayDue(scope), { synced: 0, purged: 0, deferred: 0, failed: 0, gave_up: 0, alert: null });
 });

@@ -121,7 +121,8 @@ export async function restoreVersion(
 
   // D18: the manifest is the row's, read under its lock AFTER this commit — so a
   // flag that committed since the status check above is what the edge serves.
-  const synced = await syncManifest(site.id);
+  // Its flags are the restored version's; its purge covers both sets (E08 D14).
+  const synced = await syncManifest(site.id, { alsoPurgeVersionId: previous.versionId });
   if (!synced.ok) {
     console.error(
       `[kept] restore: manifest sync failed for site ${site.id} (slug "${site.slug}", version ${version.id}) — ${synced.error}`,
@@ -139,7 +140,7 @@ export async function restoreVersion(
     }
     // A second failure leaves its `pending_purges` row; the repurge job converges
     // the edge on whichever version the row names.
-    await syncManifest(site.id);
+    await syncManifest(site.id, { alsoPurgeVersionId: version.id });
     throw new ManageStoreError("restore", synced.error);
   }
 

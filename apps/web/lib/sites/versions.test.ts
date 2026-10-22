@@ -228,7 +228,7 @@ test("AC28 at source level: the restore module writes no page bytes, and both ve
     ["r2Store().get("],
     "the one R2 call on the restore path is a read",
   );
-  assert.ok(restoreSource.includes("syncManifest(site.id)"), "a restore is a replace event: the manifest moves (D18: from the row)");
+  assert.ok(restoreSource.includes("syncManifest(site.id, { alsoPurgeVersionId: previous.versionId })"), "a restore is a replace event: the manifest moves (D18: from the row)");
 
   // "Fires the scan hook" (AC25) — `enqueueScan` is E07's stub with nothing to
   // observe yet, so the proof is that both paths call it with the new version.
