@@ -26,7 +26,7 @@
  *      every refusal later tasks add. `studioFailure` maps it through ONE table,
  *      `STUDIO_ERROR_STATUS`, so a new refusal is a `throw` in its lib module and
  *      never a new branch in the functions below.
- *   2. The shared publish pipeline REFUSED (`requestError`, `slugUnavailable`
+ *   2. The shared publish pipeline REFUSED (`readFileSet`, `slugUnavailable`
  *      — flat `PublishError`s, because `/api/publish` and
  *      `/api/anon/*` answer agents and their bodies are frozen).
  *      `fromPublishFailure` translates them here, at the boundary, and never by
@@ -104,17 +104,13 @@ import { z } from "zod";
 import { SlugUnavailableError } from "../db/queries/publish";
 import { allowNameCheck, checkName } from "../names/check";
 import { renameSite } from "../names/rename";
-import {
-  requestError,
-  slugUnavailable,
-  type PublishFailure,
-  type PublisherContext,
-} from "../publish/pipeline";
+import { isFailure, type FileSet } from "../publish/fileset/types";
+import { slugUnavailable, type PublishFailure, type PublisherContext } from "../publish/pipeline";
 import { deleteAccount } from "./account-deletion";
 import { updateSiteDetails } from "./details";
 import { openExport, openPageDownload, type Download } from "./export";
 import { demoteSite, keepSite, keepSites, SITE_NOT_FOUND_MESSAGE, swapKept } from "./keep";
-import { deleteSite, deleteSites, ownerPageBodySchema, replaceSite } from "./manage";
+import { deleteSite, deleteSites, replaceSite } from "./manage";
 import { publishOwnedPage } from "./publish";
 import { restoreVersion, VERSION_NOT_FOUND_MESSAGE } from "./restore";
 import { StudioRefusal } from "./studio-refusal";
@@ -290,6 +286,15 @@ export function ownerResponse<T>(outcome: OwnerOutcome<T>): NextResponse {
 }
 
 /**
+ * E08 D7: the OS-junk paths the reader dropped ride along for the studio's
+ * "Skipped {n} files" toast — only when there were any, so a body without them
+ * is the pre-E08 shape.
+ */
+function withIgnored<T extends object>(result: T, set: FileSet): T & { ignored?: string[] } {
+  return set.ignored.length > 0 ? { ...result, ignored: set.ignored } : result;
+}
+
+/**
  * `POST /api/sites` — publish a page that belongs to this account from its first
  * byte. Decision **D9**.
  *
@@ -313,22 +318,21 @@ export function ownerResponse<T>(outcome: OwnerOutcome<T>): NextResponse {
  * signed in is not a content policy.
  */
 export async function publishOwnedSite(
-  raw: unknown,
+  set: FileSet | PublishFailure,
   profileId: string,
   publisher: PublisherContext,
 ): Promise<OwnerOutcome<OwnedPublishResult>> {
-  const parsed = ownerPageBodySchema.safeParse(raw);
-  if (!parsed.success) return fromPublishFailure(requestError(parsed.error));
+  if (isFailure(set)) return fromPublishFailure(set);
 
   try {
-    const result = await publishOwnedPage({ profileId, html: parsed.data.html, publisher });
+    const result = await publishOwnedPage({ profileId, set, publisher });
     // Parse our own output: the studio repaints its card from this body without
     // a second request, so a silent shape change here is a broken screen rather
     // than a failed test.
     return {
       ok: true,
       status: result.duplicate ? 200 : 201,
-      body: ownedPublishResultSchema.parse(result),
+      body: ownedPublishResultSchema.parse(withIgnored(result, set)),
     };
   } catch (err) {
     if (err instanceof SlugUnavailableError) {
@@ -535,12 +539,12 @@ export async function checkOwnedName(
 /**
  * `POST /api/sites/:id/replace` — new bytes, same URL.
  *
- * VALIDATION AND CONTENT POLICY HAPPEN HERE, ORDERING HAPPENS IN `./manage.ts`,
- * the same split rename uses. `ownerPageBodySchema` is the publish schema's `html`
- * field, so `MAX_PAGE_BYTES`, the empty-page rule and every error CODE are
- * identical to the path that first stored the page — `requestError` is the
- * shared mapper, because "the body was 6 MB" and "the body had no `html` field"
- * arriving as one code is an infinite retry loop for an agent.
+ * THE BODY IS READ BY THE ROUTE (`readFileSet`, on the owner's plan), ORDERING
+ * HAPPENS IN `./manage.ts`. The reader is the publish path's, so every input,
+ * cap and error CODE is identical to the path that first stored the page —
+ * translated into studio vocabulary here, because "the body was 6 MB" and "the
+ * body had no `html` field" arriving as one code is an infinite retry loop for
+ * an agent.
  *
  * ⚠️ THE CLOCK IS NOT TOUCHED, AND THE RESPONSE SAYS SO by echoing the deadline
  * it found. A replace that extended the draft window would let a weekly upload
@@ -554,18 +558,17 @@ export async function checkOwnedName(
  */
 export async function replaceOwnedSite(
   rawSiteId: string,
-  raw: unknown,
+  set: FileSet | PublishFailure,
   profileId: string,
 ): Promise<OwnerOutcome<ReplaceResult>> {
   const parsedId = siteIdSchema.safeParse(rawSiteId);
   if (!parsedId.success) return ownerNotFound();
 
-  const parsed = ownerPageBodySchema.safeParse(raw);
-  if (!parsed.success) return fromPublishFailure(requestError(parsed.error));
+  if (isFailure(set)) return fromPublishFailure(set);
 
   try {
-    const result = await replaceSite(parsedId.data, profileId, parsed.data.html);
-    return { ok: true, status: 200, body: replaceResultSchema.parse(result) };
+    const result = await replaceSite(parsedId.data, profileId, set);
+    return { ok: true, status: 200, body: replaceResultSchema.parse(withIgnored(result, set)) };
   } catch (err) {
     // A page that is not `live` is `409 not_allowed_in_status`, with the
     // sentence `./display.ts` gives the card — thrown by `./manage.ts`.

@@ -42,6 +42,7 @@ import { insertVersionFiles, siteObjectKeys } from "../db/queries/version-files"
 import { pendingPurges, sites, siteVersions } from "../db/schema";
 import { renameSite } from "../names/rename";
 import { replacePage } from "../publish/anon-manage";
+import { fileSet, jsonBody } from "../testing/file-sets";
 import { keepSite } from "../sites/keep";
 import { replaceSite } from "../sites/manage";
 import { restoreVersion } from "../sites/restore";
@@ -225,18 +226,16 @@ function assertSucceeded(outcome: unknown): void {
 
 test("AC34: a flag committed during an OWNER replace leaves the edge on 451", { skip }, async () => {
   const page = await ownedPage();
-  const outcome = await race(page.id, "under_review", () =>
-    replaceSite(page.id, page.ownerId, html("e07-003 owner replace")),
-  );
+  const set = await fileSet({ html: html("e07-003 owner replace") });
+  const outcome = await race(page.id, "under_review", () => replaceSite(page.id, page.ownerId, set));
   assertSucceeded(outcome);
   await assertEdgeMatchesRow(page.id, "under_review", 451);
 });
 
 test("AC34: expiry committed during an owner replace leaves the edge on 410", { skip }, async () => {
   const page = await ownedPage({ kept: false });
-  const outcome = await race(page.id, "expired", () =>
-    replaceSite(page.id, page.ownerId, html("e07-003 replace vs expire")),
-  );
+  const set = await fileSet({ html: html("e07-003 replace vs expire") });
+  const outcome = await race(page.id, "expired", () => replaceSite(page.id, page.ownerId, set));
   assertSucceeded(outcome);
   await assertEdgeMatchesRow(page.id, "expired", 410);
 });
@@ -250,7 +249,7 @@ test("AC34: a flag committed during an ANONYMOUS replace leaves the edge on 451"
     .where(eq(sites.id, page.id));
 
   const outcome = await race(page.id, "under_review", () =>
-    replacePage(token, { html: html("e07-003 anon replace") }, "api"),
+    replacePage(token, jsonBody({ html: html("e07-003 anon replace") }), "api"),
   );
   assert.equal((outcome as { ok?: boolean }).ok, true, `anonymous replace must land: ${JSON.stringify(outcome)}`);
   await assertEdgeMatchesRow(page.id, "under_review", 451);

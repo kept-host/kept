@@ -177,9 +177,10 @@ test("AC2/AC8/AC12: an inert phishing page published keyless is scanned after th
   const { pointerKey } = await import("../storage/manifest");
   const { r2Store } = await import("../storage/r2");
   const { KV_REPURGE_DELAY_MS } = await import("../storage/manifest");
+  const { jsonBody } = await import("../testing/file-sets");
   const { db, eq, scans, sites } = await deps();
 
-  const outcome = await publishPage({ html: p4Html() }, { ip: "203.0.113.77", userAgent: `kept-e07-007-drill/${RUN}` });
+  const outcome = await publishPage(jsonBody({ html: p4Html() }), { ip: "203.0.113.77", userAgent: `kept-e07-007-drill/${RUN}` });
   assert.ok(outcome.ok, JSON.stringify(outcome.body));
   const { slug, live_url: liveUrl } = outcome.body;
 
@@ -235,6 +236,7 @@ test("AC2/AC8/AC12: an inert phishing page published keyless is scanned after th
 test("AC2: an owned publish, replace and restore each leave a scans row with their trigger", { skip, timeout: 120_000 }, async () => {
   const { publishOwnedPage } = await import("../sites/publish");
   const { replaceOwnedSite, restoreOwnedVersion } = await import("../sites/owner-routes");
+  const { fileSet, readJsonSet } = await import("../testing/file-sets");
   const { db, profiles, user } = await deps();
 
   const ownerId = crypto.randomUUID();
@@ -245,14 +247,14 @@ test("AC2: an owned publish, replace and restore each leave a scans row with the
 
   const { site: owned } = await publishOwnedPage({
     profileId: ownerId,
-    html: cleanHtml(),
+    set: await fileSet({ html: cleanHtml() }),
     publisher: { ip: "203.0.113.78", userAgent: `kept-e07-007-drill/${RUN}` },
   });
   (await drillPromise)!.track(owned.id, owned.slug);
   const first = (await site(owned.id)).currentVersionId!;
   assert.equal((await settledScan(first, "publish")).status, "skipped");
 
-  const replaced = await replaceOwnedSite(owned.id, { html: cleanHtml() }, ownerId);
+  const replaced = await replaceOwnedSite(owned.id, await readJsonSet({ html: cleanHtml() }), ownerId);
   assert.equal(replaced.status, 200, JSON.stringify(replaced.body));
   const second = (await site(owned.id)).currentVersionId!;
   assert.notEqual(second, first);

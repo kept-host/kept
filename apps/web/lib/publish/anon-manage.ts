@@ -9,8 +9,10 @@
  *
  * THE THREE OPERATIONS, AND THE ONE RULE EACH TURNS ON:
  *
- *   replace   R2 object → syncManifest (pointer → KV → purge, from the row
- *             under its lock — D18), same slug, same siteId, NEW versionId. The purge is load-bearing here in a way it
+ *   replace   rows → every file → point → syncManifest (pointer → KV → purge,
+ *             from the row under its lock — D18; `storeReplacement`, E08 D11),
+ *             then prune like `free` (Q-new-4), same slug, same siteId, NEW
+ *             versionId. The purge is load-bearing here in a way it
  *             is not on publish: a replaced slug ALWAYS has a cached
  *             predecessor, and `LIVE_CACHE_CONTROL` is a year. Without the
  *             purge the product's most visible behaviour — "I re-dropped my
@@ -35,35 +37,31 @@
  * says `live` for a page that no longer serves — visible to an audit, invisible
  * to the internet — instead of the reverse.
  */
-import {
-  DRAFT_TTL_DAYS,
-  hashContent,
-  htmlPublishRequestSchema,
-  type PublishChannel,
-  type SiteStatus,
-} from "@kept/shared";
+import { DRAFT_TTL_DAYS, type PublishChannel, type SiteStatus } from "@kept/shared";
 import { z } from "zod";
 
 import {
   archiveSite,
   DELETABLE_STATUSES,
-  insertReplacementVersion,
   setReminderEmail,
   type AnonSite,
 } from "../db/queries/publish";
+import { pruneVersions } from "../sites/manage";
 import { removeManifest, syncManifest } from "../storage/manifest";
-import { pageObjectKey } from "../storage/r2";
 import { notFound, resolveAnonToken } from "./anon-token";
+import { isFailure } from "./fileset/types";
 import { checkReplaceLimit, enqueueScan, verifyTurnstile } from "./hooks";
-import { extractPageTitle } from "./page-title";
 import {
   fail,
   internalError,
   liveUrl,
   rateLimited,
   requestError,
-  writePageAndManifest,
+  setTitle,
+  storeReplacement,
+  type FileSetReader,
   type PublishFailure,
+  type ReplaceStoreResult,
 } from "./pipeline";
 
 /** Success bodies differ per operation; the failure shape never does. */
@@ -86,14 +84,6 @@ export interface ReplaceResponse {
 export interface OkResponse {
   ok: true;
 }
-
-/**
- * A replace body is a publish body minus the reminder address — that has its own
- * endpoint, and accepting it here would be a second way to write one column.
- * Reusing the publish schema is what keeps `MAX_PAGE_BYTES`, the HTML check and
- * every error code identical between the two paths.
- */
-const replaceRequestSchema = htmlPublishRequestSchema.omit({ reminderEmail: true });
 
 /**
  * `""` and `null` both CLEAR the address; anything else must be an email.
@@ -119,11 +109,22 @@ function draftWindow(site: AnonSite): Pick<ReplaceResponse, "expires_in" | "expi
 /**
  * Replace a page's bytes, keeping its URL.
  *
+ * The body is a publish body read by the same `readFileSet` — every input, cap
+ * and error code identical between the two paths — except that a reminder
+ * address in it is ignored: that has its own endpoint, and accepting it here
+ * would be a second way to write one column. `read` runs only after the token
+ * resolved and the per-page governor admitted the request, so a stranger's
+ * guess or an over-limit caller costs no extraction.
+ *
  * ⚠️ THE DRAFT CLOCK IS NOT RESET, AND THAT IS NOT AN OVERSIGHT. `expires_at`
  * and `purge_after` belong to the page, not to its contents. If re-dropping a
  * file restarted the seven days, a weekly `curl` would hold a page forever for
- * free and "keep it" would stop meaning anything. `insertReplacementVersion`
- * touches neither column, and the response echoes the ORIGINAL deadline.
+ * free and "keep it" would stop meaning anything. `storeReplacement` touches
+ * neither column, and the response echoes the ORIGINAL deadline.
+ *
+ * Then the old versions are pruned — like `free` on an ownerless page (E08
+ * Q-new-4) — so a draft replaced sixty times an hour does not keep sixty sets
+ * until its `purge_after`. A prune never fails the replace.
  *
  * `publishedVia` is the route's reading of the transport (`browserChannel` in
  * `./http`): `web` for the app's own manage screen, `api` for everyone else. It
@@ -131,22 +132,24 @@ function draftWindow(site: AnonSite): Pick<ReplaceResponse, "expires_in" | "expi
  */
 export async function replacePage(
   token: string,
-  raw: unknown,
+  read: FileSetReader,
   publishedVia: Extract<PublishChannel, "web" | "api">,
 ): Promise<AnonOutcome<ReplaceResponse>> {
   const site = await resolveAnonToken(token);
   if (!site) return notFound();
 
-  const parsed = replaceRequestSchema.safeParse(raw);
-  if (!parsed.success) return requestError(parsed.error);
-  const { html, turnstileToken } = parsed.data;
-
   // The same seams as publish, for the same reason: a replace is a re-publish,
   // and a path that stores new bytes without a governor or the scan enqueue is
   // a hole big enough to publish anything through — publish clean, then
   // replace with the payload. The limit is per page (`anon-replace:<siteId>`).
-  if (turnstileToken !== undefined) {
-    const turnstile = await verifyTurnstile(turnstileToken);
+  const limit = await checkReplaceLimit(site.id);
+  if (!limit.allowed) return rateLimited(limit);
+
+  const set = await read();
+  if (isFailure(set)) return set;
+
+  if (set.turnstileToken !== undefined) {
+    const turnstile = await verifyTurnstile(set.turnstileToken);
     if (!turnstile.ok) {
       return fail(403, {
         error: "turnstile_failed",
@@ -155,39 +158,26 @@ export async function replacePage(
     }
   }
 
-  const limit = await checkReplaceLimit(site.id);
-  if (!limit.allowed) return rateLimited(limit);
-
-  const contentHash = await hashContent(html);
-  const sizeBytes = Buffer.byteLength(html, "utf8");
-  // RE-EXTRACTED, NOT CARRIED OVER. The name belongs to the bytes, so new bytes
-  // get a new name — including `null`, when the replacement has no readable
-  // `<title>`. Leaving the old value in place would make the dashboard
-  // confidently display the PREVIOUS page's name (E06 task 001). An owner-set
-  // title survives anyway: `insertReplacementVersion` guards it in SQL (D11).
-  const title = extractPageTitle(html);
-
-  // NEW versionId, SAME siteId — so the key is a new object rather than a
-  // mutation of one the edge may have cached, and the slug never has to move.
   const versionId = crypto.randomUUID();
-  const r2Key = pageObjectKey(site.id, versionId);
-
-  const previous = {
-    versionId: site.currentVersionId,
-    title: site.title,
-    contentHash: site.contentHash,
-    sizeBytes: site.sizeBytes,
-  };
-
+  let stored: ReplaceStoreResult;
   try {
-    await insertReplacementVersion({
+    stored = await storeReplacement({
+      slug: site.slug,
       siteId: site.id,
       versionId,
-      r2Key,
-      title,
-      contentHash,
-      sizeBytes,
+      set,
+      // RE-EXTRACTED, NOT CARRIED OVER. The name belongs to the bytes, so new
+      // bytes get a new name — including `null`, when the replacement has no
+      // readable `<title>`. An owner-set title survives anyway: `pointSiteAt`
+      // guards it in SQL (D11).
+      title: setTitle(set),
       publishedVia,
+      previous: {
+        versionId: site.currentVersionId,
+        title: site.title,
+        contentHash: site.contentHash,
+        sizeBytes: site.sizeBytes,
+      },
     });
   } catch (err) {
     console.error(
@@ -196,23 +186,9 @@ export async function replacePage(
     return internalError();
   }
 
-  // The manifest is `syncManifest`'s, read from the row under its lock (D18),
-  // so a flag that committed after `resolveAnonToken` saw `live` is what the
-  // edge serves. A failed write reverts the row to `previous` and syncs again:
-  // the page keeps serving what it served before, never dark.
-  const stored = await writePageAndManifest({
-    slug: site.slug,
-    siteId: site.id,
-    versionId,
-    r2Key,
-    html,
-    ownerId: site.ownerId,
-    previous,
-  });
-
   if (!stored.ok) {
     console.error(
-      `[kept] replace: store write failed for site ${site.id} (slug "${site.slug}", object "${r2Key}") — ${stored.error}`,
+      `[kept] replace: store write failed for site ${site.id} (slug "${site.slug}", version ${versionId}, ${set.entries.length} files) — ${stored.error}`,
     );
     return internalError();
   }
@@ -220,6 +196,8 @@ export async function replacePage(
   // Fire and forget by contract — the new bytes are already live and a scan must
   // never delay or fail the response.
   void enqueueScan(site.id, versionId, "replace");
+  // After the new version is live: a prune decides against the current pointer.
+  await pruneVersions(site.id);
 
   return {
     ok: true,

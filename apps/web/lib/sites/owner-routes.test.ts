@@ -579,14 +579,15 @@ test(
   { skip: skipLive },
   async () => {
     const { publishOwnedSite, replaceOwnedSite } = await import("./owner-routes");
+    const { readJsonSet } = await import("../testing/file-sets");
     const profileId = await makeProfile();
     const site = await makeSite({ ownerId: profileId, kept: true });
     const publisher = { ip: "203.0.113.5", userAgent: "kept-e06-005-drill/1.0" };
     const oversized = `<!doctype html><title>x</title>${"a".repeat(MAX_PAGE_BYTES)}`;
 
     for (const [label, call] of [
-      ["publish", (html: unknown) => publishOwnedSite({ html }, profileId, publisher)],
-      ["replace", (html: unknown) => replaceOwnedSite(site.id, { html }, profileId)],
+      ["publish", async (html: unknown) => publishOwnedSite(await readJsonSet({ html }), profileId, publisher)],
+      ["replace", async (html: unknown) => replaceOwnedSite(site.id, await readJsonSet({ html }), profileId)],
     ] as const) {
       const empty = await call("");
       assert.equal(empty.ok, false, label);
@@ -651,6 +652,7 @@ test(
   { skip: skipLive },
   async () => {
     const { replaceOwnedSite, restoreOwnedVersion } = await import("./owner-routes");
+    const { readJsonSet } = await import("../testing/file-sets");
     const db = await client();
     const { sites } = await schema();
     const { eq } = await import("drizzle-orm");
@@ -669,7 +671,7 @@ test(
       await db.update(sites).set({ status }).where(eq(sites.id, site.id));
       const before = await readSite(site.id);
 
-      const replaced = await replaceOwnedSite(site.id, { html: `<!doctype html><title>${status}</title>` }, profileId);
+      const replaced = await replaceOwnedSite(site.id, await readJsonSet({ html: `<!doctype html><title>${status}</title>` }), profileId);
       const restored = await restoreOwnedVersion(site.id, older, profileId);
 
       for (const [verb, outcome] of [["replace", replaced], ["restore", restored]] as const) {

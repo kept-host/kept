@@ -657,7 +657,7 @@ test(
     // THE CLAIM THAT MATTERS, and on a CREATE route it cannot be "the row is
     // unchanged" — there is no row yet to re-read. It is that the document was
     // never even read off the wire: `bodyUsed` false proves the refusal
-    // happened before `readPageBody`, and therefore before the hash, the
+    // happened before `readFileSet`, and therefore before the hash, the
     // transaction and every store call that could have put a page on the
     // internet. A row count would race every other spec sharing this database.
     assert.equal(request.bodyUsed, false);

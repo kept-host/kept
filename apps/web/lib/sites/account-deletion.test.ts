@@ -72,6 +72,7 @@ import { deleteAccount, getAccountDeletionSummary } from "./account-deletion";
 import { demoteSite } from "./keep";
 import { deleteSite } from "./manage";
 import { deleteOwnAccount } from "./owner-routes";
+import { fileSet } from "../testing/file-sets";
 import { publishOwnedPage } from "./publish";
 
 config({ path: ".env.local", quiet: true });
@@ -144,7 +145,7 @@ interface Published {
 }
 
 async function publish(profileId: string, marker: string): Promise<Published> {
-  const { site } = await publishOwnedPage({ profileId, html: html(marker), publisher });
+  const { site } = await publishOwnedPage({ profileId, set: await fileSet({ html: html(marker) }), publisher });
   createdSlugs.add(site.slug);
   createdSites.add(site.id);
   const [row] = await db

@@ -21,14 +21,10 @@ import type { NextResponse } from "next/server";
 
 import { getSession } from "../../../../../lib/auth/session";
 import { getProfileForSession } from "../../../../../lib/db/queries/profile";
-import {
-  readPageBody,
-  UnreadableBodyError,
-} from "../../../../../lib/publish/http";
+import { readFileSet } from "../../../../../lib/publish/fileset/read";
 import { refuseUntrustedOrigin } from "../../../../../lib/publish/origin";
 import {
   ownerResponse,
-  refuse,
   replaceOwnedSite,
   signedOut,
 } from "../../../../../lib/sites/owner-routes";
@@ -53,16 +49,9 @@ export async function POST(
   const profile = await getProfileForSession(await getSession());
   if (!profile) return ownerResponse(signedOut());
 
-  let body: unknown;
-  try {
-    body = await readPageBody(request);
-  } catch (err) {
-    if (err instanceof UnreadableBodyError) {
-      return ownerResponse(refuse("invalid_request", err.message));
-    }
-    throw err;
-  }
+  // The owner's plan's caps (E08 §5.3); the profile may own an `upload_id`.
+  const set = await readFileSet(request, { plan: profile.plan, uploaderId: profile.id });
 
   const { id } = await params;
-  return ownerResponse(await replaceOwnedSite(id, body, profile.id));
+  return ownerResponse(await replaceOwnedSite(id, set, profile.id));
 }

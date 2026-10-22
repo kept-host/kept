@@ -211,21 +211,30 @@ test("AC36: a title edit persists as the owner's; clearing it re-derives the pag
 
 test("AC36: a replace never overwrites an owner title", { skip }, async () => {
   const { updateOwnedSite } = await deps();
-  const { insertReplacementVersion } = await import("../db/queries/publish");
+  const { activatePendingVersion, insertPendingVersion } = await import("../db/queries/publish");
   const { pageObjectKey } = await deps();
   const owner = await makeOwner();
   const siteId = await seedSite(owner);
 
   await updateOwnedSite(siteId, { title: "Mine" }, owner);
   const versionId = crypto.randomUUID();
-  const kept = await insertReplacementVersion({
+  // A replace's two row steps (E08 D11): the version's rows, then the pointer.
+  await insertPendingVersion({
     siteId,
     versionId,
     r2Key: pageObjectKey(siteId, versionId),
-    title: "From the new bytes",
     contentHash: "e06-012-replaced",
     sizeBytes: 64,
     publishedVia: "studio",
+    spa: false,
+    has404: false,
+    files: [{ path: "index.html", sizeBytes: 64, sha256: "e06-012-replaced" }],
+  });
+  const kept = await activatePendingVersion(siteId, {
+    versionId,
+    title: "From the new bytes",
+    contentHash: "e06-012-replaced",
+    sizeBytes: 64,
   });
   assert.equal(kept.title, "Mine", "the replace keeps the owner's title");
   assert.equal((await row(siteId)).title, "Mine");

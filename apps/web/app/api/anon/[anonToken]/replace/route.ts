@@ -15,15 +15,11 @@
  */
 import { NextResponse } from "next/server";
 
-import { closedModeAccess } from "../../../../../lib/launch-access";
+import { closedModeAccess, keylessPlan } from "../../../../../lib/launch-access";
 import { notOpenResponse } from "../../../../../lib/launch";
 import { replacePage } from "../../../../../lib/publish/anon-manage";
-import {
-  browserChannel,
-  errorResponse,
-  readPageBody,
-  UnreadableBodyError,
-} from "../../../../../lib/publish/http";
+import { readFileSet } from "../../../../../lib/publish/fileset/read";
+import { browserChannel, errorResponse } from "../../../../../lib/publish/http";
 
 /** `postgres-js` needs TCP sockets and `aws4fetch` signs with Node's crypto. */
 export const runtime = "nodejs";
@@ -38,21 +34,18 @@ export async function POST(
   // E06a §1: closed, only an access token or an admin session gets past this —
   // checked first, before anything is read or written. RETIRE with
   // `lib/launch-access.ts`.
-  if (!(await closedModeAccess(request))) return notOpenResponse();
+  const door = await closedModeAccess(request);
+  if (!door) return notOpenResponse();
 
   const { anonToken } = await params;
 
-  let body: unknown;
-  try {
-    body = await readPageBody(request);
-  } catch (err) {
-    if (err instanceof UnreadableBodyError) {
-      return errorResponse(400, { error: "invalid_request", message: err.message });
-    }
-    throw err;
-  }
-
-  const outcome = await replacePage(anonToken, body, browserChannel(request));
+  // The same inputs as publish, on the same keyless plan (E08 §5.3), read only
+  // once the token resolved and the per-page governor admitted the request.
+  const outcome = await replacePage(
+    anonToken,
+    () => readFileSet(request, { plan: keylessPlan(door), uploaderId: null }),
+    browserChannel(request),
+  );
 
   if (!outcome.ok) return errorResponse(outcome.status, outcome.body);
 

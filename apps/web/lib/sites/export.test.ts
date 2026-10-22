@@ -507,6 +507,7 @@ test(
   { skip },
   async () => {
     const { db, eq, sites, siteVersions, ...routes } = await deps();
+    const { readJsonSet } = await import("../testing/file-sets");
     const owner = await makeOwner();
     const [removed] = await seed(owner, 1, {
       status: "removed",
@@ -524,7 +525,7 @@ test(
       rename: () => routes.changeOwnedSiteName(id, { name: `d13-${id.slice(0, 8)}` }, owner),
       title: () => routes.updateOwnedSite(id, { title: "Back again" }, owner),
       listing: () => routes.updateOwnedSite(id, { listedPublic: true }, owner),
-      replace: () => routes.replaceOwnedSite(id, { html: "<!doctype html><title>back</title>" }, owner),
+      replace: async () => routes.replaceOwnedSite(id, await readJsonSet({ html: "<!doctype html><title>back</title>" }), owner),
       restore: () => routes.restoreOwnedVersion(id, version!.id, owner),
       delete: () => routes.deleteOwnedSite(id, owner),
     };

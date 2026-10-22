@@ -4,8 +4,9 @@
  *
  * Reads the source of every `apps/web` module that calls `writeManifest` (or
  * `storeManifest`, its in-module twin) and fails on a `status: "live"` property
- * anywhere in it — except the ONE literal D18 keeps: the brand-new publish
- * branch of `writePageAndManifest`, after its replace branch has returned. A
+ * anywhere in it — except the ONE literal D18 keeps: `storeNewPage`, the
+ * brand-new publish's store half (a replace is `storeReplacement`'s, which
+ * calls `syncManifest`). A
  * replace, restore, rename or late keep that writes `live` again would undo a
  * flag committed while it was in flight; everything after a page's first
  * publish goes through `syncManifest`, which writes the row's own status.
@@ -23,7 +24,7 @@ import ts from "typescript";
 const WEB_ROOT = path.resolve(import.meta.dirname, "../..");
 const SCANNED_DIRS = ["app", "lib", "components", "scripts"];
 const WRITERS = new Set(["writeManifest", "storeManifest"]);
-const ALLOWED = { file: "lib/publish/pipeline.ts", fn: "writePageAndManifest" };
+const ALLOWED = { file: "lib/publish/pipeline.ts", fn: "storeNewPage" };
 
 /** Every non-test TypeScript module under the scanned directories. */
 function sourceFiles(): string[] {
@@ -50,20 +51,17 @@ interface LiveLiteral {
   file: string;
   line: number;
   fn: string | null;
-  pos: number;
 }
 
-function scan(file: string): { callsWriter: boolean; live: LiveLiteral[]; syncPos: number[] } {
+function scan(file: string): { callsWriter: boolean; live: LiveLiteral[] } {
   const text = readFileSync(path.join(WEB_ROOT, file), "utf8");
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
   let callsWriter = false;
   const live: LiveLiteral[] = [];
-  const syncPos: number[] = [];
 
   walk(source, (node) => {
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
-      if (WRITERS.has(node.expression.text)) callsWriter = true;
-      if (node.expression.text === "syncManifest") syncPos.push(node.getStart());
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && WRITERS.has(node.expression.text)) {
+      callsWriter = true;
     }
     if (
       ts.isPropertyAssignment(node) &&
@@ -76,11 +74,10 @@ function scan(file: string): { callsWriter: boolean; live: LiveLiteral[]; syncPo
         file,
         line: source.getLineAndCharacterOfPosition(node.getStart()).line + 1,
         fn: enclosingFunctionName(node),
-        pos: node.getStart(),
       });
     }
   });
-  return { callsWriter, live, syncPos };
+  return { callsWriter, live };
 }
 
 test('AC34: no manifest writer hard-codes status "live" outside the brand-new publish branch', () => {
@@ -97,11 +94,7 @@ test('AC34: no manifest writer hard-codes status "live" outside the brand-new pu
   let allowedSeen = 0;
   for (const writer of writers) {
     for (const literal of writer.live) {
-      const isAllowed =
-        literal.file === ALLOWED.file &&
-        literal.fn === ALLOWED.fn &&
-        // AFTER the replace branch's `syncManifest` call: the new-publish branch.
-        writer.syncPos.some((pos) => pos < literal.pos);
+      const isAllowed = literal.file === ALLOWED.file && literal.fn === ALLOWED.fn;
       if (isAllowed) allowedSeen += 1;
       else violations.push(`${literal.file}:${literal.line} (in ${literal.fn ?? "module scope"})`);
     }
@@ -112,5 +105,5 @@ test('AC34: no manifest writer hard-codes status "live" outside the brand-new pu
     [],
     `status: "live" hard-coded in a manifest writer — use syncManifest (D18): ${violations.join("; ")}`,
   );
-  assert.equal(allowedSeen, 1, "writePageAndManifest keeps exactly one literal, for a brand-new publish");
+  assert.equal(allowedSeen, 1, "storeNewPage keeps exactly one literal, for a brand-new publish");
 });

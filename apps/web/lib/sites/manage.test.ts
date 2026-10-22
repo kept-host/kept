@@ -76,9 +76,10 @@ interface Published {
 /** A real kept page: Postgres row, R2 object, pointer, KV manifest, purge. */
 async function publish(profileId: string): Promise<Published> {
   const { publishOwnedPage } = await import("./publish");
+  const { fileSet } = await import("../testing/file-sets");
   const marker = `e06-008-${crypto.randomUUID().slice(0, 8)}`;
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${marker}</title></head><body><h1>${marker}</h1></body></html>\n`;
-  const { site } = await publishOwnedPage({ profileId, html, publisher });
+  const { site } = await publishOwnedPage({ profileId, set: await fileSet({ html }), publisher });
   createdSites.add(site.id);
   createdSlugs.add(site.slug);
   // Tracked so a hold the code under test should NOT have written is still torn down.

@@ -22,6 +22,8 @@ import {
   servingDomain,
   SKIP_LIVE_PUBLISH,
 } from "./live-publish";
+import { buildZip } from "../lib/testing/zip-fixture";
+
 import { rawRequest } from "./raw-request";
 
 /**
@@ -31,7 +33,7 @@ import { rawRequest } from "./raw-request";
  * to hold for a bare `curl -X POST` — an HTML body, no cookie, no auth header,
  * no Turnstile token. `publish-flow.spec.ts` (task 007) drives the same endpoint
  * through the hero and belongs to that task; this file drives it as an API, which
- * is the shape E08's MCP tools will use.
+ * is the shape E09's MCP tools will use.
  *
  * EVERY BODY IS PARSED WITH THE SHARED SCHEMA rather than picked at field by
  * field. `publishResponseSchema` / `publishErrorSchema` are what task 002 froze
@@ -177,9 +179,9 @@ test.describe("the publish API, as an agent calls it", () => {
   }) => {
     test.setTimeout(60_000);
 
-    // `lib/publish/http.ts` documents exactly three ways in, for three real
-    // callers: JSON (the hero and E08's MCP tools), multipart (a dropped
-    // `.html` file), and raw `text/html` (the epic's literal `curl` case).
+    // `lib/publish/fileset/read.ts` keeps the three single-page ways in, for
+    // three real callers: JSON (the hero and E09's MCP tools), multipart (a
+    // dropped `.html` file), and raw `text/html` (the epic's literal `curl` case).
     // `publish-flow.spec.ts` drives two of them through the browser; nothing
     // until now proved multipart and JSON answer the same contract over the
     // wire, which is what an agent author reading the PRD would assume.
@@ -226,6 +228,58 @@ test.describe("the publish API, as an agent calls it", () => {
     // Three distinct documents, so three distinct pages — a shared slug would
     // mean the minter is not actually random, and dedup does not apply here.
     expect(new Set(slugs).size, `slugs collided: ${slugs.join(", ")}`).toBe(3);
+  });
+
+  test("E08 AC2: a zip whose files sit under dist/ publishes with dist/ stripped — / serves dist/index.html, and the body is the frozen seven fields", async ({
+    request,
+  }) => {
+    test.setTimeout(60_000);
+
+    const html = pageHtml(marker());
+    const js = `console.log(${JSON.stringify(marker())});`;
+    const zip = buildZip([
+      { name: "dist/index.html", data: html },
+      { name: "dist/assets/app.js", data: js },
+      { name: "dist/.DS_Store", data: "junk" },
+    ]);
+    const res = await request.post("/api/publish", {
+      multipart: {
+        archive: { name: "dist.zip", mimeType: "application/zip", buffer: Buffer.from(zip) },
+      },
+    });
+
+    expect(res.status(), await res.text()).toBe(201);
+    const raw = (await res.json()) as Record<string, unknown>;
+    const body = contract(raw);
+    published.push(body.anonToken);
+    // The keyless body is frozen: no `ignored`, nothing about files.
+    expect(Object.keys(raw).sort()).toEqual([...CONTRACT_FIELDS]);
+
+    const served = await waitForServe(body.live_url);
+    expect(served.status).toBe(200);
+    expect(served.body, "/ serves dist/index.html's bytes").toBe(html);
+    const asset = await probeEdge(`${body.live_url}/assets/app.js`);
+    expect(asset.status).toBe(200);
+    expect(asset.body).toBe(js);
+    expect(asset.contentType).toContain("text/javascript");
+  });
+
+  test("E08 AC5: a set with no root index.html is a flat 400 missing_index, and nothing is published", async ({
+    request,
+  }) => {
+    const res = await request.post("/api/publish", {
+      headers: { "content-type": "application/json" },
+      data: {
+        files: [
+          { path: "about/page.html", content: pageHtml(marker()) },
+          { path: "app.css", content: "body { margin: 0 }" },
+        ],
+      },
+    });
+    expect(res.status(), await res.text()).toBe(400);
+    const body = publishErrorSchema.parse(await res.json());
+    expect(body.error).toBe("missing_index");
+    expect(res.headers()["cache-control"]).toBe("no-store");
   });
 
   test("a caller-chosen slug is ignored, and no minted URL carries an unset value", async ({

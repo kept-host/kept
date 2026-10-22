@@ -11,7 +11,7 @@
  *
  * ⚠️ IT IS NOT `POST /api/publish` WITH A COOKIE, AND THE TWO MUST NOT MERGE.
  * That route is keyless by design — it mints an anonymous bearer token, leaves
- * `owner_id` null and starts a 7-day clock — and it is the path E08's agents
+ * `owner_id` null and starts a 7-day clock — and it is the path E09's agents
  * take, so it stays callable from anywhere with no origin check. This one spends
  * the `__Host-` session cookie, so it is origin-gated like every other
  * cookie-authenticated mutation (E05a D3). Same product verb, two authority
@@ -31,16 +31,12 @@ import type { NextResponse } from "next/server";
 
 import { getSession } from "../../../lib/auth/session";
 import { getProfileForSession } from "../../../lib/db/queries/profile";
-import {
-  publisherFrom,
-  readPageBody,
-  UnreadableBodyError,
-} from "../../../lib/publish/http";
+import { readFileSet } from "../../../lib/publish/fileset/read";
+import { publisherFrom } from "../../../lib/publish/http";
 import { refuseUntrustedOrigin } from "../../../lib/publish/origin";
 import {
   ownerResponse,
   publishOwnedSite,
-  refuse,
   signedOut,
 } from "../../../lib/sites/owner-routes";
 
@@ -61,15 +57,8 @@ export async function POST(request: Request): Promise<NextResponse> {
   const profile = await getProfileForSession(await getSession());
   if (!profile) return ownerResponse(signedOut());
 
-  let body: unknown;
-  try {
-    body = await readPageBody(request);
-  } catch (err) {
-    if (err instanceof UnreadableBodyError) {
-      return ownerResponse(refuse("invalid_request", err.message));
-    }
-    throw err;
-  }
+  // The owner's plan's caps (E08 §5.3); the profile may own an `upload_id`.
+  const set = await readFileSet(request, { plan: profile.plan, uploaderId: profile.id });
 
-  return ownerResponse(await publishOwnedSite(body, profile.id, publisherFrom(request)));
+  return ownerResponse(await publishOwnedSite(set, profile.id, publisherFrom(request)));
 }

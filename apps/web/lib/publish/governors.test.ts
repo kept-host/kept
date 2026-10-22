@@ -121,6 +121,7 @@ after(async () => {
 
 test("the 31st new page in an hour is a 429 with retry_after_seconds", { skip: skipLive }, async () => {
   const { publishPage } = await import("./pipeline");
+  const { jsonBody } = await import("../testing/file-sets");
   const who = freshPublisher();
   const key = await publisherKey(who);
   const { perPublisherHour, perPublisherDay } = PUBLISH_RATE_LIMITS;
@@ -128,7 +129,7 @@ test("the 31st new page in an hour is a 429 with retry_after_seconds", { skip: s
   await fill(`publish:${key}`, perPublisherHour, perPublisherHour.limit);
   assert.equal(await count(`publish:${key}`, perPublisherHour), 30, "30 new pages already this hour");
 
-  const outcome = await publishPage({ html: pageHtml(`${run}-31st`) }, who);
+  const outcome = await publishPage(jsonBody({ html: pageHtml(`${run}-31st`) }), who);
   console.log("[e07-002] 31st page →", outcome.ok ? outcome.status : outcome.body);
   assert.equal(outcome.ok, false);
   if (outcome.ok) return;
@@ -151,18 +152,19 @@ let page: { who: { ip: string; userAgent: string }; key: string; html: string; a
 test("a deduped publish spends the request ceiling, not publish:<key>", { skip: skipLive }, async () => {
   const { publishPage } = await import("./pipeline");
   const { resolveAnonToken } = await import("./anon-token");
+  const { jsonBody } = await import("../testing/file-sets");
   const who = freshPublisher();
   const key = await publisherKey(who);
   const html = pageHtml(`${run}-dedup`);
   const { perPublisherHour, perPublisherDay, requestsPerPublisherHour } = PUBLISH_RATE_LIMITS;
 
-  const first = await publishPage({ html }, who);
+  const first = await publishPage(jsonBody({ html }), who);
   assert.equal(first.ok, true, JSON.stringify(first.ok ? null : first.body));
   if (!first.ok) return;
   created.add(first.body.slug);
   assert.equal(first.body.deduped, false);
 
-  const again = await publishPage({ html }, who);
+  const again = await publishPage(jsonBody({ html }), who);
   assert.equal(again.ok, true);
   if (!again.ok) return;
   assert.equal(again.body.deduped, true, "same publisher, same bytes: the existing page");
@@ -181,6 +183,7 @@ test("the 121st request is a 429 BEFORE the dedup probe", { skip: skipLive }, as
   assert.ok(page, "needs the page from the dedup drill");
   const { publishPage } = await import("./pipeline");
   const { resolveAnonToken } = await import("./anon-token");
+  const { jsonBody } = await import("../testing/file-sets");
   const { perPublisherHour, requestsPerPublisherHour } = PUBLISH_RATE_LIMITS;
   const bucket = `publish-requests:${page.key}`;
 
@@ -189,7 +192,7 @@ test("the 121st request is a 429 BEFORE the dedup probe", { skip: skipLive }, as
   assert.equal(await count(bucket, requestsPerPublisherHour), 120);
 
   // The same bytes again: a dedup hit if the probe ran — it must not.
-  const outcome = await publishPage({ html: page.html }, page.who);
+  const outcome = await publishPage(jsonBody({ html: page.html }), page.who);
   console.log("[e07-002] 121st request →", outcome.ok ? outcome.status : outcome.body);
   assert.equal(outcome.ok, false);
   if (outcome.ok) return;
@@ -207,12 +210,13 @@ test("the 121st request is a 429 BEFORE the dedup probe", { skip: skipLive }, as
 test("the 61st anonymous replace of one page in an hour is a 429", { skip: skipLive }, async () => {
   assert.ok(page, "needs the page from the dedup drill");
   const { replacePage } = await import("./anon-manage");
+  const { jsonBody } = await import("../testing/file-sets");
   const { anonReplacePerSiteHour } = PUBLISH_RATE_LIMITS;
   const bucket = `anon-replace:${page.siteId}`;
 
   await fill(bucket, anonReplacePerSiteHour, anonReplacePerSiteHour.limit);
 
-  const outcome = await replacePage(page.anonToken, { html: pageHtml(`${run}-replace`) }, "api");
+  const outcome = await replacePage(page.anonToken, jsonBody({ html: pageHtml(`${run}-replace`) }), "api");
   console.log("[e07-002] 61st replace →", outcome.ok ? outcome.status : outcome.body);
   assert.equal(outcome.ok, false);
   if (outcome.ok) return;

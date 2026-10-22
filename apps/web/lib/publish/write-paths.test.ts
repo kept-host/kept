@@ -128,10 +128,11 @@ test(
     const { eq, db, sites } = await deps();
     const { publishPage } = await import("./pipeline");
     const { replacePage } = await import("./anon-manage");
+    const { jsonBody } = await import("../testing/file-sets");
 
     // ── POST /api/publish, keyless: `api` ─────────────────────────────────────
     const first = `${runId()} &amp; <b>friends</b>`;
-    const published = await publishPage({ html: pageHtml(first) }, publisher);
+    const published = await publishPage(jsonBody({ html: pageHtml(first) }), publisher);
     assert.equal(published.ok, true, published.ok ? "" : JSON.stringify(published.body));
     if (!published.ok) return;
     createdSlugs.add(published.body.slug);
@@ -158,7 +159,7 @@ test(
 
     // ── POST /api/publish from the landing (carries a Turnstile token): `web` ──
     const fromWeb = await publishPage(
-      { html: pageHtml(runId()), turnstileToken: "e06-005-drill" },
+      jsonBody({ html: pageHtml(runId()), turnstileToken: "e06-005-drill" }),
       publisher,
     );
     assert.equal(fromWeb.ok, true, fromWeb.ok ? "" : JSON.stringify(fromWeb.body));
@@ -171,7 +172,7 @@ test(
 
     // ── Anonymous replace from the manage screen: `web`, and an html title refreshes
     const second = runId();
-    const replaced = await replacePage(published.body.anonToken, { html: pageHtml(second) }, "web");
+    const replaced = await replacePage(published.body.anonToken, jsonBody({ html: pageHtml(second) }), "web");
     assert.equal(replaced.ok, true, replaced.ok ? "" : JSON.stringify(replaced.body));
     if (!replaced.ok) return;
     assert.deepEqual(Object.keys(replaced.body).sort(), [
@@ -185,12 +186,14 @@ test(
 
     // ── An owner title is NEVER overwritten by a replace (D11) ───────────────
     await setOwnerTitle(anon.id, "Named by its owner");
-    const again = await replacePage(published.body.anonToken, { html: pageHtml(runId()) }, "api");
+    const again = await replacePage(published.body.anonToken, jsonBody({ html: pageHtml(runId()) }), "api");
     assert.equal(again.ok, true, again.ok ? "" : JSON.stringify(again.body));
     const afterOwner = await row(anon.id);
     assert.equal(afterOwner.title, "Named by its owner");
     assert.equal(afterOwner.titleSource, "owner");
-    assert.deepEqual(await channels(anon.id), ["api", "web", "api"]);
+    // The publish's `api` version was pruned: an ownerless page keeps one
+    // previous version, like `free` (E08 Q-new-4).
+    assert.deepEqual(await channels(anon.id), ["web", "api"]);
   },
 );
 
@@ -201,6 +204,7 @@ test(
     const { db, profiles, user } = await deps();
     const { publishOwnedPage } = await import("../sites/publish");
     const { replaceSite } = await import("../sites/manage");
+    const { fileSet } = await import("../testing/file-sets");
 
     const profileId = crypto.randomUUID();
     const email = `e06-005-${profileId.slice(0, 8)}@kept-e06-005.invalid`;
@@ -212,7 +216,7 @@ test(
     const first = runId();
     const { site } = await publishOwnedPage({
       profileId,
-      html: pageHtml(`<em>${first}</em>\n\t  draft`),
+      set: await fileSet({ html: pageHtml(`<em>${first}</em>\n\t  draft`) }),
       publisher,
     });
     createdSites.add(site.id);
@@ -223,7 +227,7 @@ test(
 
     // ── Studio replace: an html title refreshes ──────────────────────────────
     const second = runId();
-    const replaced = await replaceSite(site.id, profileId, pageHtml(second));
+    const replaced = await replaceSite(site.id, profileId, await fileSet({ html: pageHtml(second) }));
     if (replaced.unchanged) assert.fail("new bytes are a new version, never a no-op");
     assert.equal(replaced.title, second);
     assert.equal((await row(site.id)).title, second);
@@ -231,7 +235,7 @@ test(
 
     // ── …and an owner title does not, and the response says what the row holds
     await setOwnerTitle(site.id, "Owner's own name");
-    const kept = await replaceSite(site.id, profileId, pageHtml(runId()));
+    const kept = await replaceSite(site.id, profileId, await fileSet({ html: pageHtml(runId()) }));
     if (kept.unchanged) assert.fail("new bytes are a new version, never a no-op");
     assert.equal(kept.title, "Owner's own name", "the response reports the stored title");
     const afterOwner = await row(site.id);

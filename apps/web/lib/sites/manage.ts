@@ -5,9 +5,10 @@
  *
  * ── TWO VERBS, TWO DELIBERATELY INVERSE ORDERINGS ────────────────────────────
  *
- *   replace:  Postgres (new version) → R2 object → syncManifest (pointer → KV
- *             → purge, from the row under its lock — D18)
- *             → scan → prune (R2 delete THEN row, per pruned version)
+ *   replace:  Postgres (new version rows, not pointed) → every file to R2 →
+ *             point → syncManifest (pointer → KV → purge, from the row under
+ *             its lock — D18; `storeReplacement`, E08 D11)
+ *             → scan → prune (R2 deletes THEN rows, every file of each version)
  *   delete:   pointer → KV → purge   → Postgres (locked status re-check →
  *             archive + purge_after + hold) → syncManifest (AC42)
  *
@@ -16,7 +17,7 @@
  * bytes are written before the pointer moves. A delete's is "a row that says
  * gone while the page keeps serving", so the edge is unwound first and Postgres
  * second. Neither is negotiable, and neither is re-derived here: `replaceSite`
- * calls `writePageAndManifest` (which owns the forward sequence and its unwind)
+ * calls `storeReplacement` (which owns the forward sequence and its unwind)
  * and `deleteSite` calls `removeManifest` (which owns pointer-before-KV). A
  * `kv.put` in this file would be both a lint error and the resurrection bug.
  *
@@ -32,7 +33,7 @@
  *
  * ── THE TWO RULES THAT ARE EASIEST TO BREAK ──────────────────────────────────
  *
- * 1. **A replace does not touch the clock.** `insertReplacementVersion` writes
+ * 1. **A replace does not touch the clock.** `storeReplacement` writes
  *    neither `expires_at` nor `purge_after`, and nothing here writes them
  *    either. If re-dropping a file restarted the seven days, a weekly upload
  *    would hold a page forever for free and "keep it" would stop meaning
@@ -48,59 +49,27 @@
  * ⚠️ R2 IS KEYED BY `siteId`, NEVER BY SLUG. A replace writes a NEW `versionId`
  * under the SAME `siteId`; a delete removes no object at all. The only objects
  * this module deletes are versions pruned past `limitsFor(plan).previousVersions`
- * (D7) — the object first, then its row. A failed object delete keeps the row
+ * (D7) — every file first, then the rows. A failed object delete keeps the rows
  * (edge case 14), so the next replace's prune finds it and tries again; the
  * reverse order would orphan bytes no row names.
  */
-import {
-  hashContent,
-  htmlPublishRequestSchema,
-  type DeleteResult,
-  type ReplaceResult,
-  type SiteStatus,
-} from "@kept/shared";
+import { type DeleteResult, type ReplaceResult, type SiteStatus } from "@kept/shared";
 import { eq } from "drizzle-orm";
 
 import { db } from "../db";
-import {
-  DELETABLE_STATUSES,
-  findSiteForOwner,
-  insertReplacementVersion,
-  lockSiteForOwner,
-} from "../db/queries/publish";
+import { DELETABLE_STATUSES, findSiteForOwner, lockSiteForOwner } from "../db/queries/publish";
 import { deleteVersionRow, lockPrunableVersions } from "../db/queries/versions";
 import { sites } from "../db/schema";
 import { holdName } from "../names/holds";
+import type { FileSet } from "../publish/fileset/types";
 import { enqueueScan } from "../publish/hooks";
-import { extractPageTitle } from "../publish/page-title";
-import { graceEnds, liveUrl, writePageAndManifest } from "../publish/pipeline";
+import { graceEnds, liveUrl, setTitle, storeReplacement } from "../publish/pipeline";
 import { removeManifest, syncManifest } from "../storage/manifest";
-import { pageObjectKey, r2Store } from "../storage/r2";
+import { r2Store } from "../storage/r2";
 
 import { managementRefusal } from "./display";
 import { keptQuotaFor, lockOwner, SiteNotFoundError, type BulkSettled } from "./keep";
 import { StudioRefusal } from "./studio-refusal";
-
-/**
- * The body of an owner write — a replace here, and the owned publish in
- * `./publish.ts` (task 004). One schema, because they carry the same thing: the
- * document, and nothing else.
- *
- * PICKED FROM THE PUBLISH SCHEMA rather than re-declared, so `MAX_PAGE_BYTES`,
- * the "looks like HTML" rule and every error code stay identical to the path
- * that first stored the page. What is deliberately left OUT:
- *
- *   · `turnstileToken` — the caller is authenticated by a session cookie and an
- *     origin check. A bot check on top of that protects nothing and would be a
- *     second thing to keep working.
- *   · `reminderEmail` — a pre-expiry reminder belongs to an anonymous draft
- *     whose publisher has no account to be reminded through. An owner has one.
- *
- * zod strips unknown keys, so a body carrying either field is accepted and the
- * field ignored — a browser posting a multipart form it built for the landing
- * page must not fail here for sending a token nothing needs.
- */
-export const ownerPageBodySchema = htmlPublishRequestSchema.pick({ html: true });
 
 /**
  * The page is not in a state whose served version may change — by replace or by
@@ -178,10 +147,11 @@ function message(err: unknown): string {
 /**
  * Swap a page's bytes, keeping its URL, its slug, its `siteId` and its clock.
  *
- * The caller (`./owner-routes.ts`) has already validated the body's shape;
- * this function owns ownership, state and ordering.
+ * The caller (`./owner-routes.ts`) has already read the body into a `FileSet`
+ * (`readFileSet`, on the owner's plan); this function owns ownership, state and
+ * ordering.
  *
- * Bytes identical to the current version are `{ unchanged: true }` with nothing
+ * A set identical to the current version is `{ unchanged: true }` with nothing
  * written (D7, AC27). Otherwise the answer names the version it replaced — what
  * the Undo toast restores — and whether pruning dropped one.
  *
@@ -192,7 +162,7 @@ function message(err: unknown): string {
 export async function replaceSite(
   siteId: string,
   profileId: string,
-  html: string,
+  set: FileSet,
 ): Promise<ReplaceResult> {
   const site = await findSiteForOwner(siteId, profileId);
   // `removed` is E07's takedown. Its owner can still see and download it until
@@ -200,25 +170,11 @@ export async function replaceSite(
   if (!site || site.status === "removed") throw new SiteNotFoundError(siteId);
   if (site.status !== "live") throw new SiteNotReplaceableError(site.status);
 
-  const contentHash = await hashContent(html);
-  // `sites.content_hash` is the CURRENT version's (`pointSiteAt` keeps it so).
-  // Re-dropping the file already served is not a new version, and writing one
-  // would push a real previous version out through pruning for nothing.
-  if (contentHash === site.contentHash) return { unchanged: true };
-
-  const sizeBytes = Buffer.byteLength(html, "utf8");
-  // RE-EXTRACTED, NOT CARRIED OVER — including to `null`, when the replacement
-  // has no readable `<title>`. The name belongs to the bytes, so new bytes get
-  // a new name; leaving the old value in place would make the wall confidently
-  // display the PREVIOUS page's name (E06 task 001). Unless the OWNER named the
-  // page (D11): `insertReplacementVersion` keeps an owner title, in SQL, and
-  // returns the title the row actually ended up with.
-  const extracted = extractPageTitle(html);
-
-  // NEW versionId, SAME siteId — so the object is a new key rather than a
-  // mutation of one the edge may have cached, and the slug never has to move.
-  const versionId = crypto.randomUUID();
-  const r2Key = pageObjectKey(site.id, versionId);
+  // `sites.content_hash` is the CURRENT version's set hash (`pointSiteAt` keeps
+  // it so). Re-dropping the set already served is not a new version, and
+  // writing one would push a real previous version out through pruning for
+  // nothing.
+  if (set.contentHash === site.contentHash) return { unchanged: true };
 
   const previous = {
     versionId: site.currentVersionId,
@@ -227,37 +183,31 @@ export async function replaceSite(
     sizeBytes: site.sizeBytes,
   };
 
-  // Postgres first, exactly as publish does and for the same reason: it is the
-  // only store with a transaction and the only one E07's audit can reconcile
-  // against. `expires_at` and `purge_after` are not in this statement.
-  const { title } = await insertReplacementVersion({
-    siteId: site.id,
-    versionId,
-    r2Key,
-    title: extracted,
-    contentHash,
-    sizeBytes,
-    publishedVia: "studio",
-  });
-
-  // The manifest is `syncManifest`'s, read from the row under its lock (D18):
-  // a flag or expiry that committed after the status check above is what the
-  // edge serves, never a stale `live`. A failed write reverts the row to
-  // `previous` and syncs again, so the page keeps serving what it served before,
-  // never dark. That branch is `writePageAndManifest`'s and exists for this call.
-  const stored = await writePageAndManifest({
+  // Rows (not pointed) → every file → point → sync, and the unwind for each —
+  // `storeReplacement`'s, shared with the anonymous replace. `expires_at` and
+  // `purge_after` are in none of its statements.
+  // NEW versionId, SAME siteId — so every key is a new object rather than a
+  // mutation of one the edge may have cached, and the slug never has to move.
+  const versionId = crypto.randomUUID();
+  const stored = await storeReplacement({
     slug: site.slug,
     siteId: site.id,
     versionId,
-    r2Key,
-    html,
-    ownerId: profileId,
+    set,
+    // RE-EXTRACTED, NOT CARRIED OVER — including to `null`, when the
+    // replacement has no readable `<title>`. The name belongs to the bytes, so
+    // new bytes get a new name; leaving the old value in place would make the
+    // wall confidently display the PREVIOUS page's name (E06 task 001). Unless
+    // the OWNER named the page (D11): `pointSiteAt` keeps an owner title, in SQL,
+    // and the result carries the title the row actually ended up with.
+    title: setTitle(set),
+    publishedVia: "studio",
     previous,
   });
 
   if (!stored.ok) {
     console.error(
-      `[kept] owner replace: store write failed for site ${site.id} (slug "${site.slug}", object "${r2Key}") — ${stored.error}`,
+      `[kept] owner replace: store write failed for site ${site.id} (slug "${site.slug}", version ${versionId}, ${set.entries.length} files) — ${stored.error}`,
     );
     throw new ManageStoreError("replace", stored.error);
   }
@@ -275,7 +225,7 @@ export async function replaceSite(
     liveUrl: liveUrl(site.slug),
     versionId,
     previousVersionId: previous.versionId,
-    title,
+    title: stored.title,
     // The clock as it was found. Echoed, never recomputed — see the note on
     // `expiresAt` in `@kept/shared`'s replace/restore result.
     expiresAt: site.expiresAt ? site.expiresAt.toISOString() : null,
@@ -287,29 +237,31 @@ export async function replaceSite(
 
 /**
  * Keep the current version plus `limitsFor(plan).previousVersions` (D7), newest
- * by `activated_at`; drop the rest — each R2 object FIRST, then its row.
+ * by `activated_at`; drop the rest — per version, EVERY file (E08 D1, the keys
+ * from `site_version_files`) in one `deleteMany`, THEN its row. An ownerless
+ * page prunes like `free` (Q-new-4); the anonymous replace calls this too.
  *
  * Runs under the site-row lock `lockPrunableVersions` takes, which is the lock a
  * restore takes too, so a restore can never point the page at bytes being
  * deleted here.
  *
- * A failed object delete keeps its row and logs, and the next replace retries it
- * (edge case 14). NEVER THROWS: the new version is already serving, and a
+ * A failed object delete keeps that version's row and logs, and the next replace
+ * retries it (edge case 14). NEVER THROWS: the new version is already serving, and a
  * prune that failed must not turn a successful replace into an error. The
  * answer is whether a version was dropped — the studio's cue for "Free accounts
  * keep one previous version." (task 012).
  */
-async function pruneVersions(siteId: string): Promise<boolean> {
+export async function pruneVersions(siteId: string): Promise<boolean> {
   try {
     return await db.transaction(async (tx) => {
       const r2 = r2Store();
       let pruned = false;
       for (const version of await lockPrunableVersions(tx, siteId)) {
         try {
-          await r2.delete(version.r2Key);
+          await r2.deleteMany(version.keys);
         } catch (err) {
           console.error(
-            `[kept] prune: R2 delete failed for "${version.r2Key}" (site ${siteId}) — ${message(err)}. The row is kept; the next replace retries it.`,
+            `[kept] prune: R2 delete failed for version ${version.id} (site ${siteId}, ${version.keys.length} objects, first "${version.keys[0]}") — ${message(err)}. The row is kept; the next replace retries it.`,
           );
           continue;
         }

@@ -1,11 +1,9 @@
 /**
- * The HTTP boundary bits every publish-family route shares — body extraction
- * and the error response — so `POST /api/publish` and the three anonymous
- * manage routes read a body exactly one way and fail exactly one way.
- *
- * Extracted from `app/api/publish/route.ts` when task 006 added replace, which
- * accepts the identical three content types for the identical reason: a dropped
- * `.html` file arrives as multipart, a pasted document as JSON, and a `curl`
+ * The HTTP boundary bits every publish-family route shares — body parsing
+ * helpers and the error response — so `POST /api/publish` and the anonymous
+ * manage routes read a body exactly one way and fail exactly one way. A page's
+ * body is read by `./fileset/read.ts` (`readFileSet`, E08 D3), on these helpers:
+ * a dropped file arrives as multipart, a pasted document as JSON, and a `curl`
  * user should not have to JSON-encode a document to use the API.
  */
 import { publishErrorSchema, type PublishError } from "@kept/shared";
@@ -38,44 +36,6 @@ export async function readJson(body: Pick<Body, "json">): Promise<unknown> {
   } catch {
     throw new UnreadableBodyError("The body is not valid JSON.");
   }
-}
-
-/**
- * Extract a page-bearing body into the shape the publish/replace schemas
- * validate. Three content types, one shape:
- *
- * - `application/json` — `{ html, turnstileToken?, reminderEmail? }`, the PRD's
- *   canonical body and what the hero and E08 send.
- * - `multipart/form-data` — the same fields; `html` may be a file part, which
- *   is what a dropped `.html` file is.
- * - `text/html` — the raw document as the whole body, so the epic's
- *   "`curl -X POST` with an HTML body" case works literally.
- */
-export async function readPageBody(request: Request): Promise<unknown> {
-  const contentType = contentTypeOf(request);
-
-  if (contentType === JSON_TYPE) return readJson(request);
-
-  if (contentType === MULTIPART_TYPE) {
-    let form: FormData;
-    try {
-      form = await request.formData();
-    } catch {
-      throw new UnreadableBodyError("The multipart body could not be parsed.");
-    }
-    const html = form.get("html");
-    return {
-      html: html instanceof File ? await html.text() : (optionalField(html) ?? ""),
-      turnstileToken: optionalField(form.get("turnstileToken")),
-      reminderEmail: optionalField(form.get("reminderEmail")),
-    };
-  }
-
-  if (contentType === HTML_TYPE) {
-    return { html: await request.text() };
-  }
-
-  throw unsupportedContentType(contentType);
 }
 
 /** The refusal for a body in none of the three page-bearing content types. */
