@@ -2,7 +2,8 @@
  * The scan runtime (E07 task 007): `enqueueScan` → `runScan`, verdict reuse,
  * P4 on a classifier error, an admin restore the scanner leaves alone,
  * `scan-retry`'s pieces, the failure alert and the spike check — AC2, AC3,
- * AC7, AC8, AC10, AC11, AC12, AC22.
+ * AC7, AC8, AC10, AC11, AC12, AC22. And E08 task 007: the scanner reads the
+ * whole set (D15) — AC30, AC31, AC32.
  *
  * NO MOCKS. Real dev Postgres for every row; real R2 objects for every page
  * scanned; real `setStatus` → `syncManifest` (R2 pointer + KV + purge) for
@@ -22,7 +23,9 @@
  * KV QUOTA (dev free plan): the keyless publish (1 write) + its flag (1) + the
  * owned publish, replace and restore (3) + the P4-on-error flag (1) + the
  * admin-restore drill's flag, restore and hide (3), and one delete per served
- * page in `after` (4) — about 13 KV operations.
+ * page in `after` (4) — about 13 KV operations. E08 task 007's set drills (D15,
+ * AC30–AC32) add the AC30 publish, its flag and its teardown delete (3); the
+ * rest are drill pages with no manifest.
  *
  * SKIPS without the database or the dev store credentials (fork-PR CI).
  */
@@ -534,4 +537,194 @@ test("AC22: the visits sync is untouched — the spike check lives in scan-retry
   assert.ok(!/spike|scan/i.test(strip("../visits/sync.ts")), "lib/visits/sync.ts knows nothing of scans or spikes");
   assert.match(strip("./run.ts"), /withJobRun\(jobs\.check/);
   assert.match(strip("./run.ts"), /from "\.\.\/visits\/sync"/);
+});
+
+// ── E08 D15: the scanner reads the whole set (task 007) ──────────────────────
+
+/** The real dev store, counting the objects it is asked for — a decorator, not a stub. */
+async function countingStore() {
+  const { r2Store } = await import("../storage/r2");
+  const real = r2Store();
+  const reads: string[] = [];
+  return {
+    reads,
+    get(key: string) {
+      reads.push(key);
+      return real.get(key);
+    },
+  };
+}
+
+/** A set read by the real reader from a `{ path: text }` map. */
+async function textSet(files: Record<string, string>) {
+  const { fileSet } = await import("../testing/file-sets");
+  return fileSet({ files: Object.entries(files).map(([path, content]) => ({ path, content })) });
+}
+
+test("D15: judge() reads only the files the budget takes, decided from site_version_files; a reused verdict reads nothing", { skip, timeout: 120_000 }, async () => {
+  const { SCAN_TEXT_BUDGET_CHARS } = await import("@kept/shared");
+  const { judge, runScan } = await import("./run");
+  const { scanFiles } = await import("./synthesize");
+  const { versionFiles } = await import("../db/queries/version-files");
+  const { siteObjectKey } = await import("../storage/r2");
+  const { db } = await deps();
+  const drill = (await drillPromise)!;
+
+  const filler = (n: number) => `<p>${"x".repeat(n)}</p>`;
+  const target = await drill.set(
+    await textSet({
+      "index.html": cleanHtml(),
+      "login.html": `<!doctype html><title>Sign in</title>${filler(400)}`,
+      "about.html": `<!doctype html><title>About</title>${filler(SCAN_TEXT_BUDGET_CHARS)}`,
+      "blog/one.html": `<!doctype html><title>One</title>${filler(SCAN_TEXT_BUDGET_CHARS + 10)}`,
+      "blog/two.html": `<!doctype html><title>Two</title>${filler(SCAN_TEXT_BUDGET_CHARS + 20)}`,
+      "app.js": `console.log(${JSON.stringify(RUN)});`,
+      "style.css": "body { color: #111; }",
+      "data.json": '{"ok":true}',
+    }),
+  );
+
+  const expected = scanFiles(await versionFiles(db, target.versionId)).map((file) =>
+    siteObjectKey(target.siteId, target.versionId, file.path),
+  );
+  assert.deepEqual(
+    expected.map((key) => key.slice(key.lastIndexOf("/") + 1)),
+    ["index.html", "login.html", "about.html"],
+    "the plan: index, then the smallest HTML until the budget is reached",
+  );
+
+  const store = await countingStore();
+  const judged = await judge(target, null, store);
+  assert.equal(judged.status, "skipped", "the scanner is off in this process");
+  assert.deepEqual(store.reads, expected, "exactly the planned objects are read — never CSS, JSON, or the HTML past the budget");
+
+  // A `done` verdict of the same bytes under this policy → reused, nothing read.
+  const classifier = await fixtureClassifier();
+  assert.equal((await runScan(target.siteId, target.versionId, "publish", classifier))?.status, "done");
+  const again = await countingStore();
+  const reused = await judge(target, null, again);
+  assert.equal(reused.status, "done");
+  assert.equal(reused.status === "done" && reused.costUsd, "0", "the reused verdict");
+  assert.deepEqual(again.reads, [], "a reused verdict reads no object");
+});
+
+test("D15: a file the set's rows name but R2 does not hold yet fails the attempt for scan-retry — never a verdict", { skip }, async () => {
+  const { judge } = await import("./run");
+  const { siteObjectKey, r2Store } = await import("../storage/r2");
+  const drill = (await drillPromise)!;
+  const target = await drill.set(await textSet({ "index.html": cleanHtml(), "login.html": `<p>${RUN}</p>` }));
+  // A replace records its rows before its uploads finish: the object is not there yet.
+  await r2Store().delete(siteObjectKey(target.siteId, target.versionId, "login.html"));
+
+  const judged = await judge(target, null);
+  assert.equal(judged.status, "failed");
+  assert.equal(judged.decision, null, "no verdict on a half-written set");
+  assert.match(judged.status === "failed" ? judged.error : "", /no object at .*login\.html/);
+});
+
+test("AC31: SCAN_POLICY_VERSION is bumped, and reusableScan never answers a set with a single-file verdict", { skip, timeout: 60_000 }, async () => {
+  const { SCAN_POLICY_VERSION } = await import("@kept/shared");
+  const { reusableScan } = await import("../db/queries/scans");
+  const { runScan } = await import("./run");
+  const { db, scans } = await deps();
+  const drill = (await drillPromise)!;
+
+  assert.match(SCAN_POLICY_VERSION, /^\d{4}-\d{2}-\d{2}\.\d+$/, "date-stamped, as E07's");
+  assert.notEqual(SCAN_POLICY_VERSION, "2026-10-17.1", "E07's single-file policy version is retired");
+
+  const html = cleanHtml();
+  const single = await drill.page(html);
+  const set = await drill.set(await textSet({ "index.html": html, "login.html": `<p>${RUN}</p>` }));
+  assert.notEqual(set.contentHash, single.contentHash, "a set of the same index.html hashes differently (D10)");
+
+  // The single page's verdict under this policy, and the set's own under E07's.
+  assert.equal((await runScan(single.siteId, single.versionId, "publish", await fixtureClassifier()))?.status, "done");
+  await db.insert(scans).values({
+    siteId: set.siteId,
+    versionId: set.versionId,
+    contentHash: set.contentHash,
+    trigger: "publish",
+    policyVersion: "2026-10-17.1",
+    status: "done",
+    verdict: "clean",
+  });
+
+  assert.ok(await reusableScan(single.contentHash), "the single file's verdict is reusable for the single file");
+  assert.equal(await reusableScan(set.contentHash), null, "no verdict reaches the set: a different hash, and an old policy");
+});
+
+test("AC32: a set with 3 MB of JS hands the classifier text within SCAN_TEXT_BUDGET_CHARS; unparsedScriptBytes records what extract() skipped", { skip, timeout: 120_000 }, async () => {
+  const { SCAN_TEXT_BUDGET_CHARS } = await import("@kept/shared");
+  const { judge } = await import("./run");
+  const drill = (await drillPromise)!;
+
+  const line = `var s${RUN} = "${"abcdefghij".repeat(10)}";\n`;
+  const js = line.repeat(Math.ceil((3 * 1024 * 1024) / line.length));
+  const target = await drill.set(await textSet({ "index.html": cleanHtml(), "assets/app.js": js }));
+
+  const fixture = await fixtureClassifier();
+  let handed: Extraction | null = null;
+  const capturing: ContentClassifier = {
+    model: fixture.model,
+    classify(state) {
+      handed = state;
+      return fixture.classify(state);
+    },
+  };
+  const judged = await judge(target, capturing);
+  assert.equal(judged.status, "done");
+  const state = handed as Extraction | null;
+  assert.ok(state, "the classifier was called once with the set's extraction");
+  assert.ok(state.text.length <= SCAN_TEXT_BUDGET_CHARS, `text ${state.text.length} ≤ ${SCAN_TEXT_BUDGET_CHARS}`);
+  assert.ok(JSON.stringify(state.facts).length + state.text.length <= SCAN_TEXT_BUDGET_CHARS, "facts + text within the budget");
+  assert.equal(state.facts.scriptBytes, Buffer.byteLength(js, "utf8"), "the bundle reached extract()");
+  assert.equal(
+    state.facts.unparsedScriptBytes,
+    Buffer.byteLength(js, "utf8"),
+    "past extract()'s 1 MB parse cap: recorded as unparsed, read by pattern",
+  );
+});
+
+test("AC30: a set whose phishing form is in login.html (index.html benign) is flagged through a real publish and scan; the site goes under_review", { skip, timeout: 120_000 }, async () => {
+  const { publishPage } = await import("../publish/pipeline");
+  const { jsonBody } = await import("../testing/file-sets");
+  const { db, eq, sites } = await deps();
+
+  const outcome = await publishPage(
+    jsonBody({
+      files: [
+        { path: "index.html", content: cleanHtml() },
+        { path: "login.html", content: p4Html() },
+      ],
+    }),
+    { ip: "203.0.113.79", userAgent: `kept-e08-007-drill/${RUN}` },
+  );
+  assert.ok(outcome.ok, JSON.stringify(outcome.body));
+  const [published] = await db.select().from(sites).where(eq(sites.slug, outcome.body.slug));
+  assert.ok(published?.currentVersionId);
+  (await drillPromise)!.track(published.id, published.slug);
+
+  // No key in this process (D17): the classifier half is skipped and P4 — the
+  // rule that fires with no answers (edge case 1) — is what flags the set.
+  const scan = await settledScan(published.currentVersionId, "publish");
+  assert.equal(scan.status, "skipped");
+  assert.equal(scan.verdict, "flag");
+  assert.equal(scan.rule, "P4", "the deterministic rule, from login.html's facts");
+  const deadline = Date.now() + 15_000;
+  while ((await site(published.id)).status !== "under_review" && Date.now() < deadline) await sleep(250);
+  assert.equal((await site(published.id)).status, "under_review");
+});
+
+test("AC30 live: the real classifier judges the phishing set once and a P rule flags it", { skip: skipLive, timeout: 120_000 }, async () => {
+  const { JevClassifier } = await import("./classifier");
+  const { judge } = await import("./run");
+  const drill = (await drillPromise)!;
+  const jev = counted(new JevClassifier(liveKey!));
+  const target = await drill.set(await textSet({ "index.html": cleanHtml(), "login.html": p4Html() }));
+
+  const judged = await judge(target, jev);
+  assert.equal(jev.calls, 1, "one classifier call for the whole set");
+  assert.equal(judged.status, "done", judged.status === "failed" ? judged.error : "");
+  assert.equal(judged.decision?.verdict, "flag");
+  assert.match(judged.decision?.verdict === "flag" ? judged.decision.rule : "", /^P[1-4]$/);
 });

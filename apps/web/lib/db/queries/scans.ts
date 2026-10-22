@@ -21,13 +21,16 @@ import { and, count, desc, eq, gt, inArray, lt, lte, notExists, or, sql } from "
 import { db } from "../index";
 import { jobRuns, scans, sites, siteVersions } from "../schema";
 
-/** A version as a scan needs it: what to read, how to address it, what it hashes to. */
+/**
+ * A version as a scan needs it: which it is, how to address it, what it hashes
+ * to. Its files are read by `judge()` from `site_version_files`, after the
+ * reuse probe (D15) — a reused verdict reads nothing.
+ */
 export interface ScanTarget {
   siteId: string;
   versionId: string;
   slug: string;
   contentHash: string;
-  r2Key: string;
 }
 
 const targetColumns = {
@@ -35,7 +38,6 @@ const targetColumns = {
   versionId: siteVersions.id,
   slug: sites.slug,
   contentHash: siteVersions.contentHash,
-  r2Key: siteVersions.r2Key,
 };
 
 /** `versionId` of `siteId`, or `null` when there is no such version of that page. */

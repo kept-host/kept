@@ -19,8 +19,8 @@
  * context → buttons → body text → script strings. No CSS, no raw script code,
  * no email addresses.
  *
- * PURE: no network, no database, no storage. Per document — E08 runs it on
- * every file of a set.
+ * PURE: no network, no database, no storage. Per document — E08 runs it once
+ * per set, over the one document `synthesize.ts` builds from it (D15).
  */
 import { parse as parseScript, type ParserOptions } from "@babel/parser";
 import type { Node } from "@babel/types";

@@ -4,20 +4,22 @@
  * screen specs' `seedKept` (`e2e/owner-fixtures.ts`). Test-only: nothing in the
  * app imports it, and its name keeps it outside the unit-test glob.
  *
- * NO MOCKS. A page is a real anonymous `sites` row, a real `site_versions` row
- * and the real R2 object its `r2_key` names, so a scan reads, extracts and
- * decides exactly as it does for a published page. No manifest is written
- * here: only a committed `setStatus` (a flag) writes one, and `cleanup()`
- * removes exactly those still served — dev KV is on the free plan (1k deletes
- * a day).
+ * NO MOCKS. A page is a real anonymous `sites` row, a real `site_versions` row,
+ * its `site_version_files` rows and the real R2 objects they name, so a scan
+ * reads, extracts and decides exactly as it does for a published page. No
+ * manifest is written here: only a committed `setStatus` (a flag) writes one,
+ * and `cleanup()` removes exactly those still served — dev KV is on the free
+ * plan (1k deletes a day).
  */
-import { hashContent } from "@kept/shared";
+import { hashContent, SITE_INDEX } from "@kept/shared";
 import { inArray } from "drizzle-orm";
 
 import { db } from "../db";
 import type { ScanTarget } from "../db/queries/scans";
+import { insertVersionFiles, siteObjectKeys } from "../db/queries/version-files";
 import { moderationActions, sites, siteVersions } from "../db/schema";
-import { PAGE_CONTENT_TYPE, pageObjectKey, r2Store } from "../storage/r2";
+import type { FileSet } from "../publish/fileset/types";
+import { PAGE_CONTENT_TYPE, pageObjectKey, r2Store, siteObjectKey } from "../storage/r2";
 
 import { stillServed } from "./moderation-drill";
 import { clearPendingPurges } from "./pending-purges";
@@ -26,27 +28,57 @@ import { removeServedManifests } from "./served-manifests";
 /** The `sites` columns `insertPage` takes from its caller; it derives the rest from the bytes. */
 export type PageRow = Omit<typeof sites.$inferInsert, "currentVersionId" | "contentHash" | "sizeBytes"> & { id: string };
 
-/**
- * A real page serving `html`: the R2 object, the `sites` row and its current
- * `site_versions` row (active since `activatedAt`) — everything a publish
- * writes except the manifest, so nothing serves at its slug.
- */
-export async function insertPage(html: string, row: PageRow, activatedAt: Date = new Date()): Promise<ScanTarget> {
-  const versionId = crypto.randomUUID();
-  const r2Key = pageObjectKey(row.id, versionId);
-  const contentHash = await hashContent(html);
-  const sizeBytes = Buffer.byteLength(html, "utf8");
+/** What `insertSet` stores of a set — a `FileSet` read by the real reader, or one `index.html`. */
+type StoredSet = Pick<FileSet, "entries" | "totalBytes" | "contentHash">;
 
-  await r2Store().put(r2Key, html, PAGE_CONTENT_TYPE);
+/**
+ * A real page serving `set`: every file's R2 object, the `sites` row, its
+ * current `site_versions` row (active since `activatedAt`) and one
+ * `site_version_files` row per file — everything a publish writes except the
+ * manifest, so nothing serves at its slug.
+ */
+async function insertSet(set: StoredSet, row: PageRow, activatedAt: Date): Promise<ScanTarget> {
+  const versionId = crypto.randomUUID();
+  const { contentHash, totalBytes: sizeBytes } = set;
+  for (const entry of set.entries) {
+    await r2Store().put(siteObjectKey(row.id, versionId, entry.path), entry.bytes, entry.contentType);
+  }
   await db.insert(sites).values({ ...row, currentVersionId: versionId, contentHash, sizeBytes });
-  await db.insert(siteVersions).values({ id: versionId, siteId: row.id, r2Key, contentHash, sizeBytes, activatedAt });
-  return { siteId: row.id, versionId, slug: row.slug, contentHash, r2Key };
+  await db.insert(siteVersions).values({
+    id: versionId,
+    siteId: row.id,
+    r2Key: pageObjectKey(row.id, versionId),
+    contentHash,
+    sizeBytes,
+    activatedAt,
+    fileCount: set.entries.length,
+  });
+  await insertVersionFiles(
+    db,
+    versionId,
+    set.entries.map(({ path, bytes, sha256 }) => ({ path, sizeBytes: bytes.length, sha256 })),
+  );
+  return { siteId: row.id, versionId, slug: row.slug, contentHash };
+}
+
+/** A real single-file page serving `html` (`insertSet` of its one `index.html`). */
+export async function insertPage(html: string, row: PageRow, activatedAt: Date = new Date()): Promise<ScanTarget> {
+  const bytes = new TextEncoder().encode(html);
+  const sha256 = await hashContent(html);
+  return insertSet(
+    {
+      entries: [{ path: SITE_INDEX, bytes, sha256, contentType: PAGE_CONTENT_TYPE }],
+      totalBytes: bytes.length,
+      contentHash: sha256,
+    },
+    row,
+    activatedAt,
+  );
 }
 
 export class ScanDrill {
   private readonly siteIds = new Set<string>();
   private readonly slugs = new Set<string>();
-  private readonly r2Keys = new Set<string>();
   /** Pages a real publish path created: their manifest exists whatever happened since. */
   private readonly published = new Set<string>();
 
@@ -60,18 +92,22 @@ export class ScanDrill {
   }
 
   /** A live anonymous kept page serving `html`, its version current since `activatedAt`. */
-  async page(html: string, activatedAt: Date = new Date()): Promise<ScanTarget> {
+  page(html: string, activatedAt: Date = new Date()): Promise<ScanTarget> {
+    return insertPage(html, this.row(), activatedAt);
+  }
+
+  /** A live anonymous kept page serving the file set `set` (`lib/testing/file-sets.ts`'s `fileSet`). */
+  set(set: StoredSet): Promise<ScanTarget> {
+    return insertSet(set, this.row(), new Date());
+  }
+
+  /** A new live anonymous page's row, tracked for `cleanup()`. */
+  private row(): PageRow {
     const siteId = crypto.randomUUID();
     const slug = `${this.prefix}-${siteId.slice(0, 8)}`;
     this.siteIds.add(siteId);
     this.slugs.add(slug);
-    const page = await insertPage(
-      html,
-      { id: siteId, slug, status: "live", ownerId: null, publisherHash: `${this.prefix}-drill` },
-      activatedAt,
-    );
-    this.r2Keys.add(page.r2Key);
-    return page;
+    return { id: siteId, slug, status: "live", ownerId: null, publisherHash: `${this.prefix}-drill` };
   }
 
   async cleanup(): Promise<void> {
@@ -81,14 +117,10 @@ export class ScanDrill {
       await removeServedManifests([...this.published, ...(await stillServed(siteIds))]);
       await db.delete(moderationActions).where(inArray(moderationActions.siteId, siteIds));
       await clearPendingPurges(this.slugs, siteIds);
-      const versions = await db
-        .select({ r2Key: siteVersions.r2Key })
-        .from(siteVersions)
-        .where(inArray(siteVersions.siteId, siteIds));
-      for (const { r2Key } of versions) this.r2Keys.add(r2Key);
-      // `scans` and `site_versions` cascade with the site.
+      const keys = (await Promise.all(siteIds.map((siteId) => siteObjectKeys(db, siteId)))).flat();
+      // `scans`, `site_versions` and `site_version_files` cascade with the site.
       await db.delete(sites).where(inArray(sites.id, siteIds));
+      await r2Store().deleteMany(keys).catch(() => undefined);
     }
-    for (const key of this.r2Keys) await r2Store().delete(key).catch(() => undefined);
   }
 }
