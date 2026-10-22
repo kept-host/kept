@@ -447,7 +447,13 @@ export function epicDrill(): void {
 
       const past = new Date(Date.now() - MS_PER_MINUTE);
       await db.update(schema.sites).set({ purgeAfter: past }).where(inArray(schema.sites.id, [b.siteId, c.siteId]));
-      expect(await sweep("purge", [b.siteId, c.siteId])).toEqual({ purged: 2, skipped: 0, failed: 0, reporterContactsCleared: 0 });
+      expect(await sweep("purge", [b.siteId, c.siteId])).toEqual({
+        purged: 2,
+        partial: 0,
+        skipped: 0,
+        failed: 0,
+        reporterContactsCleared: 0,
+      });
       // Gone: no manifest left to remove at teardown.
       scope.slugs.delete(b.slug);
       scope.slugs.delete(c.slug);

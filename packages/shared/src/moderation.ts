@@ -283,8 +283,16 @@ export const REPORTER_CONTACT_RETENTION_DAYS = 180 as const;
 
 /** The expiry sweep's batch size… */
 export const EXPIRE_BATCH_SIZE = 500 as const;
-/** …the purge sweep's (smaller: each page is an R2 delete per version, a KV delete and a purge)… */
+/** …the purge sweep's (smaller: each page is a KV delete, a purge and its R2 objects)… */
 export const PURGE_BATCH_SIZE = 100 as const;
+/**
+ * …the R2 objects one purge run deletes at most (E08 Q2, Arun 2026-10-22) — two
+ * `DeleteObjects` requests, so a 5,000-file Pro site cannot hold its locks past
+ * the deadline. A site cut off by the cap keeps its row and the
+ * `site_version_files` rows of the files not yet deleted; the next run resumes
+ * where this one stopped…
+ */
+export const PURGE_DELETES_PER_RUN = 2000 as const;
 /** …and every lifecycle job's wall-clock budget per run, in seconds. */
 export const JOB_DEADLINE_SECONDS = 50 as const;
 

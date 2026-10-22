@@ -83,9 +83,12 @@ const STORED_VERSION_COLUMNS = {
   activatedAt: siteVersions.activatedAt,
 } as const;
 
-/** One version of one site, or `null` — a version of ANOTHER site is `null` too. */
+/**
+ * One version of one site, or `null` — a version of ANOTHER site is `null` too.
+ * On `db` for a plain read (a download), on a transaction under a lock.
+ */
 export async function findSiteVersion(
-  tx: Tx,
+  tx: Tx | typeof db,
   siteId: string,
   versionId: string,
 ): Promise<StoredVersion | null> {

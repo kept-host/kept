@@ -15,7 +15,7 @@ import { REPORTER_CONTACT_RETENTION_DAYS, type SiteStatus } from "@kept/shared";
 import { and, asc, eq, inArray, isNotNull, lt, notExists, or, sql, type SQL } from "drizzle-orm";
 
 import { db, type Tx } from "../index";
-import { abuseReports, appeals, sites, siteVersions } from "../schema";
+import { abuseReports, appeals, sites } from "../schema";
 
 /**
  * The statuses `purge` collects once `purge_after` has passed (§6.13). `live`
@@ -100,15 +100,6 @@ export async function hasOpenAppeal(tx: Tx, siteId: string): Promise<boolean> {
     .where(isOpenAppealOn(siteId))
     .limit(1);
   return row !== undefined;
-}
-
-/** Every R2 object the page's versions name — current and previous alike. */
-export async function versionObjectKeys(tx: Tx, siteId: string): Promise<string[]> {
-  const rows = await tx
-    .select({ r2Key: siteVersions.r2Key })
-    .from(siteVersions)
-    .where(eq(siteVersions.siteId, siteId));
-  return rows.map((row) => row.r2Key);
 }
 
 /**

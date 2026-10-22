@@ -781,7 +781,8 @@ function attachment(download: Download): Response {
 
 /**
  * `GET /api/sites/:id/download` — one page's current version as
- * `{name}.html` (§5.7, AC39). Owner only: anyone else, a `removed` page and a
+ * `{name}.html`, or as `{name}.zip` of its whole file set when it has more than
+ * one file (§5.7, AC39; E08 AC38). Owner only: anyone else, a `removed` page and a
  * page past its `purge_after` are the same `404 not_found` (D17). An archived
  * page downloads until `purge_after` (D14).
  *

@@ -1,7 +1,8 @@
 /**
  * Real pages for the scan runtime drills (`lib/scan/run.test.ts`,
- * `lib/admin/cli.test.ts`) — E07 task 007 — and, through `insertPage`, for the
- * screen specs' `seedKept` (`e2e/owner-fixtures.ts`). Test-only: nothing in the
+ * `lib/admin/cli.test.ts`) — E07 task 007 — and, through `insertPage` and
+ * `insertSet`, for the screen specs' `seedKept` / `seedOwnedSet`
+ * (`e2e/owner-fixtures.ts`). Test-only: nothing in the
  * app imports it, and its name keeps it outside the unit-test glob.
  *
  * NO MOCKS. A page is a real anonymous `sites` row, a real `site_versions` row,
@@ -29,7 +30,7 @@ import { removeServedManifests } from "./served-manifests";
 export type PageRow = Omit<typeof sites.$inferInsert, "currentVersionId" | "contentHash" | "sizeBytes"> & { id: string };
 
 /** What `insertSet` stores of a set — a `FileSet` read by the real reader, or one `index.html`. */
-type StoredSet = Pick<FileSet, "entries" | "totalBytes" | "contentHash">;
+export type StoredSet = Pick<FileSet, "entries" | "totalBytes" | "contentHash">;
 
 /**
  * A real page serving `set`: every file's R2 object, the `sites` row, its
@@ -37,7 +38,7 @@ type StoredSet = Pick<FileSet, "entries" | "totalBytes" | "contentHash">;
  * `site_version_files` row per file — everything a publish writes except the
  * manifest, so nothing serves at its slug.
  */
-async function insertSet(set: StoredSet, row: PageRow, activatedAt: Date): Promise<ScanTarget> {
+export async function insertSet(set: StoredSet, row: PageRow, activatedAt: Date): Promise<ScanTarget> {
   const versionId = crypto.randomUUID();
   const { contentHash, totalBytes: sizeBytes } = set;
   for (const entry of set.entries) {

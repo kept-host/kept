@@ -10,7 +10,8 @@ import { db, schema } from "../lib/db";
 import { extractPageTitle } from "../lib/publish/page-title";
 import { graceEnds, liveUrl } from "../lib/publish/pipeline";
 import { clearPendingPurges } from "../lib/testing/pending-purges";
-import { insertPage } from "../lib/testing/scan-drill";
+import { fileSet } from "../lib/testing/file-sets";
+import { insertPage, insertSet, type StoredSet } from "../lib/testing/scan-drill";
 import { removeServedManifests } from "../lib/testing/served-manifests";
 
 import { SKIP_LIVE_PUBLISH } from "./live-publish";
@@ -203,6 +204,21 @@ export interface SeedOptions {
   expiresAt?: Date;
 }
 
+/** One seeded page's `sites` columns: an owned, claimed `live` row with a fresh id and slug. */
+function seedRow(ownerId: string, title: string | null, expiresAt?: Date) {
+  const id = crypto.randomUUID();
+  return {
+    id,
+    slug: `e06-seed-${id.slice(0, 8)}${id.slice(9, 13)}`,
+    title,
+    ownerId,
+    publisherHash: SEED_PUBLISHER,
+    claimedAt: new Date(),
+    expiresAt: expiresAt ?? null,
+    purgeAfter: expiresAt ? graceEnds(expiresAt) : null,
+  };
+}
+
 /**
  * `n` owned pages straight into Postgres — for specs that need an account AT
  * or NEAR its kept limit, or a page to render, download or export, never for
@@ -228,19 +244,7 @@ export async function seedKept(
   { html, expiresAt }: SeedOptions = {},
 ): Promise<SeededPage[]> {
   const title = html === undefined ? null : extractPageTitle(html);
-  const rows = Array.from({ length: n }, () => {
-    const id = crypto.randomUUID();
-    return {
-      id,
-      slug: `e06-seed-${id.slice(0, 8)}${id.slice(9, 13)}`,
-      title,
-      ownerId,
-      publisherHash: SEED_PUBLISHER,
-      claimedAt: new Date(),
-      expiresAt: expiresAt ?? null,
-      purgeAfter: expiresAt ? graceEnds(expiresAt) : null,
-    };
-  });
+  const rows = Array.from({ length: n }, () => seedRow(ownerId, title, expiresAt));
   if (rows.length === 0) return [];
   if (html === undefined) {
     await db.insert(schema.sites).values(rows.map((row) => ({ ...row, contentHash: SEED_PUBLISHER, sizeBytes: 128 })));
@@ -276,6 +280,23 @@ export async function seedOwned(
     outcome: expiresAt ? "owned_draft" : "kept",
     html,
   };
+}
+
+/**
+ * `seedOwned` for a multi-file page (E08): `files` read through the real
+ * reader as a JSON body would be, then seeded with every file's bytes, its
+ * `site_version_files` rows and no manifest.
+ */
+export async function seedOwnedSet(
+  scope: Pick<OwnerScope, "siteIds">,
+  ownerId: string,
+  files: { path: string; content: string }[],
+): Promise<SeededPage & { set: StoredSet }> {
+  const set = await fileSet({ files });
+  const row = seedRow(ownerId, null);
+  scope.siteIds.push(row.id);
+  await insertSet(set, row, new Date());
+  return { siteId: row.id, slug: row.slug, name: row.slug, set };
 }
 
 /** The row as Postgres holds it right now. The authority every assertion re-reads. */

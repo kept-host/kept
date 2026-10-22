@@ -11,7 +11,7 @@
  * Every function takes the handle it runs on, so a caller holding a row lock
  * passes its transaction and the read sees what the lock protects.
  */
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 
 import { siteObjectKey } from "../../storage/r2";
 import type { db, Tx } from "../index";
@@ -82,6 +82,37 @@ export async function siteObjectKeys(tx: Handle, siteId: string): Promise<string
     .innerJoin(siteVersions, eq(siteVersions.id, siteVersionFiles.versionId))
     .where(eq(siteVersions.siteId, siteId));
   return rows.map((row) => siteObjectKey(siteId, row.versionId, row.path));
+}
+
+/**
+ * The purge job's resumable step (E08 Q2): delete up to `limit` of a site's
+ * file rows — any versions, any order — and return their R2 keys, plus whether
+ * rows remain. Run inside the caller's locked transaction, BEFORE the objects
+ * are deleted: if the R2 delete then throws, the transaction rolls the rows
+ * back and the next run tries the same keys again; if it commits, the next
+ * run's rows are exactly the files still in R2.
+ */
+export async function takeSiteObjectKeys(
+  tx: Tx,
+  siteId: string,
+  limit: number,
+): Promise<{ keys: string[]; rest: boolean }> {
+  const ofSite = (n: number) =>
+    tx
+      .select({ versionId: siteVersionFiles.versionId, path: siteVersionFiles.path })
+      .from(siteVersionFiles)
+      .innerJoin(siteVersions, eq(siteVersions.id, siteVersionFiles.versionId))
+      .where(eq(siteVersions.siteId, siteId))
+      .limit(n);
+  const taken = await tx
+    .delete(siteVersionFiles)
+    .where(sql`(${siteVersionFiles.versionId}, ${siteVersionFiles.path}) in (${ofSite(limit)})`)
+    .returning({ versionId: siteVersionFiles.versionId, path: siteVersionFiles.path });
+  const [rest] = await ofSite(1);
+  return {
+    keys: taken.map((row) => siteObjectKey(siteId, row.versionId, row.path)),
+    rest: rest !== undefined,
+  };
 }
 
 /**

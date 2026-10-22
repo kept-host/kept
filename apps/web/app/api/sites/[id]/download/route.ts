@@ -1,6 +1,6 @@
 /**
- * `GET /api/sites/:id/download` — an owner saves one page's current HTML
- * (D13, §5.7). E06 task 008.
+ * `GET /api/sites/:id/download` — an owner saves one page's current version
+ * (D13, §5.7): its HTML, or a zip of its files (E08). E06 task 008.
  *
  * THE HTTP BOUNDARY AND THE SESSION LOOKUP, AND NOTHING ELSE. Who may download
  * what, and the streamed read from R2, live in `lib/sites/export.ts`; the

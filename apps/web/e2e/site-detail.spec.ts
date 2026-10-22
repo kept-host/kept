@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   APPEAL_MESSAGE_MIN,
@@ -24,6 +26,7 @@ import {
   UNDONE_TOAST,
 } from "../lib/sites/display";
 import { VISITS_EMPTY_NOTE, VISITS_PRIVACY_LINE, VISITS_UNAVAILABLE } from "../lib/sites/visits-view";
+import { hasUnzip, unzip } from "../lib/testing/unzip";
 
 import { decideAppeal } from "./appeal-decision";
 import { waitForBytes } from "./live-publish";
@@ -34,6 +37,7 @@ import {
   publishOwned,
   readSite,
   seedOwned,
+  seedOwnedSet,
   signInAs,
   titledHtml,
   SKIP_OWNER_UI,
@@ -555,6 +559,38 @@ test.describe("the page detail screen", () => {
     const file = await page.request.get(`${baseURL}/api/sites/${site.siteId}/download`);
     expect(file.status()).toBe(200);
     expect(await file.text()).toBe(site.html);
+  });
+
+  test("E08 AC38: a multi-file page downloads as {name}.zip whose entries are its files, byte for byte", async ({
+    page,
+    baseURL,
+  }) => {
+    test.skip(!hasUnzip(), "no `unzip` binary to read the archive with an independent reader");
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const site = await seedOwnedSet(scope, userId, [
+      { path: "index.html", content: titledHtml("E08 multi-file download") },
+      { path: "assets/app.css", content: "body { color: #111 }" },
+      { path: "assets/js/app.js", content: "console.log('kept');" },
+    ]);
+
+    const res = await page.request.get(`${baseURL}/api/sites/${site.siteId}/download`);
+    expect(res.status()).toBe(200);
+    expect(res.headers()["content-type"]).toBe("application/zip");
+    expect(res.headers()["content-disposition"]).toBe(`attachment; filename="${site.slug}.zip"`);
+
+    const dir = mkdtempSync(join(tmpdir(), "kept-download-"));
+    try {
+      const file = join(dir, `${site.slug}.zip`);
+      writeFileSync(file, await res.body());
+      unzip(["-tq", file]);
+      const paths = site.set.entries.map((entry) => entry.path).sort();
+      expect(unzip(["-Z1", file]).toString("utf8").trim().split("\n")).toEqual(paths);
+      for (const entry of site.set.entries) {
+        expect(unzip(["-p", file, entry.path]).equals(Buffer.from(entry.bytes)), entry.path).toBe(true);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("AC34 (UI): seeded daily rows draw 30 bars and a total; 7 DAYS reads the same rows; no rows is never a bare 0", async ({
