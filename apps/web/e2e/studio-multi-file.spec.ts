@@ -307,8 +307,12 @@ test.describe("studio: folders, zips and the single-page-app flag", () => {
     );
     const { userId } = await signInAs(page, baseURL!, scope);
     const run = crypto.randomUUID().slice(0, 8);
-    // 12 MB of real bytes: past INLINE_BODY_MAX_BYTES, within Free's 20 MB.
-    const dist = await writeViteDist(run, { "assets/model.bin": new Uint8Array(12 * 1024 * 1024).fill(7) });
+    // 12 MB of real bytes: past INLINE_BODY_MAX_BYTES, within Free's 20 MB, and
+    // split in two so neither file passes Free's 10 MB per-file cap.
+    const dist = await writeViteDist(run, {
+      "assets/model-a.bin": new Uint8Array(6 * 1024 * 1024).fill(7),
+      "assets/model-b.bin": new Uint8Array(6 * 1024 * 1024).fill(8),
+    });
 
     await page.goto("/dashboard");
     await hydrated(page);
@@ -327,6 +331,6 @@ test.describe("studio: folders, zips and the single-page-app flag", () => {
       .where(eq(schema.sites.ownerId, userId));
     scope.siteIds.push(row!.id);
     scope.slugs.add(row!.slug);
-    expect((await currentVersion(row!.id)).fileCount).toBe(5);
+    expect((await currentVersion(row!.id)).fileCount).toBe(6);
   });
 });
