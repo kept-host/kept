@@ -164,6 +164,23 @@ export const SITE_INDEX = "index.html" as const;
 /** A root file of this name is served, with status 404, for missing paths (D13). */
 export const SITE_404 = "404.html" as const;
 
+// ─── D4: the inline body ───────────────────────────────────────────────────
+
+/**
+ * The most bytes one inline publish or replace request may carry **on the
+ * wire**, whatever its form (JSON with base64, multipart files, a multipart
+ * zip) and whatever the caller's plan — Arun's decision of 2026-10-22
+ * (Q-new-2), which replaces D4's "the free `siteBytes`".
+ *
+ * It equals Next's default `middlewareClientMaxBodySize`: the middleware
+ * matcher covers `/api/*`, and Next hands a handler a TRUNCATED body past that
+ * buffer, so a bigger inline cap would need a bigger buffer per in-flight
+ * request on Railway. The reader refuses on `Content-Length` before parsing,
+ * and stream-counts when it is absent. A set between this and the plan's
+ * `siteBytes` goes through the presigned upload (signed-in callers only).
+ */
+export const INLINE_BODY_MAX_BYTES = 10 * 1024 * 1024;
+
 /** C0 controls and DEL. */
 // eslint-disable-next-line no-control-regex
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;

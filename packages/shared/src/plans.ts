@@ -36,9 +36,10 @@ export interface PlanLimits {
   /** Versions retained besides the current one (D7; PRD §16.1's default). */
   readonly previousVersions: number;
   /**
-   * Bytes one version's file set may hold, all files together (E08 D2). The
-   * free number also caps every inline publish body (D4), whatever the plan;
-   * bigger sets take the presigned upload path.
+   * Bytes one version's file set may hold, all files together (E08 D2). An
+   * inline publish body is capped separately, at `INLINE_BODY_MAX_BYTES` on the
+   * wire (./files, Q-new-2); a set bigger than that takes the presigned upload
+   * path up to this number.
    */
   readonly siteBytes: number;
   /** Files one version's set may hold (E08 D2). */

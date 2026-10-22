@@ -150,10 +150,15 @@ export const config = {
    * body), and a route the matcher skipped would be a route the gate never saw.
    *
    * The cost of seeing every API request: Next buffers a request body through
-   * middleware up to `middlewareClientMaxBodySize` (10 MB by default). That is
-   * twice `MAX_PAGE_BYTES`, so every publish and replace fits; a body past it
-   * reaches the handler truncated and fails to parse — still a 400 for a
-   * request that was already over the limit, just a less specific one.
+   * middleware up to `middlewareClientMaxBodySize` (10 MB by default), and a
+   * body past it reaches the handler truncated. E08 keeps that default on
+   * purpose (Arun, 2026-10-22, Q-new-2): raising it would buffer more per
+   * in-flight request on Railway. Instead every inline publish or replace body
+   * is capped at `INLINE_BODY_MAX_BYTES` (@kept/shared — the same 10 MB, on the
+   * wire), and the file-set reader refuses a larger `Content-Length` with
+   * `site_too_large` before parsing anything, so a truncated body is never
+   * read. Sets between that and the plan's `siteBytes` take the presigned
+   * upload path, which never passes through here.
    *
    * Next requires the matcher be statically analyzable, so this cannot be a
    * runtime condition — `pnpm build` is what checks it.

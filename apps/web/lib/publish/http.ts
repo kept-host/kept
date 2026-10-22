@@ -14,25 +14,27 @@ import { NextResponse } from "next/server.js";
 
 import type { PublisherContext } from "./pipeline";
 
-const JSON_TYPE = "application/json";
-const MULTIPART_TYPE = "multipart/form-data";
-const HTML_TYPE = "text/html";
+export const JSON_TYPE = "application/json";
+export const MULTIPART_TYPE = "multipart/form-data";
+export const HTML_TYPE = "text/html";
 
 /** A body that could not be read at all — distinct from one that failed zod. */
 export class UnreadableBodyError extends Error {}
 
 /** Multipart values arrive as `null` when absent; the schemas want `undefined`. */
-function optionalField(value: FormDataEntryValue | null): string | undefined {
+export function optionalField(value: FormDataEntryValue | null): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function contentTypeOf(request: Request): string {
+/** The media type alone, lowercased — no `boundary` or `charset` parameter. */
+export function contentTypeOf(request: Request): string {
   return (request.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
 }
 
-async function readJson(request: Request): Promise<unknown> {
+/** A JSON body, or `UnreadableBodyError`. Takes any `Body` — the file-set reader parses a bounded copy. */
+export async function readJson(body: Pick<Body, "json">): Promise<unknown> {
   try {
-    return await request.json();
+    return await body.json();
   } catch {
     throw new UnreadableBodyError("The body is not valid JSON.");
   }
@@ -73,7 +75,12 @@ export async function readPageBody(request: Request): Promise<unknown> {
     return { html: await request.text() };
   }
 
-  throw new UnreadableBodyError(
+  throw unsupportedContentType(contentType);
+}
+
+/** The refusal for a body in none of the three page-bearing content types. */
+export function unsupportedContentType(contentType: string): UnreadableBodyError {
+  return new UnreadableBodyError(
     `Unsupported content type "${contentType || "(none)"}". Send ${JSON_TYPE}, ${MULTIPART_TYPE} or ${HTML_TYPE}.`,
   );
 }

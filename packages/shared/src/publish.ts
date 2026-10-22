@@ -143,10 +143,11 @@ export type HtmlPublishRequest = z.infer<typeof htmlPublishRequestSchema>;
  * - `encoding` is `"utf8"` (the default) or `"base64"`. **base64 is required for
  *   every type `SITE_FILE_TYPES` marks `text: false`** — images, fonts, models,
  *   audio, video, wasm.
- * - Inline JSON is capped at the free plan's `siteBytes` of **decoded** content
- *   (`limitsFor("free").siteBytes`). A larger set needs a signed-in caller and
- *   the presigned path: `POST /api/uploads`, PUT the zip, then publish
- *   `{ upload_id }`.
+ * - Every inline body — JSON, multipart or zip — is capped at
+ *   `INLINE_BODY_MAX_BYTES` (10 MB) **on the wire** (./files), so base64
+ *   content tops out near 7.5 MB decoded. A larger set, up to the plan's
+ *   `siteBytes`, needs a signed-in caller and the presigned path:
+ *   `POST /api/uploads`, PUT the zip, then publish `{ upload_id }`.
  * - The same set may be sent as multipart instead, one `files` part per file
  *   whose **filename is the relative path** —
  *   `form.append("files", file, "assets/app.js")`; a browser keeps only the
@@ -266,7 +267,7 @@ export const PUBLISH_ERROR_CODES = [
   "invalid_path",
   /** More files than the plan's `siteFiles`. */
   "too_many_files",
-  /** More bytes than the plan's `siteBytes` (or, inline, the free plan's). */
+  /** More bytes than the plan's `siteBytes`, or an inline body over `INLINE_BODY_MAX_BYTES`. */
   "site_too_large",
   /** A non-HTML file over the plan's `fileBytes`. */
   "file_too_large",

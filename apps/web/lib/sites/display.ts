@@ -383,6 +383,8 @@ const BYTES_PER_MB = BYTES_PER_KB * BYTES_PER_KB;
  * One decimal below 10 KB and none above it: `4.2 KB` is information, `147.3 KB`
  * is noise on a line that is already competing with a date.
  */
+export function formatBytes(bytes: number): string;
+export function formatBytes(bytes: number | null): string | null;
 export function formatBytes(bytes: number | null): string | null {
   if (bytes === null) return null;
   if (bytes < BYTES_PER_KB) return `${bytes} B`;
