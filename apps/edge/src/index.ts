@@ -23,6 +23,7 @@ import {
   FALLBACK_CACHE_CONTROL,
   LIVE_CACHE_CONTROL,
   NO_STORE_CACHE_CONTROL,
+  SHORT_EDGE_CACHE_CONTROL,
   lookupCached,
   storeResponse,
   systemPageCacheControl,
@@ -32,7 +33,7 @@ import type { Env } from "./env";
 import { buildResponse } from "./headers";
 import { resolveHost } from "./host";
 import { resolveManifest } from "./manifest";
-import { fetchObject } from "./r2";
+import { fetchPage } from "./r2";
 import { renderSystemPage, type SystemPage } from "./system-pages";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -78,6 +79,16 @@ function unhandledManifestStatus(_status: never): SystemPage {
 }
 
 /**
+ * `Cache-Control` for page content: a response produced by D12's SPA rewrite is
+ * edge-cached for a minute, not a year (Q-new-1). The write side purges the
+ * URLs of the files it wrote; a deep route like `/dashboard/settings` is none of
+ * them, so after a replace it may serve the old shell for at most 60 s.
+ */
+function rewrittenCacheControl(spaRewrite: boolean, pageCacheControl: string): string {
+  return spaRewrite ? SHORT_EDGE_CACHE_CONTROL : pageCacheControl;
+}
+
+/**
  * Steps 3–6: everything downstream of the cache lookup, for a resolved slug.
  *
  * Split out so the caller has exactly ONE cache-store site — every store read in
@@ -87,7 +98,7 @@ function unhandledManifestStatus(_status: never): SystemPage {
 async function serveSlug(
   c: AppContext,
   slug: string,
-  pathname: string,
+  url: URL,
 ): Promise<Response> {
   // Step 3: the single KV read, plus — ONLY on a miss — the single R2 probe of
   // `slugs/{slug}.json` that covers KV's eventual-consistency window, so the
@@ -118,13 +129,13 @@ async function serveSlug(
   // `expired` is a status the control plane writes, not one the edge computes.
   switch (lookup.manifest.status) {
     case "live": {
-      // Steps 5–6: path → key → the single R2 read. `r2.ts` owns the traversal
-      // guard and the key shape; this branch only turns the outcome into a
-      // response. The security headers that wrap every response are task 006.
-      const fetched = await fetchObject(
+      // Steps 5–6: path → key → the R2 read. `r2.ts` owns the traversal guard,
+      // the key shape, D12's SPA rewrite and the two miss-only second reads;
+      // this branch only turns the outcome into a response.
+      const fetched = await fetchPage(
         c.env.KEPT_R2,
         lookup.manifest,
-        pathname,
+        url.pathname,
         c.req.header("if-none-match"),
       );
 
@@ -139,7 +150,7 @@ async function serveSlug(
           headers: {
             "Content-Type": fetched.contentType,
             ETag: fetched.object.httpEtag,
-            "Cache-Control": pageCacheControl,
+            "Cache-Control": rewrittenCacheControl(fetched.spaRewrite, pageCacheControl),
           },
         });
       }
@@ -158,7 +169,38 @@ async function serveSlug(
           kind: "user-page",
           headers: {
             ETag: fetched.etag,
-            "Cache-Control": pageCacheControl,
+            "Cache-Control": rewrittenCacheControl(fetched.spaRewrite, pageCacheControl),
+          },
+        });
+      }
+
+      if (fetched.kind === "directory") {
+        // `/about` on a non-SPA site that has `about/index.html` (Q-new-6): the
+        // trailing-slash form, query preserved, so the page's relative links
+        // resolve against its own folder. Same-site and relative — never an
+        // origin read off the request. Short-cached: a replace can remove the
+        // folder, and this URL is not one the write side purges.
+        return buildResponse(null, {
+          status: 301,
+          kind: "kept-own",
+          headers: {
+            Location: `${fetched.location}${url.search}`,
+            "Cache-Control": SHORT_EDGE_CACHE_CONTROL,
+          },
+        });
+      }
+
+      if (fetched.kind === "custom404") {
+        // The site's own `404.html` (D13): a stranger's bytes, so `user-page`,
+        // still a 404, and short-cached like the branded one — a later publish
+        // may put a page at this path. No `ETag`: it describes `404.html`, not
+        // the URL asked for.
+        return buildResponse(fetched.object.body, {
+          status: 404,
+          kind: "user-page",
+          headers: {
+            "Content-Type": fetched.contentType,
+            "Cache-Control": SHORT_EDGE_CACHE_CONTROL,
           },
         });
       }
@@ -248,7 +290,7 @@ app.all("*", async (c) => {
   const cached = await lookupCached(c.req.raw);
   if (cached) return cached;
 
-  return cacheServed(c, await serveSlug(c, resolved.slug, url.pathname));
+  return cacheServed(c, await serveSlug(c, resolved.slug, url));
 });
 
 export default app;

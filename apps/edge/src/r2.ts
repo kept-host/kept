@@ -6,13 +6,22 @@
 //
 // BUDGET: exactly one `KEPT_R2.get` per cold request. No `head` + `get` pair, no
 // `list`, no retry. A conditional request that matches is still one operation —
-// it just transfers no body.
+// it just transfers no body. An SPA's deep route (E08 D12) is rewritten BEFORE
+// the read, so it is one read too. The only second reads are misses: an
+// extensionless miss on a non-SPA site probes `{path}/index.html` (Q-new-6), and
+// a miss on a site that shipped a `404.html` reads it (D13). A `storeError` takes
+// neither — a second read during an outage only doubles the load.
 //
 // TRUST: every byte in R2 was uploaded by a stranger. Nothing in this module
 // takes a decision from the object's own metadata (see `CONTENT_TYPES`) and
 // nothing concatenates a request path into a key before the guard has run.
 
-import type { KvManifest, Region } from "@kept/shared";
+import {
+  SITE_FILE_TYPES,
+  type KvManifest,
+  type Region,
+  type SiteFileType,
+} from "@kept/shared";
 
 /**
  * Maximum request path length, in bytes of the raw (still percent-encoded)
@@ -26,8 +35,13 @@ export const MAX_REQUEST_PATH_BYTES = 1024;
 /** The single-file v1 default; also what a directory-shaped path resolves to. */
 const INDEX_DOCUMENT = "index.html";
 
+/** The custom not-found page a site may ship at its root (E08 D13). */
+const CUSTOM_404_DOCUMENT = "404.html";
+
 /**
- * Extension → `Content-Type`, owned by the Worker.
+ * Extension → `Content-Type`: the shared `SITE_FILE_TYPES` table itself, so the
+ * extensions publish accepts and the types the Worker serves cannot drift (D8).
+ * Widened to a string index only so a request's extension can look it up.
  *
  * NEVER derived from user input and NEVER from `object.httpMetadata`: R2 returns
  * whatever content type the uploader set, and E04's uploader takes arbitrary
@@ -36,22 +50,7 @@ const INDEX_DOCUMENT = "index.html";
  * constructed. Task 006's `X-Content-Type-Options: nosniff` is the other half of
  * this defence — without it the browser is free to sniff past our answer.
  */
-const CONTENT_TYPES: Record<string, string> = {
-  html: "text/html; charset=utf-8",
-  htm: "text/html; charset=utf-8",
-  css: "text/css; charset=utf-8",
-  js: "text/javascript; charset=utf-8",
-  json: "application/json; charset=utf-8",
-  txt: "text/plain; charset=utf-8",
-  svg: "image/svg+xml",
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  gif: "image/gif",
-  webp: "image/webp",
-  ico: "image/x-icon",
-  woff2: "font/woff2",
-};
+export const CONTENT_TYPES: Readonly<Record<string, SiteFileType>> = SITE_FILE_TYPES;
 
 /** Anything unmapped is served as opaque bytes rather than guessed at. */
 const FALLBACK_CONTENT_TYPE = "application/octet-stream";
@@ -78,7 +77,8 @@ export type PathResolution =
  * branded 404 for both, and must keep doing so — but the two are not the same
  * event: `notFound` is the expected case (a manifest pointing at an object never
  * written or already purged), while `storeError` means the store call itself
- * threw and the page may well exist.
+ * threw and the page may well exist. Only a `notFound` goes on to the
+ * directory probe and the site's own `404.html` (see `fetchPage`).
  *
  * This field exists because collapsing every throw into a bare `missing` is what
  * let a `TypeError` from a quoted `If-None-Match` masquerade as "page deleted"
@@ -87,16 +87,30 @@ export type PathResolution =
  */
 export type MissingReason = "notFound" | "storeError";
 
-export type ObjectFetch =
+/** One R2 read's outcome, for a path the guard has already accepted. */
+type ObjectFetch =
   | { kind: "object"; object: R2ObjectBody; contentType: string }
   | { kind: "notModified"; etag: string }
+  | { kind: "missing"; reason: MissingReason };
+
+/**
+ * What a request path turned into. `spaRewrite` marks a response produced by
+ * D12's rewrite, which `index.ts` caches short (Q-new-1); `directory` is the
+ * Q-new-6 redirect to the trailing-slash form; `custom404` is the site's own
+ * `404.html` (D13).
+ */
+export type PageFetch =
+  | { kind: "object"; object: R2ObjectBody; contentType: string; spaRewrite: boolean }
+  | { kind: "notModified"; etag: string; spaRewrite: boolean }
+  | { kind: "directory"; location: string }
+  | { kind: "custom404"; object: R2ObjectBody; contentType: string }
   | { kind: "missing"; reason: MissingReason }
   | { kind: "rejected" };
 
 const REJECTED_PATH: PathResolution = { kind: "rejected" };
-const REJECTED: ObjectFetch = { kind: "rejected" };
-const NOT_FOUND: ObjectFetch = { kind: "missing", reason: "notFound" };
-const STORE_ERROR: ObjectFetch = { kind: "missing", reason: "storeError" };
+const REJECTED: PageFetch = { kind: "rejected" };
+const NOT_FOUND = { kind: "missing", reason: "notFound" } as const;
+const STORE_ERROR = { kind: "missing", reason: "storeError" } as const;
 
 /**
  * Resolve a request pathname to the path portion of an R2 key, or reject it.
@@ -214,7 +228,84 @@ function selectBucket(bucket: R2Bucket, _region: Region): R2Bucket {
 }
 
 /**
- * Fetch the object a `live` manifest points at.
+ * True when a resolved path's last segment has no `.` — a route like
+ * `dashboard/settings` rather than a file like `app.js`. A resolved path never
+ * ends in `/` (`resolvePath` appends `index.html`), so `/about/` is not a route.
+ */
+function isRoute(path: string): boolean {
+  return !path.slice(path.lastIndexOf("/") + 1).includes(".");
+}
+
+/**
+ * Fetch what a `live` manifest serves at `pathname`.
+ *
+ * The guard runs first: a rejected path returns before any concatenation and
+ * before any store call, so it never reaches `KEPT_R2.get` (nor D12's rewrite),
+ * and the offending path is never echoed back to the caller.
+ *
+ * Then exactly one read, of the resolved path — or, for an SPA's route, of the
+ * root `index.html` (D12). Only a `notFound` reads again:
+ *
+ * - a non-SPA route probes `{path}/index.html` and, if it exists, answers
+ *   `directory` so the caller can 301 to `{path}/` (Q-new-6);
+ * - otherwise a site whose manifest says `has404` reads its `404.html` (D13).
+ *
+ * A `storeError` at any step ends the walk: it is an outage, already logged,
+ * and another read would only double the load.
+ */
+export async function fetchPage(
+  bucket: R2Bucket,
+  manifest: KvManifest,
+  pathname: string,
+  ifNoneMatch: string | undefined,
+): Promise<PageFetch> {
+  const resolved = resolvePath(pathname);
+  if (resolved.kind === "rejected") return REJECTED;
+
+  const route = isRoute(resolved.path);
+  const spaRewrite = manifest.spa === true && route;
+  const fetched = await fetchObject(
+    bucket,
+    manifest,
+    spaRewrite ? INDEX_DOCUMENT : resolved.path,
+    ifNoneMatch,
+  );
+  if (fetched.kind !== "missing") return { ...fetched, spaRewrite };
+  if (fetched.reason === "storeError") return fetched;
+
+  // An SPA never gets here for a route: its route already read `index.html`.
+  if (route && manifest.spa !== true) {
+    const directory = await fetchObject(
+      bucket,
+      manifest,
+      `${resolved.path}/${INDEX_DOCUMENT}`,
+      undefined,
+    );
+    if (directory.kind === "object") {
+      // Existence was the question; the body is not served from here.
+      await directory.object.body.cancel().catch(() => {});
+      // Leading slashes collapse to one, so `//host/x` can never become a
+      // protocol-relative `Location` pointing off this site.
+      return { kind: "directory", location: `${pathname.replace(/^\/+/, "/")}/` };
+    }
+    if (directory.kind === "missing" && directory.reason === "storeError") {
+      return directory;
+    }
+  }
+
+  if (manifest.has404 === true) {
+    const custom = await fetchObject(bucket, manifest, CUSTOM_404_DOCUMENT, undefined);
+    if (custom.kind === "object") {
+      return { kind: "custom404", object: custom.object, contentType: custom.contentType };
+    }
+  }
+
+  return NOT_FOUND;
+}
+
+/**
+ * Fetch the object at `path` — a path `resolvePath` accepted, or one of this
+ * module's own constants. Never a raw request path.
  *
  * The key is `sites/{siteId}/{versionId}/{path}` — keyed by `siteId`, NEVER by
  * slug. That is what makes a rename in E06 a KV-only write with no file move,
@@ -229,21 +320,13 @@ function selectBucket(bucket: R2Bucket, _region: Region): R2Bucket {
  * Nothing throws out of here: every outcome, including an unexpected store
  * failure, is a value the caller can render.
  */
-export async function fetchObject(
+async function fetchObject(
   bucket: R2Bucket,
   manifest: KvManifest,
-  pathname: string,
+  path: string,
   ifNoneMatch: string | undefined,
 ): Promise<ObjectFetch> {
-  const resolved = resolvePath(pathname);
-  if (resolved.kind === "rejected") {
-    // Returns before any concatenation and before any store call: a rejected
-    // path never reaches `KEPT_R2.get`, and the offending path is never echoed
-    // back to the caller.
-    return REJECTED;
-  }
-
-  const key = `sites/${manifest.siteId}/${manifest.versionId}/${resolved.path}`;
+  const key = `sites/${manifest.siteId}/${manifest.versionId}/${path}`;
 
   const conditional =
     ifNoneMatch === undefined ? NO_CONDITION : parseIfNoneMatch(ifNoneMatch);
@@ -301,7 +384,7 @@ export async function fetchObject(
   return {
     kind: "object",
     object,
-    contentType: contentTypeFor(resolved.path),
+    contentType: contentTypeFor(path),
   };
 }
 
@@ -310,5 +393,8 @@ function contentTypeFor(path: string): string {
   const filename = path.slice(path.lastIndexOf("/") + 1);
   const dot = filename.lastIndexOf(".");
   if (dot <= 0) return FALLBACK_CONTENT_TYPE;
-  return CONTENT_TYPES[filename.slice(dot + 1).toLowerCase()] ?? FALLBACK_CONTENT_TYPE;
+  const extension = filename.slice(dot + 1).toLowerCase();
+  // Own keys only: `constructor` or `__proto__` must not reach the prototype.
+  const type = Object.hasOwn(CONTENT_TYPES, extension) ? CONTENT_TYPES[extension] : undefined;
+  return type?.contentType ?? FALLBACK_CONTENT_TYPE;
 }

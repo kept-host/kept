@@ -133,9 +133,10 @@ const TOKENS_CSS = `
 }
 `;
 
-/* Type roles per apps/web/app/globals.css `@theme`: Geist display, Inter body,
-   JetBrains Mono meta. No webfont is loaded, so each falls back to the system
-   stack — the pages must render with zero network access. */
+/* Type roles per apps/web/lib/fonts.ts and apps/web/app/globals.css: Hanken
+   Grotesk display, Geist body, JetBrains Mono meta. No webfont is loaded, so
+   each falls back to the system stack — the pages must render with zero network
+   access. */
 const BASE_CSS = `
 *{box-sizing:border-box}
 html{color-scheme:light dark}
@@ -146,7 +147,7 @@ body{
   flex-direction:column;
   background:var(--bg);
   color:var(--text);
-  font-family:"Inter",system-ui,sans-serif;          /* --font-body */
+  font-family:"Geist",system-ui,sans-serif;          /* --font-body */
   -webkit-font-smoothing:antialiased;
 }
 ::selection{background:var(--accent);color:var(--on-accent)}
@@ -159,7 +160,7 @@ a{color:inherit}
   display:flex;align-items:center;
 }
 .mark{
-  font-family:"Geist",system-ui,sans-serif;          /* --font-display */
+  font-family:"Hanken Grotesk",system-ui,sans-serif; /* --font-display */
   font-weight:700;font-size:22px;letter-spacing:-0.03em;
   color:var(--text);text-decoration:none;
 }
@@ -175,7 +176,7 @@ main{flex:1;display:flex;align-items:center;justify-content:center;padding:48px 
   color:var(--text-secondary);margin-bottom:12px;
 }
 h1{
-  font-family:"Geist",system-ui,sans-serif;          /* --font-display */
+  font-family:"Hanken Grotesk",system-ui,sans-serif; /* --font-display */
   font-weight:700;font-size:clamp(30px,5.4vw,48px);
   letter-spacing:-0.03em;line-height:1.04;margin:0 0 14px;
 }
