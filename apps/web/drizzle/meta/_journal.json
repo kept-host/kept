@@ -71,6 +71,13 @@
       "when": 1792188832180,
       "tag": "0009_admin_restore_version",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1792667645561,
+      "tag": "0010_multi_file_sites",
+      "breakpoints": true
     }
   ]
 }
