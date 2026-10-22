@@ -177,6 +177,10 @@ const NOT_A_LIMIT: Record<string, { occurrences: number; reason: string }> = {
     occurrences: 1,
     reason: "1000 ms per second, in a days → ms horizon",
   },
+  "lib/db/queries/version-files.ts": {
+    occurrences: 1,
+    reason: "rows per multi-row INSERT chunk (bind-parameter budget)",
+  },
   "lib/email/draft-reminder.ts": { occurrences: 1, reason: "1000 ms per second, inside MS_PER_DAY" },
   "lib/founding/review-token.ts": {
     occurrences: 3,
@@ -192,6 +196,7 @@ const NOT_A_LIMIT: Record<string, { occurrences: number; reason: string }> = {
     reason: "1000 ms per second: MS_PER_SECOND, which MS_PER_HOUR / MS_PER_DAY build on",
   },
   "lib/storage/manifest.ts": { occurrences: 1, reason: "s → ms for the KV re-purge delay" },
+  "lib/storage/r2.ts": { occurrences: 1, reason: "S3 DeleteObjects takes at most 1000 keys" },
   "lib/testing/names-drill.ts": { occurrences: 1, reason: "1000 ms per second, inside MS_PER_DAY" },
   "scripts/smoke-release.ts": { occurrences: 1, reason: "ms → s for a log line" },
 };
