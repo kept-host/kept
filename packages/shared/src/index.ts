@@ -11,6 +11,7 @@ export * from "./enums";
 export * from "./schemas";
 export * from "./types";
 export * from "./kv-manifest";
+export * from "./files";
 export * from "./publish";
 export * from "./keep";
 export * from "./manage";

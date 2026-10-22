@@ -45,7 +45,7 @@ import {
   hashContent,
   hashPublisher,
   hashToken,
-  publishRequestSchema,
+  htmlPublishRequestSchema,
   publishResponseSchema,
   type PublishError,
   type PublishResponse,
@@ -359,7 +359,7 @@ export async function publishPage(
   publisher: PublisherContext,
 ): Promise<PublishOutcome> {
   // ── 1. validate ────────────────────────────────────────────────────────────
-  const parsed = publishRequestSchema.safeParse(raw);
+  const parsed = htmlPublishRequestSchema.safeParse(raw);
   if (!parsed.success) return requestError(parsed.error);
   const { html, turnstileToken, reminderEmail } = parsed.data;
 

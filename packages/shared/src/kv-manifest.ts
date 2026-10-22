@@ -6,8 +6,8 @@
 // KV; the manifest itself is keyed on `siteId` (not slug), so renaming a slug is
 // a KV-only change with no file move.
 //
-// R2 layout: `sites/{siteId}/{versionId}/index.html` (+ future paths), in the
-// bucket selected by `region`.
+// R2 layout: `sites/{siteId}/{versionId}/{path}` — one object per file of the
+// version's set (E08 D1), in the bucket selected by `region`.
 
 import { z } from "zod";
 
@@ -48,6 +48,18 @@ export const kvManifestSchema = z.object({
   ownerId: z.string().nullable(),
   /** Epoch milliseconds of the last manifest write. */
   updatedAt: z.number(),
+  /**
+   * SPA fallback (E08 D12): an extensionless last path segment serves the root
+   * `index.html`. Writers omit it when false, so a single-file manifest is
+   * byte-identical to `dev-v0.8.0`.
+   */
+  spa: z.boolean().optional(),
+  /**
+   * The set has a root `404.html` (E08 D13), served with status 404 on a miss.
+   * Writers omit it when false, so a single-file manifest is byte-identical to
+   * `dev-v0.8.0`.
+   */
+  has404: z.boolean().optional(),
 });
 
 export type KvManifest = z.infer<typeof kvManifestSchema>;

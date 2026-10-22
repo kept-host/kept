@@ -55,6 +55,16 @@ export const STUDIO_ERROR_CODES = [
   // Arun's decision 5: the word filter pulled forward from E07 refuses with its
   // own code, mirroring `validateName`'s `inappropriate`.
   "name_inappropriate",
+  // E08 (Arun, 2026-10-22, Q-new-5): the file-set refusals, each the same-named
+  // `PUBLISH_ERROR_CODES` code. `file_too_large` and `invalid_file` above
+  // already exist and stay many-to-one.
+  "missing_index",
+  "invalid_path",
+  "too_many_files",
+  "site_too_large",
+  "file_type_not_allowed",
+  "invalid_archive",
+  "upload_not_found",
 ] as const;
 
 export const studioErrorCodeEnum = z.enum(STUDIO_ERROR_CODES);
@@ -125,6 +135,8 @@ export type StudioSite = z.infer<typeof studioSiteSchema>;
 export const ownedPublishResultSchema = z.object({
   site: studioSiteSchema,
   duplicate: z.literal(true).optional(),
+  /** E08 D7: OS-junk paths dropped from the set (`.DS_Store`, `__MACOSX/`…), for the toast. */
+  ignored: z.array(z.string()).optional(),
 });
 
 export type OwnedPublishResult = z.infer<typeof ownedPublishResultSchema>;
@@ -278,8 +290,12 @@ const versionChangedSchema = z.object({
  * accounts keep one previous version." (task 012).
  */
 export const replaceResultSchema = z.discriminatedUnion("unchanged", [
-  versionUnchangedSchema,
-  versionChangedSchema.extend({ pruned: z.boolean() }),
+  versionUnchangedSchema.extend({ ignored: z.array(z.string()).optional() }),
+  versionChangedSchema.extend({
+    pruned: z.boolean(),
+    /** E08 D7: OS-junk paths dropped from the set, for the toast. */
+    ignored: z.array(z.string()).optional(),
+  }),
 ]);
 
 export type ReplaceResult = z.infer<typeof replaceResultSchema>;

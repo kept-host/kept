@@ -54,7 +54,7 @@
  */
 import {
   hashContent,
-  publishRequestSchema,
+  htmlPublishRequestSchema,
   type DeleteResult,
   type ReplaceResult,
   type SiteStatus,
@@ -100,7 +100,7 @@ import { StudioRefusal } from "./studio-refusal";
  * field ignored — a browser posting a multipart form it built for the landing
  * page must not fail here for sending a token nothing needs.
  */
-export const ownerPageBodySchema = publishRequestSchema.pick({ html: true });
+export const ownerPageBodySchema = htmlPublishRequestSchema.pick({ html: true });
 
 /**
  * The page is not in a state whose served version may change — by replace or by

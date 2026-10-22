@@ -10,7 +10,10 @@
  *      number under its old name — may be used only by the surfaces that have
  *      no plan in scope. Anything that decides a cap or speaks to a signed-in
  *      account reads `limitsFor(plan)`, so a premium account is never told, or
- *      held to, the free number.
+ *      held to, the free number;
+ *   4. a third SOURCE guard (E08 AC13): the file-set byte caps, written as a
+ *      megabyte expression or as the raw byte count, appear nowhere in
+ *      `apps/web` — they live in `PLAN_LIMITS` alone.
  *
  * Plus latent bug 2: `keptQuotaSchema.limit` was `z.literal(KEPT_PAGE_LIMIT)`,
  * so any limit but the free literal made every `keepResultSchema.parse` throw —
@@ -28,6 +31,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   KEPT_PAGE_LIMIT,
+  MAX_PAGE_BYTES,
   NAME_ABSOLUTE_MIN_LENGTH,
   NAME_MAX_LENGTH,
   PLANS,
@@ -39,19 +43,38 @@ import {
 
 import { stripComments } from "../testing/strip-comments";
 
-test("AC1: limitsFor returns each plan's exact limits", () => {
+/** A mebibyte, so the expected caps below read as the decision states them. */
+const MB = 1024 * 1024;
+
+test("AC1 + AC13: limitsFor returns each plan's exact limits", () => {
+  // E08's caps are Arun's decision of 2026-10-22 (Q1), not the PRD's D2 numbers.
   assert.deepEqual(limitsFor("free"), {
     keptPages: 50,
     chosenNames: 5,
     nameMinLength: 5,
     previousVersions: 1,
+    siteBytes: 20 * MB,
+    siteFiles: 200,
+    fileBytes: 10 * MB,
   });
   assert.deepEqual(limitsFor("premium"), {
     keptPages: 1000,
     chosenNames: 50,
     nameMinLength: 4,
     previousVersions: 20,
+    siteBytes: 100 * MB,
+    siteFiles: 1000,
+    fileBytes: 25 * MB,
   });
+});
+
+test("AC13: per file never exceeds per site, and HTML's own cap sits under every fileBytes", () => {
+  for (const plan of PLANS) {
+    const { siteBytes, fileBytes, siteFiles } = limitsFor(plan);
+    assert.ok(fileBytes <= siteBytes, `${plan}: fileBytes ${fileBytes} > siteBytes ${siteBytes}`);
+    assert.ok(MAX_PAGE_BYTES <= fileBytes, `${plan}: MAX_PAGE_BYTES above fileBytes`);
+    assert.ok(Number.isInteger(siteFiles) && siteFiles > 0, `${plan}: siteFiles ${siteFiles}`);
+  }
 });
 
 test("every plan has limits, and none grants a name shorter than NAME_ABSOLUTE_MIN_LENGTH", () => {
@@ -220,6 +243,87 @@ test("the guard can see: it finds the allowlisted files at all", () => {
   // cwd or a pathspec typo would all look like a clean tree.
   const files = candidateFiles();
   assert.ok(files.includes("components/ui/dialog.tsx"), `scanned: ${files.join(", ")}`);
+});
+
+// ─── The file-set byte-cap guard (E08 AC13) ────────────────────────────────
+
+/**
+ * Every plan's `siteBytes` / `fileBytes` in megabytes — derived from
+ * `PLAN_LIMITS`, so raising a cap there moves the guard with it.
+ */
+const CAP_MEGABYTES = [
+  ...new Set(PLANS.flatMap((plan) => [limitsFor(plan).siteBytes, limitsFor(plan).fileBytes])),
+].map((bytes) => bytes / MB);
+
+/**
+ * A cap retyped in app source: `N * 1024 * 1024` (or `* 1024 ** 2`,
+ * `* 1_048_576`, `* BYTES_PER_MB`) for a cap's N, or the raw byte count with or
+ * without `_` separators. The file COUNTS are not guarded here: the free `200`
+ * is every HTTP status in the app, and the premium `1000` is already the
+ * `LIMIT_LITERAL` guard's.
+ */
+function capPattern(): RegExp {
+  const megabytes = CAP_MEGABYTES.join("|");
+  const byteCounts = CAP_MEGABYTES.map((mb) => String(mb * MB).split("").join("_?")).join("|");
+  return new RegExp(
+    `(?<![A-Za-z0-9_.])(?:(?:${megabytes})\\s*\\*\\s*(?:1024\\s*\\*\\s*1024|1024\\s*\\*\\*\\s*2|1_?048_?576|BYTES_PER_MB)|${byteCounts})(?![A-Za-z0-9_])`,
+    "g",
+  );
+}
+
+/** App-source files with any byte-cap spelling — comments stripped. */
+function capLiteralHits(): Record<string, number> {
+  let files: string[];
+  try {
+    files = execFileSync(
+      "git",
+      ["grep", "--untracked", "-lE", "1024|048|BYTES_PER_MB|[0-9]{8}|[0-9]_[0-9]{3}_[0-9]{3}", "--", "*.ts", "*.tsx", ":!*.test.ts", ":!e2e"],
+      { cwd: WEB_ROOT, encoding: "utf8" },
+    )
+      .split("\n")
+      .filter(Boolean);
+  } catch (error) {
+    if ((error as { status?: number }).status === 1) return {};
+    throw error;
+  }
+  const found: Record<string, number> = {};
+  for (const file of files) {
+    const occurrences =
+      stripComments(readFileSync(join(WEB_ROOT, file), "utf8")).match(capPattern())?.length ?? 0;
+    if (occurrences > 0) found[file] = occurrences;
+  }
+  return found;
+}
+
+test("AC13 guard: no file-set byte cap is retyped in apps/web source", () => {
+  assert.deepEqual(
+    capLiteralHits(),
+    {},
+    "A plan's siteBytes / fileBytes appeared as a literal in apps/web. Read it from " +
+      "`limitsFor(plan)` (@kept/shared) instead — the caps live in PLAN_LIMITS alone.",
+  );
+});
+
+test("the cap guard can see: its pattern matches every spelling it claims to", () => {
+  // A pattern that matches nothing passes forever.
+  const pattern = capPattern();
+  for (const mb of CAP_MEGABYTES) {
+    for (const spelling of [
+      `${mb} * 1024 * 1024`,
+      `${mb}*1024*1024`,
+      `${mb} * 1024 ** 2`,
+      `${mb} * 1_048_576`,
+      `${mb} * BYTES_PER_MB`,
+      String(mb * MB),
+      (mb * MB).toLocaleString("en-US").replaceAll(",", "_"),
+    ]) {
+      assert.equal(`x = ${spelling};`.match(pattern)?.length, 1, `missed: ${spelling}`);
+    }
+  }
+  // …and stays quiet on the sizes that are not caps.
+  for (const fine of ["64 * 1024 * 1024", "5 * 1024 * 1024", "256 * 1024", "1.5 * 1024 * 1024"]) {
+    assert.equal(`x = ${fine};`.match(pattern), null, `false positive: ${fine}`);
+  }
 });
 
 // ─── The KEPT_PAGE_LIMIT guard ─────────────────────────────────────────────

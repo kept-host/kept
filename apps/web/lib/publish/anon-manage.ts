@@ -38,7 +38,7 @@
 import {
   DRAFT_TTL_DAYS,
   hashContent,
-  publishRequestSchema,
+  htmlPublishRequestSchema,
   type PublishChannel,
   type SiteStatus,
 } from "@kept/shared";
@@ -93,7 +93,7 @@ export interface OkResponse {
  * Reusing the publish schema is what keeps `MAX_PAGE_BYTES`, the HTML check and
  * every error code identical between the two paths.
  */
-const replaceRequestSchema = publishRequestSchema.omit({ reminderEmail: true });
+const replaceRequestSchema = htmlPublishRequestSchema.omit({ reminderEmail: true });
 
 /**
  * `""` and `null` both CLEAR the address; anything else must be an email.

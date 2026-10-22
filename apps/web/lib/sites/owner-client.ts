@@ -48,7 +48,7 @@ import {
   type NameChangeRequest,
   type NameCheckResult,
   type OwnedPublishResult,
-  type PublishRequest,
+  type HtmlPublishRequest,
   type ReplaceResult,
   type RestoreResult,
   type SiteUpdateRequest,
@@ -189,7 +189,7 @@ export async function publishOwnedHtml(
   html: string,
   signal?: AbortSignal,
 ): Promise<OwnedPublishOutcome> {
-  const body: Pick<PublishRequest, "html"> = { html };
+  const body: Pick<HtmlPublishRequest, "html"> = { html };
   const sent = await send(
     "/api/sites",
     jsonInit("POST", body, signal),
@@ -429,7 +429,7 @@ export async function replacePage(
   html: string,
   signal?: AbortSignal,
 ): Promise<ReplaceOutcome> {
-  const body: Pick<PublishRequest, "html"> = { html };
+  const body: Pick<HtmlPublishRequest, "html"> = { html };
   const sent = await send(
     `/api/sites/${encodeURIComponent(siteId)}/replace`,
     jsonInit("POST", body, signal),
