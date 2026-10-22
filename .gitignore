@@ -55,3 +55,6 @@ coverage/
 
 # Design handoff bundles (local reference only)
 *handoff.zip
+
+# Example sites (showcase + E08 fixtures) live only locally; never committed.
+/examples/

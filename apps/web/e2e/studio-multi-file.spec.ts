@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -76,7 +77,7 @@ async function writeViteDist(run: string, extra: Record<string, Uint8Array | str
   return root;
 }
 
-/** The example sites (`examples/sites/`) — real builds, committed as built. */
+/** The example sites (`examples/sites/`) — real builds, gitignored, so present only locally. */
 const EXAMPLES_DIR = fileURLToPath(new URL("../../../examples/sites/", import.meta.url));
 
 /** Every file under `dir`, as `/`-separated relative paths, in path order. */
@@ -351,6 +352,10 @@ test.describe("studio: folders, zips and the single-page-app flag", () => {
     page,
     baseURL,
   }) => {
+    test.skip(
+      !existsSync(EXAMPLES_DIR),
+      "examples/ is gitignored and absent here — run locally with the example sites in place",
+    );
     test.skip(
       !(await presignedPutAllowed(new URL(baseURL!).origin)),
       "the dev bucket has no CORS rule for the browser's PUT (epic Human step 2)",

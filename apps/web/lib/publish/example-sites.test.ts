@@ -28,8 +28,10 @@
  * directory, so its spools never race that count, and asserts its own spools
  * are gone.
  *
- * `examples/sites.json` missing is a failure, never a skip. The publishing test
- * SKIPS without dev credentials (CI on fork PRs). Never prints an upload URL.
+ * `examples/` is gitignored — the sites live only on Arun's machine (2026-10-22)
+ * — so both tests SKIP, saying so, when `examples/sites.json` is absent (CI).
+ * The publishing test also SKIPS without dev credentials. Never prints an
+ * upload URL.
  */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -73,6 +75,10 @@ const skip: string | false =
   missing.length > 0 ? `dev credentials absent (${missing.join(", ")}) — run locally with apps/web/.env.local` : false;
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
+const INDEX = join(REPO_ROOT, "examples", "sites.json");
+const noExamples: string | false = existsSync(INDEX)
+  ? false
+  : "examples/ is gitignored and absent here — run locally with the example sites in place";
 
 interface ExampleSite {
   slug: string;
@@ -81,8 +87,7 @@ interface ExampleSite {
   files: number;
 }
 
-/** Read at load: a missing or empty index fails the file instead of skipping it. */
-const EXAMPLES: ExampleSite[] = JSON.parse(readFileSync(join(REPO_ROOT, "examples", "sites.json"), "utf8"));
+const EXAMPLES: ExampleSite[] = noExamples ? [] : JSON.parse(readFileSync(INDEX, "utf8"));
 
 const SPOOL_DIR = mkdtempSync(join(tmpdir(), "kept-examples-"));
 process.env.TMPDIR = SPOOL_DIR;
@@ -140,7 +145,7 @@ after(async () => {
   await closeDb();
 });
 
-test("examples/sites.json indexes every example folder", () => {
+test("examples/sites.json indexes every example folder", { skip: noExamples }, () => {
   assert.ok(EXAMPLES.length > 0, "examples/sites.json lists no sites");
   const folders = readdirSync(join(REPO_ROOT, "examples", "sites"), { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
@@ -153,7 +158,7 @@ test("examples/sites.json indexes every example folder", () => {
   }
 });
 
-test("every example site publishes through readFileSet and publishOwnedSite as a Free owner", { skip }, async () => {
+test("every example site publishes through readFileSet and publishOwnedSite as a Free owner", { skip: noExamples || skip }, async () => {
   const owner = await makeFreeAccount();
 
   for (const site of EXAMPLES) {
