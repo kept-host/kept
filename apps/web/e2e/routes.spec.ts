@@ -2,11 +2,10 @@ import {
   test,
   expect,
   type APIRequestContext,
-  type Page,
 } from "@playwright/test";
 import { config } from "dotenv";
 
-import { gotoWithTokensApplied } from "./tokens-applied";
+import { gotoWithTokensApplied, trackConsoleErrors } from "./tokens-applied";
 
 /**
  * Route smoke: the `(app)` gate, /auth, /stats and /promise.
@@ -65,21 +64,6 @@ const SKIP_LIVE: string | false =
   missingLiveVars.length > 0
     ? `database or auth credentials absent (${missingLiveVars.join(", ")}) — run locally with apps/web/.env.local`
     : false;
-
-/**
- * The two zero-console-error drills below navigate through
- * `gotoWithTokensApplied`. A stylesheet the `--experimental-https` dev server
- * drops lands in `errors` as `Failed to load resource` and fails them for a
- * reason that has nothing to do with the route — see `tokens-applied.ts`.
- */
-function trackConsoleErrors(page: Page): string[] {
-  const errors: string[] = [];
-  page.on("console", (msg) => {
-    if (msg.type() === "error") errors.push(msg.text());
-  });
-  page.on("pageerror", (err) => errors.push(err.message));
-  return errors;
-}
 
 /**
  * /dashboard is no longer a page this suite can just fetch — E05 task 004 put

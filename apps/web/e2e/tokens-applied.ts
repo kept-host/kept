@@ -53,14 +53,23 @@ import type { Page, Response } from "@playwright/test";
  * So (3) is the gate and (2) is the *diagnostic*: on failure we name the
  * stylesheets the document asked for and say which of them never parsed.
  *
- * ── WHAT THIS DELIBERATELY DOES NOT DO ────────────────────────────────────
+ * ── ONE RE-NAVIGATION, AND ONLY ON PROOF OF A DROP ────────────────────────
  *
- * It does not re-navigate, retry, or sleep a fixed amount, and it relaxes no
- * assertion — the same colours, the same theme differences and the same empty
- * console are still required afterwards. When the asset genuinely never
- * arrives the run FAILS, naming the stylesheet, instead of silently comparing
- * two defaults. A parity test that can pass because both themes are equally
- * broken is worse than one that fails.
+ * `gotoWithTokensApplied` navigates by URL, so when the token layer is missing
+ * AND the inventory shows a stylesheet that never arrived, it loads the same URL
+ * once more. That is the whole retry: a page whose sheets all arrived but whose
+ * tokens are still unset fails at once, and a sheet dropped twice fails, naming
+ * it. CI's 1 worker + 1 test retry did not absorb the fault — the `dev-v0.9.0`
+ * deploy lost two of its validate runs to it — so this answers it per
+ * navigation instead. `waitForTokensApplied` alone never re-navigates: it runs
+ * after clicks and form state that a reload would change.
+ *
+ * It relaxes no assertion — the same colours, the same theme differences and
+ * the same empty console are still required afterwards. The one console line
+ * it takes back is the `Failed to load resource` for the sheet it re-fetched,
+ * and only from a `trackConsoleErrors` list; every other error stays. A parity
+ * test that can pass because both themes are equally broken is worse than one
+ * that fails.
  */
 
 /** What an element with no painted background reports. */
@@ -114,19 +123,37 @@ function describeSheet({ href, rules }: LinkedSheet): string {
   return `  - ${href} — delivered (${rules} rules)`;
 }
 
-function diagnose(url: string, waited: number, sheets: LinkedSheet[]): string {
+function diagnose(url: string, waited: number, sheets: LinkedSheet[], loads = 1): string {
   const inventory = sheets.length
     ? sheets.map(describeSheet).join("\n")
     : "  (the document links no stylesheet at all)";
 
   return (
-    `The design tokens never applied to ${url} within ${waited} ms: ` +
-    `\`${TOKEN_PROBE}\` is unset on :root.\n` +
+    `The design tokens never applied to ${url} within ${waited} ms` +
+    (loads > 1 ? ` on any of ${loads} loads` : "") +
+    `: \`${TOKEN_PROBE}\` is unset on :root.\n` +
     "Every computed colour on this page is therefore a browser default, and no " +
     "colour, radius or light/dark comparison here means anything — this is the " +
     "dev server dropping a static asset, NOT a token regression in the app.\n" +
     `Stylesheets linked by the document:\n${inventory}`
   );
+}
+
+const dropped = ({ rules }: LinkedSheet) => rules === null || rules === 0;
+
+/** Whether the token layer lands on `page` within `timeout`. */
+async function tokensApplied(page: Page, timeout: number): Promise<boolean> {
+  return page
+    .waitForFunction(
+      (probe) =>
+        getComputedStyle(document.documentElement).getPropertyValue(probe).trim() !== "",
+      TOKEN_PROBE,
+      { timeout },
+    )
+    .then(
+      () => true,
+      () => false,
+    );
 }
 
 /**
@@ -139,25 +166,19 @@ export async function waitForTokensApplied(
   page: Page,
   timeout: number = TOKENS_APPLIED_TIMEOUT,
 ): Promise<void> {
-  try {
-    await page.waitForFunction(
-      (probe) =>
-        getComputedStyle(document.documentElement).getPropertyValue(probe).trim() !== "",
-      TOKEN_PROBE,
-      { timeout },
-    );
-  } catch {
-    // Not swallowed — re-thrown with the one thing the raw timeout does not
-    // say, which is WHICH stylesheet is missing.
+  // Not swallowed — the timeout is re-thrown with the one thing it does not
+  // say, which is WHICH stylesheet is missing.
+  if (!(await tokensApplied(page, timeout))) {
     throw new Error(diagnose(page.url(), timeout, await linkedSheets(page)));
   }
 }
 
 /**
- * `page.goto`, but it does not return until the tokens are actually applied.
+ * `page.goto`, but it does not return until the tokens are actually applied —
+ * loading the URL a second time if the first load dropped a stylesheet.
  *
- * The response is passed straight through, so a caller can still assert on the
- * status the way `routes.spec.ts` does.
+ * The response of the load that landed is passed straight through, so a caller
+ * can still assert on the status the way `routes.spec.ts` does.
  */
 export async function gotoWithTokensApplied(
   page: Page,
@@ -165,6 +186,57 @@ export async function gotoWithTokensApplied(
   timeout: number = TOKENS_APPLIED_TIMEOUT,
 ): Promise<Response | null> {
   const response = await page.goto(url);
-  await waitForTokensApplied(page, timeout);
-  return response;
+  if (await tokensApplied(page, timeout)) return response;
+
+  const lost = (await linkedSheets(page)).filter(dropped);
+  if (lost.length === 0) {
+    throw new Error(diagnose(page.url(), timeout, await linkedSheets(page)));
+  }
+
+  const retried = await page.goto(url);
+  if (!(await tokensApplied(page, timeout))) {
+    throw new Error(diagnose(page.url(), timeout, await linkedSheets(page), 2));
+  }
+  forgetDroppedSheetErrors(page, lost);
+  return retried;
+}
+
+/** Each `trackConsoleErrors` list on a page, with the URL each entry came from. */
+const consoleLists = new WeakMap<Page, { errors: string[]; sources: string[] }[]>();
+
+/**
+ * Collect the page's console errors and uncaught exceptions, for a test that
+ * asserts there are none.
+ *
+ * The list is live: `gotoWithTokensApplied` removes from it the `Failed to load
+ * resource` for a stylesheet it then re-fetched successfully, and nothing else.
+ */
+export function trackConsoleErrors(page: Page): string[] {
+  const errors: string[] = [];
+  const sources: string[] = [];
+  page.on("console", (msg) => {
+    if (msg.type() !== "error") return;
+    errors.push(msg.text());
+    sources.push(msg.location().url);
+  });
+  page.on("pageerror", (err) => {
+    errors.push(err.message);
+    sources.push("");
+  });
+  consoleLists.set(page, [...(consoleLists.get(page) ?? []), { errors, sources }]);
+  return errors;
+}
+
+function forgetDroppedSheetErrors(page: Page, lost: LinkedSheet[]): void {
+  // Matched on pathname: the dev server stamps each load's `?v=` differently.
+  const paths = new Set(lost.map(({ href }) => new URL(href, page.url()).pathname));
+  for (const { errors, sources } of consoleLists.get(page) ?? []) {
+    for (let i = errors.length - 1; i >= 0; i--) {
+      const source = sources[i] ? new URL(sources[i] ?? "").pathname : "";
+      if (paths.has(source) && errors[i]?.startsWith("Failed to load resource")) {
+        errors.splice(i, 1);
+        sources.splice(i, 1);
+      }
+    }
+  }
 }

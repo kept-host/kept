@@ -3,7 +3,7 @@ import { config } from "dotenv";
 
 import { drillIp } from "../lib/testing/drill-ip";
 
-import { gotoWithTokensApplied } from "./tokens-applied";
+import { gotoWithTokensApplied, trackConsoleErrors } from "./tokens-applied";
 
 /**
  * `/auth` — the sign-in screen. E05 task 005.
@@ -79,15 +79,6 @@ const SIGN_IN_HEADING = "Sign in to kept";
  * run of the hour on — a failure no test here is about.
  */
 const someone = () => `someone-${crypto.randomUUID().slice(0, 8)}@example.com`;
-
-function trackConsoleErrors(page: Page): string[] {
-  const errors: string[] = [];
-  page.on("console", (msg) => {
-    if (msg.type() === "error") errors.push(msg.text());
-  });
-  page.on("pageerror", (err) => errors.push(err.message));
-  return errors;
-}
 
 /**
  * Hold a request open long enough to observe the loading state, then let it go
