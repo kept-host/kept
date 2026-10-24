@@ -3,6 +3,7 @@ import { expect, test } from "@playwright/test";
 import {
   TRANSPARENT,
   gotoWithTokensApplied,
+  trackConsoleErrors,
   waitForTokensApplied,
 } from "./tokens-applied";
 
@@ -19,6 +20,10 @@ import {
  *      same transparent default in light and in dark — i.e. the silent
  *      false-pass this guard exists to prevent is real, not theoretical;
  *   2. the guard refuses that page, and its message names the stylesheet.
+ *
+ * It also drills `gotoWithTokensApplied`'s one re-navigation: a sheet dropped
+ * once is re-fetched without a trace in the console list, and a sheet dropped
+ * on both loads still fails, naming it.
  *
  * `/promise` is used because it is a static marketing route: no database, no
  * session, nothing that can make this drill skip.
@@ -120,5 +125,37 @@ test.describe("the design-token readiness guard", () => {
     expect(failure).toContain(LAYOUT_CSS);
     expect(failure).toContain("NEVER DELIVERED");
     expect(failure).toContain("--bg");
+  });
+  test("a stylesheet dropped once is re-fetched: the page lands and the console stays clean", async ({
+    page,
+  }) => {
+    let drops = 0;
+    await page.route("**/_next/static/css/**", (route) =>
+      drops++ === 0 ? route.abort() : route.continue(),
+    );
+    const errors = trackConsoleErrors(page);
+
+    const response = await gotoWithTokensApplied(page, ROUTE);
+    expect(response?.ok()).toBe(true);
+    expect(drops, "the first load's stylesheet was never dropped").toBeGreaterThan(1);
+    expect(
+      await page.evaluate(() =>
+        getComputedStyle(document.documentElement).getPropertyValue("--bg").trim(),
+      ),
+    ).not.toBe("");
+    expect(errors, `console errors: ${errors.join(" | ")}`).toEqual([]);
+  });
+
+  test("a stylesheet dropped on both loads still fails, naming it", async ({ page }) => {
+    await page.route("**/_next/static/css/**", (route) => route.abort());
+
+    const failure = await gotoWithTokensApplied(page, ROUTE, 2_000).then(
+      () => null,
+      (error: Error) => error.message,
+    );
+    expect(failure, "the guard passed a page whose stylesheet never arrived").not.toBeNull();
+    expect(failure).toContain("on any of 2 loads");
+    expect(failure).toContain(LAYOUT_CSS);
+    expect(failure).toContain("NEVER DELIVERED");
   });
 });
