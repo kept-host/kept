@@ -22,7 +22,8 @@
  * The purge reads a page's objects from `site_version_files`, so every fixture
  * with bytes records its files there. Two scratch pages carry real file sets:
  * 2 × 250 files (AC29, timed against `JOB_DEADLINE_SECONDS` — Verification 4)
- * and `PURGE_DELETES_PER_RUN + 50` files (the cap and the resume). Neither has
+ * and `PURGE_DELETES_PER_RUN + 50` files (the cap and the resume). A third
+ * prunes a 500-file version (Verification 4's prune half; no KV). Neither has
  * a manifest; each costs one KV delete when it is finally purged.
  *
  * KV QUOTA (dev is on the free plan): about eight KV writes and fourteen
@@ -48,9 +49,11 @@ import { eq, inArray, sql } from "drizzle-orm";
 import { closeDb, db } from "../db";
 import { clearResolvedReporterContacts, dueExpiriesQuery } from "../db/queries/lifecycle";
 import { insertVersionFiles, siteObjectKeys } from "../db/queries/version-files";
+import { stampActivated } from "../db/queries/versions";
 import { abuseReports, appeals, moderationActions, nameHolds, sites, siteVersionFiles, siteVersions } from "../db/schema";
 import { MS_PER_DAY, MS_PER_SECOND } from "../sites/display";
 import { keepSite } from "../sites/keep";
+import { pruneVersions } from "../sites/manage";
 import { removeManifest, syncManifest } from "../storage/manifest";
 import { pageObjectKey, PAGE_CONTENT_TYPE, r2Store, siteObjectKey } from "../storage/r2";
 import { edgeStatus, liveSkip, LockDrill, manifestAt, settle } from "../testing/lock-drill";
@@ -399,6 +402,43 @@ test(
       "site_version_files cascaded with the versions",
     );
     assert.deepEqual(await stillStored(keys), [], "a get on every recorded key is null");
+  },
+);
+
+test(
+  "Verification 4 (prune half): pruning a 500-file version deletes every file in one deleteMany, inside JOB_DEADLINE_SECONDS",
+  { skip, timeout: 300_000 },
+  async () => {
+    const page = await fixture();
+    const current = (await drill.read(page.id)).currentVersionId!;
+    const previous = crypto.randomUUID();
+    const oldest = crypto.randomUUID();
+    await fileSet(page.id, current, 1);
+    await fileSet(page.id, previous, 1);
+    const keys = await fileSet(page.id, oldest, 500);
+    // Free keeps one previous version: the oldest-activated one is the prune's.
+    await db.transaction(async (tx) => {
+      await stampActivated(tx, page.id, previous, new Date(Date.now() - MS_PER_DAY));
+      await stampActivated(tx, page.id, oldest, new Date(Date.now() - 2 * MS_PER_DAY));
+    });
+    assert.equal((await stillStored(keys)).length, 500, "precondition: every file of the oldest version is in R2");
+
+    const started = Date.now();
+    const pruned = await pruneVersions(page.id);
+    const elapsed = Date.now() - started;
+    console.log(`[prune drill] a 500-file version pruned in ${elapsed} ms`);
+
+    assert.equal(pruned, true);
+    assert.ok(elapsed < JOB_DEADLINE_SECONDS * MS_PER_SECOND, `${elapsed} ms is inside the job's deadline`);
+    assert.deepEqual(
+      (await db.select({ id: siteVersions.id }).from(siteVersions).where(eq(siteVersions.siteId, page.id)))
+        .map((version) => version.id)
+        .sort(),
+      [current, previous].sort(),
+      "the current and one previous version are kept",
+    );
+    assert.deepEqual(await db.select().from(siteVersionFiles).where(eq(siteVersionFiles.versionId, oldest)), []);
+    assert.deepEqual(await stillStored(keys), [], "a get on every pruned key is null");
   },
 );
 

@@ -1,5 +1,7 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { existsSync } from "node:fs";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { dirname, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { limitsFor, kvManifestSchema } from "@kept/shared";
 import { expect, test, type Page } from "@playwright/test";
@@ -29,9 +31,9 @@ import { cleanup, holdPath, hydrated, newScope, signInAs, SKIP_OWNER_UI } from "
  * image, and a `.DS_Store`) is written to this test's output folder and
  * dropped as a FOLDER through Chromium's own drag pipeline (`holdPath`), so the
  * studio walks it with `webkitGetAsEntry`, packs it store-only in the browser
- * and sends ONE multipart `archive`. AC36 closes on Arun's real Vite build
- * (epic Human step 1): task 012 re-runs this spec against
- * `lib/publish/fixtures/sites/`.
+ * and sends ONE multipart `archive`. AC36 closes on real Vite builds (task
+ * 012): `examples/sites/field-notes` (a Vite + React SPA, inline) and
+ * `examples/sites/orbit-garden` (Vite + three.js, 13.2 MiB, presigned).
  *
  * NO MOCKS: a real magic-link session, `POST /api/sites`, `POST
  * /api/sites/:id/replace` and a restore against dev Neon, R2 and KV; every
@@ -40,7 +42,8 @@ import { cleanup, holdPath, hydrated, newScope, signInAs, SKIP_OWNER_UI } from "
  * ── DEV KV BUDGET (free plan: 1,000 writes + deletes a day) ─────────────────
  * One page for the whole file: publish (1) → replace (1) → restore (1) →
  * cleanup (1). The size refusal sends nothing. The presigned test adds one
- * publish and only runs once the dev bucket allows the browser's PUT.
+ * publish and only runs once the dev bucket allows the browser's PUT. The real
+ * Vite builds add two publishes and two cleanups.
  */
 const scope = newScope();
 
@@ -72,6 +75,17 @@ async function writeViteDist(run: string, extra: Record<string, Uint8Array | str
     await writeFile(target, body);
   }
   return root;
+}
+
+/** The example sites (`examples/sites/`) — real builds, gitignored, so present only locally. */
+const EXAMPLES_DIR = fileURLToPath(new URL("../../../examples/sites/", import.meta.url));
+
+/** Every file under `dir`, as `/`-separated relative paths, in path order. */
+async function sitePaths(dir: string): Promise<string[]> {
+  return (await readdir(dir, { recursive: true, withFileTypes: true }))
+    .filter((entry) => entry.isFile())
+    .map((entry) => relative(dir, join(entry.parentPath, entry.name)).split("\\").join("/"))
+    .sort();
 }
 
 /** Every studio write the screen sends from now on, with its body's content type. */
@@ -332,5 +346,71 @@ test.describe("studio: folders, zips and the single-page-app flag", () => {
     scope.siteIds.push(row!.id);
     scope.slugs.add(row!.slug);
     expect((await currentVersion(row!.id)).fileCount).toBe(6);
+  });
+
+  test("AC36 (real Vite builds): field-notes dropped as a folder publishes inline as an SPA; orbit-garden goes presigned", async ({
+    page,
+    baseURL,
+  }) => {
+    test.skip(
+      !existsSync(EXAMPLES_DIR),
+      "examples/ is gitignored and absent here — run locally with the example sites in place",
+    );
+    test.skip(
+      !(await presignedPutAllowed(new URL(baseURL!).origin)),
+      "the dev bucket has no CORS rule for the browser's PUT (epic Human step 2)",
+    );
+    const builds = [
+      { slug: "field-notes", spa: true, writes: ["/api/sites"], drop: true },
+      { slug: "orbit-garden", spa: false, writes: ["/api/uploads", "/api/sites"], drop: false },
+    ];
+
+    for (const build of builds) {
+      // A fresh account each: an empty Pages home has the zone, the checkbox and Browse folder.
+      const { userId } = await signInAs(page, baseURL!, scope);
+      const dir = join(EXAMPLES_DIR, build.slug);
+      const paths = await sitePaths(dir);
+
+      await page.goto("/dashboard");
+      await hydrated(page);
+      const zone = page.getByRole("button", { name: /Drop an HTML file, a folder or a \.zip/ });
+      await expect(zone).toBeVisible();
+      if (build.spa) await page.getByTestId("spa-checkbox").check();
+      const writes = watchWrites(page);
+
+      if (build.drop) await (await holdPath(page, zone, dir)).drop();
+      else await page.getByTestId("folder-input").setInputFiles(dir);
+      if (!build.drop) {
+        await expect(page.getByTestId("upload-progress")).toHaveAttribute("data-phase", "uploading", {
+          timeout: LIVE_STACK_TIMEOUT,
+        });
+      }
+      await expect(page.locator("[data-sonner-toast]").filter({ hasText: PUBLISHED_KEPT_TOAST })).toBeVisible({
+        timeout: LIVE_STACK_TIMEOUT,
+      });
+      expect(writes.map((write) => write.path), build.slug).toEqual(build.writes);
+
+      const [row] = await db
+        .select({ id: schema.sites.id, slug: schema.sites.slug })
+        .from(schema.sites)
+        .where(eq(schema.sites.ownerId, userId));
+      expect(row, `${build.slug}: the account owns the published page`).toBeDefined();
+      scope.siteIds.push(row!.id);
+      scope.slugs.add(row!.slug);
+
+      const version = await currentVersion(row!.id);
+      console.log(`[studio-multi-file] ${build.slug} → ${row!.slug}: ${version.fileCount} files, ${version.sizeBytes} B, spa ${version.spa}`);
+      expect(version.fileCount).toBe(paths.length);
+      expect(version.spa).toBe(build.spa);
+      expect((await versionPaths(db, [version.versionId])).get(version.versionId), "the build's own paths").toEqual(paths);
+      await expect.poll(() => manifestSpa(row!.slug), MANIFEST_READ).toBe(build.spa);
+
+      // Page detail: "{n} files · {size}" and Open ↗ in place of the srcdoc frame.
+      await page.goto(`/site/${row!.id}`);
+      await page.waitForLoadState("networkidle");
+      await expect(page.locator("iframe")).toHaveCount(0);
+      await expect(page.getByTestId("file-summary")).toHaveText(fileSetSummary(paths.length, version.sizeBytes));
+      await expect(page.getByTestId("thumbnail-preview").getByRole("link", { name: /Open ↗/ })).toBeVisible();
+    }
   });
 });

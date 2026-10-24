@@ -450,7 +450,7 @@ test.describe("the sweep, on the wire (AC44)", () => {
         expect(await theirs.text(), `${key}: "not yours" must read as "not there"`).toBe(await absent.text());
       }
       expect(exempted.sort(), "only the account-scoped routes name no page").toEqual(
-        ["DELETE /api/account", "POST /api/sites"].sort(),
+        ["DELETE /api/account", "POST /api/sites", "POST /api/uploads"].sort(),
       );
     } finally {
       await strangerContext.close();
