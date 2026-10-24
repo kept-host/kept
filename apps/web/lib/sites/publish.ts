@@ -15,10 +15,11 @@
  * authority on the page to revoke afterwards.
  *
  * ── WHAT IS REUSED, VERBATIM ─────────────────────────────────────────────────
- * The store half is `writePageAndManifest` from `lib/publish/pipeline.ts` — the
- * R2 → pointer → KV → purge sequence and its unwind, in the one place it is
+ * The store half is `storeNewPage` from `lib/publish/pipeline.ts` — the every
+ * file → pointer → KV → purge sequence and its unwind, in the one place it is
  * written down. The clocks are `draftClocks`, the URL is `liveUrl`, the name is
- * `extractPageTitle`, the scan is the same `./hooks` seam, the size cap is `MAX_PAGE_BYTES` through the same schema, and the slug
+ * `setTitle`, the scan is the same `./hooks` seam, the caps are the owner's
+ * plan's through the same `readFileSet` (the route reads it), and the slug
  * comes out of the same generate-and-retry loop (`withMintedSlug`: the namespace
  * check, then `sites_slug_key`). Nothing about the ordering is re-derived here. The version
  * row records `published_via = 'studio'` (§5.9).
@@ -49,17 +50,12 @@
  *      on every row here, which is what E07 needs to decide the authenticated
  *      policy — governing an account is E07's to write, against `owner_id`.
  *
- * ⚠️ NO HTTP IN THIS FILE, and no zod. `./owner-routes.ts` validates the body
- * and maps failures onto statuses; this module owns
+ * ⚠️ NO HTTP IN THIS FILE, and no zod. The route reads the body into a
+ * `FileSet`, `./owner-routes.ts` maps failures onto statuses; this module owns
  * the cap, the database and the store ordering. Same split as `./rename.ts` and
  * `./manage.ts`.
  */
-import {
-  hashContent,
-  hashPublisher,
-  type OwnedPublishResult,
-  type StudioSite,
-} from "@kept/shared";
+import { hashPublisher, type OwnedPublishResult, type StudioSite } from "@kept/shared";
 
 import { db } from "../db";
 import {
@@ -67,16 +63,18 @@ import {
   findOwnedDuplicate,
   insertOwnedPage,
   withMintedSlug,
+  type PendingVersionInput,
 } from "../db/queries/publish";
+import type { FileSet } from "../publish/fileset/types";
 import { enqueueScan } from "../publish/hooks";
-import { extractPageTitle } from "../publish/page-title";
 import {
   draftClocks,
-  writePageAndManifest,
+  pendingVersion,
+  setTitle,
+  storeNewPage,
   type PublisherContext,
 } from "../publish/pipeline";
 import { publisherHashSalt } from "../storage/env";
-import { pageObjectKey } from "../storage/r2";
 
 import { keptQuotaFor, lockOwner } from "./keep";
 import { StudioRefusal } from "./studio-refusal";
@@ -121,13 +119,10 @@ interface Landed {
  * `updatedAt` are the row's, never a second computation of them.
  */
 async function insertWithMintedSlug(input: {
-  siteId: string;
-  versionId: string;
+  version: PendingVersionInput;
   ownerId: string;
   publisherHash: string;
   title: string | null;
-  contentHash: string;
-  sizeBytes: number;
 }): Promise<Landed> {
   return withMintedSlug((slug) =>
     db.transaction(async (tx): Promise<Landed> => {
@@ -136,7 +131,7 @@ async function insertWithMintedSlug(input: {
 
       // Behind the lock, so an identical publish from another tab has either
       // committed (and is found here) or is queued behind this one.
-      const duplicateId = await findOwnedDuplicate(tx, input.ownerId, input.contentHash);
+      const duplicateId = await findOwnedDuplicate(tx, input.ownerId, input.version.contentHash);
       if (duplicateId !== null) {
         return { site: await readStudioSite(tx, duplicateId), duplicate: true };
       }
@@ -149,24 +144,19 @@ async function insertWithMintedSlug(input: {
       const clocks = quota.remaining > 0 ? null : draftClocks(new Date());
 
       await insertOwnedPage(tx, {
-        siteId: input.siteId,
-        versionId: input.versionId,
+        version: input.version,
         slug,
-        r2Key: pageObjectKey(input.siteId, input.versionId),
         ownerId: input.ownerId,
         publisherHash: input.publisherHash,
         title: input.title,
-        contentHash: input.contentHash,
-        sizeBytes: input.sizeBytes,
         expiresAt: clocks?.expiresAt ?? null,
         purgeAfter: clocks?.purgeAfter ?? null,
         // The page is this account's from its first byte, so the stamp that
         // records when it stopped being anonymous is its creation.
         claimedAt: new Date(),
-        publishedVia: "studio",
       });
 
-      return { site: await readStudioSite(tx, input.siteId), duplicate: false };
+      return { site: await readStudioSite(tx, input.version.siteId), duplicate: false };
     }),
   );
 }
@@ -174,25 +164,19 @@ async function insertWithMintedSlug(input: {
 /**
  * Publish a page that belongs to an account from the moment it exists.
  *
- * The caller has already validated the body.
+ * The caller has already read the body into a `FileSet` on the owner's plan.
  *
  * @returns `{ site }` for a new page, `{ site, duplicate: true }` when this
- *   account already has these bytes live — nothing is written for a duplicate.
+ *   account already has this set live — nothing is written for a duplicate.
  * @throws {SlugUnavailableError} minting exhausted its attempts — a 503
  * @throws {OwnedPublishStoreError} R2 or KV refused; the row is rolled back
  */
 export async function publishOwnedPage(args: {
   profileId: string;
-  html: string;
+  set: FileSet;
   publisher: PublisherContext;
 }): Promise<OwnedPublishResult> {
-  const { profileId, html, publisher } = args;
-
-  // Over the exact bytes that will be stored, and read ONCE: the hash, the
-  // size and the name all come off this same in-memory buffer.
-  const contentHash = await hashContent(html);
-  const sizeBytes = Buffer.byteLength(html, "utf8");
-  const title = extractPageTitle(html);
+  const { profileId, set, publisher } = args;
 
   // The raw IP is used to compute the digest and then dropped — never stored,
   // never logged. Recorded because an owned publish is still a publish (E07).
@@ -202,40 +186,36 @@ export async function publishOwnedPage(args: {
     publisherHashSalt(),
   );
 
-  // Both ids up front, so the R2 key is known before the transaction opens.
+  // Both ids up front, so every R2 key is known before the transaction opens.
   const siteId = crypto.randomUUID();
   const versionId = crypto.randomUUID();
-  const r2Key = pageObjectKey(siteId, versionId);
 
   // POSTGRES COMMITS FIRST, exactly as the anonymous pipeline does and for the
   // same reason: it is the only store with a transaction and the only one E07's
-  // divergence audit can reconcile against.
+  // divergence audit can reconcile against. The set hash, size and name all
+  // come off the in-memory set (D10 — `hashContent(html)` for a single page).
   const landed = await insertWithMintedSlug({
-    siteId,
-    versionId,
+    version: pendingVersion(siteId, versionId, set, "studio"),
     ownerId: profileId,
     publisherHash,
-    title,
-    contentHash,
-    sizeBytes,
+    title: setTitle(set),
   });
 
   // The account already has this page. No row, no object, no manifest, no scan:
   // the bytes are already live at the existing page's address.
   if (landed.duplicate) return { site: landed.site, duplicate: true };
 
-  const stored = await writePageAndManifest({
+  const stored = await storeNewPage({
     slug: landed.site.slug,
     siteId,
     versionId,
-    r2Key,
-    html,
+    set,
     ownerId: profileId,
   });
 
   if (!stored.ok) {
     console.error(
-      `[kept] owned publish: store write failed for site ${siteId} (slug "${landed.site.slug}", object "${r2Key}") — ${stored.error}`,
+      `[kept] owned publish: store write failed for site ${siteId} (slug "${landed.site.slug}", version ${versionId}, ${set.entries.length} files) — ${stored.error}`,
     );
     try {
       await deleteSiteCascade(siteId);

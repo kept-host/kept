@@ -4,14 +4,17 @@
  * The Versions tab — PRD §5.5, §9.2, AC25 (UI). E06 task 012.
  *
  * `listVersions` (task 007), newest first by `activated_at`: when the file was
- * published, its size and its door (Web / Studio / API), the served one marked
- * CURRENT. A page with one version says so in the PRD's words.
+ * published, "{n} files · {size}" (E08 §5.7) and its door (Web / Studio / API),
+ * the served one marked CURRENT. A page with one version says so in the PRD's
+ * words.
  *
- *   · **Replace** — `DropTarget`'s zone (drop or choose), then task 011's shared
- *     replace toast: "No changes — …" for the bytes already served, otherwise
- *     "Replaced. Same link, new version." with **Undo** (a restore of the
- *     version that was current) and, once per session on Free when a version
- *     was pruned, the version-limit note.
+ *   · **Replace** — `DropTarget`'s zone (a page, files, a folder or a `.zip`),
+ *     with "Serve as a single-page app" starting from the current version's
+ *     value (E08 D12), then task 011's shared replace toast: "No changes — …"
+ *     for the bytes already served, otherwise "Replaced. Same link, new
+ *     version." with **Undo** (a restore of the version that was current) and,
+ *     once per session on Free when a version was pruned, the version-limit
+ *     note. A set over Free's size cap adds the locked row (E06 D15).
  *   · **Restore** — confirm → restoring → done, a pointer move with no upload.
  *
  * Both only while the page is `live` (PRD §5.2) — otherwise they are absent,
@@ -28,19 +31,23 @@ import type { Plan } from "@kept/shared";
 
 import { DropTarget } from "@/components/kept/drop-target";
 import { LockedRow } from "@/components/kept/locked-row";
-import { toastReplaced } from "@/components/kept/replace-toast";
+import { SpaCheckbox } from "@/components/kept/spa-checkbox";
+import { UploadProgressBar } from "@/components/kept/upload-progress";
+import { useReplace } from "@/components/kept/use-replace";
 import { Button } from "@/components/ui/button";
 import type { VersionListItem } from "@/lib/db/queries/versions";
 import {
   CHANNEL_LABEL,
+  fileSetSummary,
   FIRST_VERSION_NOTE,
-  formatBytes,
   formatTimestamp,
+  PRO_SITE_BYTES_LINE,
   PRO_VERSIONS_LINE,
   restoredToast,
   restoreWarning,
 } from "@/lib/sites/display";
-import { replacePage, restoreVersion } from "@/lib/sites/owner-client";
+import { restoreVersion } from "@/lib/sites/owner-client";
+import { progressNotice } from "@/lib/sites/owner-upload";
 
 import { ConfirmDialog } from "./confirm-dialog";
 import { Section } from "./section";
@@ -60,30 +67,11 @@ export function VersionsPanel({
   canChange: boolean;
 }) {
   const router = useRouter();
-  const [replacing, setReplacing] = useState(false);
   const [restoreTarget, setRestoreTarget] = useState<VersionListItem | null>(null);
   const [restoring, setRestoring] = useState(false);
   const [restoreError, setRestoreError] = useState<string | null>(null);
   const refresh = () => router.refresh();
-
-  async function replace(file: File) {
-    setReplacing(true);
-    let html: string;
-    try {
-      html = await file.text();
-    } catch {
-      setReplacing(false);
-      toast.error("That file could not be read. Try choosing it again.", { description: host });
-      return;
-    }
-    const outcome = await replacePage(siteId, html);
-    setReplacing(false);
-    if (!outcome.ok) {
-      toast.error(outcome.error.message, { description: host });
-      return;
-    }
-    toastReplaced({ page: outcome.page, host, plan, refresh });
-  }
+  const current = versions.find((version) => version.isCurrent);
 
   async function restore() {
     if (!restoreTarget) return;
@@ -113,8 +101,8 @@ export function VersionsPanel({
           >
             <span className="flex min-w-[140px] flex-1 flex-col leading-[1.35]">
               <span className="text-sm text-text">{formatTimestamp(version.createdAt)}</span>
-              <span className="font-mono text-xs text-text-secondary">
-                {formatBytes(version.sizeBytes)} · {CHANNEL_LABEL[version.publishedVia]}
+              <span data-testid="version-files" className="font-mono text-xs text-text-secondary">
+                {fileSetSummary(version.fileCount, version.sizeBytes)} · {CHANNEL_LABEL[version.publishedVia]}
               </span>
             </span>
             {version.isCurrent ? (
@@ -148,20 +136,16 @@ export function VersionsPanel({
       ) : null}
 
       {canChange ? (
-        <div className="flex flex-col gap-1.5 pt-2" aria-busy={replacing || undefined}>
-          <DropTarget
-            scope="zone"
-            disabled={replacing}
-            onFile={replace}
-            onRefuse={(message) => toast.error(message, { description: host })}
-            className="min-h-28"
-          />
-          {replacing ? (
-            <p role="status" className="text-[13px] text-text-secondary">
-              Uploading…
-            </p>
-          ) : null}
-        </div>
+        // Keyed by the served version, so the checkbox starts again from ITS
+        // value after a replace, a restore or an Undo (AC37).
+        <ReplaceForm
+          key={current?.id ?? "none"}
+          siteId={siteId}
+          host={host}
+          plan={plan}
+          initialSpa={current?.spa ?? false}
+          refresh={refresh}
+        />
       ) : null}
 
       {plan === "free" ? <LockedRow className="border-t border-border">{PRO_VERSIONS_LINE}</LockedRow> : null}
@@ -180,5 +164,56 @@ export function VersionsPanel({
         onConfirm={restore}
       />
     </Section>
+  );
+}
+
+/** The replace zone, its single-page-app checkbox and what the upload is doing. */
+function ReplaceForm({
+  siteId,
+  host,
+  plan,
+  initialSpa,
+  refresh,
+}: {
+  siteId: string;
+  host: string;
+  plan: Plan;
+  initialSpa: boolean;
+  refresh: () => void;
+}) {
+  const [spa, setSpa] = useState(initialSpa);
+  const [locked, setLocked] = useState(false);
+  const { replacing, progress, replace } = useReplace({
+    siteId,
+    host,
+    plan,
+    refresh,
+    onRefuse: (refusal) => {
+      toast.error(refusal.error.message, { description: host });
+      setLocked(refusal.locked);
+    },
+  });
+
+  return (
+    <div className="flex flex-col gap-1.5 pt-2" aria-busy={replacing || undefined}>
+      <DropTarget
+        scope="zone"
+        disabled={replacing}
+        onUpload={(intent) => {
+          setLocked(false);
+          void replace(intent, spa);
+        }}
+        onRefuse={(message) => toast.error(message, { description: host })}
+        className="min-h-28"
+      />
+      <SpaCheckbox checked={spa} onChange={setSpa} disabled={replacing} />
+      {replacing ? (
+        <div role="status" className="flex flex-col gap-1.5">
+          <p className="text-[13px] text-text-secondary">{progress ? progressNotice(progress) : "Uploading…"}</p>
+          {progress ? <UploadProgressBar progress={progress} /> : null}
+        </div>
+      ) : null}
+      {locked ? <LockedRow>{PRO_SITE_BYTES_LINE}</LockedRow> : null}
+    </div>
   );
 }

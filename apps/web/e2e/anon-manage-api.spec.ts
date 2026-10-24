@@ -10,6 +10,8 @@ import {
   publishViaApi,
   SKIP_LIVE_PUBLISH,
 } from "./live-publish";
+import { buildZip } from "../lib/testing/zip-fixture";
+
 import { LIVE_STACK_TIMEOUT } from "./live-stack";
 import { rawRequest } from "./raw-request";
 
@@ -202,7 +204,7 @@ test.describe("the anonymous manage API", () => {
     const replacement = pageHtml(marker());
 
     // What the `/p` dropzone sends for a dropped `.html`. It reaches the same
-    // handler through the same `readPageBody`, so a divergence between the two
+    // handler through the same `readFileSet`, so a divergence between the two
     // transports here would be a divergence the console silently inherits.
     const res = await request.post(`/api/anon/${draft.anonToken}/replace`, {
       multipart: {
@@ -221,6 +223,39 @@ test.describe("the anonymous manage API", () => {
     expect(raw.expires_at).toBe(draft.expires_at);
 
     expect((await waitForBody(draft.live_url, replacement)).body).toBe(replacement);
+  });
+
+  test("E08: a zip replaces a page with a whole file set — same URL, every file serves, and the keyless body is unchanged", async ({
+    request,
+  }) => {
+    test.setTimeout(90_000);
+
+    const draft = await publish(request, pageHtml(marker()));
+    const replacement = pageHtml(marker());
+    const css = `/* ${marker()} */ body { margin: 0 }`;
+    const zip = buildZip([
+      { name: "index.html", data: replacement },
+      { name: "assets/site.css", data: css },
+      { name: "__MACOSX/._index.html", data: "junk" },
+    ]);
+
+    const res = await request.post(`/api/anon/${draft.anonToken}/replace`, {
+      multipart: {
+        archive: { name: "site.zip", mimeType: "application/zip", buffer: Buffer.from(zip) },
+      },
+    });
+
+    expect(res.status(), await res.text()).toBe(200);
+    const raw = (await res.json()) as Record<string, unknown>;
+    // FROZEN (the E09 contract): no `ignored`, no file list — the same four keys.
+    expect(Object.keys(raw).sort()).toEqual([...REPLACE_FIELDS]);
+    expect(raw.slug).toBe(draft.slug);
+    expect(raw.expires_at).toBe(draft.expires_at);
+
+    expect((await waitForBody(draft.live_url, replacement)).body).toBe(replacement);
+    const asset = await waitForBody(`${draft.live_url}/assets/site.css`, css);
+    expect(asset.body).toBe(css);
+    expect(asset.contentType).toContain("text/css");
   });
 
   test("the reminder route stores, overwrites and clears behind one indistinguishable answer", async ({

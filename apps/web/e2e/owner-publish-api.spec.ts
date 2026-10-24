@@ -10,6 +10,7 @@ import { config } from "dotenv";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
+import { siteObjectKeys } from "../lib/db/queries/version-files";
 import { pageObjectKey, r2Store } from "../lib/storage/r2";
 import { clearPendingPurges } from "../lib/testing/pending-purges";
 import { removeServedManifests } from "../lib/testing/served-manifests";
@@ -93,15 +94,10 @@ test.describe("owned publish", () => {
     await removeServedManifests(createdSlugs);
     await clearPendingPurges(createdSlugs, createdSiteIds);
     for (const id of createdSiteIds) {
-      const versions = await db
-        .select({ id: schema.siteVersions.id })
-        .from(schema.siteVersions)
-        .where(eq(schema.siteVersions.siteId, id));
-      for (const version of versions) {
-        await r2Store()
-          .delete(pageObjectKey(id, version.id))
-          .catch(() => undefined);
-      }
+      // Every file of every version, from `site_version_files` (E08 D1).
+      await r2Store()
+        .deleteMany(await siteObjectKeys(db, id))
+        .catch(() => undefined);
     }
     if (createdSiteIds.length) {
       await db.delete(schema.sites).where(inArray(schema.sites.id, createdSiteIds));
@@ -265,6 +261,45 @@ test.describe("owned publish", () => {
     const served = await waitForServe(urlFor(site.slug));
     expect(served.status).toBe(200);
     expect(served.body).toBe(html);
+  });
+
+  test("E08: a file list publishes one owned page — 201 OwnedPublishResult + `ignored`, one row per file, and every file serves", async ({
+    request,
+    baseURL,
+  }) => {
+    const { cookie } = await signIn(baseURL!);
+    const marker = `e08-004-${crypto.randomUUID().slice(0, 8)}`;
+    const html = pageHtml(marker);
+    const css = `/* ${marker} */ body { margin: 0 }`;
+    const response = await request.post(`${baseURL}/api/sites`, {
+      headers: sessionHeaders(cookie, baseURL!),
+      data: {
+        files: [
+          { path: "index.html", content: html },
+          { path: "assets/site.css", content: css },
+          { path: ".DS_Store", content: "junk" },
+        ],
+      },
+    });
+
+    expect(response.status(), await response.text()).toBe(201);
+    const body = await parsed(response);
+    expect(body.ignored, "the junk the reader dropped, for the toast").toEqual([".DS_Store"]);
+
+    const row = await readSite(body.site.id);
+    const files = await db
+      .select({ path: schema.siteVersionFiles.path })
+      .from(schema.siteVersionFiles)
+      .where(eq(schema.siteVersionFiles.versionId, row.currentVersionId!));
+    expect(files.map((file) => file.path).sort()).toEqual(["assets/site.css", "index.html"]);
+
+    const served = await waitForServe(urlFor(body.site.slug));
+    expect(served.status).toBe(200);
+    expect(served.body).toBe(html);
+    const asset = await probeEdge(`${urlFor(body.site.slug)}assets/site.css`);
+    expect(asset.status).toBe(200);
+    expect(asset.body).toBe(css);
+    expect(asset.contentType).toContain("text/css");
   });
 
   test("two different publishes racing one slot short produce exactly one kept page", async ({

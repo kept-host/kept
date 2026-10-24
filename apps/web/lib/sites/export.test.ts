@@ -1,6 +1,8 @@
 /**
  * Downloads (D13) — one page and the streamed export. E06 task 008, PRD
- * acceptance criteria **39** and **40**, edge case 18.
+ * acceptance criteria **39** and **40**, edge case 18; E08 task 008, AC38 (a
+ * multi-file version downloads as `{name}.zip`) and edge case 20 (the export
+ * carries each page's whole set under `{name}/`, memory still flat).
  *
  * NO MOCKS: real dev Postgres and R2. Every call goes through
  * `downloadOwnedSite` / `exportOwnPages` — the exact functions the two GET
@@ -8,8 +10,9 @@
  *
  * ── AC40, AND HOW MEMORY IS MEASURED ─────────────────────────────────────────
  * `EXPORT_PAGES` (≥ 50) real pages are seeded: a `sites` row, a
- * `site_versions` row and an R2 object of `PAGE_BYTES` each, plus an archived
- * and the pages the export must leave out (archived, removed past its window,
+ * `site_versions` row, its `site_version_files` row and an R2 object of
+ * `PAGE_BYTES` each, a multi-file page of `SET_FILES` such files, plus the
+ * pages the export must leave out (archived, removed past its window,
  * and any page whose bytes E07 withholds — D13). The export stream is consumed
  * chunk by chunk and written straight to a file on disk (the TEST's file, so it
  * holds nothing in memory either), and the zip is then checked by an
@@ -31,6 +34,7 @@
  * object created here is removed in `after`.
  */
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { mkdtemp, open, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -70,6 +74,8 @@ const skipZip: string | false =
 const EXPORT_PAGES = 60;
 /** Each seeded page's size — 60 × 256 KiB ≈ 15 MiB exported. */
 const PAGE_BYTES = 256 * 1024;
+/** The multi-file page in the memory drill: this many files of `PAGE_BYTES`. */
+const SET_FILES = 20;
 /** The peak memory rise allowed while streaming — a fraction of what is exported. */
 const MEMORY_BOUND = 4 * 1024 * 1024;
 const SAMPLE_EVERY_BYTES = 1024 * 1024;
@@ -84,7 +90,8 @@ async function deps() {
   const { eq, inArray } = await import("drizzle-orm");
   const { db } = await import("../db");
   const { profiles, siteVersions, sites, user } = await import("../db/schema");
-  const { PAGE_CONTENT_TYPE, pageObjectKey, r2Store } = await import("../storage/r2");
+  const { insertVersionFiles } = await import("../db/queries/version-files");
+  const { PAGE_CONTENT_TYPE, r2Store, siteObjectKey } = await import("../storage/r2");
   const owner = await import("./owner-routes");
   return {
     eq,
@@ -94,9 +101,10 @@ async function deps() {
     siteVersions,
     sites,
     user,
+    insertVersionFiles,
     PAGE_CONTENT_TYPE,
-    pageObjectKey,
     r2Store,
+    siteObjectKey,
     ...owner,
   };
 }
@@ -120,17 +128,27 @@ function pageOf(marker: string, bytes: number): string {
 
 type SiteStatusValue = "live" | "under_review" | "quarantined" | "expired" | "archived" | "removed";
 
+interface SeededFile {
+  path: string;
+  body: Uint8Array<ArrayBuffer>;
+  key: string;
+}
+
 interface Seeded {
   siteId: string;
   slug: string;
   title: string;
   html: string;
   objectKey: string;
+  /** The version's files in path order — `site_version_files`' order. */
+  files: SeededFile[];
 }
 
 /**
- * Real pages, without the edge: a `sites` row, its `site_versions` row and the
- * R2 object a download reads. No manifest is written — downloads never read KV.
+ * Real pages, without the edge: a `sites` row, its `site_versions` row, its
+ * `site_version_files` rows and the R2 objects a download reads — `index.html`,
+ * plus `files - 1` more (one binary) for a multi-file page. No manifest is
+ * written — downloads never read KV.
  */
 async function seed(
   ownerId: string,
@@ -141,9 +159,11 @@ async function seed(
     purgeAfter?: Date | null;
     bytes?: number;
     moderationReason?: ModerationReason;
+    files?: number;
   } = {},
 ): Promise<Seeded[]> {
-  const { db, siteVersions, sites, PAGE_CONTENT_TYPE, pageObjectKey, r2Store } = await deps();
+  const { db, siteVersions, sites, insertVersionFiles, PAGE_CONTENT_TYPE, r2Store, siteObjectKey } = await deps();
+  const fileCount = options.files ?? 1;
   const now = Date.now();
   const pages = Array.from({ length: n }, (_, i) => {
     const siteId = crypto.randomUUID();
@@ -152,11 +172,20 @@ async function seed(
     const title = `Export drill ${i} ${siteId.slice(0, 4)}`;
     const html = pageOf(title, options.bytes ?? 512);
     createdSites.add(siteId);
-    const objectKey = pageObjectKey(siteId, versionId);
-    createdKeys.add(objectKey);
+    const extra = Array.from({ length: fileCount - 1 }, (_, f) =>
+      f === 0
+        ? { path: "assets/img/logo.bin", body: randomBytes(options.bytes ?? 512) }
+        : { path: `assets/part-${String(f).padStart(3, "0")}.txt`, body: Buffer.from(pageOf(`${title} ${f}`, options.bytes ?? 512)) },
+    );
+    const files: SeededFile[] = [{ path: "index.html", body: Buffer.from(html) }, ...extra]
+      .map((file) => ({ path: file.path, body: new Uint8Array(file.body), key: siteObjectKey(siteId, versionId, file.path) }))
+      .sort((a, b) => (a.path < b.path ? -1 : 1));
+    for (const file of files) createdKeys.add(file.key);
+    const objectKey = siteObjectKey(siteId, versionId, "index.html");
+    const total = files.reduce((sum, file) => sum + file.body.byteLength, 0);
     const expiresAt = options.draft ? new Date(now + DRAFT_TTL_DAYS * MS_PER_DAY) : null;
     return {
-      seeded: { siteId, slug, title, html, objectKey },
+      seeded: { siteId, slug, title, html, objectKey, files },
       site: {
         id: siteId,
         slug,
@@ -175,7 +204,7 @@ async function seed(
               : null,
         claimedAt: new Date(now),
         contentHash: `e06-008-${siteId}`,
-        sizeBytes: Buffer.byteLength(html),
+        sizeBytes: total,
         moderationReason: options.moderationReason ?? null,
         // Distinct, ordered creation times: the export lists by `created_at`.
         createdAt: new Date(now - (n - i) * 1000),
@@ -185,17 +214,28 @@ async function seed(
         siteId,
         r2Key: objectKey,
         contentHash: `e06-008-${siteId}`,
-        sizeBytes: Buffer.byteLength(html),
+        sizeBytes: total,
+        fileCount,
       },
     };
   });
   if (pages.length === 0) return [];
   await db.insert(sites).values(pages.map((p) => p.site));
   await db.insert(siteVersions).values(pages.map((p) => p.version));
+  for (const p of pages) {
+    await insertVersionFiles(
+      db,
+      p.version.id,
+      p.seeded.files.map((file) => ({ path: file.path, sizeBytes: file.body.byteLength, sha256: `e06-008-${file.path}` })),
+    );
+  }
   const r2 = r2Store();
-  for (let i = 0; i < pages.length; i += 8) {
+  const uploads = pages.flatMap((p) => p.seeded.files);
+  for (let i = 0; i < uploads.length; i += 8) {
     await Promise.all(
-      pages.slice(i, i + 8).map((p) => r2.put(p.seeded.objectKey, p.seeded.html, PAGE_CONTENT_TYPE)),
+      uploads
+        .slice(i, i + 8)
+        .map((file) => r2.put(file.key, file.body, file.path === "index.html" ? PAGE_CONTENT_TYPE : "application/octet-stream")),
     );
   }
   return pages.map((p) => p.seeded);
@@ -205,12 +245,8 @@ after(async () => {
   if (skip) return;
   const { db, inArray, sites, user, r2Store } = await deps();
   const { closeDb } = await import("../db");
-  const r2 = r2Store();
-  const keys = [...createdKeys];
-  for (let i = 0; i < keys.length; i += 8) {
-    await Promise.all(keys.slice(i, i + 8).map((key) => r2.delete(key).catch(() => undefined)));
-  }
-  // `site_versions` cascades off `sites`.
+  await r2Store().deleteMany([...createdKeys]).catch(() => undefined);
+  // `site_versions` and `site_version_files` cascade off `sites`.
   if (createdSites.size > 0) await db.delete(sites).where(inArray(sites.id, [...createdSites]));
   if (createdUsers.size > 0) await db.delete(user).where(inArray(user.id, [...createdUsers]));
   await closeDb();
@@ -294,6 +330,49 @@ test(
   },
 );
 
+test(
+  "download (E08 AC38): a multi-file version is {name}.zip whose entries are its site_version_files paths, byte-equal; withheld bytes stay a 404",
+  { skip: skipZip },
+  async () => {
+    const { db, eq, sites, downloadOwnedSite } = await deps();
+    const { versionFiles } = await import("../db/queries/version-files");
+    const owner = await makeOwner();
+    const [page] = await seed(owner, 1, { files: 5 });
+    const [withheld] = await seed(owner, 1, { files: 5, status: "quarantined", moderationReason: "child_sexual_abuse" });
+
+    const res = await downloadOwnedSite(page!.siteId, owner);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("content-type"), "application/zip");
+    assert.equal(res.headers.get("content-disposition"), `attachment; filename="${page!.slug}.zip"`);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+
+    const dir = await mkdtemp(join(tmpdir(), "kept-download-"));
+    const file = join(dir, "page.zip");
+    try {
+      const handle = await open(file, "w");
+      await handle.write(new Uint8Array(await res.arrayBuffer()));
+      await handle.close();
+
+      unzip(["-tq", file]);
+      const [row] = await db
+        .select({ versionId: sites.currentVersionId })
+        .from(sites)
+        .where(eq(sites.id, page!.siteId));
+      const recorded = (await versionFiles(db, row!.versionId!)).map((entry) => entry.path);
+      assert.deepEqual(unzip(["-Z1", file]).toString("utf8").trim().split("\n"), recorded, "entries = site_version_files paths");
+      assert.deepEqual(recorded, page!.files.map((f) => f.path));
+      for (const seeded of page!.files) {
+        assert.ok(Buffer.from(seeded.body).equals(unzip(["-p", file, seeded.path])), `${seeded.path}: byte-equal`);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+
+    const refused = await downloadOwnedSite(withheld!.siteId, owner);
+    assert.equal(refused.status, 404, "D13: a withheld multi-file page is the same 404");
+  },
+);
+
 // ── GET /api/export (AC40) ──────────────────────────────────────────────────
 
 /** `kept-export.json`, read back out of the zip by `unzip`. */
@@ -308,14 +387,15 @@ interface ExportEntryOnDisk {
 }
 
 test(
-  `export: ${EXPORT_PAGES} pages stream into a valid zip whose JSON lists every non-archived page, whose files match R2, with flat memory`,
+  `export: ${EXPORT_PAGES} pages and a ${SET_FILES}-file page stream into a valid zip whose JSON lists every non-archived page, whose files match R2, with flat memory`,
   { skip: skipZip, timeout: 600_000 },
   async () => {
     const { exportOwnPages, r2Store } = await deps();
     const owner = await makeOwner();
     const pages = await seed(owner, EXPORT_PAGES, { bytes: PAGE_BYTES });
     const drafts = await seed(owner, 1, { draft: true });
-    const all = [...pages, ...drafts];
+    const set = await seed(owner, 1, { files: SET_FILES, bytes: PAGE_BYTES });
+    const all = [...pages, ...drafts, ...set];
     await seed(owner, 1, { status: "archived", purgeAfter: new Date(Date.now() + MS_PER_DAY) });
     await seed(owner, 1, { status: "removed", purgeAfter: new Date(Date.now() - 60_000), moderationReason: "spam" });
     await seed(owner, 1, {
@@ -363,7 +443,7 @@ test(
       } finally {
         await handle.close();
       }
-      const exported = EXPORT_PAGES * PAGE_BYTES;
+      const exported = (EXPORT_PAGES + SET_FILES) * PAGE_BYTES;
       assert.ok(total > exported, `the zip carries every page (${total} bytes)`);
       assert.ok(
         peak < MEMORY_BOUND,
@@ -379,8 +459,8 @@ test(
       const names = unzip(["-Z1", file]).toString("utf8").trim().split("\n");
       assert.deepEqual(
         names,
-        ["kept-export.json", ...all.map((p) => `${p.slug}/index.html`)],
-        "the JSON first, then every non-archived page in created order — no archived, no removed past its window, no withheld bytes",
+        ["kept-export.json", ...all.flatMap((p) => p.files.map((f) => `${p.slug}/${f.path}`))],
+        "the JSON first, then every non-archived page's whole set in created order — no archived, no removed past its window, no withheld bytes",
       );
 
       const manifest = JSON.parse(unzip(["-p", file, "kept-export.json"]).toString("utf8")) as ExportEntryOnDisk[];
@@ -391,7 +471,7 @@ test(
       for (const [i, entry] of manifest.entries()) {
         assert.equal(entry.title, all[i]!.title);
         assert.equal(entry.status, "live");
-        assert.equal(entry.kind, i < pages.length ? "kept" : "draft");
+        assert.equal(entry.kind, i === pages.length ? "draft" : "kept");
         assert.ok(!Number.isNaN(Date.parse(entry.created_at)));
         assert.ok(!Number.isNaN(Date.parse(entry.updated_at)));
         assert.equal(entry.url, `https://${entry.name}.${process.env.KEPT_BASE_DOMAIN}`);
@@ -401,6 +481,10 @@ test(
       for (const page of all) {
         const zipped = unzip(["-p", file, `${page.slug}/index.html`]).toString("utf8");
         assert.equal(zipped, await r2.get(page.objectKey), `${page.slug}: zipped bytes match R2`);
+      }
+      for (const seeded of set[0]!.files) {
+        const zipped = unzip(["-p", file, `${set[0]!.slug}/${seeded.path}`]);
+        assert.ok(Buffer.from(seeded.body).equals(zipped), `${seeded.path}: byte-equal under {name}/`);
       }
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -482,7 +566,7 @@ test("preview (D13): withheld bytes are never read for any screen; other restric
     ...(await seed(owner, 1, { status: "under_review", moderationReason: "child_sexual_abuse" })),
   ];
   const [phishing] = await seed(owner, 1, { status: "under_review", moderationReason: "phishing" });
-  const { db, eq, sites } = await deps();
+  const { db, eq, sites, siteVersions } = await deps();
   const read = async (siteId: string) => {
     const [row] = await db
       .select({
@@ -490,9 +574,11 @@ test("preview (D13): withheld bytes are never read for any screen; other restric
         slug: sites.slug,
         currentVersionId: sites.currentVersionId,
         sizeBytes: sites.sizeBytes,
+        fileCount: siteVersions.fileCount,
         moderationReason: sites.moderationReason,
       })
       .from(sites)
+      .leftJoin(siteVersions, eq(siteVersions.id, sites.currentVersionId))
       .where(eq(sites.id, siteId));
     return row!;
   };
@@ -507,6 +593,7 @@ test(
   { skip },
   async () => {
     const { db, eq, sites, siteVersions, ...routes } = await deps();
+    const { readJsonSet } = await import("../testing/file-sets");
     const owner = await makeOwner();
     const [removed] = await seed(owner, 1, {
       status: "removed",
@@ -524,7 +611,7 @@ test(
       rename: () => routes.changeOwnedSiteName(id, { name: `d13-${id.slice(0, 8)}` }, owner),
       title: () => routes.updateOwnedSite(id, { title: "Back again" }, owner),
       listing: () => routes.updateOwnedSite(id, { listedPublic: true }, owner),
-      replace: () => routes.replaceOwnedSite(id, { html: "<!doctype html><title>back</title>" }, owner),
+      replace: async () => routes.replaceOwnedSite(id, await readJsonSet({ html: "<!doctype html><title>back</title>" }), owner),
       restore: () => routes.restoreOwnedVersion(id, version!.id, owner),
       delete: () => routes.deleteOwnedSite(id, owner),
     };

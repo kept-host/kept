@@ -10,7 +10,9 @@
  * second, the spinner and "Keeping it…" over the file's name — and the mascot,
  * whose eyes ride the sweep. When the answer lands the mascot hops ("It's yours
  * now.") and the real card takes its place; when it fails the card says why,
- * in the server's words, with Try again and dismiss.
+ * in the server's words, with Try again and dismiss. A folder says "Packing
+ * {n} files…", and a set past one inline request "Uploading {size}…", each
+ * over its bar (E08 §8), before "Keeping it…".
  *
  * Every movement is `motion-safe:`. Under reduced motion the mascot rests (it
  * starts no loop), there is no sweep and no hop, and the spinner is a still
@@ -20,8 +22,10 @@ import { useEffect, useRef } from "react";
 import { Check, RotateCw, X } from "lucide-react";
 
 import { MASCOT_DIM, Mascot, type MascotGaze } from "@/components/kept/mascot";
+import { UploadProgressBar } from "@/components/kept/upload-progress";
 import { Button } from "@/components/ui/button";
 import { prefersReducedMotion } from "@/lib/motion";
+import { progressNotice } from "@/lib/sites/owner-upload";
 import { cn } from "@/lib/utils";
 
 import { ARRIVAL_SCROLL_MARGIN } from "./home-card";
@@ -58,6 +62,8 @@ export function MintCard({
   onDismiss: () => void;
 }) {
   const failed = minting.phase === "failed";
+  // A set being packed or uploaded first (E08 §8): its line, then its bar.
+  const progress = minting.phase === "sending" ? minting.progress : null;
   const list = variant === "list";
   const itemRef = useRef<HTMLLIElement | null>(null);
 
@@ -127,10 +133,11 @@ export function MintCard({
                 className="size-4 shrink-0 rounded-full border-2 border-accent-soft border-t-accent motion-safe:animate-spin"
               />
             )}
-            {minting.phase === "landed" ? "It's yours now." : "Keeping it…"}
+            {minting.phase === "landed" ? "It's yours now." : progress ? progressNotice(progress) : "Keeping it…"}
           </p>
         )}
         <span className="truncate font-mono text-xs text-text-secondary">{minting.label}</span>
+        {progress ? <UploadProgressBar progress={progress} className="mt-1.5" /> : null}
 
         {failed && !list ? <FailedActions onRetry={onRetry} onDismiss={onDismiss} className="mt-2" /> : null}
       </div>

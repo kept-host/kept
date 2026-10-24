@@ -17,7 +17,7 @@
  * design's 2.4 s ring — so a slow refresh never eats into it (task 015). A
  * draft that was just kept fades where it stands until the wall takes it.
  */
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowUpRight, Ellipsis, Upload } from "lucide-react";
 import { toast } from "sonner";
@@ -27,8 +27,8 @@ import type { Plan } from "@kept/shared";
 import { type Browse, DropTarget } from "@/components/kept/drop-target";
 import { copyLink } from "@/components/kept/link-toast";
 import { CopyLinkButton } from "@/components/kept/live-url";
-import { toastReplaced } from "@/components/kept/replace-toast";
 import { SiteCard } from "@/components/kept/site-card";
+import { useReplace } from "@/components/kept/use-replace";
 import type { SwapPage } from "@/components/kept/swap-dialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -39,8 +39,9 @@ import {
 } from "@/components/ui/dropdown-menu";
 import type { DashboardSite } from "@/lib/db/queries/dashboard";
 import { prefersReducedMotion } from "@/lib/motion";
-import { pageName, siteHref } from "@/lib/sites/display";
-import { readPageHtml, replacePage } from "@/lib/sites/owner-client";
+import { pageName, PRO_SITE_BYTES_LINE, siteHref } from "@/lib/sites/display";
+import { readPageHtml } from "@/lib/sites/owner-client";
+import { progressNotice } from "@/lib/sites/owner-upload";
 import { cn } from "@/lib/utils";
 
 import type { Arrival } from "./use-arrival";
@@ -108,11 +109,27 @@ export function HomeCard({
   selected?: boolean;
 }) {
   const router = useRouter();
-  const [replacing, setReplacing] = useState(false);
   const itemRef = useRef<HTMLLIElement | null>(null);
   const host = new URL(site.liveUrl).host;
   const href = siteHref(site.id);
   const replaceable = site.status === "live";
+  // A card's drop keeps the page's current "single-page app" choice (D12):
+  // there is no checkbox on a card, and a replace must not quietly turn it off.
+  const { replacing, progress, replace } = useReplace({
+    siteId: site.id,
+    host,
+    plan,
+    refresh: () => router.refresh(),
+    onRefuse: ({ error, locked }) =>
+      toast.error(error.message, { description: locked ? PRO_SITE_BYTES_LINE : host }),
+  });
+  const progressToast = `replace-${site.id}`;
+
+  // "Packing…" / "Uploading…" for a set, in one toast updated in place.
+  useEffect(() => {
+    if (progress) toast.loading(progressNotice(progress), { id: progressToast, description: host });
+    else toast.dismiss(progressToast);
+  }, [progress, progressToast, host]);
 
   useEffect(() => {
     if (!arrival) return;
@@ -123,25 +140,6 @@ export function HomeCard({
     const timer = setTimeout(() => onSettled(arrival.id), ARRIVAL_MS);
     return () => clearTimeout(timer);
   }, [arrival, onSettled]);
-
-  async function replace(file: File) {
-    setReplacing(true);
-    let html: string;
-    try {
-      html = await file.text();
-    } catch {
-      setReplacing(false);
-      toast.error("That file could not be read. Try choosing it again.", { description: host });
-      return;
-    }
-    const outcome = await replacePage(site.id, html);
-    setReplacing(false);
-    if (!outcome.ok) {
-      toast.error(outcome.error.message, { description: host });
-      return;
-    }
-    toastReplaced({ page: outcome.page, host, plan, refresh: () => router.refresh() });
-  }
 
   const card = (browse: Browse) => {
     const actions =
@@ -190,7 +188,7 @@ export function HomeCard({
         scope="card"
         host={host}
         disabled={!replaceable || replacing}
-        onFile={replace}
+        onUpload={(intent) => void replace(intent, site.spa === true)}
         onRefuse={(message) => toast.error(message, { description: host })}
       >
         {card}

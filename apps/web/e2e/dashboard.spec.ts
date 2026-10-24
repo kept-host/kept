@@ -196,7 +196,7 @@ test.describe("the Pages home", () => {
     const empty = page.getByTestId("empty-state");
     await expect(empty.getByRole("heading", { name: "Nothing kept yet. Drop a file to begin." })).toBeVisible();
     await expect(empty.locator("svg[data-mascot]")).toHaveAttribute("aria-hidden", "true");
-    await expect(empty.getByRole("button", { name: /Drop an \.html file/ })).toBeVisible();
+    await expect(empty.getByRole("button", { name: /Drop an HTML file, a folder or a \.zip/ })).toBeVisible();
     await expect(page.getByRole("list", { name: "Summary" })).toHaveCount(0);
     await expect(page.getByTestId("home-card")).toHaveCount(0);
 

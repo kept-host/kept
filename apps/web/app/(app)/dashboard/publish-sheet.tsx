@@ -21,6 +21,8 @@ import { useState } from "react";
 import { DRAFT_TTL_DAYS } from "@kept/shared";
 
 import { DropTarget } from "@/components/kept/drop-target";
+import { LockedRow } from "@/components/kept/locked-row";
+import { SpaCheckbox } from "@/components/kept/spa-checkbox";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -30,6 +32,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
+import { PRO_SITE_BYTES_LINE } from "@/lib/sites/display";
 import { cn } from "@/lib/utils";
 
 import type { Publisher } from "./use-publish";
@@ -86,7 +89,11 @@ export function PublishSheet({
   );
 }
 
-/** The drop zone, the paste box and the inline error under them. */
+/**
+ * The drop zone (a page, a folder, files or a `.zip` — E08 §5.7), the
+ * single-page-app checkbox, the paste box and the inline error under them —
+ * with the locked row when the error is Free's size cap (E06 D15).
+ */
 export function PublishForm({
   publisher,
   zoneClassName,
@@ -103,15 +110,18 @@ export function PublishForm({
       <DropTarget
         scope="zone"
         disabled={busy}
-        onFile={publisher.publishFile}
+        onUpload={publisher.publish}
         onRefuse={publisher.refuse}
         className={zoneClassName}
       />
 
+      <SpaCheckbox checked={publisher.spa} onChange={publisher.setSpa} disabled={busy} />
+
       {publisher.error ? (
-        <p role="alert" data-testid="publish-error" className="text-sm leading-relaxed text-danger">
-          {publisher.error}
-        </p>
+        <div role="alert" data-testid="publish-error">
+          <p className="text-sm leading-relaxed text-danger">{publisher.error.message}</p>
+          {publisher.error.locked ? <LockedRow>{PRO_SITE_BYTES_LINE}</LockedRow> : null}
+        </div>
       ) : null}
 
       {pasteOpen ? (

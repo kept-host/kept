@@ -11,6 +11,10 @@ unchanged; keep and demote are recorded as not purging, as built.
 Amended 2026-10-16 by E07: every write to an existing page goes through
 `syncManifest` (§5), and owed purges are durable `pending_purges` rows that the
 `repurge` job replays (§3).
+Amended 2026-10-22 by E08 (multi-file sites, D14): every purge covers the whole
+file set from `site_version_files` (§4), 100 URLs a request with one
+`pending_purges` row per batch (§3), replace and restore purge old ∪ new (§5);
+§2 corrected for Cloudflare's 2025-04-01 change — URL purge is still the method.
 Secret **values** never appear here; names refer to the GitHub Environment keys
 defined in E02 task 004.
 
@@ -27,11 +31,33 @@ A year at the edge, no `stale-while-revalidate`. Nothing expires on its own.
 page stop serving is an explicit purge call from the control plane.** If the
 write path forgets a purge, the stale copy serves for a year.
 
-## 2. Purge-by-URL only — cache tags are Enterprise-only
+## 2. Purge-by-URL only — by decision, not by plan (E08 D14)
 
-Cloudflare's cache-tag purge (`{"tags": [...]}`) requires an **Enterprise** zone
-plan and is **not available to this account**. Do not design around it, and do
-not emit `Cache-Tag` response headers expecting them to become purgeable later.
+Until 2025-04-01 cache-tag purge (`{"tags": [...]}`) was Enterprise-only. Since
+then Cloudflare offers **every purge method — tag, prefix, hostname and URL — on
+every plan** ([changelog](https://developers.cloudflare.com/changelog/post/2025-04-01-purge-for-all/)).
+kept **still purges by URL only**, for two reasons (E08 D14):
+
+- **Rate.** On the Free plan tag, prefix and hostname purge are limited to
+  **5 requests a minute** (bucket 25). A busy hour of replaces would queue behind
+  that limit; URL purge's limit (§3) is per URL and far higher.
+- **Reach.** Cloudflare's docs describe the Workers Cache API (`caches.default`,
+  which is where the Worker stores pages) as a separate store and do not say
+  these methods reach it. URL purge is proven against it on dev (2026-08-05).
+
+Do not add a tags branch, and do not emit `Cache-Tag` response headers.
+
+- **Q4 — hostname purge on dev, run 2026-10-22 (E08 task 005).** A dev page was
+  served from KV into `caches.default` (`s-maxage=31536000`), its R2 object was
+  overwritten in place (the edge kept serving the old bytes), then
+  `{"hosts": ["{slug}.kept-dev.xyz"]}` was sent: Cloudflare answered `success`
+  and the next request served the new bytes within 3 s. So **hostname purge does
+  reach the Cache API** — one run, one colo. It does not change D14: the Free
+  rate (5/min) still rules it out as the write path. It is the candidate for a
+  plan whose hostname-purge rate fits, for very large sites.
+- **Q5 — Cloudflare "Workers Caching"** (`ctx.cache.purge()`, tag and prefix
+  purge built for Workers) is a possible later replacement for the Cache API
+  layer. Out of scope for v1; noted for the self-host / scaling work.
 
 The available mechanism is **purge-by-URL**, and that forces the cache key: the
 Worker stores entries under the **bare public request URL**, with no `Vary` and
@@ -64,10 +90,14 @@ The zone id is not currently a configured variable in either environment. The
 first epic to implement a purge (E04) must add `CLOUDFLARE_ZONE_ID` to the
 control plane's environment alongside the existing token, per environment.
 
-Limits worth knowing before batching: **30 URLs per request**, and purge-by-URL
-is rate limited per zone (1000 calls/minute at the time of writing). Purge on the
-write path, one call per affected slug, batching the URL forms of that slug into
-the single `files` array.
+Limits worth knowing before batching (checked 2026-10-21,
+[purge-cache](https://developers.cloudflare.com/cache/how-to/purge-cache/)):
+**100 URLs per request** on Free, Pro and Business (`PURGE_MAX_URLS_PER_REQUEST`,
+`apps/web/lib/storage/purge.ts` — the "30" this section used to say is out of
+date), and a rate of **800 URLs a second on Free, 1,500 on Pro**. A slug's URLs
+go out in batches of 100, one call after another (a 1,000-file Pro site is about
+eleven calls), and the delayed second purges follow in the same order after one
+wait, so a big set never lands as a single burst.
 
 **Failure handling.** A purge is a control-plane obligation, not a user-facing
 one. The write itself (Postgres → R2 → KV) has already succeeded by the time
@@ -79,12 +109,17 @@ serves.
 records every purge it still owes as a `pending_purges` row (`site_id`, `slug`,
 `urls`, `due_at`, `attempts`, `last_error`):
 
-- A purge that **succeeds** writes a row due in `KV_REPURGE_DELAY_MS` (125 s) for
-  the second purge (§6) *before* it starts the in-process timer. The timer
-  deletes the row when its purge lands, so a restart or redeploy in between
-  leaves a row instead of a stale edge.
-- A purge that **fails** (or cannot run because the zone is not configured)
-  writes a row due now. There is no in-process retry.
+- **One row per batch, before the first call** (E08 D14). Each row is due in
+  `KV_REPURGE_DELAY_MS` (125 s) for that batch's second purge (§6); the
+  in-process timer deletes a batch's row when its second purge lands, so a
+  restart or redeploy in between leaves rows instead of a stale edge. Only the
+  first batch's row names the site, so one failed sync of a big set is one
+  re-sync, not one per batch.
+- A refusal on batch *k* moves batches *k…n* to due-now — they never reached the
+  edge — and stops; the batches before *k* keep their second purge. A purge that
+  cannot run at all (the zone or base domain is not configured) writes one row
+  due now with no URLs; its replay derives them from the site's current set.
+  There is no in-process retry.
 - A `syncManifest` whose store write **fails** writes a row due now with no
   URLs; its replay is the sync itself.
 - Inside `syncManifest` the row is written on the sync's own transaction (in a
@@ -93,8 +128,11 @@ records every purge it still owes as a `pending_purges` row (`site_id`, `slug`,
 The `repurge` job (`POST /api/cron/repurge`, `.github/workflows/cron-repurge.yml`,
 every 12 minutes, under `CRON_SECRET`) replays due rows in batches
 (`apps/web/lib/storage/repurge.ts`). A row that names a site is re-synced first
-(`syncManifestForReplay`, which reads the row as it stands now), then purged, and
-kept due in 125 s for that write's own second purge. A row without a site is
+(`syncManifestForReplay`, which reads the row as it stands now), then its own
+batch is purged, and it is kept due in 125 s for that write's own second purge
+(the batch ∪ the site's current set). A row with no URLs is given the site's
+current set under the row's slug, from `site_version_files` — the old name, for
+a rename — or the root forms when it names no site. A row without a site is
 purged, then deleted, or deferred until 125 s after it was created. Each failure
 counts an attempt and retries 125 s later. After `REPURGE_MAX_ATTEMPTS` (5) the
 row stays in the table, is never selected again, and the run sends one admin
@@ -117,28 +155,32 @@ https://{slug}.{base}/index.html
 Scheme is always `https`. There is no `http` entry to purge (the zone redirects)
 and no `www.{slug}` form (the Worker only answers single-label hosts).
 
-**Enumerating for multi-file sites (post-v1).** v1 is single-HTML-file, so the
-two forms above are complete. When a site holds more than one object, the purge
-set is derived from the **version's file list in Postgres** — for every stored
-path `p` under `sites/{siteId}/{versionId}/`:
+**Enumerating multi-file sites — in force since E08.** Every version is a file
+set (E08 D1), and the purge set is derived from the **version's file list in
+Postgres** (`site_version_files`) — for every stored path `p` under
+`sites/{siteId}/{versionId}/`:
 
-- `https://{slug}.{base}/{p}` for every `p`;
+- `https://{slug}.{base}/{p}` for every `p`, each segment encoded once with
+  `encodeURIComponent` (the Worker's `resolvePath` decodes once);
 - plus `https://{slug}.{base}/` and `https://{slug}.{base}/{dir}/` for every
   directory prefix `dir` that contains an `index.html`, because the Worker
   resolves those to the index object under a different URL.
 
-Never enumerate by listing R2 — the previous version's objects are still present
-and the list is unbounded. The database row is the authority on what URLs exist.
+`setPurgeUrls(slug, paths)` in `apps/web/lib/storage/manifest.ts` builds it,
+always leading with the two root forms above, so a single-file set purges
+exactly what it did before E08. Never enumerate by listing R2 — the previous
+version's objects are still present and the list is unbounded. The database row
+is the authority on what URLs exist.
 
 ## 5. Which events must purge
 
 | Event | Epic | Purge |
 | --- | --- | --- |
 | First publish of a new slug | E04 | Yes — a prior 404 for that slug may be cached for up to 60s (`s-maxage=60`); purge makes the new page appear immediately. **The only direct `writeManifest` left** (`apps/web/lib/publish/pipeline.ts`); a failed first publish unwinds with `removeManifest` |
-| Version replace (owner, anonymous) | E04 | Yes — all URL forms of the slug, through **`syncManifest(siteId)`** after the replace commits (E07). A failed replace unwinds by re-running `syncManifest`, so the edge returns to whatever the row says |
-| Restore a previous version | E06 | Yes — **restore is the replace event.** The manifest (and pointer) is rewritten to an older `versionId` whose object is already in R2; no page object is written. Same targets, same delayed second purge, same `syncManifest` call as a replace (`apps/web/lib/sites/restore.ts`) |
-| Rename `old` → `new` | E06 | Yes — **both** slugs. `old` must stop serving; `new` may hold a cached 404. `syncManifest` writes `new` from the row, then `removeManifest(old)` (`apps/web/lib/names/rename.ts`) |
-| Delete (owner, bulk, anonymous, account deletion) | E06 | Yes — all URL forms of the slug. **Edge first** (E07 AC42, D-65): `removeManifest` runs before the row is archived, so a delete that answers "done" is already offline; the row change then runs under the site lock (account deletion: `lockOwner`) and re-checks the status; every delete ends with `syncManifest` for each site it touched, whether the row change committed or was refused, which undoes any writer that slipped a manifest back in between. Owner and anonymous delete refuse `under_review` / `quarantined` / `removed` (D-66); account deletion takes every page (D-68) |
+| Version replace (owner, anonymous) | E04 | Yes — through **`syncManifest(siteId, { alsoPurgeVersionId })`** after the replace commits (E07): every URL of the **old ∪ new** version's sets (E08 D14), or a path only the old set had keeps serving its old bytes for a year. A failed replace unwinds by re-running `syncManifest`, so the edge returns to whatever the row says |
+| Restore a previous version | E06 | Yes — **restore is the replace event.** The manifest (and pointer) is rewritten to an older `versionId` whose objects are already in R2; no page object is written. Same targets (restored ∪ replaced set), same delayed second purge, same `syncManifest` call as a replace; the manifest's `spa` / `has404` are the restored version's (`apps/web/lib/sites/restore.ts`) |
+| Rename `old` → `new` | E06 | Yes — **both** slugs, the whole set on each. `old` must stop serving; `new` may hold a cached 404. `syncManifest` writes `new` from the row, then `removeManifest(old, siteId)` purges the current set at the old host (`apps/web/lib/names/rename.ts`) |
+| Delete (owner, bulk, anonymous, account deletion) | E06 | Yes — every URL of the current set (`removeManifest(slug, siteId)` reads it from Postgres). **Edge first** (E07 AC42, D-65): `removeManifest` runs before the row is archived, so a delete that answers "done" is already offline; the row change then runs under the site lock (account deletion: `lockOwner`) and re-checks the status; every delete ends with `syncManifest` for each site it touched, whether the row change committed or was refused, which undoes any writer that slipped a manifest back in between. Owner and anonymous delete refuse `under_review` / `quarantined` / `removed` (D-66); account deletion takes every page (D-68) |
 | Demote kept → draft | E06 | **No, as built.** The manifest carries no clock and the status stays `live`, so nothing served changes and demote is Postgres-only. Becomes a purge event when the badge differs between draft and kept (E10) |
 | Keep draft → kept | E06 | **No, as built** — same reason; the manifest's `ownerId` is knowingly left stale because nothing in `apps/edge` reads it (`apps/web/lib/sites/keep.ts` header). The exception is a **late keep** (`expired` within grace → `live`), which rewrites the manifest through `syncManifest` and so purges |
 | Status flip to `under_review` / `quarantined` / `removed` / back to `live` | E07 | Yes — **mandatory**, this is a moderation action; see §6. `setStatus` (`apps/web/lib/moderation/status.ts`) commits, then `syncManifest`: a written manifest for `under_review` / `quarantined` (451), a removed one for `removed` |
@@ -148,7 +190,8 @@ and the list is unbounded. The database row is the authority on what URLs exist.
 **The rule as built (E07 D18).** For any page that already exists, the only
 manifest write is `syncManifest(siteId)` (`apps/web/lib/storage/manifest.ts`). In
 one transaction it locks the site row, reads `slug`, `status`,
-`current_version_id`, `owner_id` and `region`, writes the manifest (`live`,
+`current_version_id`, `owner_id`, `region`, the current version's `spa` /
+`has_404` (written only when true) and the file paths it will purge (E08), writes the manifest (`live`,
 `under_review`, `quarantined`, `expired`) or removes it (`removed`, `archived`),
 and commits only after KV has answered. Callers run it **after** their own commit,
 never inside it. Whatever order writers commit in, the last sync reads the last

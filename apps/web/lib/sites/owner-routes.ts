@@ -6,7 +6,7 @@
  * `POST /api/sites/swap` · `PATCH /api/sites/:id/name` · `GET /api/names/check`
  * `POST /api/sites/:id/replace` · `POST /api/sites/:id/versions/:versionId/restore`
  * `DELETE /api/sites/:id` · `POST /api/sites/bulk` · `DELETE /api/account`
- * `GET /api/sites/:id/download` · `GET /api/export`
+ * `GET /api/sites/:id/download` · `GET /api/export` · `POST /api/uploads`
  *
  * ── WHAT THIS MODULE IS FOR ────────────────────────────────────────────────
  * Validation and result→response mapping, and nothing else. Every database
@@ -26,7 +26,7 @@
  *      every refusal later tasks add. `studioFailure` maps it through ONE table,
  *      `STUDIO_ERROR_STATUS`, so a new refusal is a `throw` in its lib module and
  *      never a new branch in the functions below.
- *   2. The shared publish pipeline REFUSED (`requestError`, `slugUnavailable`
+ *   2. The shared publish pipeline REFUSED (`readFileSet`, `slugUnavailable`
  *      — flat `PublishError`s, because `/api/publish` and
  *      `/api/anon/*` answer agents and their bodies are frozen).
  *      `fromPublishFailure` translates them here, at the boundary, and never by
@@ -82,6 +82,8 @@ import {
   siteUpdateResultSchema,
   studioErrorSchema,
   swapResultSchema,
+  uploadRequestSchema,
+  uploadResponseSchema,
   type AccountDeletionResult,
   type BulkItemResult,
   type BulkResult,
@@ -91,12 +93,14 @@ import {
   type NameChangeResult,
   type NameCheckResult,
   type OwnedPublishResult,
+  type Plan,
   type PublishErrorCode,
   type ReplaceResult,
   type RestoreResult,
   type SiteUpdateResult,
   type StudioErrorCode,
   type SwapResult,
+  type UploadResponse,
 } from "@kept/shared";
 import { NextResponse } from "next/server";
 import { z } from "zod";
@@ -104,17 +108,14 @@ import { z } from "zod";
 import { SlugUnavailableError } from "../db/queries/publish";
 import { allowNameCheck, checkName } from "../names/check";
 import { renameSite } from "../names/rename";
-import {
-  requestError,
-  slugUnavailable,
-  type PublishFailure,
-  type PublisherContext,
-} from "../publish/pipeline";
+import { isFailure, type FileSet } from "../publish/fileset/types";
+import { slugUnavailable, type PublishFailure, type PublisherContext } from "../publish/pipeline";
+import { consumeUpload, createUpload } from "../uploads/upload";
 import { deleteAccount } from "./account-deletion";
 import { updateSiteDetails } from "./details";
 import { openExport, openPageDownload, type Download } from "./export";
 import { demoteSite, keepSite, keepSites, SITE_NOT_FOUND_MESSAGE, swapKept } from "./keep";
-import { deleteSite, deleteSites, ownerPageBodySchema, replaceSite } from "./manage";
+import { deleteSite, deleteSites, replaceSite } from "./manage";
 import { publishOwnedPage } from "./publish";
 import { restoreVersion, VERSION_NOT_FOUND_MESSAGE } from "./restore";
 import { StudioRefusal } from "./studio-refusal";
@@ -149,7 +150,14 @@ const STUDIO_ERROR_STATUS = {
   name_pro_length: 400,
   name_reserved: 400,
   name_inappropriate: 400,
+  missing_index: 400,
+  invalid_path: 400,
+  file_type_not_allowed: 400,
+  invalid_archive: 400,
   file_too_large: 413,
+  too_many_files: 413,
+  site_too_large: 413,
+  upload_not_found: 404,
   name_taken: 409,
   name_quota: 409,
   not_allowed_in_status: 409,
@@ -176,6 +184,15 @@ const STUDIO_CODE_FOR: Record<PublishErrorCode, StudioErrorCode> = {
   rate_limited: "rate_limited",
   slug_unavailable: "slug_unavailable",
   internal_error: "internal_error",
+  missing_index: "missing_index",
+  invalid_path: "invalid_path",
+  too_many_files: "too_many_files",
+  site_too_large: "site_too_large",
+  file_too_large: "file_too_large",
+  file_type_not_allowed: "file_type_not_allowed",
+  invalid_file: "invalid_file",
+  invalid_archive: "invalid_archive",
+  upload_not_found: "upload_not_found",
 };
 
 /** The envelope, built and validated in one place. */
@@ -274,6 +291,15 @@ export function ownerResponse<T>(outcome: OwnerOutcome<T>): NextResponse {
 }
 
 /**
+ * E08 D7: the OS-junk paths the reader dropped ride along for the studio's
+ * "Skipped {n} files" toast — only when there were any, so a body without them
+ * is the pre-E08 shape.
+ */
+function withIgnored<T extends object>(result: T, set: FileSet): T & { ignored?: string[] } {
+  return set.ignored.length > 0 ? { ...result, ignored: set.ignored } : result;
+}
+
+/**
  * `POST /api/sites` — publish a page that belongs to this account from its first
  * byte. Decision **D9**.
  *
@@ -297,22 +323,24 @@ export function ownerResponse<T>(outcome: OwnerOutcome<T>): NextResponse {
  * signed in is not a content policy.
  */
 export async function publishOwnedSite(
-  raw: unknown,
+  set: FileSet | PublishFailure,
   profileId: string,
   publisher: PublisherContext,
 ): Promise<OwnerOutcome<OwnedPublishResult>> {
-  const parsed = ownerPageBodySchema.safeParse(raw);
-  if (!parsed.success) return fromPublishFailure(requestError(parsed.error));
+  if (isFailure(set)) return fromPublishFailure(set);
 
   try {
-    const result = await publishOwnedPage({ profileId, html: parsed.data.html, publisher });
+    const result = await publishOwnedPage({ profileId, set, publisher });
+    // D5, used once: the upload is deleted only after the publish landed, so a
+    // failed one can be retried with the same ID inside its window.
+    if (set.uploadKey) await consumeUpload(set.uploadKey);
     // Parse our own output: the studio repaints its card from this body without
     // a second request, so a silent shape change here is a broken screen rather
     // than a failed test.
     return {
       ok: true,
       status: result.duplicate ? 200 : 201,
-      body: ownedPublishResultSchema.parse(result),
+      body: ownedPublishResultSchema.parse(withIgnored(result, set)),
     };
   } catch (err) {
     if (err instanceof SlugUnavailableError) {
@@ -322,6 +350,33 @@ export async function publishOwnedSite(
       return fromPublishFailure(slugUnavailable());
     }
     return studioFailure(err, "publish");
+  }
+}
+
+/**
+ * `POST /api/uploads` — a presigned PUT for a zip larger than one inline
+ * request carries (E08 D5). `{ size_bytes }` → `{ upload_id, upload_url,
+ * expires_at, max_bytes }`; the zip is then published or replaced with
+ * `{ upload_id }`. Every rule is `../uploads/upload.ts`'s: the plan's
+ * `siteBytes × 1.1` ceiling (`413 site_too_large`) and 20 an hour per profile
+ * (`429 rate_limited`). Never log the body — `upload_url` is a bearer
+ * credential until it expires.
+ */
+export async function requestOwnedUpload(
+  raw: unknown,
+  profileId: string,
+  plan: Plan,
+): Promise<OwnerOutcome<UploadResponse>> {
+  const parsed = uploadRequestSchema.safeParse(raw);
+  if (!parsed.success) {
+    return refuse("invalid_request", "Send `{ size_bytes }`: the size of the .zip you are about to upload, in bytes.");
+  }
+
+  try {
+    const result = await createUpload(profileId, plan, parsed.data.size_bytes);
+    return { ok: true, status: 200, body: uploadResponseSchema.parse(result) };
+  } catch (err) {
+    return studioFailure(err, "upload", "kept could not prepare that upload just now. Try again.");
   }
 }
 
@@ -519,12 +574,12 @@ export async function checkOwnedName(
 /**
  * `POST /api/sites/:id/replace` — new bytes, same URL.
  *
- * VALIDATION AND CONTENT POLICY HAPPEN HERE, ORDERING HAPPENS IN `./manage.ts`,
- * the same split rename uses. `ownerPageBodySchema` is the publish schema's `html`
- * field, so `MAX_PAGE_BYTES`, the empty-page rule and every error CODE are
- * identical to the path that first stored the page — `requestError` is the
- * shared mapper, because "the body was 6 MB" and "the body had no `html` field"
- * arriving as one code is an infinite retry loop for an agent.
+ * THE BODY IS READ BY THE ROUTE (`readFileSet`, on the owner's plan), ORDERING
+ * HAPPENS IN `./manage.ts`. The reader is the publish path's, so every input,
+ * cap and error CODE is identical to the path that first stored the page —
+ * translated into studio vocabulary here, because "the body was 6 MB" and "the
+ * body had no `html` field" arriving as one code is an infinite retry loop for
+ * an agent.
  *
  * ⚠️ THE CLOCK IS NOT TOUCHED, AND THE RESPONSE SAYS SO by echoing the deadline
  * it found. A replace that extended the draft window would let a weekly upload
@@ -538,18 +593,18 @@ export async function checkOwnedName(
  */
 export async function replaceOwnedSite(
   rawSiteId: string,
-  raw: unknown,
+  set: FileSet | PublishFailure,
   profileId: string,
 ): Promise<OwnerOutcome<ReplaceResult>> {
   const parsedId = siteIdSchema.safeParse(rawSiteId);
   if (!parsedId.success) return ownerNotFound();
 
-  const parsed = ownerPageBodySchema.safeParse(raw);
-  if (!parsed.success) return fromPublishFailure(requestError(parsed.error));
+  if (isFailure(set)) return fromPublishFailure(set);
 
   try {
-    const result = await replaceSite(parsedId.data, profileId, parsed.data.html);
-    return { ok: true, status: 200, body: replaceResultSchema.parse(result) };
+    const result = await replaceSite(parsedId.data, profileId, set);
+    if (set.uploadKey) await consumeUpload(set.uploadKey);
+    return { ok: true, status: 200, body: replaceResultSchema.parse(withIgnored(result, set)) };
   } catch (err) {
     // A page that is not `live` is `409 not_allowed_in_status`, with the
     // sentence `./display.ts` gives the card — thrown by `./manage.ts`.
@@ -726,7 +781,8 @@ function attachment(download: Download): Response {
 
 /**
  * `GET /api/sites/:id/download` — one page's current version as
- * `{name}.html` (§5.7, AC39). Owner only: anyone else, a `removed` page and a
+ * `{name}.html`, or as `{name}.zip` of its whole file set when it has more than
+ * one file (§5.7, AC39; E08 AC38). Owner only: anyone else, a `removed` page and a
  * page past its `purge_after` are the same `404 not_found` (D17). An archived
  * page downloads until `purge_after` (D14).
  *

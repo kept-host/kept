@@ -87,6 +87,9 @@ export function checkPageFile(file: Pick<File, "name" | "type" | "size">): Publi
   return null;
 }
 
+/** A chosen or dropped file the browser could not read back. */
+export const FILE_UNREADABLE = "That file could not be read. Try choosing it again.";
+
 /** The same pre-flight for markup that arrived as text (paste, text drop). */
 export function checkPageHtml(html: string): PublishError | null {
   const bytes = byteLength(html);
@@ -170,19 +173,38 @@ async function readError(response: Response): Promise<PublishError> {
  * Never throws, including on abort: the caller decides what an aborted request
  * means by reading its own signal.
  */
-export async function publishHtml(
+export function publishHtml(
   html: string,
   signal?: AbortSignal,
 ): Promise<PublishOutcome> {
   const body: PublishRequest = { html };
+  return post(
+    { headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
+    signal,
+  );
+}
+
+/**
+ * POST a zip or a packed set as the one multipart `archive` part
+ * (`inlineArchiveForm`, `lib/publish/pack.ts`) — the hero's folder and `.zip`
+ * drops (E08 task 011). Same response, same errors, same never-throws as
+ * `publishHtml`.
+ */
+export function publishArchive(
+  form: FormData,
+  signal?: AbortSignal,
+): Promise<PublishOutcome> {
+  return post({ body: form }, signal);
+}
+
+/** The one request and the one response handler both bodies share. */
+async function post(
+  init: Pick<RequestInit, "headers" | "body">,
+  signal?: AbortSignal,
+): Promise<PublishOutcome> {
   let response: Response;
   try {
-    response = await fetch("/api/publish", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal,
-    });
+    response = await fetch("/api/publish", { method: "POST", ...init, signal });
   } catch {
     return {
       ok: false,

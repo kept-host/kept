@@ -591,14 +591,15 @@ test(
     const { removeManifest, pointerKey } = await import("../storage/manifest");
     const { r2Store } = await import("../storage/r2");
     const { eq } = await import("drizzle-orm");
+    const { jsonBody } = await import("../testing/file-sets");
     const db = await client();
     const { sites } = await schema();
 
     const marker = `e05-008-${crypto.randomUUID().slice(0, 8)}`;
     const published = await publishPage(
-      {
+      jsonBody({
         html: `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${marker}</title></head><body><h1>${marker}</h1></body></html>\n`,
-      },
+      }),
       { ip: "203.0.113.80", userAgent: "kept-e05-008-drill/1.0" },
     );
     assert.equal(published.ok, true, published.ok ? "" : JSON.stringify(published.body));

@@ -43,11 +43,12 @@ import {
 
 import { DRAFT_SECTION_NOTE } from "@/components/kept/draft-chip";
 import { DropTarget } from "@/components/kept/drop-target";
+import { LockedRow } from "@/components/kept/locked-row";
 import { Mascot } from "@/components/kept/mascot";
 import { UtilityBar } from "@/components/kept/utility-bar";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { formatUpdatedAt, type DraftFilter } from "@/lib/sites/display";
+import { formatUpdatedAt, PRO_SITE_BYTES_LINE, type DraftFilter } from "@/lib/sites/display";
 import { cn } from "@/lib/utils";
 
 import { Wordmark } from "../wordmark";
@@ -134,7 +135,7 @@ export function PagesHome({
     setSheetOpen(false);
     replaceParam("tab", atLimit ? "drafts" : null);
   }, [atLimit]);
-  const publisher = usePublish({ keptLimit: quota.limit, onSend, arrive: arrivals.arrive });
+  const publisher = usePublish({ plan, keptLimit: quota.limit, onSend, arrive: arrivals.arrive });
 
   const present = gone.from === drafts ? drafts.filter((site) => !gone.ids.has(site.id)) : drafts;
   const tab: Tab = searchParams.get("tab") === "drafts" ? "drafts" : "kept";
@@ -195,7 +196,7 @@ export function PagesHome({
   };
 
   return (
-    <DropTarget scope="window" disabled={publisher.busy} onFile={publisher.publishFile} onRefuse={publisher.refuse}>
+    <DropTarget scope="window" disabled={publisher.busy} onUpload={publisher.publish} onRefuse={publisher.refuse}>
       {() => (
         <>
           <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-border bg-bg px-4 md:px-8">
@@ -259,13 +260,16 @@ export function PagesHome({
             ) : null}
 
             {publisher.error && !sheetOpen && !empty ? (
-              <p
+              <div
                 role="alert"
                 data-testid="publish-error"
-                className="rounded-[var(--r-md)] border border-[color-mix(in_srgb,var(--danger)_35%,var(--border))] bg-surface px-4 py-3 text-sm leading-relaxed text-danger"
+                className="rounded-[var(--r-md)] border border-[color-mix(in_srgb,var(--danger)_35%,var(--border))] bg-surface px-4 py-3"
               >
-                {publisher.error}
-              </p>
+                <p className="text-sm leading-relaxed text-danger">{publisher.error.message}</p>
+                {publisher.error.locked ? (
+                  <LockedRow className="pb-0">{PRO_SITE_BYTES_LINE}</LockedRow>
+                ) : null}
+              </div>
             ) : null}
 
             {empty ? (

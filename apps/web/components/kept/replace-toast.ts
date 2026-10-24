@@ -8,6 +8,7 @@
  *   · a new version   → "Replaced. Same link, new version." with **Undo**, which
  *                       restores the version that was current (AC25)
  *   · pruned on Free  → the toast adds the version-limit note, once per session
+ *   · a set with junk → the toast says what was skipped (E08 D7, §8), once
  *
  * Undo is `POST …/versions/:previousVersionId/restore` — a pointer move, no
  * upload. Both outcomes end in `refresh`, because the page's card is a server
@@ -22,6 +23,8 @@ import {
   UNDONE_TOAST,
 } from "@/lib/sites/display";
 import { replaceNotice, restoreVersion } from "@/lib/sites/owner-client";
+
+import { skippedNote } from "./link-toast";
 
 /** "Once per session" (PRD §5.5): this tab, until it reloads. */
 let prunedNoteShown = false;
@@ -47,8 +50,13 @@ export function toastReplaced({
   if (notePruned) prunedNoteShown = true;
   const { previousVersionId, siteId } = page;
 
+  const notes = [
+    notePruned ? prunedVersionsNote(limitsFor(plan).previousVersions) : undefined,
+    skippedNote(page.ignored),
+  ].filter(Boolean);
+
   toast.success(REPLACED_TOAST, {
-    description: notePruned ? prunedVersionsNote(limitsFor(plan).previousVersions) : host,
+    description: notes.length > 0 ? notes.join(" ") : host,
     action:
       previousVersionId === null
         ? undefined

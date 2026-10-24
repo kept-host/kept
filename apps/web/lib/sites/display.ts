@@ -383,6 +383,8 @@ const BYTES_PER_MB = BYTES_PER_KB * BYTES_PER_KB;
  * One decimal below 10 KB and none above it: `4.2 KB` is information, `147.3 KB`
  * is noise on a line that is already competing with a date.
  */
+export function formatBytes(bytes: number): string;
+export function formatBytes(bytes: number | null): string | null;
 export function formatBytes(bytes: number | null): string | null {
   if (bytes === null) return null;
   if (bytes < BYTES_PER_KB) return `${bytes} B`;
@@ -472,6 +474,14 @@ export function restoreWarning(stamp: string): string {
 
 /** The Versions tab's locked row on Free (D15) — the Pro count from `limitsFor`. */
 export const PRO_VERSIONS_LINE = `Keep ${limitsFor("premium").previousVersions} versions with Pro`;
+
+/** The locked row under a Free set refused for size (E08 §8, D15) — the Pro cap from `limitsFor`. */
+export const PRO_SITE_BYTES_LINE = `Publish sites up to ${formatBytes(limitsFor("premium").siteBytes)} with Pro`;
+
+/** E08 §8: "{n} files · {size}" — a version's file count and its set's total size. */
+export function fileSetSummary(fileCount: number, sizeBytes: number): string {
+  return `${fileCount === 1 ? "1 file" : `${fileCount.toLocaleString("en-US")} files`} · ${formatBytes(sizeBytes)}`;
+}
 
 /**
  * Where a card points: the page-detail screen, `/site/[id]` — by the page's

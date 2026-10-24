@@ -10,11 +10,13 @@ import { config } from "dotenv";
 import { eq, inArray } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
+import { siteObjectKeys } from "../lib/db/queries/version-files";
 import { managementRefusal } from "../lib/sites/display";
 import { pointerKey } from "../lib/storage/manifest";
 import { pageObjectKey, r2Store } from "../lib/storage/r2";
 import { clearPendingPurges } from "../lib/testing/pending-purges";
 import { removeServedManifests } from "../lib/testing/served-manifests";
+import { buildZip } from "../lib/testing/zip-fixture";
 
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
 import { seedOwned } from "./owner-fixtures";
@@ -102,15 +104,10 @@ test.describe("owner replace", () => {
     await removeServedManifests(createdSlugs);
     await clearPendingPurges(createdSlugs, createdSiteIds);
     for (const id of createdSiteIds) {
-      const versions = await db
-        .select({ id: schema.siteVersions.id })
-        .from(schema.siteVersions)
-        .where(eq(schema.siteVersions.siteId, id));
-      for (const version of versions) {
-        await r2Store()
-          .delete(pageObjectKey(id, version.id))
-          .catch(() => undefined);
-      }
+      // Every file of every version, from `site_version_files` (E08 D1).
+      await r2Store()
+        .deleteMany(await siteObjectKeys(db, id))
+        .catch(() => undefined);
     }
     if (createdSiteIds.length) {
       await db.delete(schema.sites).where(inArray(schema.sites.id, createdSiteIds));
@@ -292,6 +289,46 @@ test.describe("owner replace", () => {
     // And the edge catches up within the architectural bound.
     const elapsed = await waitForBytes(urlFor(page.slug), nextHtml);
     expect(elapsed).toBeLessThanOrEqual(STALE_EDGE_WINDOW_MS);
+  });
+
+  test("E08: a zip replaces the page with a whole set — the ReplaceResult carries `ignored`, and every file serves at the same URL", async ({
+    request,
+    baseURL,
+  }) => {
+    test.setTimeout(LIVE_STACK_TIMEOUT + STALE_EDGE_WINDOW_MS + 30_000);
+
+    const { cookie } = await signIn(baseURL!);
+    const page = await ownedPage(request, baseURL!, cookie);
+    const nextHtml = pageHtml(`${page.marker}-set`);
+    const js = `console.log(${JSON.stringify(page.marker)});`;
+    const zip = buildZip([
+      { name: "index.html", data: nextHtml },
+      { name: "assets/app.js", data: js },
+      { name: "__MACOSX/._index.html", data: "junk" },
+    ]);
+
+    const response = await request.post(`${baseURL}/api/sites/${page.siteId}/replace`, {
+      headers: sessionHeaders(cookie, baseURL!),
+      multipart: {
+        archive: { name: "site.zip", mimeType: "application/zip", buffer: Buffer.from(zip) },
+      },
+    });
+    expect(response.status(), await response.text()).toBe(200);
+    const body = newVersion(await response.json());
+    expect(body.ignored, "the junk the reader dropped, for the toast").toEqual(["__MACOSX/._index.html"]);
+    expect(body.previousVersionId).toBe(page.versionId);
+    expect(body.pruned).toBe(false);
+
+    const [version] = await db
+      .select()
+      .from(schema.siteVersions)
+      .where(eq(schema.siteVersions.id, body.versionId));
+    expect(version!.fileCount).toBe(2);
+
+    expect(await waitForBytes(urlFor(page.slug), nextHtml)).toBeLessThanOrEqual(STALE_EDGE_WINDOW_MS);
+    const asset = await probeEdge(`${urlFor(page.slug)}assets/app.js`);
+    expect(asset.status).toBe(200);
+    expect(asset.body).toBe(js);
   });
 
   test("the bytes already served are { unchanged: true }: no version, no manifest write (AC27)", async ({

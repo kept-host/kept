@@ -10,7 +10,8 @@ import { db, schema } from "../lib/db";
 import { extractPageTitle } from "../lib/publish/page-title";
 import { graceEnds, liveUrl } from "../lib/publish/pipeline";
 import { clearPendingPurges } from "../lib/testing/pending-purges";
-import { insertPage } from "../lib/testing/scan-drill";
+import { fileSet } from "../lib/testing/file-sets";
+import { insertPage, insertSet, type StoredSet } from "../lib/testing/scan-drill";
 import { removeServedManifests } from "../lib/testing/served-manifests";
 
 import { SKIP_LIVE_PUBLISH } from "./live-publish";
@@ -203,6 +204,21 @@ export interface SeedOptions {
   expiresAt?: Date;
 }
 
+/** One seeded page's `sites` columns: an owned, claimed `live` row with a fresh id and slug. */
+function seedRow(ownerId: string, title: string | null, expiresAt?: Date) {
+  const id = crypto.randomUUID();
+  return {
+    id,
+    slug: `e06-seed-${id.slice(0, 8)}${id.slice(9, 13)}`,
+    title,
+    ownerId,
+    publisherHash: SEED_PUBLISHER,
+    claimedAt: new Date(),
+    expiresAt: expiresAt ?? null,
+    purgeAfter: expiresAt ? graceEnds(expiresAt) : null,
+  };
+}
+
 /**
  * `n` owned pages straight into Postgres — for specs that need an account AT
  * or NEAR its kept limit, or a page to render, download or export, never for
@@ -228,19 +244,7 @@ export async function seedKept(
   { html, expiresAt }: SeedOptions = {},
 ): Promise<SeededPage[]> {
   const title = html === undefined ? null : extractPageTitle(html);
-  const rows = Array.from({ length: n }, () => {
-    const id = crypto.randomUUID();
-    return {
-      id,
-      slug: `e06-seed-${id.slice(0, 8)}${id.slice(9, 13)}`,
-      title,
-      ownerId,
-      publisherHash: SEED_PUBLISHER,
-      claimedAt: new Date(),
-      expiresAt: expiresAt ?? null,
-      purgeAfter: expiresAt ? graceEnds(expiresAt) : null,
-    };
-  });
+  const rows = Array.from({ length: n }, () => seedRow(ownerId, title, expiresAt));
   if (rows.length === 0) return [];
   if (html === undefined) {
     await db.insert(schema.sites).values(rows.map((row) => ({ ...row, contentHash: SEED_PUBLISHER, sizeBytes: 128 })));
@@ -276,6 +280,23 @@ export async function seedOwned(
     outcome: expiresAt ? "owned_draft" : "kept",
     html,
   };
+}
+
+/**
+ * `seedOwned` for a multi-file page (E08): `files` read through the real
+ * reader as a JSON body would be, then seeded with every file's bytes, its
+ * `site_version_files` rows and no manifest.
+ */
+export async function seedOwnedSet(
+  scope: Pick<OwnerScope, "siteIds">,
+  ownerId: string,
+  files: { path: string; content: string }[],
+): Promise<SeededPage & { set: StoredSet }> {
+  const set = await fileSet({ files });
+  const row = seedRow(ownerId, null);
+  scope.siteIds.push(row.id);
+  await insertSet(set, row, new Date());
+  return { siteId: row.id, slug: row.slug, name: row.slug, set };
 }
 
 /** The row as Postgres holds it right now. The authority every assertion re-reads. */
@@ -343,7 +364,15 @@ export async function hold(page: Page, target: Locator, file: DroppedFile): Prom
   const path = test.info().outputPath(`drop-${crypto.randomUUID()}`, file.name);
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, file.body);
+  return holdPath(page, target, path);
+}
 
+/**
+ * `hold` for something already on disk — a binary file, or a whole folder
+ * (E08: Chromium hands a dropped directory to `webkitGetAsEntry` as a
+ * directory entry, exactly as a drag from the desktop does).
+ */
+export async function holdPath(page: Page, target: Locator, path: string): Promise<HeldFile> {
   await target.scrollIntoViewIfNeeded();
   const box = await target.boundingBox();
   expect(box, "the drop target is on screen").not.toBeNull();
@@ -388,6 +417,7 @@ export async function drop(page: Page, target: Locator, file: DroppedFile): Prom
  */
 export async function cleanup(scope: OwnerScope): Promise<void> {
   const { pageObjectKey, r2Store } = await import("../lib/storage/r2");
+  const { siteObjectKeys } = await import("../lib/db/queries/version-files");
 
   if (scope.userIds.length) {
     const owned = await db
@@ -416,11 +446,15 @@ export async function cleanup(scope: OwnerScope): Promise<void> {
       .select({ id: schema.siteVersions.id })
       .from(schema.siteVersions)
       .where(eq(schema.siteVersions.siteId, id));
-    for (const version of versions) {
-      await r2Store()
-        .delete(pageObjectKey(id, version.id))
-        .catch(() => undefined);
-    }
+    // Every file of every version (E08: a set is many objects); `index.html`
+    // by name too, for a seeded version that has no file rows.
+    const keys = new Set([
+      ...versions.map((version) => pageObjectKey(id, version.id)),
+      ...(await siteObjectKeys(db, id).catch(() => [])),
+    ]);
+    await r2Store()
+      .deleteMany([...keys])
+      .catch(() => undefined);
   }
 
   // By id, never by owner: a spec that deleted its own account leaves rows whose

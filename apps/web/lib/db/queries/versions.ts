@@ -16,6 +16,7 @@ import { and, desc, eq, ne, sql } from "drizzle-orm";
 
 import { db, type Tx } from "../index";
 import { profiles, sites, siteVersions } from "../schema";
+import { versionFileKeys } from "./version-files";
 
 const NEWEST_FIRST = [desc(siteVersions.activatedAt), desc(siteVersions.createdAt)] as const;
 
@@ -24,7 +25,12 @@ export interface VersionListItem {
   id: string;
   createdAt: Date;
   activatedAt: Date;
+  /** The version's set total (E08). */
   sizeBytes: number;
+  /** How many files the version holds (E08) — "{n} files · {size}". */
+  fileCount: number;
+  /** Its "single-page app" flag (D12): the replace checkbox starts from the current one's. */
+  spa: boolean;
   publishedVia: PublishChannel;
   isCurrent: boolean;
 }
@@ -44,6 +50,8 @@ export async function listVersions(siteId: string, ownerId: string): Promise<Ver
       createdAt: siteVersions.createdAt,
       activatedAt: siteVersions.activatedAt,
       sizeBytes: siteVersions.sizeBytes,
+      fileCount: siteVersions.fileCount,
+      spa: siteVersions.spa,
       publishedVia: siteVersions.publishedVia,
       currentVersionId: sites.currentVersionId,
     })
@@ -75,9 +83,12 @@ const STORED_VERSION_COLUMNS = {
   activatedAt: siteVersions.activatedAt,
 } as const;
 
-/** One version of one site, or `null` — a version of ANOTHER site is `null` too. */
+/**
+ * One version of one site, or `null` — a version of ANOTHER site is `null` too.
+ * On `db` for a plain read (a download), on a transaction under a lock.
+ */
 export async function findSiteVersion(
-  tx: Tx,
+  tx: Tx | typeof db,
   siteId: string,
   versionId: string,
 ): Promise<StoredVersion | null> {
@@ -108,35 +119,49 @@ export async function stampActivated(
     .where(and(eq(siteVersions.id, versionId), eq(siteVersions.siteId, siteId)));
 }
 
+/** A version a prune drops: its id, and every R2 key its files occupy. */
+export interface PrunableVersion {
+  id: string;
+  keys: string[];
+}
+
 /**
  * The versions a prune should drop: everything older than the current one plus
  * the newest `limitsFor(plan).previousVersions` (D7), with the SITE ROW LOCKED
- * `FOR UPDATE` until `tx` ends.
+ * `FOR UPDATE` until `tx` ends — each with every file key it owns (E08 D1, from
+ * `site_version_files`, never an R2 list).
  *
  * The lock is what makes "R2 delete, then row" safe against a restore: restore
  * takes the same lock (`lockSiteForOwner`), so it can never point the page at a
  * version whose bytes a concurrent prune is deleting. The plan is the owner's
  * plan NOW, read in the same statement — so a downgrade prunes nothing until the
- * next replace (edge case 8), and a page with no owner prunes nothing at all.
+ * next replace (edge case 8). A page with NO owner (an anonymous draft) prunes
+ * like `free` (E08 Q-new-4, Arun 2026-10-22): its replace governor allows dozens
+ * of versions an hour, and nothing else would ever collect them before
+ * `purge_after`.
  */
-export async function lockPrunableVersions(tx: Tx, siteId: string): Promise<StoredVersion[]> {
+export async function lockPrunableVersions(tx: Tx, siteId: string): Promise<PrunableVersion[]> {
   const [site] = await tx
     .select({ currentVersionId: sites.currentVersionId, plan: profiles.plan })
     .from(sites)
-    .innerJoin(profiles, eq(profiles.id, sites.ownerId))
+    .leftJoin(profiles, eq(profiles.id, sites.ownerId))
     .where(eq(sites.id, siteId))
     .for("update", { of: sites });
   if (!site?.currentVersionId) return [];
 
-  return tx
-    .select(STORED_VERSION_COLUMNS)
+  const rows = await tx
+    .select({ id: siteVersions.id })
     .from(siteVersions)
     .where(and(eq(siteVersions.siteId, siteId), ne(siteVersions.id, site.currentVersionId)))
     .orderBy(...NEWEST_FIRST)
-    .offset(limitsFor(site.plan).previousVersions);
+    .offset(limitsFor(site.plan ?? "free").previousVersions);
+
+  const prunable: PrunableVersion[] = [];
+  for (const { id } of rows) prunable.push({ id, keys: await versionFileKeys(tx, siteId, [id]) });
+  return prunable;
 }
 
-/** Drop one version row. Called only after its R2 object is gone. */
+/** Drop one version row (its `site_version_files` cascade). Called only after its R2 objects are gone. */
 export async function deleteVersionRow(tx: Tx, siteId: string, versionId: string): Promise<void> {
   await tx
     .delete(siteVersions)

@@ -14,7 +14,7 @@
  *   [old name chosen → holdName(old, 'renamed')]
  *   COMMIT
  *   syncManifest(site)                 ← the new name: pointer → KV → purge (D18)
- *   removeManifest(old)                ← pointer → KV → purge
+ *   removeManifest(old, site)          ← pointer → KV → purge (the site's whole set)
  *
  * **New first, old second, never the reverse** (`docs/edge-purge-contract.md`,
  * the rename event). New-first's transient state is "both names resolve" —
@@ -272,7 +272,9 @@ export async function renameSite(
 
   // From here a failure costs nothing but a stale alias.
   try {
-    const removed = await removeManifest(previousSlug);
+    // With the site id: the old hostname served the whole file set, so all of it
+    // is purged there (E08 D14), not just its root forms.
+    const removed = await removeManifest(previousSlug, siteId);
     if (!removed.ok) {
       console.error(
         `[kept] rename: site ${siteId} moved to "${site.slug}" but the old name "${previousSlug}" failed to unpublish at the "${removed.step}" step — ${removed.error}. Both names resolve to the same page; the rename itself succeeded. Replay this removal (contract §3).`,

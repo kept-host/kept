@@ -106,9 +106,10 @@ interface Published {
 /** A real owned page: Postgres, R2 object, pointer, KV and purge. */
 async function publish(profileId: string): Promise<Published> {
   const { publishOwnedPage } = await import("./publish");
+  const { fileSet } = await import("../testing/file-sets");
   const title = runId();
   const html = pageHtml(title);
-  const { site } = await publishOwnedPage({ profileId, html, publisher });
+  const { site } = await publishOwnedPage({ profileId, set: await fileSet({ html }), publisher });
   createdSites.add(site.id);
   createdSlugs.add(site.slug);
   const current = await row(site.id);
@@ -147,7 +148,8 @@ async function pointerVersion(slug: string): Promise<string | null> {
 /** `POST /api/sites/:id/replace`'s 200 body, parsed with the wire schema. */
 async function replace(siteId: string, profileId: string, html: string): Promise<ReplaceResult> {
   const { replaceOwnedSite } = await import("./owner-routes");
-  const outcome = await replaceOwnedSite(siteId, { html }, profileId);
+  const { readJsonSet } = await import("../testing/file-sets");
+  const outcome = await replaceOwnedSite(siteId, await readJsonSet({ html }), profileId);
   assert.equal(outcome.status, 200, JSON.stringify(outcome.body));
   return replaceResultSchema.parse(outcome.body);
 }
@@ -181,23 +183,19 @@ async function capturingErrors<T>(fn: () => Promise<T>): Promise<{ value: T; log
 
 after(async () => {
   if (skip) return;
-  const { eq, inArray } = await import("drizzle-orm");
+  const { inArray } = await import("drizzle-orm");
   const { db } = await import("../db/index");
-  const { siteVersions, sites, user } = await import("../db/schema");
+  const { sites, user } = await import("../db/schema");
   const { removeManifest } = await import("../storage/manifest");
   const { r2Store } = await import("../storage/r2");
+  const { siteObjectKeys } = await import("../db/queries/version-files");
 
   for (const slug of createdSlugs) await removeManifest(slug).catch(() => undefined);
   for (const siteId of createdSites) {
-    const versions = await db
-      .select({ r2Key: siteVersions.r2Key })
-      .from(siteVersions)
-      .where(eq(siteVersions.siteId, siteId));
-    for (const version of versions) {
-      await r2Store()
-        .delete(version.r2Key)
-        .catch(() => undefined);
-    }
+    // Every file of every version, from `site_version_files` (E08 D1).
+    await r2Store()
+      .deleteMany(await siteObjectKeys(db, siteId))
+      .catch(() => undefined);
   }
   await (await import("../testing/pending-purges")).clearPendingPurges(createdSlugs, createdSites);
   if (createdSites.size > 0) await db.delete(sites).where(inArray(sites.id, [...createdSites]));
@@ -216,7 +214,7 @@ test("AC28 at source level: the restore module writes no page bytes, and both ve
       .replace(/^\s*\/\/.*$/gm, "");
 
   const restoreSource = code("./restore.ts");
-  for (const forbidden of [".put(", ".putJson(", ".delete(", "writePageAndManifest", "removeManifest", "pageObjectKey"]) {
+  for (const forbidden of [".put(", ".putJson(", ".delete(", "writeVersionFiles", "storeNewPage", "storeReplacement", "removeManifest", "pageObjectKey"]) {
     assert.equal(
       restoreSource.includes(forbidden),
       false,
@@ -228,7 +226,7 @@ test("AC28 at source level: the restore module writes no page bytes, and both ve
     ["r2Store().get("],
     "the one R2 call on the restore path is a read",
   );
-  assert.ok(restoreSource.includes("syncManifest(site.id)"), "a restore is a replace event: the manifest moves (D18: from the row)");
+  assert.ok(restoreSource.includes("syncManifest(site.id, { alsoPurgeVersionId: previous.versionId })"), "a restore is a replace event: the manifest moves (D18: from the row)");
 
   // "Fires the scan hook" (AC25) — `enqueueScan` is E07's stub with nothing to
   // observe yet, so the proof is that both paths call it with the new version.
@@ -382,16 +380,22 @@ test(
 );
 
 test(
-  "a failed R2 delete keeps its row and logs, the replace still succeeds and serves, and the next replace retries it (edge case 14)",
+  "a failed R2 delete keeps its row and logs, never throws, leaves the served version alone, and the next replace retries it (edge case 14)",
   { skip },
   async () => {
     const { db, siteVersions } = await deps();
+    const { insertVersionFiles } = await import("../db/queries/version-files");
+    const { pruneVersions } = await import("./manage");
+    const { pageObjectKey } = await import("../storage/r2");
     const profileId = await makeOwner("free");
     const page = await publish(profileId);
+    const first = await replaced(page.siteId, profileId, pageHtml(runId()));
+    assert.equal(first.pruned, false);
 
-    // A version R2 will refuse to delete: its key is past R2's 1,024-byte limit,
-    // so the DELETE is a real HTTP 400. Activated long ago, so it is the oldest.
-    const unprunable = { id: crypto.randomUUID(), r2Key: `sites/${page.siteId}/${"x".repeat(1100)}/index.html` };
+    // One more previous version than free keeps, activated long ago so it is the
+    // one a prune drops. Its keys come from `site_version_files` (E08 D1).
+    const unprunable = { id: crypto.randomUUID(), r2Key: "" };
+    unprunable.r2Key = pageObjectKey(page.siteId, unprunable.id);
     await db.insert(siteVersions).values({
       id: unprunable.id,
       siteId: page.siteId,
@@ -401,34 +405,125 @@ test(
       createdAt: new Date(Date.now() - 86_400_000),
       activatedAt: new Date(Date.now() - 86_400_000),
     });
+    await insertVersionFiles(db, unprunable.id, [{ path: "index.html", sizeBytes: 1, sha256: "e06-007-unprunable" }]);
 
-    const nextHtml = pageHtml(runId());
-    const { value: result, logged } = await capturingErrors(() =>
-      replaced(page.siteId, profileId, nextHtml),
-    );
-    assert.equal(result.pruned, false, "nothing was actually dropped");
+    // A REAL refusal: a bucket that does not exist, so the batch delete is a
+    // 404 (`r2Config()` re-reads the environment on every call). R2's batch
+    // delete accepts any key — even one past its 1,024-byte limit — so a bad key
+    // can no longer stage this.
+    const priorBucket = process.env.R2_BUCKET_AUTO;
+    const { value: pruned, logged } = await capturingErrors(async () => {
+      process.env.R2_BUCKET_AUTO = `kept-e06-007-missing-${crypto.randomUUID().slice(0, 8)}`;
+      try {
+        return await pruneVersions(page.siteId);
+      } finally {
+        process.env.R2_BUCKET_AUTO = priorBucket;
+      }
+    });
+    assert.equal(pruned, false, "nothing was actually dropped, and nothing was thrown");
     assert.ok(
-      logged.some((line) => line.includes("prune: R2 delete failed") && line.includes(unprunable.r2Key)),
-      "the failure is logged with the key",
+      logged.some((line) => line.includes("prune: R2 delete failed") && line.includes(unprunable.id)),
+      `the failure is logged with the version: ${logged.join(" | ")}`,
     );
     const rows = await versionRows(page.siteId);
     assert.deepEqual(
       rows.map((version) => version.id),
-      [result.versionId, page.versionId, unprunable.id],
+      [first.versionId, page.versionId, unprunable.id],
       "the row whose delete failed is kept",
     );
-    assert.equal((await row(page.siteId)).currentVersionId, result.versionId, "the served version is unaffected");
-    assert.equal(await pointerVersion(page.slug), result.versionId);
+    assert.equal((await row(page.siteId)).currentVersionId, first.versionId, "the served version is unaffected");
+    assert.equal(await pointerVersion(page.slug), first.versionId);
 
-    // The next replace retries it — and still prunes what it can.
-    const { value: next, logged: loggedAgain } = await capturingErrors(() =>
-      replaced(page.siteId, profileId, pageHtml(runId())),
-    );
-    assert.ok(loggedAgain.some((line) => line.includes(unprunable.r2Key)), "retried");
-    assert.equal(next.pruned, true, "the prunable one still went");
+    // The next replace retries it — and prunes everything past the limit.
+    const next = await replaced(page.siteId, profileId, pageHtml(runId()));
+    assert.equal(next.pruned, true, "the retried one went");
     assert.deepEqual(
       (await versionRows(page.siteId)).map((version) => version.id),
-      [next.versionId, result.versionId, unprunable.id],
+      [next.versionId, first.versionId],
+    );
+  },
+);
+
+test(
+  "E08 AC15 + AC18 + AC28 (owner): a file set's rows match it, the same set is a duplicate, `ignored` reaches the body, and pruning on free deletes EVERY file of the pruned version",
+  { skip },
+  async () => {
+    const { db, eq, r2Store, siteVersions } = await deps();
+    const { siteVersionFiles } = await import("../db/schema");
+    const { versionFileKeys, versionFiles } = await import("../db/queries/version-files");
+    const { siteObjectKey } = await import("../storage/r2");
+    const { publishOwnedSite, replaceOwnedSite } = await import("./owner-routes");
+    const { readJsonSet, fileSet } = await import("../testing/file-sets");
+    const { ownedPublishResultSchema } = await import("@kept/shared");
+    const profileId = await makeOwner("free");
+
+    /** A three-file set unique to `marker`, plus macOS junk the reader drops (D7). */
+    const body = (marker: string) => ({
+      files: [
+        { path: "index.html", content: pageHtml(marker) },
+        { path: "assets/site.css", content: `/* ${marker} */ body { margin: 0 }` },
+        { path: `assets/${marker}.js`, content: `console.log(${JSON.stringify(marker)});` },
+        { path: ".DS_Store", content: "junk" },
+      ],
+    });
+
+    // ── publish: rows match the set (AC15), junk is reported, not stored ──────
+    const v1Body = body(runId());
+    const published = await publishOwnedSite(await readJsonSet(v1Body), profileId, publisher);
+    assert.equal(published.status, 201, JSON.stringify(published.body));
+    const { site, ignored } = ownedPublishResultSchema.parse(published.body);
+    createdSites.add(site.id);
+    createdSlugs.add(site.slug);
+    assert.deepEqual(ignored, [".DS_Store"], "the studio toast's list");
+
+    const expected = await fileSet(v1Body);
+    const v1 = (await row(site.id)).currentVersionId!;
+    const [version] = await db.select().from(siteVersions).where(eq(siteVersions.id, v1));
+    assert.equal(version!.fileCount, 3);
+    assert.equal(version!.sizeBytes, expected.totalBytes, "site_versions.size_bytes is the set total");
+    assert.equal((await row(site.id)).sizeBytes, expected.totalBytes, "and so is sites.size_bytes");
+    assert.equal(version!.contentHash, expected.contentHash);
+    assert.deepEqual(
+      await versionFiles(db, v1),
+      expected.entries
+        .map(({ path, bytes, sha256 }) => ({ path, sizeBytes: bytes.length, sha256 }))
+        .sort((a, b) => a.path.localeCompare(b.path)),
+      "one row per stored path, with its size and SHA-256",
+    );
+    for (const entry of expected.entries) {
+      assert.equal(await r2Store().get(siteObjectKey(site.id, v1, entry.path)), new TextDecoder().decode(entry.bytes));
+    }
+
+    // ── the same set again is this account's one page (AC18, owner) ──────────
+    const again = await publishOwnedSite(await readJsonSet(v1Body), profileId, publisher);
+    assert.equal(again.status, 200, JSON.stringify(again.body));
+    const duplicate = ownedPublishResultSchema.parse(again.body);
+    assert.equal(duplicate.duplicate, true);
+    assert.equal(duplicate.site.id, site.id);
+
+    // ── two replaces on free: v1 falls off, every one of its files with it ───
+    const v1Keys = await versionFileKeys(db, site.id, [v1]);
+    assert.equal(v1Keys.length, 3, "the keys are read from site_version_files before the prune");
+
+    const second = await replaceOwnedSite(site.id, await readJsonSet(body(runId())), profileId);
+    assert.equal(second.status, 200, JSON.stringify(second.body));
+    const secondBody = replaceResultSchema.parse(second.body);
+    assert.deepEqual(secondBody.ignored, [".DS_Store"], "a replace reports the junk too");
+    if (secondBody.unchanged) assert.fail("a new set is a new version");
+    assert.equal(secondBody.pruned, false);
+
+    const third = await replaced(site.id, profileId, pageHtml(runId()));
+    assert.equal(third.pruned, true, "v1 fell off the free limit");
+    for (const key of v1Keys) assert.equal(await r2Store().get(key), null, `pruned file still in R2: ${key}`);
+    assert.deepEqual(await db.select().from(siteVersions).where(eq(siteVersions.id, v1)), [], "its version row is gone");
+    assert.deepEqual(
+      await db.select().from(siteVersionFiles).where(eq(siteVersionFiles.versionId, v1)),
+      [],
+      "and its file rows with it",
+    );
+    assert.deepEqual(
+      (await versionRows(site.id)).map((v) => v.id),
+      [third.versionId, secondBody.versionId],
     );
   },
 );

@@ -5,7 +5,7 @@
  *
  *   1. insert the scans row (pending, trigger)   ← before anything can fail
  *   2. reuse a `done` scan of the same (content_hash, SCAN_POLICY_VERSION)
- *   3. read the version's HTML from R2
+ *   3. read the files D15 scans (`site_version_files` → R2) into one document
  *   4. extract → facts + text
  *   5. classify → typed answers + cost          — `skipped` when the scanner is off (D17)
  *   6. decide (pure)
@@ -38,6 +38,7 @@ import {
   type ScanVerdict,
 } from "@kept/shared";
 
+import { db } from "../db";
 import {
   dueScans,
   finishScan,
@@ -53,16 +54,18 @@ import {
   type ScanFinish,
   type ScanTarget,
 } from "../db/queries/scans";
+import { versionFiles } from "../db/queries/version-files";
 import { sendAdminAlert, type AdminAlertOutcome } from "../email/admin-alert";
 import { setStatus } from "../moderation/status";
 import { MS_PER_DAY, MS_PER_SECOND } from "../sites/display";
 import { servingBaseDomain } from "../storage/env";
-import { r2Store } from "../storage/r2";
+import { r2Store, siteObjectKey, type R2Store } from "../storage/r2";
 import { withJobRun } from "../visits/sync";
 
 import { defaultClassifier, type ContentClassifier } from "./classifier";
 import { extract } from "./extract";
 import { decide } from "./policy";
+import { scanFiles, synthesize } from "./synthesize";
 import type { PageFacts, PolicyDecision, PolicyRule } from "./types";
 
 function message(err: unknown): string {
@@ -94,10 +97,35 @@ function storedDecision(row: { verdict: ScanVerdict | null; rule: string | null;
 }
 
 /**
- * Steps 2–6 for one version: reuse, read, extract, classify, decide. Writes
- * nothing — `runScan` records it, the CLI's dry run only counts it.
+ * The text of each file D15 scans, read from R2. Which files is decided from
+ * the sizes in `site_version_files` before any read, so a 5,000-file set reads
+ * only what the budget takes. A missing object throws: a replace records its
+ * rows before its uploads finish, so the attempt fails and `scan-retry` runs
+ * it again — never a verdict on a half-written set.
  */
-export async function judge(target: ScanTarget, classifier: ContentClassifier | null): Promise<Judgment> {
+async function scannedTexts(target: ScanTarget, store: Pick<R2Store, "get">): Promise<{ path: string; text: string }[]> {
+  const files = scanFiles(await versionFiles(db, target.versionId));
+  if (files.length === 0) throw new Error(`version ${target.versionId} has no file to scan`);
+  return Promise.all(
+    files.map(async ({ path }) => {
+      const key = siteObjectKey(target.siteId, target.versionId, path);
+      const text = await store.get(key);
+      if (text === null) throw new Error(`no object at ${key}`);
+      return { path, text };
+    }),
+  );
+}
+
+/**
+ * Steps 2–6 for one version: reuse, read, extract, classify, decide. Writes
+ * nothing — `runScan` records it, the CLI's dry run only counts it. `store`
+ * is the R2 store the files are read from (default: `r2Store()`).
+ */
+export async function judge(
+  target: ScanTarget,
+  classifier: ContentClassifier | null,
+  store?: Pick<R2Store, "get">,
+): Promise<Judgment> {
   let facts: PageFacts | null = null;
   try {
     const reused = await reusableScan(target.contentHash);
@@ -112,8 +140,7 @@ export async function judge(target: ScanTarget, classifier: ContentClassifier | 
       };
     }
 
-    const html = await r2Store().get(target.r2Key);
-    if (html === null) throw new Error(`no page object at ${target.r2Key}`);
+    const html = synthesize(await scannedTexts(target, store ?? r2Store()));
     const extraction = extract(html, `${target.slug}.${servingBaseDomain()}`);
     facts = extraction.facts;
 

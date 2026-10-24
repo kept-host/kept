@@ -2,7 +2,7 @@
 //
 // ⚠️ THE ONE PLACE A LIMIT LIVES. Every cap in `apps/web` — the kept cap in
 // keep / swap / the owned publish, the chosen-name quota and minimum length,
-// the version count pruning keeps — reads `limitsFor(plan)`. No other module
+// the version count pruning keeps, E08's file-set sizes — reads `limitsFor(plan)`. No other module
 // may contain one of these numbers, and `apps/web/lib/plans/limits.test.ts`
 // fails the build when a `50` or a `1000` appears in app source outside its
 // annotated allowlist.
@@ -35,11 +35,46 @@ export interface PlanLimits {
   readonly nameMinLength: number;
   /** Versions retained besides the current one (D7; PRD §16.1's default). */
   readonly previousVersions: number;
+  /**
+   * Bytes one version's file set may hold, all files together (E08 D2). An
+   * inline publish body is capped separately, at `INLINE_BODY_MAX_BYTES` on the
+   * wire (./files, Q-new-2); a set bigger than that takes the presigned upload
+   * path up to this number.
+   */
+  readonly siteBytes: number;
+  /** Files one version's set may hold (E08 D2). */
+  readonly siteFiles: number;
+  /**
+   * Bytes any one non-HTML file may hold (E08 D2). HTML stays at
+   * `MAX_PAGE_BYTES` on every plan — the scanner's budget is built around it.
+   */
+  readonly fileBytes: number;
 }
 
+/** Bytes in a mebibyte — the unit the E08 caps are stated in. */
+const MB = 1024 * 1024;
+
+// E08 caps: Arun's decision of 2026-10-22 (Q1) — sized to stay inside
+// Cloudflare's free tier until Pro sells; raising one is a one-line change here.
 export const PLAN_LIMITS = {
-  free: { keptPages: 50, chosenNames: 5, nameMinLength: 5, previousVersions: 1 },
-  premium: { keptPages: 1000, chosenNames: 50, nameMinLength: 4, previousVersions: 20 },
+  free: {
+    keptPages: 50,
+    chosenNames: 5,
+    nameMinLength: 5,
+    previousVersions: 1,
+    siteBytes: 20 * MB,
+    siteFiles: 200,
+    fileBytes: 10 * MB,
+  },
+  premium: {
+    keptPages: 1000,
+    chosenNames: 50,
+    nameMinLength: 4,
+    previousVersions: 20,
+    siteBytes: 100 * MB,
+    siteFiles: 1000,
+    fileBytes: 25 * MB,
+  },
 } as const satisfies Record<Plan, PlanLimits>;
 
 /**

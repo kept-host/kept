@@ -4,19 +4,20 @@
  * The first request in the product that touches all four stores, and the reason
  * their ordering is written down in `docs/edge-purge-contract.md`:
  *
- *   validate → Turnstile → request ceiling → content_hash → dedup probe
- *     → new-page governors → Postgres tx → R2 page object
- *     → writeManifest(pointer → KV → purge) → enqueueScan
+ *   request ceiling → read the file set → Turnstile → set hash → dedup probe
+ *     → new-page governors → Postgres tx (site + version + file rows)
+ *     → every file to R2 (`writeVersionFiles`) → writeManifest(pointer → KV
+ *     → purge) → enqueueScan
  *
- * (A replace reaches the same store half through `writePageAndManifest`, whose
- * manifest is `syncManifest`'s — D18.)
+ * (A replace has its own store order, `storeReplacement`: rows → files → point
+ * → `syncManifest` — D18, E08 D11.)
  *
- * NO HTTP IN THIS FILE. `publishPage` takes an already-extracted body and a
- * publisher identity and returns an outcome; `app/api/publish/route.ts` is a
- * thin boundary over it that knows about `Request`, content types and status
+ * NO HTTP IN THIS FILE. `publishPage` takes a reader for the request's file set
+ * and a publisher identity and returns an outcome; `app/api/publish/route.ts` is
+ * a thin boundary over it that knows about `Request`, content types and status
  * codes, and nothing else. That split is what lets the whole pipeline be
  * exercised from a test with no server running — and it is also why the API is
- * the product rather than an accident of the landing page: E08's MCP tools and
+ * the product rather than an accident of the landing page: E09's MCP tools and
  * the hero are two callers of the same function.
  *
  * WHY POSTGRES COMMITS FIRST. Four stores, no distributed transaction, so
@@ -33,6 +34,10 @@
  * rollback itself failing — is logged loudly enough for E07's audit to find,
  * and that audit's authority is Postgres, NEVER an R2 `list` (contract §7.5).
  *
+ * ALL OR NOTHING (E08 D11). A version's files go up eight at a time; the first
+ * refusal stops the rest and deletes every key it wrote, so no version is
+ * ever visible half-uploaded and no object outlives the rows that name it.
+ *
  * A FAILED PURGE IS NOT A FAILED PUBLISH (contract §3). The write already
  * succeeded and the page is correct; only the edge is stale, and it is stale
  * until a retry lands. `writeManifest` logs it; this pipeline returns 201.
@@ -41,28 +46,33 @@ import {
   DRAFT_GRACE_DAYS,
   DRAFT_TTL_DAYS,
   MAX_PAGE_BYTES,
+  SITE_INDEX,
   generateAnonToken,
-  hashContent,
   hashPublisher,
   hashToken,
-  publishRequestSchema,
   publishResponseSchema,
+  type PublishChannel,
   type PublishError,
   type PublishResponse,
 } from "@kept/shared";
 import type { z } from "zod";
 
 import {
+  activatePendingVersion,
   claimDedupCandidate,
+  deletePendingVersion,
   deleteSiteCascade,
   insertAnonymousDraft,
+  insertPendingVersion,
   revertReplacementVersion,
   SlugUnavailableError,
+  type PendingVersionInput,
   type SitePointer,
 } from "../db/queries/publish";
 import { appOrigin, publisherHashSalt, servingBaseDomain } from "../storage/env";
 import { pointerKey, removeManifest, syncManifest, writeManifest } from "../storage/manifest";
-import { PAGE_CONTENT_TYPE, pageObjectKey, r2Store } from "../storage/r2";
+import { pageObjectKey, r2Store, siteObjectKey } from "../storage/r2";
+import { isFailure, type FileSet } from "./fileset/types";
 import {
   checkRateLimit,
   checkRequestLimit,
@@ -125,7 +135,7 @@ export function requestError(error: z.ZodError): PublishFailure {
   if (htmlIssue?.code === "custom") {
     return fail(413, {
       error: "page_too_large",
-      message: `The page is larger than the ${MAX_PAGE_BYTES}-byte limit. kept hosts a single HTML document — inline or trim the largest assets and try again.`,
+      message: `The page is larger than the ${MAX_PAGE_BYTES}-byte limit for an HTML file — move its largest inline assets into their own files, or trim them, and try again.`,
     });
   }
 
@@ -167,74 +177,135 @@ export type StoreWriteResult =
   | { ok: false; error: string; unwound: boolean };
 
 /**
- * The store half of a publish or a replace: **R2 page object → manifest**, and
- * the exact reverse on failure.
+ * How a publish or replace reads its file set — `readFileSet` over the request,
+ * bound by the route. A reader rather than the set itself so the pipeline
+ * decides WHEN the body is read: after the request ceiling (PRD §5.3 step 6),
+ * so an over-limit caller costs no zip extraction.
+ */
+export type FileSetReader = () => Promise<FileSet | PublishFailure>;
+
+/** Files a version uploads at once (E08 D11). */
+const UPLOAD_CONCURRENCY = 8;
+
+/** The page's display name: the `<title>` of the set's `index.html`, or `null`. */
+export function setTitle(set: FileSet): string | null {
+  const index = set.entries.find((entry) => entry.path === SITE_INDEX);
+  return index ? extractPageTitle(new TextDecoder().decode(index.bytes)) : null;
+}
+
+/** A version's rows for `set`: one `site_versions` row, one file row per entry. */
+export function pendingVersion(
+  siteId: string,
+  versionId: string,
+  set: FileSet,
+  publishedVia: PublishChannel,
+): PendingVersionInput {
+  return {
+    siteId,
+    versionId,
+    r2Key: pageObjectKey(siteId, versionId),
+    contentHash: set.contentHash,
+    sizeBytes: set.totalBytes,
+    publishedVia,
+    spa: set.spa,
+    has404: set.has404,
+    files: set.entries.map(({ path, bytes, sha256 }) => ({ path, sizeBytes: bytes.length, sha256 })),
+  };
+}
+
+function versionKeys(siteId: string, versionId: string, set: Pick<FileSet, "entries">): string[] {
+  return set.entries.map((entry) => siteObjectKey(siteId, versionId, entry.path));
+}
+
+/**
+ * Upload every file of a version — all or nothing (E08 D11).
  *
- * Exported because a replace is this same sequence — a publish minus the mint
- * and minus the row insert. Re-deriving the order at a second call site is how
- * the delete path ends up backwards, where it is invisible until a KV miss
- * resurrects a deleted page.
+ * At most `UPLOAD_CONCURRENCY` puts in flight. The first refusal stops the
+ * scheduling, the puts already in flight finish, and every key that was written
+ * is deleted in one `deleteMany`. A failed unwind is logged loudly enough for
+ * E07's audit and reported as `unwound: false`.
  *
- * The object write MUST precede the manifest write: the manifest is what makes
- * a slug resolvable, so publishing it before the bytes exist is a window in
- * which the Worker serves a 404 for a page the control plane calls live.
+ * Exported for AC14's drill, which feeds it a key R2 really refuses.
+ */
+export async function writeVersionFiles(
+  siteId: string,
+  versionId: string,
+  set: Pick<FileSet, "entries">,
+): Promise<StoreWriteResult> {
+  const r2 = r2Store();
+  const written: string[] = [];
+  let failure: string | null = null;
+  let next = 0;
+
+  async function worker(): Promise<void> {
+    while (failure === null && next < set.entries.length) {
+      const index = next++;
+      const entry = set.entries[index]!;
+      const key = siteObjectKey(siteId, versionId, entry.path);
+      try {
+        await r2.put(key, entry.bytes, entry.contentType);
+        written.push(key);
+      } catch (err) {
+        failure ??= `version ${versionId}, file ${index + 1} of ${set.entries.length}: ${message(err)}`;
+      }
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(UPLOAD_CONCURRENCY, set.entries.length) }, worker),
+  );
+  if (failure === null) return { ok: true };
+
+  try {
+    await r2.deleteMany(written);
+    return { ok: false, error: failure, unwound: true };
+  } catch (err) {
+    console.error(
+      `[kept] ROLLBACK INCOMPLETE — version ${versionId} of site ${siteId}: ${written.length} uploaded keys could not be deleted (${message(err)}). Unreferenced bytes, not a serving fault; Postgres is the authority, never an R2 list (contract §7.5).`,
+    );
+    return { ok: false, error: failure, unwound: false };
+  }
+}
+
+/**
+ * The store half of a BRAND-NEW page: **every file → manifest**, and the exact
+ * reverse on failure. The caller has committed the site, version and file rows;
+ * nothing serves the slug until its manifest exists.
+ *
+ * The files MUST precede the manifest: the manifest is what makes a slug
+ * resolvable, so publishing it before the bytes exist is a window in which the
+ * Worker serves a 404 for a page the control plane calls live.
+ *
+ * `status: "live"` is the one literal manifest left (D18): the row was inserted
+ * a moment ago and nobody else can have changed it. Everything after a page's
+ * first publish goes through `syncManifest`. `spa` / `has404` are written only
+ * when true, so a single-file manifest is byte-identical to `dev-v0.8.0`.
  *
  * `unwound` reports whether the reverse path completed. `false` means the edge
  * and Postgres may now disagree, and the `pending_purges` row the failed write
  * left behind is what reconciles them.
- *
- * ── TWO MANIFEST WRITES, AND ONLY ONE OF THEM IS A LITERAL ─────────────────
- * A BRAND-NEW PUBLISH (no `previous`) writes `status: "live"` directly: the row
- * was inserted a moment ago and nobody else can have changed it. A failed write
- * unwinds by REMOVING the manifest.
- *
- * A REPLACE (`previous` set) never does (D18). The caller has committed the new
- * version; the manifest comes from `syncManifest`, which reads the row under its
- * lock — so a flag, hide or expiry that committed after the caller's status
- * check is what the edge serves, never a stale `live`. A failed replace leaves
- * the page serving what it served before: the row is reverted to `previous`,
- * then synced again, and only then is the new object deleted.
  */
-export async function writePageAndManifest(args: {
+export async function storeNewPage(args: {
   slug: string;
   siteId: string;
   versionId: string;
-  r2Key: string;
-  html: string;
+  set: FileSet;
   ownerId: string | null;
-  /** Set by replace only: the row's pointer before this replacement committed. */
-  previous?: SitePointer;
 }): Promise<StoreWriteResult> {
-  const { slug, siteId, versionId, r2Key, html, ownerId, previous } = args;
-  const r2 = r2Store();
+  const { slug, siteId, versionId, set, ownerId } = args;
 
-  try {
-    await r2.put(r2Key, html, PAGE_CONTENT_TYPE);
-  } catch (err) {
-    // No store was written; a replace still has its committed row to put back.
-    const error = `page object: ${message(err)}`;
-    if (!previous) return { ok: false, error, unwound: true };
-    return { ok: false, error, unwound: await revertReplacement({ siteId, versionId, previous }) };
-  }
-
-  if (previous) {
-    const synced = await syncManifest(siteId);
-    // `purge.ok === false` is NOT a failure (contract §3); `syncManifest` only
-    // fails when a store write did, and has already logged it.
-    if (synced.ok) return { ok: true };
-    const unwound = await unwindReplacement({ slug, siteId, versionId, r2Key, previous });
-    return { ok: false, error: `manifest sync: ${synced.error}`, unwound };
-  }
+  const files = await writeVersionFiles(siteId, versionId, set);
+  if (!files.ok) return files;
 
   const written = await writeManifest(slug, {
     siteId,
     versionId,
-    // A brand-new page — the one literal manifest left (D18). Drafts are `live`;
-    // the clock lives in Postgres and never in the manifest.
+    // Drafts are `live`; the clock lives in Postgres and never in the manifest.
     status: "live",
     region: "auto",
     ownerId,
     updatedAt: Date.now(),
+    ...(set.spa && { spa: true }),
+    ...(set.has404 && { has404: true }),
   });
   if (written.ok) {
     // `purge.ok === false` is NOT a failure (contract §3). `writeManifest` has
@@ -244,8 +315,113 @@ export async function writePageAndManifest(args: {
 
   // Unwind in reverse. `step: "kv"` means the POINTER IS WRITTEN and must be
   // removed; `"validate"` and `"pointer"` mean nothing reached a store.
-  const unwound = await unwindStores({ slug, r2Key, pointerWritten: written.step === "kv" });
+  const unwound = await unwindStores({
+    slug,
+    versionId,
+    keys: versionKeys(siteId, versionId, set),
+    pointerWritten: written.step === "kv",
+  });
   return { ok: false, error: `manifest ${written.step}: ${written.error}`, unwound };
+}
+
+/** What a replace's store half answers: the title the row ended up with. */
+export type ReplaceStoreResult =
+  | { ok: true; title: string | null }
+  | { ok: false; error: string; unwound: boolean };
+
+/**
+ * A replace, owner and anonymous alike (E08 D11, epic Risk 2):
+ *
+ *   (a) INSERT the version + file rows — NOT pointed at        (commits)
+ *   (b) every file to R2                                        (`writeVersionFiles`)
+ *   (c) point the site at it, stamp `activated_at`              (own transaction)
+ *   (d) `syncManifest`, purging old ∪ new paths                  (D18, D14)
+ *
+ * Until (c) the row still names the previous version, so a `syncManifest` from
+ * anyone else in the upload window — a moderation flag, the expiry sweep, a
+ * rename, a repurge replay — re-publishes the previous version, never a
+ * half-uploaded one. A failure at (b) or (c) deletes the written keys and the
+ * un-pointed rows; the pointer never moved, so nothing is reverted. A failure at
+ * (d) runs `unwindReplacement`: the row back to `previous`, the edge re-synced,
+ * then the new keys deleted.
+ *
+ * The manifest is `syncManifest`'s, read from the row under its lock, so a flag
+ * that committed after the caller's status check is what the edge serves —
+ * never a stale `live`.
+ *
+ * @throws when (a) cannot commit — nothing was written; the caller answers it.
+ */
+export async function storeReplacement(args: {
+  slug: string;
+  siteId: string;
+  /**
+   * NEW versionId, SAME siteId — so every key is a new object rather than a
+   * mutation of one the edge may have cached, and the slug never has to move.
+   */
+  versionId: string;
+  set: FileSet;
+  /** `setTitle(set)`, re-extracted from the new bytes. */
+  title: string | null;
+  publishedVia: PublishChannel;
+  /** The row's pointer as the caller found it — what an unwind puts back. */
+  previous: SitePointer;
+}): Promise<ReplaceStoreResult> {
+  const { slug, siteId, versionId, set, previous } = args;
+  const keys = versionKeys(siteId, versionId, set);
+
+  await insertPendingVersion(pendingVersion(siteId, versionId, set, args.publishedVia));
+
+  const files = await writeVersionFiles(siteId, versionId, set);
+  if (!files.ok) {
+    return { ok: false, error: files.error, unwound: (await dropPendingVersion(siteId, versionId)) && files.unwound };
+  }
+
+  let title: string | null;
+  try {
+    ({ title } = await activatePendingVersion(siteId, {
+      versionId,
+      title: args.title,
+      contentHash: set.contentHash,
+      sizeBytes: set.totalBytes,
+    }));
+  } catch (err) {
+    const keysGone = await deleteKeys(keys, versionId);
+    const rowsGone = await dropPendingVersion(siteId, versionId);
+    return { ok: false, error: `point: ${message(err)}`, unwound: keysGone && rowsGone };
+  }
+
+  const synced = await syncManifest(siteId, { alsoPurgeVersionId: previous.versionId });
+  // `purge.ok === false` is NOT a failure (contract §3); `syncManifest` only
+  // fails when a store write did, and has already logged it.
+  if (synced.ok) return { ok: true, title };
+  const unwound = await unwindReplacement({ slug, siteId, versionId, keys, previous });
+  return { ok: false, error: `manifest sync: ${synced.error}`, unwound };
+}
+
+/** The rows of a version nothing points at. True when they are gone. */
+async function dropPendingVersion(siteId: string, versionId: string): Promise<boolean> {
+  try {
+    await deletePendingVersion(siteId, versionId);
+    return true;
+  } catch (err) {
+    console.error(
+      `[kept] ROLLBACK INCOMPLETE — un-pointed version ${versionId} of site ${siteId} kept its rows: ${message(err)}. It serves nothing; the next prune or the purge job collects it. Postgres is the authority, never an R2 list (contract §7.5).`,
+    );
+    return false;
+  }
+}
+
+/** Delete a version's keys. True when R2 confirmed it. */
+async function deleteKeys(keys: readonly string[], versionId: string): Promise<boolean> {
+  try {
+    await r2Store().deleteMany(keys);
+    return true;
+  } catch (err) {
+    console.error(
+      `[kept] ROLLBACK INCOMPLETE — ${keys.length} orphan R2 objects of version ${versionId}: ${message(err)}. Unreferenced bytes, not a serving fault; E07's audit reconciles against Postgres.`,
+    );
+    return false;
+  }
 }
 
 /** The row half of a failed replace: point it back at `previous`. True when it landed. */
@@ -266,39 +442,31 @@ async function revertReplacement(args: {
 }
 
 /**
- * A replace whose manifest sync failed: revert the row, then sync again so the
- * edge names the previous version, then delete the new object — unless the
- * slug pointer may still name it, because deleting bytes a pointer names takes
- * the page dark on the next KV miss. KV itself never named it: a failed sync
- * failed before KV answered. A second failed sync leaves its `pending_purges`
- * row for the repurge job.
+ * A replace whose manifest sync failed after the pointer moved: revert the row,
+ * then sync again (purging both sets) so the edge names the previous version,
+ * then delete the new keys — unless the slug pointer may still name the new
+ * version, because deleting bytes a pointer names takes the page dark on the
+ * next KV miss. A second failed sync leaves its `pending_purges` row for the
+ * repurge job.
  */
 async function unwindReplacement(args: {
   slug: string;
   siteId: string;
   versionId: string;
-  r2Key: string;
+  keys: readonly string[];
   previous: SitePointer;
 }): Promise<boolean> {
   if (!(await revertReplacement(args))) return false;
 
-  const rewound = await syncManifest(args.siteId);
+  const rewound = await syncManifest(args.siteId, { alsoPurgeVersionId: args.versionId });
   if (!rewound.ok && (await pointerMayName(args.slug, args.versionId))) {
     console.error(
-      `[kept] ROLLBACK INCOMPLETE — the pointer for slug "${args.slug}" may still name version ${args.versionId}; its object "${args.r2Key}" is kept until the repurge job re-syncs the row.`,
+      `[kept] ROLLBACK INCOMPLETE — the pointer for slug "${args.slug}" may still name version ${args.versionId}; its ${args.keys.length} objects are kept until the repurge job re-syncs the row.`,
     );
     return false;
   }
 
-  try {
-    await r2Store().delete(args.r2Key);
-    return rewound.ok;
-  } catch (err) {
-    console.error(
-      `[kept] ROLLBACK INCOMPLETE — orphan R2 object "${args.r2Key}": ${message(err)}. Unreferenced bytes, not a serving fault.`,
-    );
-    return false;
-  }
+  return (await deleteKeys(args.keys, args.versionId)) && rewound.ok;
 }
 
 /** Whether `slug`'s pointer may name `versionId`. Unreadable counts as yes. */
@@ -313,7 +481,8 @@ async function pointerMayName(slug: string, versionId: string): Promise<boolean>
 
 async function unwindStores(args: {
   slug: string;
-  r2Key: string;
+  versionId: string;
+  keys: readonly string[];
   pointerWritten: boolean;
 }): Promise<boolean> {
   let clean = true;
@@ -331,16 +500,7 @@ async function unwindStores(args: {
     }
   }
 
-  try {
-    await r2Store().delete(args.r2Key);
-  } catch (err) {
-    clean = false;
-    console.error(
-      `[kept] ROLLBACK INCOMPLETE — orphan R2 object "${args.r2Key}": ${message(err)}. Unreferenced bytes, not a serving fault; E07's audit reconciles against Postgres.`,
-    );
-  }
-
-  return clean;
+  return (await deleteKeys(args.keys, args.versionId)) && clean;
 }
 
 function message(err: unknown): string {
@@ -350,23 +510,35 @@ function message(err: unknown): string {
 /**
  * Publish a page. The whole endpoint, minus HTTP.
  *
- * @param raw the request body, already extracted from JSON, multipart or a raw
- *   HTML payload by the route handler. Unvalidated on purpose — validation
- *   belongs here, not in the boundary and certainly not in a query.
+ * @param read the request's file set (`readFileSet`, bound by the route). It
+ *   runs AFTER the request ceiling, so a caller over it costs no extraction.
  */
 export async function publishPage(
-  raw: unknown,
+  read: FileSetReader,
   publisher: PublisherContext,
 ): Promise<PublishOutcome> {
-  // ── 1. validate ────────────────────────────────────────────────────────────
-  const parsed = publishRequestSchema.safeParse(raw);
-  if (!parsed.success) return requestError(parsed.error);
-  const { html, turnstileToken, reminderEmail } = parsed.data;
+  // ── 1. request ceiling ─────────────────────────────────────────────────────
+  const publisherHash = await hashPublisher(
+    publisher.ip,
+    publisher.userAgent,
+    publisherHashSalt(),
+  );
 
-  // ── 2. E07 seams ───────────────────────────────────────────────────────────
+  // The request ceiling counts every request, deduped or not — a dedup hit
+  // still rotates the token. It needs only the publisher, so it runs BEFORE the
+  // body is read (PRD §5.3 step 6). The new-page governors wait for the probe.
+  const requests = await checkRequestLimit(publisherHash);
+  if (!requests.allowed) return rateLimited(requests);
+
+  // ── 2. read + validate (D3, D6–D10) ────────────────────────────────────────
+  const set = await read();
+  if (isFailure(set)) return set;
+  const { turnstileToken, reminderEmail } = set;
+
+  // ── 3. E07 seams ───────────────────────────────────────────────────────────
   // Turnstile ONLY when a token is present: keyless API callers legitimately
   // cannot solve a CAPTCHA, and publishing keyless is the epic's locked
-  // decision. See `./hooks`.
+  // decision. See `./hooks`. It needs the envelope, so it follows the read.
   if (turnstileToken !== undefined) {
     const turnstile = await verifyTurnstile(turnstileToken);
     if (!turnstile.ok) {
@@ -377,27 +549,13 @@ export async function publishPage(
     }
   }
 
-  const publisherHash = await hashPublisher(
-    publisher.ip,
-    publisher.userAgent,
-    publisherHashSalt(),
-  );
-
-  // The request ceiling counts every request, deduped or not — a dedup hit
-  // still rotates the token. The new-page governors wait for the probe below.
-  const requests = await checkRequestLimit(publisherHash);
-  if (!requests.allowed) return rateLimited(requests);
-
-  // ── 3. content hash ────────────────────────────────────────────────────────
-  // Over the exact bytes that will be stored: `hashContent` digests the UTF-8
-  // encoding, which is what `r2.put` sends.
-  const contentHash = await hashContent(html);
-  const sizeBytes = Buffer.byteLength(html, "utf8");
-  // The page's display name, off the SAME in-memory buffer that was just hashed
-  // and sized — one read of the bytes, not a second. `null` when the document
-  // has no readable `<title>`; the helper cannot throw, so extraction can never
-  // fail a publish (E06 task 001).
-  const title = extractPageTitle(html);
+  // ── 4. content hash ────────────────────────────────────────────────────────
+  // D10, over the exact bytes that will be stored — for a single HTML document
+  // that is `hashContent(html)`, unchanged since E04 (AC17). The page's display
+  // name comes off the same in-memory `index.html`; the helper cannot throw, so
+  // extraction can never fail a publish (E06 task 001).
+  const contentHash = set.contentHash;
+  const title = setTitle(set);
   // The door (§5.9), on E04's existing distinction: the landing's browser path
   // is the one that carries a Turnstile token; a keyless caller never does.
   // Recorded on the version row only — the wire response does not change.
@@ -407,7 +565,7 @@ export async function publishPage(
   const anonToken = generateAnonToken();
   const anonTokenHash = await hashToken(anonToken);
 
-  // ── 4. dedup probe ─────────────────────────────────────────────────────────
+  // ── 5. dedup probe ─────────────────────────────────────────────────────────
   const deduped = await claimDedupCandidate({
     publisherHash,
     contentHash,
@@ -427,31 +585,25 @@ export async function publishPage(
     });
   }
 
-  // ── 5. new-page governors ──────────────────────────────────────────────────
+  // ── 6. new-page governors ──────────────────────────────────────────────────
   const rate = await checkRateLimit(publisherHash);
   if (!rate.allowed) return rateLimited(rate);
 
-  // ── 6. Postgres tx ─────────────────────────────────────────────────────────
+  // ── 7. Postgres tx ─────────────────────────────────────────────────────────
   const siteId = crypto.randomUUID();
   const versionId = crypto.randomUUID();
-  const r2Key = pageObjectKey(siteId, versionId);
   const { expiresAt, purgeAfter } = draftClocks(new Date());
 
   let slug: string;
   try {
     ({ slug } = await insertAnonymousDraft({
-      siteId,
-      versionId,
-      r2Key,
+      version: pendingVersion(siteId, versionId, set, publishedVia),
       title,
-      contentHash,
-      sizeBytes,
       anonTokenHash,
       publisherHash,
       expiresAt,
       purgeAfter,
       reminderEmail,
-      publishedVia,
     }));
   } catch (err) {
     if (err instanceof SlugUnavailableError) {
@@ -462,19 +614,12 @@ export async function publishPage(
     return internalError();
   }
 
-  // ── 7–10. object → pointer → KV → purge ────────────────────────────────────
-  const stored = await writePageAndManifest({
-    slug,
-    siteId,
-    versionId,
-    r2Key,
-    html,
-    ownerId: null,
-  });
+  // ── 8–11. files → pointer → KV → purge ─────────────────────────────────────
+  const stored = await storeNewPage({ slug, siteId, versionId, set, ownerId: null });
 
   if (!stored.ok) {
     console.error(
-      `[kept] publish: store write failed for site ${siteId} (slug "${slug}", object "${r2Key}") — ${stored.error}`,
+      `[kept] publish: store write failed for site ${siteId} (slug "${slug}", version ${versionId}, ${set.entries.length} files) — ${stored.error}`,
     );
     try {
       await deleteSiteCascade(siteId);
@@ -532,7 +677,7 @@ export function internalError(): PublishFailure {
 
 /**
  * Build and VALIDATE the 201 body before it leaves. The response schema is
- * shared because E08's MCP server wraps this contract without modifying it;
+ * shared because E09's MCP server wraps this contract without modifying it;
  * parsing our own output is what stops a field from silently changing shape.
  */
 function respond(args: {

@@ -273,6 +273,30 @@ test.describe("card gradients and the hover preview", () => {
     }
   });
 
+  // E08 epic Risk 11: `size_bytes` is a set's total now, so size alone would
+  // preview a small multi-file page — its `index.html` in an opaque-origin
+  // frame, with none of its assets. `previewFits` asks for exactly one file.
+  test("a multi-file page never previews: the card keeps its thumbnail, and nothing is read", async ({
+    page,
+    baseURL,
+  }) => {
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const site = await seedOwned(scope, userId, "E08 hover multi-file");
+    const [row] = await db
+      .select({ versionId: schema.sites.currentVersionId })
+      .from(schema.sites)
+      .where(eq(schema.sites.id, site.siteId));
+    // Marked by hand: the row is what the preview rule reads (task 010).
+    await db.update(schema.siteVersions).set({ fileCount: 4 }).where(eq(schema.siteVersions.id, row!.versionId!));
+
+    await openHome(page);
+    const reads = watchReads(page);
+    await thumbnail(page, site.siteId).hover();
+    await page.waitForTimeout(WELL_PAST_THE_DELAY_MS);
+    await expect(card(page, site.siteId).getByTestId("card-preview")).toHaveCount(0);
+    expect(reads, "a multi-file page is never read for a preview").toEqual([]);
+  });
+
   test("under reduced motion the preview still shows, without the fade", async ({ page, baseURL }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
     const { userId } = await signInAs(page, baseURL!, scope);

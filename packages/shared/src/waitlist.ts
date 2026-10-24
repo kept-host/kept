@@ -58,6 +58,12 @@ export const RATE_LIMITS = {
   /** `POST /api/reports` (E07 §6.8): two rules, because a rule holds one window. */
   reportPerIpHour: { limit: 5, windowSeconds: HOUR_SECONDS },
   reportPerIpDay: { limit: 20, windowSeconds: DAY_SECONDS },
+  /**
+   * `POST /api/uploads` (E08 D5), keyed by profile id (Arun, 2026-10-22,
+   * Q-new-7). Governs only the presigned large-upload path; inline publishes
+   * stay under E07's `PUBLISH_RATE_LIMITS`.
+   */
+  uploadsPerUser: { limit: 20, windowSeconds: HOUR_SECONDS },
 } as const satisfies Record<string, RateLimitRule>;
 
 /** A confirmation token stays valid this long after it is sent. */

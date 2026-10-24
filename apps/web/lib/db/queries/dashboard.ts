@@ -64,8 +64,12 @@ export interface OwnedSite {
   expiresAt: Date | null;
   /** End of the post-expiry grace window; null on a kept page. */
   purgeAfter: Date | null;
-  /** Denormalised on `sites`, so a card renders a size with no join needed. */
+  /** Denormalised on `sites`, so a card renders a size with no join needed. Since E08, the set's total. */
   sizeBytes: number | null;
+  /** The current version's file count (E08); `null` only for a row with no version. */
+  fileCount: number | null;
+  /** The current version's "single-page app" flag (E08 D12) — a replace keeps it. */
+  spa: boolean | null;
   /** The page's first publish — a draft card's "Published 3 Oct". */
   createdAt: Date;
   updatedAt: Date;
@@ -111,6 +115,8 @@ const OWNED_SITE_COLUMNS = {
   expiresAt: sites.expiresAt,
   purgeAfter: sites.purgeAfter,
   sizeBytes: sites.sizeBytes,
+  fileCount: siteVersions.fileCount,
+  spa: siteVersions.spa,
   createdAt: sites.createdAt,
   updatedAt: sites.updatedAt,
   versionCreatedAt: siteVersions.createdAt,

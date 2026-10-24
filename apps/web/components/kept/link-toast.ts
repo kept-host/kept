@@ -8,7 +8,16 @@
  */
 import { toast } from "sonner";
 
+import { skipped } from "@/lib/publish/fileset/copy";
 import { COPY_FAILED, LINK_COPIED_TOAST } from "@/lib/sites/display";
+
+/**
+ * E08 §8: the OS junk a set publish or replace dropped (D7), said once —
+ * "Published. Skipped {n} files ({list})." — or nothing when there was none.
+ */
+export function skippedNote(ignored: readonly string[] | undefined): string | undefined {
+  return ignored && ignored.length > 0 ? skipped(ignored.length, ignored) : undefined;
+}
 
 /**
  * Copy `liveUrl` and toast the outcome. With `id`, that toast is rewritten in
@@ -25,11 +34,19 @@ export async function copyLink(liveUrl: string, id?: string | number): Promise<v
   }
 }
 
-/** A toast about one page that ends in **Copy link** — every publish outcome. */
-export function toastWithCopyLink(message: string, liveUrl: string, success: boolean): void {
+/**
+ * A toast about one page that ends in **Copy link** — every publish outcome.
+ * `ignored` (a set's skipped junk) takes the description line; else the host.
+ */
+export function toastWithCopyLink(
+  message: string,
+  liveUrl: string,
+  success: boolean,
+  ignored?: readonly string[],
+): void {
   const show = success ? toast.success : toast;
   const id = show(message, {
-    description: new URL(liveUrl).host,
+    description: skippedNote(ignored) ?? new URL(liveUrl).host,
     action: {
       label: "Copy link",
       onClick: (event) => {

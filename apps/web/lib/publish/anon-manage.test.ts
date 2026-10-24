@@ -122,22 +122,18 @@ after(async () => {
   if (skipLive) return;
   const { eq } = await import("drizzle-orm");
   const { db } = await import("../db/index");
-  const { sites, siteVersions } = await import("../db/schema");
-  const { pageObjectKey, r2Store } = await import("../storage/r2");
+  const { sites } = await import("../db/schema");
+  const { r2Store } = await import("../storage/r2");
+  const { siteObjectKeys } = await import("../db/queries/version-files");
 
   await (await import("../testing/served-manifests")).removeServedManifests(created);
   for (const slug of created) {
     const [row] = await db.select({ id: sites.id }).from(sites).where(eq(sites.slug, slug));
     if (!row) continue;
-    const versions = await db
-      .select({ id: siteVersions.id })
-      .from(siteVersions)
-      .where(eq(siteVersions.siteId, row.id));
-    for (const version of versions) {
-      await r2Store()
-        .delete(pageObjectKey(row.id, version.id))
-        .catch(() => undefined);
-    }
+    // Every file of every version, from `site_version_files` (E08 D1).
+    await r2Store()
+      .deleteMany(await siteObjectKeys(db, row.id))
+      .catch(() => undefined);
     await db.delete(sites).where(eq(sites.id, row.id));
   }
   await (await import("../testing/pending-purges")).clearPendingPurges(created);
@@ -148,13 +144,14 @@ test(
   { skip: skipLive },
   async () => {
     const { deletePage, replacePage, updateReminderEmail } = await import("./anon-manage");
+    const { jsonBody } = await import("../testing/file-sets");
 
     // Structurally impossible, structurally plausible but unknown, and empty.
     const tokens = ["../../etc/passwd", "A".repeat(43), ""];
     const bodies = new Set<string>();
 
     for (const token of tokens) {
-      const replaced = await replacePage(token, { html: pageHtml(runId()) }, "api");
+      const replaced = await replacePage(token, jsonBody({ html: pageHtml(runId()) }), "api");
       const deleted = await deletePage(token);
       const reminded = await updateReminderEmail(token, { reminderEmail: "a@b.co" });
 
@@ -182,9 +179,10 @@ test(
     const { publishPage } = await import("./pipeline");
     const { replacePage } = await import("./anon-manage");
     const { pageObjectKey, r2Store } = await import("../storage/r2");
+    const { jsonBody } = await import("../testing/file-sets");
 
     const first = pageHtml(`${runId()}-v1`);
-    const published = await publishPage({ html: first }, publisher("203.0.113.60"));
+    const published = await publishPage(jsonBody({ html: first }), publisher("203.0.113.60"));
     assert.equal(published.ok, true, published.ok ? "" : JSON.stringify(published.body));
     if (!published.ok) return;
 
@@ -202,7 +200,7 @@ test(
     assert.equal((await probeUntil(page.liveUrl, /-v1/)).status, 200);
 
     const second = pageHtml(`${runId()}-v2`);
-    const replaced = await replacePage(page.token, { html: second }, "api");
+    const replaced = await replacePage(page.token, jsonBody({ html: second }), "api");
     assert.equal(replaced.ok, true, replaced.ok ? "" : JSON.stringify(replaced.body));
     if (!replaced.ok) return;
 
@@ -260,6 +258,7 @@ test(
     const { replacePage } = await import("./anon-manage");
     const { purgeUrls } = await import("../storage/purge");
     const { slugPurgeUrls } = await import("../storage/manifest");
+    const { jsonBody } = await import("../testing/file-sets");
 
     const third = pageHtml(`${runId()}-v3`);
     const prior = process.env.CLOUDFLARE_ZONE_ID;
@@ -270,7 +269,7 @@ test(
     const { result: replaced, errors } = await withCapturedErrors(async () => {
       delete process.env.CLOUDFLARE_ZONE_ID;
       try {
-        return await replacePage(page.token, { html: third }, "api");
+        return await replacePage(page.token, jsonBody({ html: third }), "api");
       } finally {
         restoreEnv("CLOUDFLARE_ZONE_ID", prior);
       }
@@ -307,7 +306,8 @@ test(
     const { sites, siteVersions } = await import("../db/schema");
     const { replacePage } = await import("./anon-manage");
     const { pointerKey } = await import("../storage/manifest");
-    const { r2Store } = await import("../storage/r2");
+    const { pageObjectKey, r2Store } = await import("../storage/r2");
+    const { jsonBody } = await import("../testing/file-sets");
 
     const [before] = await db.select().from(sites).where(eq(sites.id, page.siteId));
     assert.ok(before);
@@ -323,7 +323,7 @@ test(
       // one with something to unwind.
       process.env.KV_NAMESPACE_ID = "00000000000000000000000000000000";
       try {
-        return await replacePage(page.token, { html: pageHtml(`${runId()}-v4`) }, "api");
+        return await replacePage(page.token, jsonBody({ html: pageHtml(`${runId()}-v4`) }), "api");
       } finally {
         restoreEnv("KV_NAMESPACE_ID", priorNamespace);
       }
@@ -335,8 +335,11 @@ test(
 
     const failure = errors.find((line) => line.includes("store write failed"));
     assert.ok(failure, `expected a store-failure log, got: ${errors.join(" | ")}`);
-    const orphanKey = /object "([^"]+)"/.exec(failure)?.[1];
-    assert.ok(orphanKey);
+    // The log names the version (E08: a set is many objects); its entry document
+    // is the one this single-file drill wrote.
+    const orphanVersion = /version ([0-9a-f-]{36})/.exec(failure)?.[1];
+    assert.ok(orphanVersion);
+    const orphanKey = pageObjectKey(page.siteId, orphanVersion);
 
     // THE ROW IS BACK WHERE IT WAS. Not a new version, not a dangling pointer to
     // a version whose bytes were deleted.
@@ -428,9 +431,10 @@ test(
       .select()
       .from(siteVersions)
       .where(eq(siteVersions.siteId, page.siteId));
-    // v1 (publish), v2 (replace), v3 (replace with the purge broken). The failed
+    // v3 (replace with the purge broken) and v2, the one previous version an
+    // ownerless page keeps — v1 was pruned like `free` (E08 Q-new-4). The failed
     // v4 was unwound and must not be here.
-    assert.equal(versions.length, 3);
+    assert.equal(versions.length, 2);
     for (const version of versions) {
       assert.notEqual(await r2.get(version.r2Key), null, "bytes must be retained");
     }
@@ -454,6 +458,7 @@ test(
   { skip: skipLive },
   async () => {
     const { deletePage, replacePage, updateReminderEmail } = await import("./anon-manage");
+    const { jsonBody } = await import("../testing/file-sets");
 
     // A retrying agent or a double-clicked button gets the state it asked for,
     // not a 500 and not a 404.
@@ -464,7 +469,7 @@ test(
     // The token still resolves — it is how E05/E07's late-recovery path finds
     // the page — but the manage operations are closed, and they close with the
     // same 404 a stranger's token gets.
-    const replaced = await replacePage(page.token, { html: pageHtml(runId()) }, "api");
+    const replaced = await replacePage(page.token, jsonBody({ html: pageHtml(runId()) }), "api");
     assert.equal(replaced.ok === false && replaced.status, 404);
     const reminded = await updateReminderEmail(page.token, { reminderEmail: "a@b.co" });
     assert.equal(reminded.ok === false && reminded.status, 404);
@@ -480,9 +485,10 @@ test(
     const { sites } = await import("../db/schema");
     const { publishPage } = await import("./pipeline");
     const { updateReminderEmail } = await import("./anon-manage");
+    const { jsonBody } = await import("../testing/file-sets");
 
     const published = await publishPage(
-      { html: pageHtml(runId()) },
+      jsonBody({ html: pageHtml(runId()) }),
       publisher("203.0.113.61"),
     );
     assert.equal(published.ok, true, published.ok ? "" : JSON.stringify(published.body));
@@ -526,5 +532,208 @@ test(
     assert.equal(bad.ok === false && bad.status, 400);
     assert.equal(bad.ok === false && bad.body.error, "invalid_request");
     assert.equal(await readEmail(), null);
+  },
+);
+
+// ── E08 task 004: a file set through the anonymous replace ────────────────────
+// ONE ownerless page, ordered like the drills above: published as three files,
+// replaced by two (AC25 through the replace), by 200 with a sync fired mid-upload
+// (Verification 2) — whose prune drops the first set (Q-new-4, AC28) — and then a
+// replace R2 refuses (AC14). KV budget: four manifest writes, one delete.
+
+const setPage = { slug: "", token: "", siteId: "", liveUrl: "", versions: [] as string[] };
+
+/** `{ files }` for the JSON file-list form. */
+const filesBody = (files: Record<string, string>) => ({
+  files: Object.entries(files).map(([path, content]) => ({ path, content })),
+});
+
+test(
+  "E08 AC25 through the replace: a 3-file set replaced by 2 files purges old ∪ new in one manifest write",
+  { skip: skipLive },
+  async () => {
+    const { and, eq, gte } = await import("drizzle-orm");
+    const { db } = await import("../db/index");
+    const { pendingPurges, sites } = await import("../db/schema");
+    const { versionPaths } = await import("../db/queries/version-files");
+    const { publishPage } = await import("./pipeline");
+    const { replacePage } = await import("./anon-manage");
+    const { pointerKey, setPurgeUrls } = await import("../storage/manifest");
+    const { r2Store } = await import("../storage/r2");
+    const { jsonBody } = await import("../testing/file-sets");
+
+    const marker = runId();
+    const published = await publishPage(
+      jsonBody(filesBody({ "index.html": pageHtml(`${marker}-a`), "a.css": `/* ${marker} a */`, "old.js": `// ${marker} a` })),
+      { ip: "203.0.113.64", userAgent: `kept-e08-004-drill/${marker}` },
+    );
+    assert.equal(published.ok, true, published.ok ? "" : JSON.stringify(published.body));
+    if (!published.ok) return;
+    created.add(published.body.slug);
+    const [row] = await db.select().from(sites).where(eq(sites.slug, published.body.slug));
+    Object.assign(setPage, {
+      slug: published.body.slug,
+      token: published.body.anonToken,
+      siteId: row!.id,
+      liveUrl: published.body.live_url,
+      versions: [row!.currentVersionId!],
+    });
+
+    const since = new Date();
+    const replaced = await replacePage(
+      setPage.token,
+      jsonBody(filesBody({ "index.html": pageHtml(`${marker}-b`), "a.css": `/* ${marker} b */` })),
+      "api",
+    );
+    assert.equal(replaced.ok, true, replaced.ok ? "" : JSON.stringify(replaced.body));
+    const [after_] = await db.select().from(sites).where(eq(sites.id, setPage.siteId));
+    const [a, b] = [setPage.versions[0]!, after_!.currentVersionId!];
+    assert.notEqual(b, a);
+    setPage.versions.push(b);
+
+    const rows = await db
+      .select()
+      .from(pendingPurges)
+      .where(and(eq(pendingPurges.slug, setPage.slug), gte(pendingPurges.createdAt, since)));
+    assert.equal(rows.length, 1, "ONE manifest write, one batch of purges");
+    const paths = [...(await versionPaths(db, [a, b])).values()].flat();
+    assert.deepEqual([...(rows[0]!.urls as string[])].sort(), setPurgeUrls(setPage.slug, paths).sort(), "old ∪ new");
+    assert.ok((rows[0]!.urls as string[]).some((url) => url.endsWith("/old.js")), "the removed path is purged");
+
+    const manifest = JSON.parse((await r2Store().get(pointerKey(setPage.slug)))!) as Record<string, unknown>;
+    assert.equal(manifest.versionId, b);
+    assert.equal("spa" in manifest, false);
+  },
+);
+
+test(
+  "E08 Verification 2 + Q-new-4 + AC28: a sync fired mid-upload keeps the previous version; a 200-file version appears only once stored; the anonymous prune drops every file of the oldest set",
+  { skip: skipLive },
+  async () => {
+    assert.ok(setPage.token, "runs after the AC25 step");
+    const { and, eq, notInArray } = await import("drizzle-orm");
+    const { db } = await import("../db/index");
+    const { sites, siteVersionFiles, siteVersions } = await import("../db/schema");
+    const { versionFileKeys } = await import("../db/queries/version-files");
+    const { replacePage } = await import("./anon-manage");
+    const { pointerKey, syncManifest } = await import("../storage/manifest");
+    const { r2Store, siteObjectKey } = await import("../storage/r2");
+    const { jsonBody } = await import("../testing/file-sets");
+
+    const [a, b] = setPage.versions as [string, string];
+    const aKeys = await versionFileKeys(db, setPage.siteId, [a]);
+    assert.equal(aKeys.length, 3, "the oldest set's keys, read before the prune");
+
+    const marker = runId();
+    const files: Record<string, string> = { "index.html": pageHtml(`${marker}-c`) };
+    for (let i = 1; i < 200; i++) files[`js/m${String(i).padStart(3, "0")}.js`] = `// ${marker} ${i}`;
+    const pointerVersion = async () =>
+      (JSON.parse((await r2Store().get(pointerKey(setPage.slug)))!) as { versionId: string }).versionId;
+
+    const replacing = replacePage(setPage.token, jsonBody(filesBody(files)), "api");
+
+    // Wait for step (a): the new version's rows, committed but NOT pointed at.
+    let pending: string | undefined;
+    for (let tries = 0; !pending && tries < 400; tries++) {
+      const [row] = await db
+        .select({ id: siteVersions.id })
+        .from(siteVersions)
+        .where(and(eq(siteVersions.siteId, setPage.siteId), notInArray(siteVersions.id, [a, b])));
+      pending = row?.id;
+      if (!pending) await sleep(25);
+    }
+    assert.ok(pending, "the replace inserted its version rows");
+
+    // Mid-upload: anyone's sync (a flag, the expiry sweep, a replay) re-publishes B.
+    const synced = await syncManifest(setPage.siteId);
+    assert.equal(synced.ok, true, JSON.stringify(synced));
+    const [during] = await db.select().from(sites).where(eq(sites.id, setPage.siteId));
+    assert.equal(during!.currentVersionId, b, "the row still names the previous version — the sync ran inside the upload window");
+    assert.equal(await pointerVersion(), b, "the manifest never named a half-uploaded version");
+
+    const outcome = await replacing;
+    assert.equal(outcome.ok, true, outcome.ok ? "" : JSON.stringify(outcome.body));
+    const [done] = await db.select().from(sites).where(eq(sites.id, setPage.siteId));
+    assert.equal(done!.currentVersionId, pending);
+    assert.equal(await pointerVersion(), pending, "the new version is served once every file is stored");
+    const missing = (
+      await Promise.all(
+        Object.keys(files).map(async (path) =>
+          (await r2Store().get(siteObjectKey(setPage.siteId, pending!, path))) === null ? path : null,
+        ),
+      )
+    ).filter(Boolean);
+    assert.deepEqual(missing, [], "all 200 files are in R2");
+    setPage.versions.push(pending);
+
+    // Q-new-4: the ownerless page pruned like free — current + one previous.
+    const versions = await db
+      .select({ id: siteVersions.id })
+      .from(siteVersions)
+      .where(eq(siteVersions.siteId, setPage.siteId));
+    assert.deepEqual(versions.map((v) => v.id).sort(), [b, pending].sort());
+    // AC28: every file of the pruned set is gone, and its rows.
+    for (const key of aKeys) assert.equal(await r2Store().get(key), null, `pruned file still in R2: ${key}`);
+    assert.deepEqual(await db.select().from(siteVersionFiles).where(eq(siteVersionFiles.versionId, a)), []);
+  },
+);
+
+test(
+  "E08 AC14 (replace): a file R2 refuses leaves no object and no row of the new version, and the page keeps serving the previous one",
+  { skip: skipLive },
+  async () => {
+    assert.ok(setPage.versions.length === 3, "runs after the Verification 2 step");
+    const { eq } = await import("drizzle-orm");
+    const { hashBytes } = await import("@kept/shared");
+    const { db } = await import("../db/index");
+    const { sites, siteVersions } = await import("../db/schema");
+    const { storeReplacement } = await import("./pipeline");
+    const { pointerKey } = await import("../storage/manifest");
+    const { r2Store, siteObjectKey } = await import("../storage/r2");
+    const { fileSet } = await import("../testing/file-sets");
+
+    const current = setPage.versions[2]!;
+    const [before] = await db.select().from(sites).where(eq(sites.id, setPage.siteId));
+    const marker = runId();
+    const set = await fileSet(
+      filesBody({ "index.html": pageHtml(`${marker}-d`), "a.css": `/* ${marker} */`, "b.css": `/* ${marker} */` }),
+    );
+    // THE SEAM (epic Risk 9): a key past R2's 1,024-byte limit — a real refusal.
+    const refusedBytes = new TextEncoder().encode("p {}");
+    const crafted = {
+      ...set,
+      entries: [
+        ...set.entries,
+        { path: `${"x".repeat(1100)}.css`, bytes: refusedBytes, sha256: await hashBytes(refusedBytes), contentType: "text/css; charset=utf-8" },
+      ],
+    };
+    const versionId = crypto.randomUUID();
+
+    const stored = await storeReplacement({
+      slug: setPage.slug,
+      siteId: setPage.siteId,
+      versionId,
+      set: crafted,
+      title: null,
+      publishedVia: "api",
+      previous: { versionId: current, title: before!.title, contentHash: before!.contentHash, sizeBytes: before!.sizeBytes },
+    });
+    assert.equal(stored.ok, false, "R2 must refuse the long key");
+    assert.equal(!stored.ok && stored.unwound, true);
+
+    assert.deepEqual(await db.select().from(siteVersions).where(eq(siteVersions.id, versionId)), [], "no site_versions row");
+    for (const entry of set.entries) {
+      assert.equal(await r2Store().get(siteObjectKey(setPage.siteId, versionId, entry.path)), null, `${entry.path} survived`);
+    }
+    const [after_] = await db.select().from(sites).where(eq(sites.id, setPage.siteId));
+    assert.equal(after_!.currentVersionId, current, "the pointer never moved");
+    assert.equal(after_!.contentHash, before!.contentHash);
+    assert.equal(
+      (JSON.parse((await r2Store().get(pointerKey(setPage.slug)))!) as { versionId: string }).versionId,
+      current,
+    );
+    const served = await probeUntil(setPage.liveUrl, /-c</);
+    assert.equal(served.status, 200);
+    assert.match(served.body, /-c</, "the edge still serves the previous version");
   },
 );

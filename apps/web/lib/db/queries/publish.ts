@@ -19,6 +19,8 @@ import { isNameAvailable } from "../../names/availability";
 import { mintSlugCandidate } from "../../publish/slug";
 import { db, type Tx } from "../index";
 import { sites, siteVersions } from "../schema";
+import { insertVersionFiles, type VersionFileEntry } from "./version-files";
+import { deleteVersionRow, findSiteVersion, stampActivated } from "./versions";
 
 /**
  * Slug attempts before giving up. The keyspace is 32^8 ≈ 1.1e12, so at a
@@ -202,13 +204,59 @@ export async function findOwnedDuplicate(
   return row?.id ?? null;
 }
 
-export interface AnonymousDraftInput {
-  /** Pre-generated so the R2 key is known before the row exists. */
+/**
+ * A version's rows, as every write path inserts them (E08 D1): the
+ * `site_versions` row and one `site_version_files` row per stored file.
+ *
+ * `r2Key` is the set's `index.html` key — what preview, title and restore read;
+ * every reader that ENUMERATES the version reads `files` back instead.
+ * `sizeBytes` is the set total, and `file_count` is `files.length`.
+ */
+export interface PendingVersionInput {
   siteId: string;
   versionId: string;
   r2Key: string;
+  /** The set hash (D10) — `hashContent(html)` for a single-HTML page. */
   contentHash: string;
   sizeBytes: number;
+  /** The door these bytes came through (§5.9). REQUIRED: the column's default is a guess. */
+  publishedVia: PublishChannel;
+  spa: boolean;
+  has404: boolean;
+  files: readonly VersionFileEntry[];
+}
+
+/**
+ * Insert a version's rows — and nothing else: no site row is pointed at it.
+ *
+ * A new page calls it inside the transaction that inserts the site (the site is
+ * unreachable until its manifest exists). A replace calls it with no `tx`, so it
+ * commits on its own BEFORE any byte is uploaded (E08 D11, epic Risk 2): the
+ * rows name every key the upload may write, so a failure is nameable, and the
+ * site row keeps pointing at the previous version until every file is stored
+ * (`activatePendingVersion`). A concurrent `syncManifest` in that window
+ * re-publishes the previous version, never a half-uploaded one.
+ */
+export async function insertPendingVersion(input: PendingVersionInput, tx?: Tx): Promise<void> {
+  if (!tx) return db.transaction((own) => insertPendingVersion(input, own));
+  await tx.insert(siteVersions).values({
+    id: input.versionId,
+    siteId: input.siteId,
+    region: "auto",
+    r2Key: input.r2Key,
+    contentHash: input.contentHash,
+    sizeBytes: input.sizeBytes,
+    publishedVia: input.publishedVia,
+    fileCount: input.files.length,
+    spa: input.spa,
+    has404: input.has404,
+  });
+  await insertVersionFiles(tx, input.versionId, input.files);
+}
+
+export interface AnonymousDraftInput {
+  /** Pre-generated ids, so every R2 key is known before the row exists. */
+  version: PendingVersionInput;
   anonTokenHash: string;
   publisherHash: string;
   expiresAt: Date;
@@ -221,11 +269,6 @@ export interface AnonymousDraftInput {
    * path cannot forget it and quietly ship a wall of slugs.
    */
   title: string | null;
-  /**
-   * The door these bytes came through (§5.9): `web` or `api` on this path.
-   * REQUIRED for the reason `title` is — the column's default is a guess.
-   */
-  publishedVia: PublishChannel;
 }
 
 /**
@@ -262,7 +305,7 @@ export async function withMintedSlug<T>(
 }
 
 /**
- * Insert the `sites` + `site_versions` pair for a new anonymous draft and
+ * Insert the `sites` row and its first version's rows for a new anonymous draft and
  * return the slug that was actually taken.
  *
  * `status: "live"` and `expires_at` set — DRAFTS ARE `live`. There is no
@@ -272,60 +315,49 @@ export async function withMintedSlug<T>(
  * knows nothing about expiry.
  *
  * The ids are supplied by the caller rather than defaulted by Postgres so the
- * R2 object key (`sites/{siteId}/{versionId}/index.html`) is known before the
- * transaction opens; nothing is committed until both rows are in, so a retried
+ * R2 keys (`sites/{siteId}/{versionId}/{path}`) are known before the
+ * transaction opens; nothing is committed until every row is in, so a retried
  * attempt reuses them safely.
  */
 export async function insertAnonymousDraft(
   input: AnonymousDraftInput,
 ): Promise<{ slug: string }> {
+  const { version } = input;
   return withMintedSlug(async (slug) => {
     await db.transaction(async (tx) => {
       // `sites` first: `site_versions.site_id` has an FK onto it.
       // `current_version_id` has no DB-level FK (it would be circular), so it
       // can point at the version row before that row is written.
       await tx.insert(sites).values({
-        id: input.siteId,
+        id: version.siteId,
         slug,
         status: "live",
         region: "auto",
-        currentVersionId: input.versionId,
+        currentVersionId: version.versionId,
         ownerId: null,
         anonTokenHash: input.anonTokenHash,
         publisherHash: input.publisherHash,
         expiresAt: input.expiresAt,
         purgeAfter: input.purgeAfter,
         title: input.title,
-        contentHash: input.contentHash,
-        sizeBytes: input.sizeBytes,
+        contentHash: version.contentHash,
+        sizeBytes: version.sizeBytes,
         reminderEmail: input.reminderEmail ?? null,
       });
-      await tx.insert(siteVersions).values({
-        id: input.versionId,
-        siteId: input.siteId,
-        region: "auto",
-        r2Key: input.r2Key,
-        contentHash: input.contentHash,
-        sizeBytes: input.sizeBytes,
-        publishedVia: input.publishedVia,
-      });
+      await insertPendingVersion(version, tx);
     });
     return { slug };
   });
 }
 
 export interface OwnedPageInput {
-  /** Pre-generated so the R2 key is known before the row exists. */
-  siteId: string;
-  versionId: string;
+  /** Pre-generated ids, so every R2 key is known before the row exists. */
+  version: PendingVersionInput;
   /** Minted by `withMintedSlug`, which owns the collision handling. */
   slug: string;
-  r2Key: string;
   ownerId: string;
   publisherHash: string;
   title: string | null;
-  contentHash: string;
-  sizeBytes: number;
   /**
    * The draft clock, or its absence. **Both null ⇒ kept** (permanent, no
    * countdown); **both set ⇒ an owned draft** at the cap. Never one of the two:
@@ -336,12 +368,10 @@ export interface OwnedPageInput {
   purgeAfter: Date | null;
   /** When the page became this account's. On this path, its creation. */
   claimedAt: Date;
-  /** The door these bytes came through (§5.9) — `studio` for `POST /api/sites`. */
-  publishedVia: PublishChannel;
 }
 
 /**
- * Insert the `sites` + `site_versions` pair for a page that is OWNED from its
+ * Insert the `sites` row and its first version's rows for a page that is OWNED from its
  * first byte — E06 task 004, epic decision D1.
  *
  * ⚠️ IT TAKES THE CALLER'S TRANSACTION, AND THAT IS THE WHOLE POINT. The cap
@@ -365,15 +395,16 @@ export interface OwnedPageInput {
  * publisher that *has* a name invisible to the machinery that counts them.
  */
 export async function insertOwnedPage(tx: Tx, input: OwnedPageInput): Promise<void> {
+  const { version } = input;
   // `sites` first: `site_versions.site_id` has an FK onto it.
   await tx.insert(sites).values({
-    id: input.siteId,
+    id: version.siteId,
     slug: input.slug,
     // DRAFTS ARE `live`, exactly as on the anonymous path — the difference
     // between a draft and a kept page is the clock column and nothing else.
     status: "live",
     region: "auto",
-    currentVersionId: input.versionId,
+    currentVersionId: version.versionId,
     ownerId: input.ownerId,
     anonTokenHash: null,
     publisherHash: input.publisherHash,
@@ -381,18 +412,10 @@ export async function insertOwnedPage(tx: Tx, input: OwnedPageInput): Promise<vo
     purgeAfter: input.purgeAfter,
     claimedAt: input.claimedAt,
     title: input.title,
-    contentHash: input.contentHash,
-    sizeBytes: input.sizeBytes,
+    contentHash: version.contentHash,
+    sizeBytes: version.sizeBytes,
   });
-  await tx.insert(siteVersions).values({
-    id: input.versionId,
-    siteId: input.siteId,
-    region: "auto",
-    r2Key: input.r2Key,
-    contentHash: input.contentHash,
-    sizeBytes: input.sizeBytes,
-    publishedVia: input.publishedVia,
-  });
+  await insertPendingVersion(version, tx);
 }
 
 /**
@@ -441,6 +464,8 @@ export interface AnonSite {
   title: string | null;
   contentHash: string | null;
   sizeBytes: number | null;
+  /** The current version's file count (E08) — a preview needs exactly one. `null` with no version. */
+  fileCount: number | null;
   /** Why E07 restricted the page; `null` unless it is. Read for D13's byte rule. */
   moderationReason: ModerationReason | null;
 }
@@ -463,6 +488,9 @@ const MANAGED_SITE_COLUMNS = {
   title: sites.title,
   contentHash: sites.contentHash,
   sizeBytes: sites.sizeBytes,
+  // A scalar subquery, not a join: `lockSiteForOwner` reads these columns
+  // `FOR UPDATE`, which Postgres refuses on the nullable side of an outer join.
+  fileCount: sql<number | null>`(select ${siteVersions.fileCount} from ${siteVersions} where ${siteVersions.id} = ${sites.currentVersionId})`,
   moderationReason: sites.moderationReason,
 } as const;
 
@@ -541,24 +569,6 @@ export async function lockSiteForOwner(
   return site ?? null;
 }
 
-export interface ReplaceVersionInput {
-  siteId: string;
-  versionId: string;
-  r2Key: string;
-  contentHash: string;
-  sizeBytes: number;
-  /**
-   * Re-extracted from the NEW bytes. Required, and set in the SAME statement as
-   * the `current_version_id` swap below: a replace that updates the bytes but
-   * not the title leaves the dashboard confidently displaying the PREVIOUS
-   * page's name, which is worse than displaying the slug. Unless the OWNER set
-   * the title — see `htmlTitle`.
-   */
-  title: string | null;
-  /** The door these bytes came through (§5.9). */
-  publishedVia: PublishChannel;
-}
-
 /**
  * `sites.title` for a write that carries new bytes (D11): the HTML's title,
  * unless the owner set one (`title_source = 'owner'`), which no replace may
@@ -609,9 +619,11 @@ export async function pointSiteAt(
 }
 
 /**
- * Insert the new `site_versions` row for a replace and repoint the site at it —
- * ONE transaction, because a `current_version_id` that names a row which does
- * not exist is unservable.
+ * Step (c) of a replace (E08 D11): point the site at a version whose rows
+ * `insertPendingVersion` committed and whose files are ALL stored — in its own
+ * transaction, stamped `activated_at = now()` (the upload took a while; "newest"
+ * means "most recently live", which is what the Versions list and pruning sort
+ * on). Returns the title the row ended up with (the owner's, when they set one).
  *
  * ⚠️ `expires_at` AND `purge_after` ARE DELIBERATELY UNTOUCHED. The draft clock
  * belongs to the page, not to its bytes: if re-dropping a file restarted the
@@ -619,27 +631,38 @@ export async function pointSiteAt(
  * week, and "keep it" would stop meaning anything. This looks like an omission
  * later — it is not. The same reasoning is why the slug and `siteId` are stable
  * across a replace: it is the same page with new contents.
+ *
+ * Throws, rolling back, when the version row is gone: a prune that ran while the
+ * files were uploading (it takes the same site-row lock this UPDATE waits on)
+ * may have dropped it, and a pointer at a version with no rows is unservable.
  */
-export async function insertReplacementVersion(
-  input: ReplaceVersionInput,
+export async function activatePendingVersion(
+  siteId: string,
+  target: SitePointer & { versionId: string },
 ): Promise<{ title: string | null }> {
   return db.transaction(async (tx) => {
-    await tx.insert(siteVersions).values({
-      id: input.versionId,
-      siteId: input.siteId,
-      region: "auto",
-      r2Key: input.r2Key,
-      contentHash: input.contentHash,
-      sizeBytes: input.sizeBytes,
-      publishedVia: input.publishedVia,
-    });
-    return pointSiteAt(tx, input.siteId, input);
+    const pointed = await pointSiteAt(tx, siteId, target);
+    if (!(await findSiteVersion(tx, siteId, target.versionId))) {
+      throw new Error(`version ${target.versionId} of site ${siteId} was pruned before it could be served`);
+    }
+    await stampActivated(tx, siteId, target.versionId, "now");
+    return pointed;
   });
 }
 
 /**
- * The row half of the replace unwind: drop the new version and put the site row
- * back where it was. Called only after the stores have been rewound.
+ * The row half of a replace whose upload failed (E08 D11): drop the version
+ * that was never pointed at (`site_version_files` cascades). The pointer never
+ * moved, so there is nothing to revert.
+ */
+export async function deletePendingVersion(siteId: string, versionId: string): Promise<void> {
+  await db.transaction((tx) => deleteVersionRow(tx, siteId, versionId));
+}
+
+/**
+ * The row half of a replace whose manifest sync failed AFTER the pointer moved
+ * (`activatePendingVersion`): put the site row back where it was and drop the
+ * new version. Called only after the stores have been rewound.
  */
 export async function revertReplacementVersion(input: {
   siteId: string;

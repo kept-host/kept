@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   APPEAL_MESSAGE_MIN,
@@ -18,11 +20,13 @@ import { qrMatrix, qrPath } from "../lib/qr/qr-code";
 import {
   DEMOTE_NOTE,
   deletePageWarning,
+  fileSetSummary,
   formatUpdatedAt,
   REPLACED_TOAST,
   UNDONE_TOAST,
 } from "../lib/sites/display";
 import { VISITS_EMPTY_NOTE, VISITS_PRIVACY_LINE, VISITS_UNAVAILABLE } from "../lib/sites/visits-view";
+import { hasUnzip, unzip } from "../lib/testing/unzip";
 
 import { decideAppeal } from "./appeal-decision";
 import { waitForBytes } from "./live-publish";
@@ -33,6 +37,7 @@ import {
   publishOwned,
   readSite,
   seedOwned,
+  seedOwnedSet,
   signInAs,
   titledHtml,
   SKIP_OWNER_UI,
@@ -195,6 +200,37 @@ test.describe("the page detail screen", () => {
     } finally {
       await strangerContext.close();
     }
+  });
+
+  // E08 §5.7 / epic Risk 11: a multi-file version's `index.html` alone, in an
+  // opaque-origin frame, has none of its assets — so no `srcdoc` preview at
+  // any width; the thumbnail, Open ↗ and "{n} files · {size}" instead.
+  test("a multi-file page shows its thumbnail, Open ↗ and “{n} files · {size}” instead of the live preview", async ({
+    page,
+    baseURL,
+  }) => {
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const site = await seedOwned(scope, userId, "E08 detail multi-file");
+    const [row] = await db
+      .select({ versionId: schema.sites.currentVersionId, sizeBytes: schema.sites.sizeBytes })
+      .from(schema.sites)
+      .where(eq(schema.sites.id, site.siteId));
+    // Marked by hand: the version row is what the screen reads (task 010).
+    await db.update(schema.siteVersions).set({ fileCount: 7 }).where(eq(schema.siteVersions.id, row!.versionId!));
+    const summary = fileSetSummary(7, row!.sizeBytes!);
+
+    await openDetail(page, site.siteId);
+    await expect(page.locator("iframe")).toHaveCount(0);
+    const thumb = page.getByTestId("thumbnail-preview");
+    await expect(thumb).toBeVisible();
+    await expect(thumb.getByTestId("file-summary")).toHaveText(summary);
+    await expect(thumb.locator("img")).toHaveAttribute("src", /\/og\//);
+    const open = thumb.getByRole("link", { name: /Open ↗/ });
+    await expect(open).toHaveAttribute("href", site.liveUrl);
+    await expect(open).toHaveAttribute("rel", /noopener/);
+
+    await page.getByRole("tab", { name: "Versions" }).click();
+    await expect(page.getByTestId("version-files")).toHaveText(new RegExp(`^${summary} · `));
   });
 
   test("AC36 + Bug 4: a title edit is the owner's and moves updated_at; a replace keeps it; clearing hands it back", async ({
@@ -412,7 +448,7 @@ test.describe("the page detail screen", () => {
     async function chooseFile(name: string, body: string) {
       const [chooser] = await Promise.all([
         page.waitForEvent("filechooser"),
-        panel.getByRole("button", { name: /Drop an \.html file/ }).click(),
+        panel.getByRole("button", { name: /Drop an HTML file, a folder or a \.zip/ }).click(),
       ]);
       await chooser.setFiles({ name, mimeType: "text/html", buffer: Buffer.from(body) });
     }
@@ -525,6 +561,38 @@ test.describe("the page detail screen", () => {
     expect(await file.text()).toBe(site.html);
   });
 
+  test("E08 AC38: a multi-file page downloads as {name}.zip whose entries are its files, byte for byte", async ({
+    page,
+    baseURL,
+  }) => {
+    test.skip(!hasUnzip(), "no `unzip` binary to read the archive with an independent reader");
+    const { userId } = await signInAs(page, baseURL!, scope);
+    const site = await seedOwnedSet(scope, userId, [
+      { path: "index.html", content: titledHtml("E08 multi-file download") },
+      { path: "assets/app.css", content: "body { color: #111 }" },
+      { path: "assets/js/app.js", content: "console.log('kept');" },
+    ]);
+
+    const res = await page.request.get(`${baseURL}/api/sites/${site.siteId}/download`);
+    expect(res.status()).toBe(200);
+    expect(res.headers()["content-type"]).toBe("application/zip");
+    expect(res.headers()["content-disposition"]).toBe(`attachment; filename="${site.slug}.zip"`);
+
+    const dir = mkdtempSync(join(tmpdir(), "kept-download-"));
+    try {
+      const file = join(dir, `${site.slug}.zip`);
+      writeFileSync(file, await res.body());
+      unzip(["-tq", file]);
+      const paths = site.set.entries.map((entry) => entry.path).sort();
+      expect(unzip(["-Z1", file]).toString("utf8").trim().split("\n")).toEqual(paths);
+      for (const entry of site.set.entries) {
+        expect(unzip(["-p", file, entry.path]).equals(Buffer.from(entry.bytes)), entry.path).toBe(true);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("AC34 (UI): seeded daily rows draw 30 bars and a total; 7 DAYS reads the same rows; no rows is never a bare 0", async ({
     page,
     baseURL,
@@ -627,7 +695,7 @@ test.describe("the page detail screen", () => {
     await expect(page.getByTestId("download-page")).toBeVisible();
     await page.getByRole("tab", { name: "Versions" }).click();
     await expect(page.getByTestId("restore-button")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: /Drop an \.html file/ })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /Drop an HTML file, a folder or a \.zip/ })).toHaveCount(0);
     await page.getByRole("tab", { name: "General" }).click();
     await expectNoLaterEpics(page);
 

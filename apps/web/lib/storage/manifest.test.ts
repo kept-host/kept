@@ -45,10 +45,11 @@ import {
   pointerKey,
   removeManifest,
   repurgeAfterKvPropagation,
+  setPurgeUrls,
   slugPurgeUrls,
   writeManifest,
 } from "./manifest";
-import { purgeUrls } from "./purge";
+import { PURGE_MAX_URLS_PER_REQUEST, purgeBatches, purgeUrls } from "./purge";
 import { r2Store } from "./r2";
 
 config({ path: ".env.local", quiet: true });
@@ -141,6 +142,63 @@ test("pointer key and purge URLs match the contract", () => {
   } finally {
     restoreEnv("KEPT_BASE_DOMAIN", prior);
   }
+});
+
+test("E08 D14: setPurgeUrls covers every path, / and each dir/ holding an index.html", () => {
+  const prior = process.env.KEPT_BASE_DOMAIN;
+  process.env.KEPT_BASE_DOMAIN = "kept-test.example";
+  const origin = "https://abc12345.kept-test.example/";
+  try {
+    const table: Array<{ name: string; paths: string[]; urls: string[] }> = [
+      // The dev-v0.8.0 purge list, byte for byte: a single-file set is exactly the root forms.
+      { name: "single file", paths: ["index.html"], urls: slugPurgeUrls("abc12345") },
+      { name: "no file rows", paths: [], urls: slugPurgeUrls("abc12345") },
+      {
+        name: "nested index",
+        paths: ["a/b/index.html", "app.js", "index.html"],
+        urls: [`${origin}`, `${origin}index.html`, `${origin}a/b/`, `${origin}a/b/index.html`, `${origin}app.js`],
+      },
+      {
+        name: "not an index",
+        paths: ["docs/myindex.html"],
+        urls: [`${origin}`, `${origin}index.html`, `${origin}docs/myindex.html`],
+      },
+      {
+        // Each segment once through encodeURIComponent — the Worker decodes once.
+        name: "non-ASCII and reserved characters",
+        paths: ["bilder/grüße 1.png", "a#b?c.txt", "ü/index.html"],
+        urls: [
+          `${origin}`,
+          `${origin}index.html`,
+          `${origin}bilder/gr%C3%BC%C3%9Fe%201.png`,
+          `${origin}a%23b%3Fc.txt`,
+          `${origin}%C3%BC/`,
+          `${origin}%C3%BC/index.html`,
+        ],
+      },
+      {
+        // Old ∪ new arrives with repeats: each URL once.
+        name: "dedup",
+        paths: ["index.html", "a.css", "a.css", "x/index.html", "x/index.html"],
+        urls: [`${origin}`, `${origin}index.html`, `${origin}a.css`, `${origin}x/`, `${origin}x/index.html`],
+      },
+    ];
+    for (const row of table) assert.deepEqual(setPurgeUrls("abc12345", row.paths), row.urls, row.name);
+    assert.deepEqual(slugPurgeUrls("abc12345"), [`${origin}`, `${origin}index.html`]);
+  } finally {
+    restoreEnv("KEPT_BASE_DOMAIN", prior);
+  }
+});
+
+test("purge batches are Cloudflare's 100 URLs per request", () => {
+  assert.equal(PURGE_MAX_URLS_PER_REQUEST, 100);
+  const urls = Array.from({ length: 250 }, (_, i) => `https://x.example/${i}`);
+  assert.deepEqual(
+    purgeBatches(urls).map((batch) => batch.length),
+    [100, 100, 50],
+  );
+  assert.deepEqual(purgeBatches(urls).flat(), urls, "every URL once, in order");
+  assert.deepEqual(purgeBatches([]), []);
 });
 
 test("the re-purge delay clears the edge's KV read cache twice over", () => {

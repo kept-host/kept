@@ -18,8 +18,15 @@
  * SHOWS each queued behind H; lock waiters are served in queue order, so letting
  * H go runs them in exactly that order — both orders, for both jobs.
  *
- * KV QUOTA (dev is on the free plan): about eight KV writes and twelve deletes
- * for the whole file. Every row, hold, object, report and `pending_purges` row
+ * ── E08: EVERY FILE OF EVERY VERSION (AC29), THE PER-RUN CAP (Q2) ────────────
+ * The purge reads a page's objects from `site_version_files`, so every fixture
+ * with bytes records its files there. Two scratch pages carry real file sets:
+ * 2 × 250 files (AC29, timed against `JOB_DEADLINE_SECONDS` — Verification 4)
+ * and `PURGE_DELETES_PER_RUN + 50` files (the cap and the resume). Neither has
+ * a manifest; each costs one KV delete when it is finally purged.
+ *
+ * KV QUOTA (dev is on the free plan): about eight KV writes and fourteen
+ * deletes for the whole file. Every row, hold, object, report and `pending_purges` row
  * it creates is deleted in `after`.
  *
  * SKIPS when the database or the dev store credentials are absent (fork-PR CI).
@@ -27,23 +34,31 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
-import { EXPIRE_BATCH_SIZE, REPORTER_CONTACT_RETENTION_DAYS, type NameKind, type SiteStatus } from "@kept/shared";
+import {
+  EXPIRE_BATCH_SIZE,
+  JOB_DEADLINE_SECONDS,
+  PURGE_DELETES_PER_RUN,
+  REPORTER_CONTACT_RETENTION_DAYS,
+  type NameKind,
+  type SiteStatus,
+} from "@kept/shared";
 import { config } from "dotenv";
 import { eq, inArray, sql } from "drizzle-orm";
 
 import { closeDb, db } from "../db";
 import { clearResolvedReporterContacts, dueExpiriesQuery } from "../db/queries/lifecycle";
-import { abuseReports, appeals, moderationActions, nameHolds, sites, siteVersions } from "../db/schema";
-import { MS_PER_DAY } from "../sites/display";
+import { insertVersionFiles, siteObjectKeys } from "../db/queries/version-files";
+import { abuseReports, appeals, moderationActions, nameHolds, sites, siteVersionFiles, siteVersions } from "../db/schema";
+import { MS_PER_DAY, MS_PER_SECOND } from "../sites/display";
 import { keepSite } from "../sites/keep";
 import { removeManifest, syncManifest } from "../storage/manifest";
-import { pageObjectKey, PAGE_CONTENT_TYPE, r2Store } from "../storage/r2";
+import { pageObjectKey, PAGE_CONTENT_TYPE, r2Store, siteObjectKey } from "../storage/r2";
 import { edgeStatus, liveSkip, LockDrill, manifestAt, settle } from "../testing/lock-drill";
 import { NamesDrill } from "../testing/names-drill";
 import { clearPendingPurges } from "../testing/pending-purges";
 
 import { expireDue, expireSite } from "./expire";
-import { purgeDue, purgeSite } from "./purge";
+import { purgeDue, purgeSite, type PurgeResult } from "./purge";
 
 config({ path: ".env.local", quiet: true });
 
@@ -63,7 +78,7 @@ after(async () => {
   if (skipDb) return;
   if (!skip) {
     for (const slug of slugs) await removeManifest(slug).catch(() => undefined);
-    for (const key of objectKeys) await r2Store().delete(key).catch(() => undefined);
+    await r2Store().deleteMany([...objectKeys]).catch(() => undefined);
   }
   if (reportIds.size > 0) await db.delete(abuseReports).where(inArray(abuseReports.id, [...reportIds]));
   if (siteIds.size > 0) {
@@ -111,18 +126,67 @@ async function fixture(options: PageOptions = {}) {
   const objectKey = pageObjectKey(page.id, row.currentVersionId!);
   if (options.bytes) {
     objectKeys.add(objectKey);
-    await r2Store().put(objectKey, `<!doctype html><title>${page.slug}</title>`, PAGE_CONTENT_TYPE);
+    const html = `<!doctype html><title>${page.slug}</title>`;
+    await r2Store().put(objectKey, html, PAGE_CONTENT_TYPE);
     await db.insert(siteVersions).values({
       id: row.currentVersionId!,
       siteId: page.id,
       r2Key: objectKey,
       contentHash: `e07-008-${page.id}`,
-      sizeBytes: 64,
+      sizeBytes: Buffer.byteLength(html),
       publishedVia: "studio",
     });
+    await insertVersionFiles(db, row.currentVersionId!, [
+      { path: "index.html", sizeBytes: Buffer.byteLength(html), sha256: `e07-008-${page.id}` },
+    ]);
   }
   if (options.manifest) assert.ok((await syncManifest(page.id)).ok, "precondition: the manifest is written");
   return { ...page, ownerId, objectKey };
+}
+
+/** R2 puts and gets in flight at once while building or checking a scratch file set. */
+const R2_CONCURRENCY = 32;
+
+/** `fn` over `items`, `R2_CONCURRENCY` at a time. */
+async function inChunks<T, R>(items: readonly T[], fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = [];
+  for (let i = 0; i < items.length; i += R2_CONCURRENCY) {
+    out.push(...(await Promise.all(items.slice(i, i + R2_CONCURRENCY).map(fn))));
+  }
+  return out;
+}
+
+/**
+ * Version `versionId` of `siteId` as a set of `n` one-byte files: its
+ * `site_versions` row, its `site_version_files` rows and a real R2 object per
+ * file. Returns the keys.
+ */
+async function fileSet(siteId: string, versionId: string, n: number): Promise<string[]> {
+  const entries = Array.from({ length: n }, (_, i) => ({
+    path: i === 0 ? "index.html" : `assets/f${i}.txt`,
+    sizeBytes: 1,
+    sha256: `e08-008-${i}`,
+  }));
+  await db.insert(siteVersions).values({
+    id: versionId,
+    siteId,
+    r2Key: pageObjectKey(siteId, versionId),
+    contentHash: `e08-008-${versionId}`,
+    sizeBytes: n,
+    fileCount: n,
+    publishedVia: "studio",
+  });
+  await insertVersionFiles(db, versionId, entries);
+  const keys = entries.map((entry) => siteObjectKey(siteId, versionId, entry.path));
+  for (const key of keys) objectKeys.add(key);
+  await inChunks(keys, (key) => r2Store().put(key, "k", "text/plain; charset=utf-8"));
+  return keys;
+}
+
+/** The keys among `keys` that R2 still holds. */
+async function stillStored(keys: readonly string[]): Promise<string[]> {
+  const found = await inChunks(keys, async (key) => ((await r2Store().get(key)) === null ? null : key));
+  return found.filter((key): key is string => key !== null);
 }
 
 async function rowOf(siteId: string) {
@@ -211,7 +275,10 @@ test("AC25: a late keep racing purge loses cleanly in either order — never a h
     () => keepSite(pages[1]!.id, pages[1]!.ownerId),
     () => purgeSite(pages[1]!.id),
   );
-  assert.deepEqual([purgedFirst, purgedSecond], ["purged", "purged"]);
+  assert.deepEqual(
+    [purgedFirst, purgedSecond].map((result) => (result as PurgeResult).outcome),
+    ["purged", "purged"],
+  );
   for (const lost of [keepSecond, keepFirst]) {
     assert.equal((lost as { code?: string }).code, "not_found", "past grace, the keep finds nothing to keep");
   }
@@ -273,7 +340,7 @@ test("AC24: purge deletes every eligible status past purge_after — name, manif
   const scope = [expired, archived, removed, reviewed, appealed, released, taker, notYet, kept].map((page) => page.id);
   const untouched = await Promise.all([appealed, taker, notYet, kept].map((page) => rowOf(page.id)));
 
-  assert.deepEqual(await purgeDue(scope), { purged: 5, skipped: 0, failed: 0, reporterContactsCleared: 0 });
+  assert.deepEqual(await purgeDue(scope), { purged: 5, partial: 0, skipped: 0, failed: 0, reporterContactsCleared: 0 });
 
   for (const page of [expired, archived, removed, reviewed, released]) {
     assert.equal(await rowOf(page.id), null, `${page.slug}: the row is gone`);
@@ -303,8 +370,75 @@ test("AC24: purge deletes every eligible status past purge_after — name, manif
   assert.equal(reportAfter?.siteId, null);
 
   // Safe to run twice: nothing is due any more.
-  assert.deepEqual(await purgeDue(scope), { purged: 0, skipped: 0, failed: 0, reporterContactsCleared: 0 });
+  assert.deepEqual(await purgeDue(scope), { purged: 0, partial: 0, skipped: 0, failed: 0, reporterContactsCleared: 0 });
 });
+
+test(
+  "AC29 + Verification 4: purge deletes every file of every version of an expired 500-file draft, inside JOB_DEADLINE_SECONDS",
+  { skip, timeout: 300_000 },
+  async () => {
+    const page = await fixture({ status: "expired", expiresInDays: -40, purgeInDays: -1 });
+    const current = (await drill.read(page.id)).currentVersionId!;
+    const previous = crypto.randomUUID();
+    const keys = [...(await fileSet(page.id, previous, 250)), ...(await fileSet(page.id, current, 250))];
+    assert.equal((await siteObjectKeys(db, page.id)).length, 500, "precondition: 2 versions × 250 recorded files");
+    assert.equal((await stillStored(keys)).length, 500, "precondition: every file is in R2");
+
+    const started = Date.now();
+    const counts = await purgeDue([page.id]);
+    const elapsed = Date.now() - started;
+    console.log(`[purge drill] 500 files across 2 versions purged in ${elapsed} ms`);
+
+    assert.deepEqual(counts, { purged: 1, partial: 0, skipped: 0, failed: 0, reporterContactsCleared: 0 });
+    assert.ok(elapsed < JOB_DEADLINE_SECONDS * MS_PER_SECOND, `${elapsed} ms is inside the job's deadline`);
+    assert.equal(await rowOf(page.id), null, "the row is gone");
+    assert.deepEqual(await db.select().from(siteVersions).where(eq(siteVersions.siteId, page.id)), []);
+    assert.deepEqual(
+      await db.select().from(siteVersionFiles).where(inArray(siteVersionFiles.versionId, [previous, current])),
+      [],
+      "site_version_files cascaded with the versions",
+    );
+    assert.deepEqual(await stillStored(keys), [], "a get on every recorded key is null");
+  },
+);
+
+test(
+  "Q2: a page past PURGE_DELETES_PER_RUN keeps its row and its unfinished files; the next run resumes and finishes",
+  { skip, timeout: 600_000 },
+  async () => {
+    const page = await fixture({ status: "expired", expiresInDays: -40, purgeInDays: -1 });
+    const current = (await drill.read(page.id)).currentVersionId!;
+    const keys = await fileSet(page.id, current, PURGE_DELETES_PER_RUN + 50);
+
+    assert.deepEqual(await purgeDue([page.id]), {
+      purged: 0,
+      partial: 1,
+      skipped: 0,
+      failed: 0,
+      reporterContactsCleared: 0,
+    });
+    const row = await rowOf(page.id);
+    assert.equal(row?.status, "expired", "cut off by the cap: the row stays, untouched");
+    assert.equal(row?.slug, page.slug, "and keeps its name");
+    const recorded = await siteObjectKeys(db, page.id);
+    assert.equal(recorded.length, 50, "only the files not yet deleted are still recorded");
+    assert.deepEqual(
+      (await stillStored(keys)).sort(),
+      [...recorded].sort(),
+      "R2 holds exactly the recorded remainder — Postgres and the bytes agree",
+    );
+
+    assert.deepEqual(await purgeDue([page.id]), {
+      purged: 1,
+      partial: 0,
+      skipped: 0,
+      failed: 0,
+      reporterContactsCleared: 0,
+    });
+    assert.equal(await rowOf(page.id), null, "the next run finishes: the row is gone");
+    assert.deepEqual(await stillStored(recorded), [], "and so is the rest of the bytes");
+  },
+);
 
 test("purge forgets a reporter's name and email REPORTER_CONTACT_RETENTION_DAYS after resolution, and only then", { skip: skipDb }, async () => {
   const resolved = (days: number) => ({

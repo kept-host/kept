@@ -143,6 +143,12 @@ const SWEPT: Record<string, SweptRoute> = {
       }),
     stranger: "creates a page in the caller's own account; it names no page",
   },
+  // E08 D5: mints a presigned PUT and spends the hour's upload quota.
+  "POST /api/uploads": {
+    send: (ctx, base, _t, headers) =>
+      ctx.post(`${base}/api/uploads`, { headers, data: { size_bytes: 1024 } }),
+    stranger: "signs a PUT into the caller's own upload prefix; it names no page",
+  },
   "PATCH /api/sites/[id]": {
     send: (ctx, base, t, headers) =>
       ctx.patch(`${base}/api/sites/${t.siteId}`, { headers, data: { title: sweepName() } }),

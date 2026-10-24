@@ -40,6 +40,7 @@ import { closeDb, db } from "../db";
 import { profiles, siteVersions, sites, user } from "../db/schema";
 import { pageObjectKey, r2Store } from "../storage/r2";
 
+import { fileSet } from "../testing/file-sets";
 import { publishOwnedPage } from "./publish";
 
 config({ path: ".env.local", quiet: true });
@@ -104,7 +105,7 @@ const pageHtml = (marker: string) =>
 
 /** Publish exact bytes, recording whatever page came back for teardown. */
 async function publishHtml(profileId: string, html: string) {
-  const result = await publishOwnedPage({ profileId, html, publisher });
+  const result = await publishOwnedPage({ profileId, set: await fileSet({ html }), publisher });
   createdSites.add(result.site.id);
   publishedSlugs.add(result.site.slug);
   return result;

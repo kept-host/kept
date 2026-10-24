@@ -29,7 +29,7 @@ import { pageObjectKey, r2Store } from "../storage/r2";
 export const PREVIEW_MAX_BYTES = 256 * 1024;
 
 /**
- * The five columns a preview read actually consults.
+ * The six columns a preview read actually consults.
  *
  * ⚠️ THE PARAMETER IS THIS SHAPE, NOT `AnonSite`, and that is deliberate. E06's
  * page-detail screen, `/site/[id]` (task 012), previews an **owner-scoped** row
@@ -43,19 +43,24 @@ export interface PreviewSubject {
   id: string;
   slug: string;
   currentVersionId: string | null;
+  /** Since E08, the whole set's total — not `index.html`'s size. */
   sizeBytes: number | null;
+  /** The current version's file count (E08). Only a one-file page previews. */
+  fileCount: number | null;
   /** D13: a page restricted for child sexual abuse material previews nowhere. */
   moderationReason: ModerationReason | null;
 }
 
 /**
- * Whether a page's bytes are small enough to preview at all (`PREVIEW_MAX_BYTES`).
- * The one size rule for every preview: the screens above, and the studio card's
- * hover preview (E06 task 016), which the Pages home only offers for a page
- * this says yes to.
+ * Whether a page can be previewed at all: ONE file (E08, epic Risk 11 — a
+ * multi-file page's `index.html` in an opaque-origin `srcdoc` frame has none of
+ * its assets, so those screens show the thumbnail and "Open ↗" instead), and
+ * bytes small enough (`PREVIEW_MAX_BYTES`). The one rule for every preview: the
+ * screens above, and the studio card's hover preview (E06 task 016), which the
+ * Pages home only offers for a page this says yes to.
  */
-export function previewFits(site: Pick<PreviewSubject, "sizeBytes">): boolean {
-  return site.sizeBytes === null || site.sizeBytes <= PREVIEW_MAX_BYTES;
+export function previewFits(site: Pick<PreviewSubject, "sizeBytes" | "fileCount">): boolean {
+  return site.fileCount === 1 && (site.sizeBytes === null || site.sizeBytes <= PREVIEW_MAX_BYTES);
 }
 
 /**

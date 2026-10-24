@@ -21,7 +21,7 @@ import { config } from "dotenv";
 
 import { mintAccessToken } from "./access-token";
 import { isAdminEmail } from "./auth/closed-sign-in";
-import { closedModeAccess } from "./launch-access";
+import { closedModeAccess, keylessPlan } from "./launch-access";
 
 config({ path: ".env.local", quiet: true });
 
@@ -129,23 +129,28 @@ test("admin emails compare trimmed and lowercased", () => {
 
 test("open: every request may publish — the check is not consulted (D9)", async () => {
   setOpen(true);
-  assert.equal(await closedModeAccess(publishRequest()), true);
+  assert.equal(await closedModeAccess(publishRequest()), "open");
   assert.equal(
     await closedModeAccess(publishRequest({ authorization: "Bearer kpt_access_unknown" })),
-    true,
+    "open",
   );
+  // A valid token is ignored too: open, the caller is `free` (E08 §5.3).
+  const door = await closedModeAccess(publishRequest({ authorization: `Bearer ${issued.token}` }));
+  assert.equal(door, "open");
+  assert.equal(keylessPlan(door!), "free");
 });
 
 test("closed: a configured access token passes", async () => {
   setOpen(false);
   assert.equal(
     await closedModeAccess(publishRequest({ authorization: `Bearer ${issued.token}` })),
-    true,
+    "token",
   );
   assert.equal(
     await closedModeAccess(publishRequest({ authorization: `bearer  ${issued.token}` })),
-    true,
+    "token",
   );
+  assert.equal(keylessPlan("token"), "premium", "the access-token door publishes on premium caps");
 });
 
 test(
@@ -164,19 +169,20 @@ test(
       issued.token,
     ]) {
       const headers: Record<string, string> = authorization ? { authorization } : {};
-      assert.equal(await closedModeAccess(publishRequest(headers)), false, "refused shape");
+      assert.equal(await closedModeAccess(publishRequest(headers)), null, "refused shape");
     }
   },
 );
 
 test("closed: an admin's session passes; anyone else's does not", { skip: skipLive }, async () => {
   setOpen(false);
-  assert.equal(await closedModeAccess(publishRequest({ cookie: cookies.get(adminEmail)! })), true);
-  assert.equal(await closedModeAccess(publishRequest({ cookie: cookies.get(otherEmail)! })), false);
+  assert.equal(await closedModeAccess(publishRequest({ cookie: cookies.get(adminEmail)! })), "admin");
+  assert.equal(keylessPlan("admin"), "premium", "the admin door publishes on premium caps");
+  assert.equal(await closedModeAccess(publishRequest({ cookie: cookies.get(otherEmail)! })), null);
   // A forged cookie value is no session at all.
   assert.equal(
     await closedModeAccess(publishRequest({ cookie: "__Host-kept.session_token=forged.value" })),
-    false,
+    null,
   );
   // An unknown token does not spoil a valid admin session on the same request.
   const unknown = await mintAccessToken();
@@ -187,6 +193,6 @@ test("closed: an admin's session passes; anyone else's does not", { skip: skipLi
         authorization: `Bearer ${unknown.token}`,
       }),
     ),
-    true,
+    "admin",
   );
 });

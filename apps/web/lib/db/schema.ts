@@ -418,7 +418,8 @@ export const siteVersions = pgTable("site_versions", {
   // rollback/purge never has to re-derive a key from a naming convention that
   // may have changed since the object was written.
   r2Key: text("r2_key").notNull(),
-  // SHA-256 (hex) of the stored HTML, and its byte length.
+  // SHA-256 (hex) of the version's file set (`hashFileSet`; for a set of one,
+  // the `index.html` bytes' own hash, D10), and the SET TOTAL in bytes (E08).
   contentHash: text("content_hash").notNull(),
   sizeBytes: integer("size_bytes").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true })
@@ -431,7 +432,33 @@ export const siteVersions = pgTable("site_versions", {
     .defaultNow(),
   // The channel that published this version.
   publishedVia: publishChannelEnum("published_via").notNull().default("web"),
+  // E08: how many files the set holds (one `site_version_files` row each), and
+  // the two manifest flags the Worker reads — D12 SPA rewrite, D13 the set
+  // ships its own `404.html`.
+  fileCount: integer("file_count").notNull().default(1),
+  spa: boolean("spa").notNull().default(false),
+  has404: boolean("has_404").notNull().default(false),
 });
+
+// ── site_version_files ───────────────────────────────────────────────────────
+// Every object of a version (E08 D1): one row per stored path, at R2 key
+// `sites/{siteId}/{versionId}/{path}`. The authority on what a version holds —
+// every reader that enumerates a version's objects reads this, never an R2
+// list. Cascades with its version. `size_bytes` is the file's own length.
+export const siteVersionFiles = pgTable(
+  "site_version_files",
+  {
+    versionId: uuid("version_id")
+      .notNull()
+      .references(() => siteVersions.id, { onDelete: "cascade" }),
+    path: text("path").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    sha256: text("sha256").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.versionId, table.path] })],
+);
+
+export type SiteVersionFile = typeof siteVersionFiles.$inferSelect;
 
 // ── name_holds ───────────────────────────────────────────────────────────────
 // A released name, held until `held_until` (D4: 365 days after a delete,
@@ -781,10 +808,18 @@ export const sitesRelations = relations(sites, ({ one, many }) => ({
   pageViews: many(pageViewsDaily),
 }));
 
-export const siteVersionsRelations = relations(siteVersions, ({ one }) => ({
+export const siteVersionsRelations = relations(siteVersions, ({ one, many }) => ({
   site: one(sites, {
     fields: [siteVersions.siteId],
     references: [sites.id],
+  }),
+  files: many(siteVersionFiles),
+}));
+
+export const siteVersionFilesRelations = relations(siteVersionFiles, ({ one }) => ({
+  version: one(siteVersions, {
+    fields: [siteVersionFiles.versionId],
+    references: [siteVersions.id],
   }),
 }));
 

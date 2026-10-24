@@ -1,0 +1,328 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`a manifest without spa/has404 serves byte-identically to dev-v0.8.0 (AC23) > /index.html (/index.html) 1`] = `
+{
+  "body": "<!doctype html><html><head><title>legacy</title></head><body><h1>kept</h1></body></html>",
+  "headers": [
+    [
+      "cache-control",
+      "public, max-age=60, s-maxage=31536000",
+    ],
+    [
+      "content-security-policy",
+      "default-src 'self' blob: data:; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data: https:; style-src 'self' 'unsafe-inline' blob: data: https:; img-src 'self' blob: data: https:; font-src 'self' blob: data: https:; media-src 'self' blob: data: https:; frame-src 'self' https:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
+    ],
+    [
+      "content-type",
+      "text/html; charset=utf-8",
+    ],
+    [
+      "cross-origin-opener-policy",
+      "same-origin",
+    ],
+    [
+      "cross-origin-resource-policy",
+      "same-origin",
+    ],
+    [
+      "etag",
+      ""8fb8c947e945b28038fef397929e9bc6"",
+    ],
+    [
+      "permissions-policy",
+      "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+    ],
+    [
+      "referrer-policy",
+      "strict-origin-when-cross-origin",
+    ],
+    [
+      "x-content-type-options",
+      "nosniff",
+    ],
+    [
+      "x-frame-options",
+      "DENY",
+    ],
+  ],
+  "status": 200,
+}
+`;
+
+exports[`a manifest without spa/has404 serves byte-identically to dev-v0.8.0 (AC23) > a conditional request for the root 1`] = `
+{
+  "body": "",
+  "headers": [
+    [
+      "cache-control",
+      "public, max-age=60, s-maxage=31536000",
+    ],
+    [
+      "content-security-policy",
+      "default-src 'self' blob: data:; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data: https:; style-src 'self' 'unsafe-inline' blob: data: https:; img-src 'self' blob: data: https:; font-src 'self' blob: data: https:; media-src 'self' blob: data: https:; frame-src 'self' https:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
+    ],
+    [
+      "cross-origin-opener-policy",
+      "same-origin",
+    ],
+    [
+      "cross-origin-resource-policy",
+      "same-origin",
+    ],
+    [
+      "etag",
+      ""8fb8c947e945b28038fef397929e9bc6"",
+    ],
+    [
+      "permissions-policy",
+      "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+    ],
+    [
+      "referrer-policy",
+      "strict-origin-when-cross-origin",
+    ],
+    [
+      "x-content-type-options",
+      "nosniff",
+    ],
+    [
+      "x-frame-options",
+      "DENY",
+    ],
+  ],
+  "status": 304,
+}
+`;
+
+exports[`a manifest without spa/has404 serves byte-identically to dev-v0.8.0 (AC23) > a miss (/missing.html) 1`] = `
+{
+  "body": "<branded notFound page>",
+  "headers": [
+    [
+      "cache-control",
+      "public, max-age=0, s-maxage=60",
+    ],
+    [
+      "content-security-policy",
+      "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    ],
+    [
+      "content-type",
+      "text/html; charset=utf-8",
+    ],
+    [
+      "cross-origin-opener-policy",
+      "same-origin",
+    ],
+    [
+      "cross-origin-resource-policy",
+      "same-origin",
+    ],
+    [
+      "permissions-policy",
+      "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+    ],
+    [
+      "referrer-policy",
+      "strict-origin-when-cross-origin",
+    ],
+    [
+      "x-content-type-options",
+      "nosniff",
+    ],
+    [
+      "x-frame-options",
+      "DENY",
+    ],
+  ],
+  "status": 404,
+}
+`;
+
+exports[`a manifest without spa/has404 serves byte-identically to dev-v0.8.0 (AC23) > a traversal attempt (/..%2F..%2Fsites%2Fother%2Fv1%2Findex.html) 1`] = `
+{
+  "body": "<branded notFound page>",
+  "headers": [
+    [
+      "cache-control",
+      "public, max-age=0, s-maxage=60",
+    ],
+    [
+      "content-security-policy",
+      "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    ],
+    [
+      "content-type",
+      "text/html; charset=utf-8",
+    ],
+    [
+      "cross-origin-opener-policy",
+      "same-origin",
+    ],
+    [
+      "cross-origin-resource-policy",
+      "same-origin",
+    ],
+    [
+      "permissions-policy",
+      "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+    ],
+    [
+      "referrer-policy",
+      "strict-origin-when-cross-origin",
+    ],
+    [
+      "x-content-type-options",
+      "nosniff",
+    ],
+    [
+      "x-frame-options",
+      "DENY",
+    ],
+  ],
+  "status": 404,
+}
+`;
+
+exports[`a manifest without spa/has404 serves byte-identically to dev-v0.8.0 (AC23) > an asset (/app.js) 1`] = `
+{
+  "body": "console.log('legacy');",
+  "headers": [
+    [
+      "cache-control",
+      "public, max-age=60, s-maxage=31536000",
+    ],
+    [
+      "content-security-policy",
+      "default-src 'self' blob: data:; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data: https:; style-src 'self' 'unsafe-inline' blob: data: https:; img-src 'self' blob: data: https:; font-src 'self' blob: data: https:; media-src 'self' blob: data: https:; frame-src 'self' https:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
+    ],
+    [
+      "content-type",
+      "text/javascript; charset=utf-8",
+    ],
+    [
+      "cross-origin-opener-policy",
+      "same-origin",
+    ],
+    [
+      "cross-origin-resource-policy",
+      "same-origin",
+    ],
+    [
+      "etag",
+      ""d116bedd2522afe1338aa3cf3aa3689b"",
+    ],
+    [
+      "permissions-policy",
+      "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+    ],
+    [
+      "referrer-policy",
+      "strict-origin-when-cross-origin",
+    ],
+    [
+      "x-content-type-options",
+      "nosniff",
+    ],
+    [
+      "x-frame-options",
+      "DENY",
+    ],
+  ],
+  "status": 200,
+}
+`;
+
+exports[`a manifest without spa/has404 serves byte-identically to dev-v0.8.0 (AC23) > an extensionless miss (/dashboard/settings) 1`] = `
+{
+  "body": "<branded notFound page>",
+  "headers": [
+    [
+      "cache-control",
+      "public, max-age=0, s-maxage=60",
+    ],
+    [
+      "content-security-policy",
+      "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    ],
+    [
+      "content-type",
+      "text/html; charset=utf-8",
+    ],
+    [
+      "cross-origin-opener-policy",
+      "same-origin",
+    ],
+    [
+      "cross-origin-resource-policy",
+      "same-origin",
+    ],
+    [
+      "permissions-policy",
+      "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+    ],
+    [
+      "referrer-policy",
+      "strict-origin-when-cross-origin",
+    ],
+    [
+      "x-content-type-options",
+      "nosniff",
+    ],
+    [
+      "x-frame-options",
+      "DENY",
+    ],
+  ],
+  "status": 404,
+}
+`;
+
+exports[`a manifest without spa/has404 serves byte-identically to dev-v0.8.0 (AC23) > the root (/) 1`] = `
+{
+  "body": "<!doctype html><html><head><title>legacy</title></head><body><h1>kept</h1></body></html>",
+  "headers": [
+    [
+      "cache-control",
+      "public, max-age=60, s-maxage=31536000",
+    ],
+    [
+      "content-security-policy",
+      "default-src 'self' blob: data:; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data: https:; style-src 'self' 'unsafe-inline' blob: data: https:; img-src 'self' blob: data: https:; font-src 'self' blob: data: https:; media-src 'self' blob: data: https:; frame-src 'self' https:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
+    ],
+    [
+      "content-type",
+      "text/html; charset=utf-8",
+    ],
+    [
+      "cross-origin-opener-policy",
+      "same-origin",
+    ],
+    [
+      "cross-origin-resource-policy",
+      "same-origin",
+    ],
+    [
+      "etag",
+      ""8fb8c947e945b28038fef397929e9bc6"",
+    ],
+    [
+      "permissions-policy",
+      "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+    ],
+    [
+      "referrer-policy",
+      "strict-origin-when-cross-origin",
+    ],
+    [
+      "x-content-type-options",
+      "nosniff",
+    ],
+    [
+      "x-frame-options",
+      "DENY",
+    ],
+  ],
+  "status": 200,
+}
+`;
