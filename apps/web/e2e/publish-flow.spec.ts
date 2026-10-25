@@ -7,7 +7,6 @@ import { closeDb, db, schema } from "../lib/db";
 import {
   deleteDrafts,
   pageHtml,
-  resultScreenHydrated,
   servingDomain,
   SKIP_LIVE_PUBLISH,
   trackDrafts,
@@ -175,7 +174,6 @@ test.describe("publish flow", () => {
       // the intent parked, then attached on the way back.
       const scope = newScope();
       try {
-        await resultScreenHydrated(page);
         await page.getByRole("button", { name: "Keep it forever →" }).click();
         await expect(page).toHaveURL("/auth/keep", { timeout: 30_000 });
         const { userId } = await signInAs(page, baseURL!, scope);

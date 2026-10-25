@@ -10,11 +10,15 @@
  *
  * - `robots: noindex, nofollow` — a manage link in a search index is somebody
  *   else's delete button.
- * - `referrer: "no-referrer"` — every outbound navigation from this document
- *   would otherwise carry the token in a `Referer` header to whatever it lands
- *   on, including the visitor's own hosted page. The metadata sets it for the
- *   whole document; `LiveUrlBlock` also pins `rel="noopener noreferrer"` on the
- *   one link that leaves the origin.
+ * - `referrer: "same-origin"` — every cross-origin navigation from this
+ *   document would otherwise carry the token in a `Referer` header to whatever
+ *   it lands on, including the visitor's own hosted page. Not `no-referrer`:
+ *   under that policy Chrome sends a form POST with `Origin: null`, which
+ *   Next's server-action check cannot parse, so "Keep it forever →" pressed
+ *   before hydration (or with no JavaScript) was a 500. Same-origin requests
+ *   only reach this app, which already holds the token. The metadata sets it
+ *   for the whole document; `LiveUrlBlock` also pins `rel="noopener noreferrer"`
+ *   on the one link that leaves the origin.
  * - The token is never logged. The failure log below names the site id and the
  *   slug, which diagnose everything and grant nothing.
  *
@@ -64,7 +68,7 @@ export const metadata: Metadata = {
   title: "Your page",
   description: "Copy, replace, delete or keep the page you just published.",
   robots: { index: false, follow: false },
-  referrer: "no-referrer",
+  referrer: "same-origin",
 };
 
 export default async function ResultPage({

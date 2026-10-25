@@ -20,7 +20,6 @@ import {
   deleteDraft,
   pageHtml,
   publishViaApi,
-  resultScreenHydrated,
   SKIP_LIVE_PUBLISH,
 } from "./live-publish";
 import { closeDb, db, schema } from "../lib/db";
@@ -217,11 +216,12 @@ test.describe("the anon-token screens", () => {
       "content",
       /nofollow/,
     );
-    // Without this, every outbound navigation from this document hands the
+    // Without this, every cross-origin navigation from this document hands the
     // token to whatever it lands on — including the visitor's own hosted page.
+    // `same-origin`, not `no-referrer`: see the keep press with no JavaScript.
     await expect(page.locator('meta[name="referrer"]')).toHaveAttribute(
       "content",
-      "no-referrer",
+      "same-origin",
     );
 
     // The one link that leaves the origin opens a new tab and is pinned on
@@ -383,7 +383,6 @@ test.describe("the anon-token screens", () => {
         });
 
         await page.goto(`/p/${draft.anonToken}`);
-        await resultScreenHydrated(page);
         await page.getByRole("button", { name: "Keep it forever →" }).click();
 
         if (!signedIn) {
@@ -417,7 +416,7 @@ test.describe("the anon-token screens", () => {
     });
   }
 
-  test("/keep — noindex, no-referrer, and the token appears in no link on the page", async ({
+  test("/keep — noindex, same-origin referrer, and the token appears in no link on the page", async ({
     page,
   }) => {
     await page.goto(`/keep/${draft.anonToken}`);
@@ -428,7 +427,7 @@ test.describe("the anon-token screens", () => {
     );
     await expect(page.locator('meta[name="referrer"]')).toHaveAttribute(
       "content",
-      "no-referrer",
+      "same-origin",
     );
 
     // THE TOKEN IS IN THIS PAGE'S PATH AND MUST BE IN NOTHING ELSE. The claim
@@ -554,6 +553,25 @@ test.describe("the claim page with JavaScript switched off", () => {
     // implementation and would put a bearer credential in the markup.
     expect(await form.innerHTML()).not.toContain(draft.anonToken);
   });
+
+  // Pressing it, not just finding it. Under `referrer: "no-referrer"` Chrome
+  // sent this native POST with `Origin: null` and Next's server-action check
+  // answered 500 — invisible to every hydrated test, because there the action
+  // goes out as a fetch. Both screens carry the same form, so both are pressed.
+  for (const prefix of ["/keep", "/p"]) {
+    test(`${prefix} — the keep button posts with no JS and hands the visitor to sign-in`, async ({
+      page,
+    }) => {
+      await page.goto(`${prefix}/${draft.anonToken}`);
+      const posted = page.waitForResponse(
+        (r) => r.request().method() === "POST" && new URL(r.url()).pathname === `${prefix}/${draft.anonToken}`,
+      );
+      await page.getByRole("button", { name: /Keep it forever/ }).click();
+
+      expect((await posted).status()).toBeLessThan(400);
+      await expect(page).toHaveURL("/auth/keep", { timeout: 30_000 });
+    });
+  }
 });
 
 test.describe("an anon token that resolves to nothing", () => {
