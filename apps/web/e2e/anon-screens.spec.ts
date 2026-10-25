@@ -20,6 +20,7 @@ import {
   deleteDraft,
   pageHtml,
   publishViaApi,
+  resultScreenHydrated,
   SKIP_LIVE_PUBLISH,
 } from "./live-publish";
 import { closeDb, db, schema } from "../lib/db";
@@ -382,6 +383,7 @@ test.describe("the anon-token screens", () => {
         });
 
         await page.goto(`/p/${draft.anonToken}`);
+        await resultScreenHydrated(page);
         await page.getByRole("button", { name: "Keep it forever →" }).click();
 
         if (!signedIn) {

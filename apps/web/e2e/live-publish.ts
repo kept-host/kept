@@ -1,6 +1,7 @@
 import { MANIFEST_KV_CACHE_TTL_SECONDS } from "@kept/shared";
 import { config } from "dotenv";
 import {
+  expect,
   request as apiRequest,
   type APIRequestContext,
   type APIResponse,
@@ -93,6 +94,22 @@ export async function deleteDraft(
   await request.delete(`/api/anon/${token}`).catch(() => {
     /* best effort: a failed teardown must not fail the assertion above it */
   });
+}
+
+/**
+ * Wait until `/p/{token}` is hydrated, proved by the Replace toggle answering
+ * (and then put back). Pressing "Keep it forever →" before that posts the form
+ * natively, and under the screen's `no-referrer` policy Chrome sends that POST
+ * with `Origin: null`, which Next's server-action check cannot parse — a 500.
+ */
+export async function resultScreenHydrated(page: Page): Promise<void> {
+  const replace = page.getByRole("button", { name: "Replace", exact: true });
+  await expect(async () => {
+    await replace.click();
+    await expect(replace).toHaveAttribute("aria-expanded", "true", { timeout: 1_000 });
+  }).toPass({ timeout: 30_000 });
+  await replace.click();
+  await expect(replace).toHaveAttribute("aria-expanded", "false");
 }
 
 /** Delete every tracked draft through the real anonymous manage API. */
