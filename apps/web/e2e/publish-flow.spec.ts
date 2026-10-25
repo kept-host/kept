@@ -280,9 +280,9 @@ test.describe("publish flow", () => {
     });
 
     await expect(face(page, "error")).toHaveCSS("opacity", "1");
-    // The PRD's sentence (E06 AC7), naming what was actually dropped.
+    // The one not-a-page sentence (E06 AC7), naming what kept does take.
     await expect(face(page, "error")).toContainText(
-      "That's a .txt. kept publishes HTML pages — drop an .html file.",
+      "kept needs an HTML file. Drop an .html file, or a folder or .zip with an index.html in it.",
     );
     expect(requests, "a non-HTML file reached the network").toBe(0);
 

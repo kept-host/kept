@@ -44,8 +44,9 @@
  * (`lib/publish/pack.ts`, E08 §5.7): one HTML page, a zip sent as it is, or a
  * set of files at their relative paths. A single file that is neither a page
  * nor a zip goes through `checkPageFile`, the same pre-flight the landing and
- * the anonymous replace read: a `.png` gets "That's a .png. kept publishes HTML
- * pages — drop an .html file.", an oversize page gets the `MAX_PAGE_BYTES`
+ * the anonymous replace read: a `.png` gets `NOT_A_PAGE` ("kept needs an HTML
+ * file. Drop an .html file, or a folder or .zip with an index.html in it."),
+ * an oversize page gets the `MAX_PAGE_BYTES`
  * sentence, and `onUpload` is never called, so the caller never sends anything.
  * The server re-validates every byte regardless; this is a courtesy, not a
  * gate.

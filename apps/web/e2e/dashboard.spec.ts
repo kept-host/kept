@@ -58,7 +58,7 @@ const PRO = limitsFor("premium");
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
 
-const PNG_REFUSAL = "That's a .png. kept publishes HTML pages — drop an .html file.";
+const PNG_REFUSAL = "kept needs an HTML file. Drop an .html file, or a folder or .zip with an index.html in it.";
 
 /** Text a later epic owns. None of it may exist anywhere in the home's DOM (AC10). */
 const LATER_EPIC_TEXT: readonly RegExp[] = [

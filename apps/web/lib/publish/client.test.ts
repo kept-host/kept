@@ -15,21 +15,17 @@ import { checkPageFile, publishErrorText } from "./client";
 
 const PAGE = "<!doctype html><title>t</title><p>hello</p>";
 
-test("AC7: a .png is refused with the PRD's sentence, naming what it was", () => {
+const NOT_A_PAGE = "kept needs an HTML file. Drop an .html file, or a folder or .zip with an index.html in it.";
+
+test("AC7: a .png is refused with the one not-a-page sentence", () => {
   const refusal = checkPageFile(new File([new Uint8Array(64)], "photo.png", { type: "image/png" }));
   assert.ok(refusal, "a .png must be refused before any request");
-  assert.equal(
-    publishErrorText(refusal),
-    "That's a .png. kept publishes HTML pages — drop an .html file.",
-  );
+  assert.equal(publishErrorText(refusal), NOT_A_PAGE);
 });
 
-test("a file with no extension and no type is refused without inventing one", () => {
+test("a file with no extension and no type gets the same sentence", () => {
   const refusal = checkPageFile(new File(["plain"], "README", { type: "" }));
-  assert.equal(
-    refusal?.message,
-    "That isn't an HTML file. kept publishes HTML pages — drop an .html file.",
-  );
+  assert.equal(refusal?.message, NOT_A_PAGE);
 });
 
 test("edge case 11: a page over MAX_PAGE_BYTES is refused with the limit in the copy", () => {
