@@ -4,9 +4,10 @@ import { and, eq, inArray } from "drizzle-orm";
 
 import { closeDb, db, schema } from "../lib/db";
 import { ADMIN_PREVIEW_CSP } from "../lib/routing/admin-csp";
+import { fileSetSummary, formatBytes } from "../lib/sites/display";
 
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
-import { cleanup, newScope, publishOwned, readSite, signInAs, SKIP_OWNER_UI } from "./owner-fixtures";
+import { cleanup, newScope, publishOwned, readSite, seedOwnedSet, signInAs, SKIP_OWNER_UI } from "./owner-fixtures";
 
 /**
  * The moderation screen (E07 task 011, AC20, AC21, the admin half of AC39),
@@ -255,6 +256,8 @@ test.describe("the moderation screen (open)", () => {
     await expect(inFrame.locator("#ran"), "the page's inline script ran").toHaveText("ran");
     await expect(inFrame.locator("#top"), "parent.document throws: opaque origin").toHaveText("blocked");
     await expect(inFrame.locator("#cookie"), "document.cookie throws: opaque origin").toHaveText("blocked");
+    // A single-file page has no set to list.
+    await expect(admin.getByTestId("item-files")).toHaveCount(0);
 
     // The route's own headers — and not the `/admin/*` policy on top of them.
     const preview = await admin.request.get(previewUrl(flagged.siteId));
@@ -380,5 +383,46 @@ test.describe("the moderation screen (open)", () => {
     expect(decided!.status).toBe("rejected");
     expect(decided!.decisionNote).toBe("e07-011: the report stands.");
     expect((await readSite(csam.siteId)).status, "a rejection changes nothing").toBe("quarantined");
+  });
+
+  test("E08: a multi-file page lists its files under the preview, from Postgres — path, size and served type", async ({
+    browser,
+    baseURL,
+  }) => {
+    const owner = await signedIn(browser, baseURL!);
+    const marker = `e08-hand-${RUN}-set`;
+    const files = [
+      { path: "index.html", content: `<!doctype html><title>${marker}</title><h1 id="m">${marker}</h1><script src="assets/app.js"></script>` },
+      { path: "assets/app.js", content: `document.title = "${marker}";` },
+      { path: "assets/data.json", content: `{"marker":"${marker}"}` },
+    ];
+    // Seeded rows and bytes, no manifest: nothing on the edge, no KV spent.
+    const set = await seedOwnedSet(scope, owner.userId, files);
+    await db
+      .update(schema.sites)
+      .set({ status: "under_review", moderationReason: "phishing" })
+      .where(eq(schema.sites.id, set.siteId));
+
+    const { page: admin } = await signedIn(browser, baseURL!, ADMIN);
+    await admin.goto(`/admin/moderation/site/${set.siteId}`);
+
+    // The preview is unchanged: the same sandboxed frame on the same route.
+    const frame = admin.getByTestId("item-preview").locator("iframe");
+    await expect(frame).toHaveAttribute("sandbox", "allow-scripts");
+    await expect(frame).toHaveAttribute("src", previewUrl(set.siteId));
+    await expect(admin.frameLocator('[data-testid="item-preview"] iframe').locator("#m")).toHaveText(marker);
+
+    // …and beneath it, the whole set in path order, as `site_version_files` holds it.
+    const total = files.reduce((sum, file) => sum + Buffer.byteLength(file.content), 0);
+    await expect(admin.getByTestId("item-files-summary")).toHaveText(fileSetSummary(files.length, total));
+    const rows = admin.getByTestId("item-file");
+    await expect(rows).toHaveCount(files.length);
+    const sorted = [...files].sort((a, b) => (a.path < b.path ? -1 : 1));
+    for (const [i, file] of sorted.entries()) {
+      await expect(rows.nth(i)).toContainText(file.path);
+      await expect(rows.nth(i)).toContainText(formatBytes(Buffer.byteLength(file.content)));
+    }
+    await expect(rows.filter({ hasText: "assets/app.js" })).toContainText("text/javascript; charset=utf-8");
+    await expect(rows.filter({ hasText: "assets/data.json" })).toContainText("application/json; charset=utf-8");
   });
 });

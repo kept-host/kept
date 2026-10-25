@@ -11,6 +11,7 @@ import { and, asc, desc, eq, gt, inArray, sql, sum } from "drizzle-orm";
 
 import { db } from "../index";
 import { abuseReports, appeals, moderationActions, scans, sites, siteVersions, user } from "../schema";
+import { versionFiles } from "./version-files";
 
 /** Rows per page of the Log tab. */
 export const LOG_PAGE_SIZE = 40;
@@ -184,6 +185,11 @@ export async function scanSpendUsd(days: number): Promise<number> {
  * through which channel its current version came, the latest scan of that
  * version, its reports, its appeals and its moderation timeline. `null`: no
  * such page (purged, or never existed).
+ *
+ * `files` lists the current version's set from `site_version_files` (never an
+ * R2 list) when it has more than one file — the preview frames only
+ * `index.html`, so this is how a moderator sees the scripts and binaries the
+ * page also ships. Empty for a single-file page.
  */
 export async function moderationItem(siteId: string) {
   const [site] = await db
@@ -199,6 +205,7 @@ export async function moderationItem(siteId: string) {
       sizeBytes: sites.sizeBytes,
       owner,
       channel: siteVersions.publishedVia,
+      fileCount: siteVersions.fileCount,
     })
     .from(sites)
     .leftJoin(user, withOwner)
@@ -228,7 +235,7 @@ export async function moderationItem(siteId: string) {
         .limit(1)
     : [];
 
-  const [reports, siteAppeals, timeline] = await Promise.all([
+  const [reports, siteAppeals, timeline, files] = await Promise.all([
     db
       .select({
         id: abuseReports.id,
@@ -258,9 +265,10 @@ export async function moderationItem(siteId: string) {
       .from(moderationActions)
       .where(eq(moderationActions.siteId, siteId))
       .orderBy(asc(moderationActions.createdAt)),
+    site.currentVersionId && (site.fileCount ?? 1) > 1 ? versionFiles(db, site.currentVersionId) : [],
   ]);
 
-  return { site, scan: scan ?? null, reports, appeals: siteAppeals, timeline };
+  return { site, scan: scan ?? null, reports, appeals: siteAppeals, timeline, files };
 }
 
 export type ModerationItem = NonNullable<Awaited<ReturnType<typeof moderationItem>>>;
