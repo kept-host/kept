@@ -21,8 +21,9 @@
  * is taken." with nothing changed.
  *
  * The route is keyed by id (D2), so a rename moves nothing under this screen:
- * the toast, then `router.refresh()` repaints the link. (The `[slug]` screen had
- * to navigate, and carried its notice across the remount in the URL.)
+ * the card shows the new name from the PATCH's answer at once (`shown`), then
+ * `router.refresh()` brings the rest of the screen along. (The `[slug]` screen
+ * had to navigate, and carried its notice across the remount in the URL.)
  *
  * Drafts get the helper instead of the button (AC17); a page under review gets
  * neither — the banner says why.
@@ -81,6 +82,8 @@ export function NameSection({
 }) {
   const router = useRouter();
   const [phase, setPhase] = useState<Phase>("idle");
+  /** The name the card shows: the rename's own answer until the refresh lands. */
+  const [shown, setShown] = useState(slug);
   const [value, setValue] = useState(slug);
   const [verdict, setVerdict] = useState<Verdict | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -90,6 +93,14 @@ export function NameSection({
   const fieldId = useId();
   const statusId = useId();
   const suffix = `.${baseDomain}`;
+
+  // Adopt a new server render — React's "adjust state on a prop change"
+  // pattern, as in `./details-section.tsx`, so no effect paints the stale name.
+  const [seenSlug, setSeenSlug] = useState(slug);
+  if (slug !== seenSlug) {
+    setSeenSlug(slug);
+    setShown(slug);
+  }
 
   useEffect(() => {
     return () => {
@@ -101,13 +112,13 @@ export function NameSection({
 
   const editing = phase !== "idle";
   const candidate = value.trim();
-  const unchanged = candidate === slug;
+  const unchanged = candidate === shown;
   const canSubmit =
     candidate !== "" && !unchanged && verdict?.kind !== "refused" && phase !== "saving";
 
   function startEditing() {
     setVerdict(null);
-    setValue(slug);
+    setValue(shown);
     setPhase("editing");
     requestAnimationFrame(() => inputRef.current?.select());
   }
@@ -116,7 +127,7 @@ export function NameSection({
     if (settleTimer.current) clearTimeout(settleTimer.current);
     checking.current?.abort();
     setPhase("idle");
-    setValue(slug);
+    setValue(shown);
     setVerdict(null);
   }
 
@@ -127,7 +138,7 @@ export function NameSection({
     checking.current?.abort();
 
     const name = next.trim();
-    if (name === "" || name === slug) {
+    if (name === "" || name === shown) {
       setPhase("editing");
       return;
     }
@@ -177,6 +188,7 @@ export function NameSection({
       return;
     }
 
+    setShown(outcome.site.slug);
     setPhase("idle");
     setVerdict(null);
     toast.success(renameNotice(outcome.site));
@@ -188,7 +200,7 @@ export function NameSection({
       {!editing ? (
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p data-testid="current-link" className="min-w-0 font-mono text-sm break-all text-text">
-            {slug}
+            {shown}
             <span className="text-text-secondary">{suffix}</span>
           </p>
           {canRename ? (
@@ -315,7 +327,7 @@ export function NameSection({
           if (!open) setPhase("resolved");
         }}
         title={`Change the name to ${candidate}?`}
-        description={renameWarning(`${slug}${suffix}`, nameChosen)}
+        description={renameWarning(`${shown}${suffix}`, nameChosen)}
         confirmLabel={phase === "saving" ? "Changing…" : "Change name"}
         testId="rename-dialog"
         pending={phase === "saving"}

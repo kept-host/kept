@@ -396,8 +396,21 @@ test.describe("the page detail screen", () => {
     );
     await expect(dialog, "a generated name is not held, so no hold is promised").not.toContainText("12 months");
     expect((await readSite(site.siteId)).slug).toBe(site.slug);
+    // The card shows the new name as soon as the dialog closes, from the
+    // rename's own answer — not when `router.refresh()` lands. So the refresh's
+    // RSC fetch is HELD until the card has been read.
+    let releaseRefresh!: () => void;
+    const refreshHeld = new Promise<void>((resolve) => (releaseRefresh = resolve));
+    await page.route(`**/site/${site.siteId}**`, async (route) => {
+      if (route.request().headers()["rsc"]) await refreshHeld;
+      await route.continue();
+    });
     await page.getByTestId("rename-dialog-confirm").click();
     const newHost = `${chosen}.${new URL(site.liveUrl).host.slice(site.slug.length + 1)}`;
+    await expect(dialog).toBeHidden({ timeout: LIVE_STACK_TIMEOUT });
+    await expect(page.getByTestId("current-link")).toHaveText(newHost);
+    // Released, the route passes every later request straight through.
+    releaseRefresh();
     await expect(page.getByText(`Renamed. Your page is at ${newHost}.`)).toBeVisible({
       timeout: LIVE_STACK_TIMEOUT,
     });
