@@ -14,8 +14,10 @@
  * "Preparing…" runs from the click until the download begins. The start signal
  * is the route's own cookie (`lib/sites/export-ready.ts`): it arrives with the
  * response headers — the moment the browser starts saving — and says whether
- * the zip started. If no answer arrives in `START_TIMEOUT_MS`, the request
- * never got one, and that is said too.
+ * the zip started. Only the route's own "failed" is shown as an error: if no
+ * answer arrives in `START_TIMEOUT_MS` the button goes quietly back to idle,
+ * because a missing cookie does not mean a missing download — the zip may well
+ * be on disk already.
  *
  * Disabled with "Nothing to export yet." when the account has no page to put in
  * the zip; the count is the server component's.
@@ -31,7 +33,7 @@ import { SettingsCard } from "./settings-card";
 
 /** How often the button looks for the route's answer. */
 const POLL_MS = 250;
-/** The route answers after one owner-scoped read; a minute of nothing is a failure. */
+/** The route answers after one owner-scoped read; after a minute of nothing, stop waiting. */
 const START_TIMEOUT_MS = 60_000;
 
 export function ExportPanel({ empty }: { empty: boolean }) {
@@ -47,7 +49,7 @@ export function ExportPanel({ empty }: { empty: boolean }) {
       if (start === null && Date.now() - since < START_TIMEOUT_MS) return;
       window.clearInterval(timer);
       setAttempt(null);
-      if (start !== "started") setError(COULD_NOT_SAVE.message);
+      if (start === "failed") setError(COULD_NOT_SAVE.message);
     }, POLL_MS);
     return () => window.clearInterval(timer);
   }, [attempt]);
