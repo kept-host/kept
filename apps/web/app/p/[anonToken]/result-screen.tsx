@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { KeyRound, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
@@ -61,6 +61,7 @@ export function ResultScreen({
 }) {
   const router = useRouter();
   const [replaceOpen, setReplaceOpen] = useState(false);
+  const replacePanel = useRef<HTMLDivElement>(null);
   const [replacedAt, setReplacedAt] = useState<number | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -68,6 +69,14 @@ export function ResultScreen({
   const [deleted, setDeleted] = useState(false);
 
   const host = new URL(liveUrl).host;
+
+  // The panel opens below the fold; without this, Replace looks like it did
+  // nothing at all.
+  useEffect(() => {
+    if (replaceOpen) {
+      replacePanel.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [replaceOpen]);
 
   async function confirmDelete() {
     setDeleting(true);
@@ -184,6 +193,7 @@ export function ResultScreen({
 
       <div
         id="replace-panel"
+        ref={replacePanel}
         hidden={!replaceOpen}
         className="w-full rounded-[var(--r-lg)] border border-border bg-surface p-5 text-left shadow-[var(--shadow-sm)]"
       >

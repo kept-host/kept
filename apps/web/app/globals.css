@@ -154,6 +154,13 @@
     text-rendering: optimizeLegibility;
   }
 
+  /* Tailwind v4's preflight dropped `cursor: pointer` on buttons; without it
+     every button reads as dead text. This is the upgrade guide's own rule. */
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
   /* Visible keyboard focus = accent ring (quality floor §10). */
   :focus-visible {
     outline: 2px solid var(--accent);
