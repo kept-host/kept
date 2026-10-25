@@ -22,6 +22,13 @@
  * architecture rule, through the ONE token resolver
  * (`lib/publish/anon-token.ts`). No second hashing, no second 404 shape.
  *
+ * "KEEP IT FOREVER" IS THE CLAIM PAGE'S OWN ACTION, not a link to it. The
+ * person on this screen published the page; sending them through
+ * `/keep/[anonToken]` ("someone shared this page with you") only to press a
+ * second Keep button was a detour. The inline action below closes over the
+ * token exactly as the claim page's does, and `startKeep` takes it from there —
+ * the sign-in round trip, the immediate keep, or the at-cap swap screen.
+ *
  * A RESTRICTED PAGE (E07 §6.10, AC38) — under review, hidden, or removed before
  * its `purge_after` — gets the restricted view instead: the banner, the reason
  * and "Ask for a review" (`POST /api/anon/:token/appeal`). No preview (its
@@ -44,6 +51,7 @@ import { resolveAnonToken } from "@/lib/publish/anon-token";
 import { liveUrl } from "@/lib/publish/pipeline";
 import { readPreviewHtml } from "@/lib/publish/preview";
 import { isPastGrace } from "@/lib/sites/keep";
+import { startKeep } from "@/app/keep/[anonToken]/start-keep";
 import { ResultScreen } from "./result-screen";
 
 /** `postgres-js` needs TCP sockets and `aws4fetch` signs with Node's crypto. */
@@ -93,6 +101,13 @@ export default async function ResultPage({
 
   const html = await readPreviewHtml(site, "result");
 
+  // Closed over, never bound: see the same action in `app/keep/[anonToken]/page.tsx`
+  // for why the token must not become a plaintext form field.
+  async function keepThisPage() {
+    "use server";
+    await startKeep(anonToken);
+  }
+
   return (
     <ResultShell>
       <ResultScreen
@@ -100,6 +115,7 @@ export default async function ResultPage({
         liveUrl={url}
         slug={site.slug}
         status={site.status}
+        keepAction={keepThisPage}
         // The chip, the preview and the QR are rendered HERE, on the server:
         // the chip so its countdown cannot disagree with a hydrated clock, the
         // QR so the encoder never reaches the browser bundle, the preview so

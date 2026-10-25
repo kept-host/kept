@@ -47,6 +47,7 @@ export function ResultScreen({
   liveUrl,
   slug,
   status,
+  keepAction,
   chip,
   preview,
   qr,
@@ -55,6 +56,8 @@ export function ResultScreen({
   liveUrl: string;
   slug: string;
   status: SiteStatus;
+  /** The keep, as a server action with the token closed over (`./page.tsx`). */
+  keepAction: () => Promise<void>;
   chip: ReactNode;
   preview: ReactNode;
   qr: ReactNode;
@@ -142,9 +145,11 @@ export function ResultScreen({
           Keeping attaches this page to an account and clears the clock. The page
           stays exactly where it is — same link, same file, no downtime.
         </p>
-        <Button asChild className="mb-5 w-full">
-          <Link href={`/keep/${anonToken}`}>Keep it forever →</Link>
-        </Button>
+        <form action={keepAction} className="mb-5">
+          <Button type="submit" className="w-full">
+            Keep it forever →
+          </Button>
+        </form>
 
         <ReminderForm anonToken={anonToken} />
       </div>

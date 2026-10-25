@@ -24,8 +24,10 @@ import {
 } from "./live-publish";
 import { closeDb, db, schema } from "../lib/db";
 import { formatUpdatedAt } from "../lib/sites/display";
+import { PENDING_KEEP_COOKIE } from "../lib/auth/pending-keep";
 
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
+import { cleanup, newScope, signInAs, SKIP_OWNER_UI } from "./owner-fixtures";
 
 /**
  * The two anon-token screens, against a page that was really published:
@@ -353,24 +355,65 @@ test.describe("the anon-token screens", () => {
     ).toEqual([]);
   });
 
-  test("/p — 'Keep it forever' is a real URL, and it lands on the claim page", async ({
-    page,
-  }) => {
-    await page.goto(`/p/${draft.anonToken}`);
+  /**
+   * "Keep it forever →" on `/p` IS the keep — not a link to the claim page,
+   * which greets the publisher as "someone shared this page with you" and asks
+   * for a second press. Both identities are drilled: signed out the intent is
+   * parked in the pending-keep cookie and spent by `/auth/callback` after
+   * sign-in; signed in the keep happens in the submit itself. Either way the
+   * visitor never lands on `/keep/`, and the published page ends kept.
+   *
+   * A kept page outlives the anonymous DELETE in `afterEach` (keeping kills the
+   * token), so each test unwinds its account and page through `cleanup`.
+   */
+  for (const signedIn of [false, true]) {
+    test(`/p — 'Keep it forever →' keeps the page from this screen (${signedIn ? "signed in" : "signed out"})`, async ({
+      page,
+      baseURL,
+    }) => {
+      test.skip(!!SKIP_OWNER_UI, String(SKIP_OWNER_UI));
+      const scope = newScope();
+      try {
+        const userId = signedIn ? (await signInAs(page, baseURL!, scope)).userId : null;
 
-    await page.getByRole("link", { name: /Keep it forever/ }).click();
+        const visited: string[] = [];
+        page.on("framenavigated", (frame) => {
+          if (frame === page.mainFrame()) visited.push(new URL(frame.url()).pathname);
+        });
 
-    // The default 5 s EXPECT budget, not the 60 s test budget, is what fired
-    // here: `/keep` resolves the token against remote Neon and reads the
-    // preview bytes from R2 before it renders, which is comfortably over 5 s
-    // from a laptop. `test.setTimeout` does not widen a per-assertion wait.
-    await expect(page).toHaveURL(`/keep/${draft.anonToken}`, { timeout: 30_000 });
-    await expect(
-      page.getByRole("heading", { name: "It is live — but not permanent yet" }),
-    ).toBeVisible();
-    // The claim link the API handed out is the same one the screen links to.
-    expect(draft.claim_url.endsWith(`/keep/${draft.anonToken}`)).toBe(true);
-  });
+        await page.goto(`/p/${draft.anonToken}`);
+        await page.getByRole("button", { name: "Keep it forever →" }).click();
+
+        if (!signedIn) {
+          // Handed straight to sign-in, the intent parked in the cookie.
+          await expect(page).toHaveURL("/auth/keep", { timeout: 30_000 });
+          const cookies = await page.context().cookies();
+          expect(cookies.find((cookie) => cookie.name === PENDING_KEEP_COOKIE)).toBeDefined();
+          await signInAs(page, baseURL!, scope);
+          await page.goto("/auth/callback");
+        }
+
+        // Same budget as `anon-keep-flow.spec.ts`'s KEEP_TIMEOUT: a keep is
+        // ~10 round trips to remote Neon.
+        await expect(page).toHaveURL(`/auth/callback/done?outcome=kept&slug=${draft.slug}`, {
+          timeout: 30_000,
+        });
+        await expect(page.getByRole("heading", { name: "Kept forever" })).toBeVisible();
+        expect(visited.filter((path) => path.startsWith("/keep/"))).toEqual([]);
+        if (signedIn) expect(visited).not.toContain("/auth/keep");
+
+        const [row] = await db
+          .select()
+          .from(schema.sites)
+          .where(eq(schema.sites.slug, draft.slug));
+        expect(row?.ownerId).toBe(userId ?? scope.userIds[0]);
+        expect(row?.expiresAt, "kept means no clock").toBeNull();
+        expect(row?.anonTokenHash, "keeping retires the manage link").toBeNull();
+      } finally {
+        await cleanup(scope);
+      }
+    });
+  }
 
   test("/keep — noindex, no-referrer, and the token appears in no link on the page", async ({
     page,
