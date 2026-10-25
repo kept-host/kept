@@ -1,13 +1,19 @@
 import { MAX_PAGE_BYTES } from "@kept/shared";
 import { test, expect, type Page } from "@playwright/test";
+import { eq } from "drizzle-orm";
+
+import { closeDb, db, schema } from "../lib/db";
 
 import {
   deleteDrafts,
   pageHtml,
+  resultScreenHydrated,
   servingDomain,
   SKIP_LIVE_PUBLISH,
   trackDrafts,
 } from "./live-publish";
+import { LIVE_STACK_TIMEOUT } from "./live-stack";
+import { cleanup, newScope, signInAs, SKIP_OWNER_UI } from "./owner-fixtures";
 
 /**
  * The hero's publish flow, against the REAL `POST /api/publish`.
@@ -83,12 +89,22 @@ test.describe("publish flow", () => {
       await deleteDrafts(request, drafts);
     });
 
+    test.afterAll(async () => {
+      if (SKIP_LIVE_PUBLISH) return;
+      await closeDb();
+    });
+
     // Two real publishes, not one per face: each is a KV write and a delete on
     // dev's free plan, so the keep screen rides on the drop and reduced motion
     // on the paste.
-    test("drop a file → minting lasts as long as the request → live carries the minted slug → Keep opens its keep screen", async ({
+    test("drop a file → minting lasts as long as the request → live carries the minted slug → Keep keeps it from the manage screen", async ({
       page,
+      baseURL,
     }) => {
+      test.skip(!!SKIP_OWNER_UI, String(SKIP_OWNER_UI));
+      // A publish, a sign-in and a keep against remote Neon: the live-stack
+      // budget, not Playwright's 30 s default.
+      test.setTimeout(LIVE_STACK_TIMEOUT);
       await page.goto("/");
       await page.waitForLoadState("networkidle");
 
@@ -132,11 +148,13 @@ test.describe("publish flow", () => {
       await expect(face(page, "minting")).toHaveCSS("opacity", "0");
 
       // A minted page is a DRAFT, and the next step offers to keep it. That
-      // step is a NAVIGATION into E05's keep flow at /keep/{token} — the only
-      // path that parks the keep intent, carries it through sign-in and
-      // actually attaches the page. The inert sign-in panel that used to open
-      // here instead (two provider buttons with no handlers, and no keep intent
-      // at all) is gone; this asserts it cannot come back.
+      // step is a NAVIGATION to the publisher's own manage screen at
+      // /p/{token}, whose "Keep it forever →" parks the keep intent, carries
+      // it through sign-in and actually attaches the page. Not /keep/{token}:
+      // that is the claim page for somebody handed a link, and it greeted the
+      // publisher as a stranger. The inert sign-in panel that once opened here
+      // (two provider buttons with no handlers, and no keep intent at all) is
+      // gone; this asserts it cannot come back.
       await expect(
         page.getByRole("heading", { name: "Keep this page" }),
       ).toHaveCount(0);
@@ -145,19 +163,37 @@ test.describe("publish flow", () => {
       // Keyed by the token the publish response returned — not an invented one,
       // and not a panel that would have carried no token at all.
       await expect(page).toHaveURL(
-        new RegExp(`/keep/${encodeURIComponent(body.anonToken)}$`),
+        new RegExp(`/p/${encodeURIComponent(body.anonToken)}$`),
+        { timeout: 30_000 },
       );
-      // No panel opened on the way, and the pre-pivot "Claim this page"
-      // framing is gone entirely.
-      await expect(
-        page.getByRole("heading", { name: "Keep this page" }),
-      ).toHaveCount(0);
+      // The pre-pivot "Claim this page" framing is gone entirely, and the
+      // screen it reaches is the manage screen for THAT page.
       await expect(page.getByText(/Claim this page/)).toHaveCount(0);
-      // …and the screen it reaches is the keep screen for THAT page.
-      await expect(
-        page.getByRole("button", { name: "Keep it forever" }),
-      ).toBeVisible();
-      await expect(page.getByText(host, { exact: false }).first()).toBeVisible();
+      await expect(page.getByRole("heading", { level: 1 })).toHaveText(host);
+
+      // …and keeping from it is the whole keep: signed out, to sign-in with
+      // the intent parked, then attached on the way back.
+      const scope = newScope();
+      try {
+        await resultScreenHydrated(page);
+        await page.getByRole("button", { name: "Keep it forever →" }).click();
+        await expect(page).toHaveURL("/auth/keep", { timeout: 30_000 });
+        const { userId } = await signInAs(page, baseURL!, scope);
+        await page.goto("/auth/callback");
+        await expect(page).toHaveURL(
+          `/auth/callback/done?outcome=kept&slug=${body.slug}`,
+          { timeout: 30_000 },
+        );
+        await expect(page.getByRole("heading", { name: "Kept forever" })).toBeVisible();
+        const [row] = await db
+          .select()
+          .from(schema.sites)
+          .where(eq(schema.sites.slug, body.slug));
+        expect(row?.ownerId).toBe(userId);
+        expect(row?.expiresAt, "kept means no clock").toBeNull();
+      } finally {
+        await cleanup(scope);
+      }
     });
 
     test("paste is publish-equivalent: same path, same phases, same minted link — and under reduced motion it crossfades straight to live", async ({

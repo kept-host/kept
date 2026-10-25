@@ -821,11 +821,11 @@ export default function KeptLanding() {
                     marginTop: 18,
                   }}
                 >
-                  {/* Into E05's keep flow at /keep/{token} — the only path
-                      that carries the keep intent through sign-in and actually
-                      attaches the page. See `KeptEngine.keep`. */}
+                  {/* To the manage screen at /p/{token}, whose "Keep it
+                      forever →" carries the keep intent through sign-in and
+                      attaches the page. See `KeptEngine.manage`. */}
                   <button
-                    onClick={() => e()?.keep()}
+                    onClick={() => e()?.manage()}
                     style={{
                       fontFamily: "var(--font-display)",
                       fontWeight: 600,
