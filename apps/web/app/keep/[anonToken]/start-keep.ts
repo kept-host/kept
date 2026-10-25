@@ -7,7 +7,8 @@
  * the same way:
  *
  *   1. **The token never travels.** It is closed over by the inline action in
- *      `./page.tsx` when the screen renders, so it goes into no URL, no query
+ *      `./page.tsx` (and its twin on `/p/[anonToken]`, the publisher's own
+ *      screen) when the screen renders, so it goes into no URL, no query
  *      string and no visible form field — Next encrypts the closed-over
  *      variables of an inline server action before they reach the document.
  *      (`.bind()` does NOT: its arguments are serialised into a plaintext hidden

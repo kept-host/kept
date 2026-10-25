@@ -797,21 +797,6 @@ export class KeptEngine {
     if (input) input.value = "";
     void this.publishFiles(entries);
   };
-  /**
-   * Keep the draft that was just published. `/keep/{token}` is E05's one and
-   * only entry into the keep flow: it parks the keep intent, sends a signed-out
-   * visitor through `/auth` and back, then attaches the page on return. A
-   * sign-in panel spliced in here would carry no keep intent at all, so the
-   * page would never actually be kept — which is precisely what the dead modal
-   * this replaced did.
-   *
-   * On the apex the middleware 307s `/keep/*` to the `app.` host, so the
-   * relative path is correct on both origins.
-   */
-  keep = () => {
-    const token = this.published?.anonToken;
-    if (token) window.location.assign(`/keep/${encodeURIComponent(token)}`);
-  };
   reset = () => {
     this.liveSlug = PLACEHOLDER_HOST;
     this.published = null;
@@ -827,6 +812,13 @@ export class KeptEngine {
    * The anonymous manage screen for the draft just published. The token is the
    * only handle a signed-out publisher has, so this is a real navigation to a
    * real URL, not a modal: it survives a bookmark and a shared link.
+   *
+   * It is also where keeping starts: `/p/{token}`'s "Keep it forever →" runs
+   * the keep itself (pending-keep cookie, sign-in, attach), so both of the live
+   * face's onward controls land here. `/keep/{token}` is the claim page for a
+   * human somebody else published for, not for the publisher. On the apex the
+   * middleware 307s `/p/*` to the `app.` host, so the relative path is correct
+   * on both origins.
    */
   manage = () => {
     const token = this.published?.anonToken;

@@ -7,6 +7,11 @@
  * the Preview frame reads it again from its own sandboxed route (D-69) — never
  * markup on an `app.` document. A child-sexual-abuse item reads nothing here
  * (D13): its bytes leave only through "Show".
+ *
+ * A multi-file page also lists its current version's files under the preview —
+ * path, size and the type the edge serves it as, from Postgres alone — since
+ * the preview shows `index.html` with no network and the rest of the set would
+ * otherwise be invisible. Withheld with the bytes on a child-sexual-abuse item.
  */
 import { DRAFT_GRACE_DAYS } from "@kept/shared";
 import Link from "next/link";
@@ -17,9 +22,10 @@ import { getAdminSession } from "@/lib/auth/admin";
 import { moderationItem } from "@/lib/db/queries/moderation-screen";
 import { allowedSiteActions, readAdminHtml } from "@/lib/moderation/admin";
 import { withholdsBytes } from "@/lib/moderation/restriction";
+import { extensionOf, siteFileType } from "@/lib/publish/fileset/checks";
 import { liveUrl } from "@/lib/publish/pipeline";
 import { siteIdSchema } from "@/lib/sites/owner-routes";
-import { CHANNEL_LABEL, formatTimestamp } from "@/lib/sites/display";
+import { CHANNEL_LABEL, fileSetSummary, formatBytes, formatTimestamp } from "@/lib/sites/display";
 
 import { Section } from "../../../../(app)/site/[id]/section";
 import { ADMIN_METADATA, AdminShell } from "../../admin-shell";
@@ -63,7 +69,7 @@ export default async function ModerationItemPage({ params }: { params: Promise<{
   const item = await moderationItem(id.data);
   if (!item) notFound();
 
-  const { site, scan, reports, appeals, timeline } = item;
+  const { site, scan, reports, appeals, timeline, files } = item;
   const withheld = withholdsBytes({ moderationReason: site.reason });
   const html = withheld ? null : await readAdminHtml(site);
   const openReportIds = reports.filter((report) => report.status === "open").map((report) => report.id);
@@ -147,6 +153,27 @@ export default async function ModerationItemPage({ params }: { params: Promise<{
         ) : (
           <PreviewPanel html={html} siteId={site.id} slug={site.slug} />
         )}
+        {!withheld && files.length > 1 ? (
+          <div data-testid="item-files" className="flex flex-col gap-2">
+            <p data-testid="item-files-summary" className="text-sm text-text-secondary">
+              {fileSetSummary(
+                files.length,
+                files.reduce((total, file) => total + file.sizeBytes, 0),
+              )}
+            </p>
+            <ul className="max-h-72 overflow-auto rounded-[var(--r-md)] border border-border bg-sunken p-3 font-mono text-xs">
+              {files.map((file) => (
+                <li key={file.path} data-testid="item-file" className="grid grid-cols-[1fr_auto_auto] gap-x-4 py-0.5">
+                  <span className="min-w-0 break-all text-text">{file.path}</span>
+                  <span className="text-right text-text-secondary">{formatBytes(file.sizeBytes)}</span>
+                  <span className="text-text-muted">
+                    {siteFileType(extensionOf(file.path))?.contentType ?? "application/octet-stream"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
       </Section>
 
       <Section

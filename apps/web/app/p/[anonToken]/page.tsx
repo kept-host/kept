@@ -10,17 +10,28 @@
  *
  * - `robots: noindex, nofollow` — a manage link in a search index is somebody
  *   else's delete button.
- * - `referrer: "no-referrer"` — every outbound navigation from this document
- *   would otherwise carry the token in a `Referer` header to whatever it lands
- *   on, including the visitor's own hosted page. The metadata sets it for the
- *   whole document; `LiveUrlBlock` also pins `rel="noopener noreferrer"` on the
- *   one link that leaves the origin.
+ * - `referrer: "same-origin"` — every cross-origin navigation from this
+ *   document would otherwise carry the token in a `Referer` header to whatever
+ *   it lands on, including the visitor's own hosted page. Not `no-referrer`:
+ *   under that policy Chrome sends a form POST with `Origin: null`, which
+ *   Next's server-action check cannot parse, so "Keep it forever →" pressed
+ *   before hydration (or with no JavaScript) was a 500. Same-origin requests
+ *   only reach this app, which already holds the token. The metadata sets it
+ *   for the whole document; `LiveUrlBlock` also pins `rel="noopener noreferrer"`
+ *   on the one link that leaves the origin.
  * - The token is never logged. The failure log below names the site id and the
  *   slug, which diagnose everything and grant nothing.
  *
  * THE READ IS A DIRECT POSTGRES READ from a server component, per the repo's
  * architecture rule, through the ONE token resolver
  * (`lib/publish/anon-token.ts`). No second hashing, no second 404 shape.
+ *
+ * "KEEP IT FOREVER" IS THE CLAIM PAGE'S OWN ACTION, not a link to it. The
+ * person on this screen published the page; sending them through
+ * `/keep/[anonToken]` ("someone shared this page with you") only to press a
+ * second Keep button was a detour. The inline action below closes over the
+ * token exactly as the claim page's does, and `startKeep` takes it from there —
+ * the sign-in round trip, the immediate keep, or the at-cap swap screen.
  *
  * A RESTRICTED PAGE (E07 §6.10, AC38) — under review, hidden, or removed before
  * its `purge_after` — gets the restricted view instead: the banner, the reason
@@ -44,6 +55,7 @@ import { resolveAnonToken } from "@/lib/publish/anon-token";
 import { liveUrl } from "@/lib/publish/pipeline";
 import { readPreviewHtml } from "@/lib/publish/preview";
 import { isPastGrace } from "@/lib/sites/keep";
+import { startKeep } from "@/app/keep/[anonToken]/start-keep";
 import { ResultScreen } from "./result-screen";
 
 /** `postgres-js` needs TCP sockets and `aws4fetch` signs with Node's crypto. */
@@ -56,7 +68,7 @@ export const metadata: Metadata = {
   title: "Your page",
   description: "Copy, replace, delete or keep the page you just published.",
   robots: { index: false, follow: false },
-  referrer: "no-referrer",
+  referrer: "same-origin",
 };
 
 export default async function ResultPage({
@@ -93,6 +105,13 @@ export default async function ResultPage({
 
   const html = await readPreviewHtml(site, "result");
 
+  // Closed over, never bound: see the same action in `app/keep/[anonToken]/page.tsx`
+  // for why the token must not become a plaintext form field.
+  async function keepThisPage() {
+    "use server";
+    await startKeep(anonToken);
+  }
+
   return (
     <ResultShell>
       <ResultScreen
@@ -100,6 +119,7 @@ export default async function ResultPage({
         liveUrl={url}
         slug={site.slug}
         status={site.status}
+        keepAction={keepThisPage}
         // The chip, the preview and the QR are rendered HERE, on the server:
         // the chip so its countdown cannot disagree with a hydrated clock, the
         // QR so the encoder never reaches the browser bundle, the preview so

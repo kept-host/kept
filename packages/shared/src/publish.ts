@@ -103,7 +103,10 @@ const publishOptionsShape = {
   reminderEmail: z.string().email().optional(),
 };
 
-/** Opt in to the SPA fallback (D12): an extensionless path serves the root `index.html`. Absent = false. */
+/**
+ * Opt in to the SPA fallback (D12): an extensionless path serves the root `index.html`. Absent = false.
+ * A path ending in `/` is not rewritten: `/notes/7/` reads `notes/7/index.html` and 404s without it.
+ */
 const spaField = z.boolean().optional();
 
 /**
@@ -153,7 +156,10 @@ export type HtmlPublishRequest = z.infer<typeof htmlPublishRequestSchema>;
  *   `form.append("files", file, "assets/app.js")`; a browser keeps only the
  *   basename unless the third argument is given — or as one `archive` part
  *   holding a `.zip`.
- * - `spa: true` opts in to the SPA fallback (D12).
+ * - `spa: true` opts in to the SPA fallback (D12). Only an extensionless path
+ *   with no trailing slash is rewritten to the root `index.html`: `/notes/7`
+ *   is, but `/notes/7/` reads `notes/7/index.html` and 404s unless that file
+ *   exists, so an SPA's routes must not end in `/`.
  * - Link to a folder's page as `/about/`, not `/about`. Without `spa`, the
  *   Worker answers `/about` with a 301 to `/about/` when `about/index.html`
  *   exists (Q-new-6), which costs the visitor a redirect and an extra read.

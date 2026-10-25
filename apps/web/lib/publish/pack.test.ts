@@ -12,7 +12,7 @@ import { test } from "node:test";
 
 import { INLINE_BODY_MAX_BYTES } from "@kept/shared";
 
-import { inlineTooLarge, missingIndex } from "./fileset/copy";
+import { inlineTooLarge, missingIndex, NOT_A_PAGE } from "./fileset/copy";
 import { readZipStream } from "./fileset/zip";
 import { isFailure } from "./fileset/types";
 import {
@@ -92,7 +92,7 @@ test("toIntent refuses before any request: an empty drop, and one file that is n
 
   const png = toIntent([{ path: "photo.png", file: file("photo.png", PNG, "image/png") }]);
   assert.ok(isRefusal(png));
-  assert.equal(png.message, "That's a .png. kept publishes HTML pages — drop an .html file.");
+  assert.equal(png.message, NOT_A_PAGE);
   console.log("[pack] refusals:", empty.error, "/", png.message);
 });
 

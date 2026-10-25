@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { KeyRound, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
@@ -47,6 +47,7 @@ export function ResultScreen({
   liveUrl,
   slug,
   status,
+  keepAction,
   chip,
   preview,
   qr,
@@ -55,12 +56,15 @@ export function ResultScreen({
   liveUrl: string;
   slug: string;
   status: SiteStatus;
+  /** The keep, as a server action with the token closed over (`./page.tsx`). */
+  keepAction: () => Promise<void>;
   chip: ReactNode;
   preview: ReactNode;
   qr: ReactNode;
 }) {
   const router = useRouter();
   const [replaceOpen, setReplaceOpen] = useState(false);
+  const replacePanel = useRef<HTMLDivElement>(null);
   const [replacedAt, setReplacedAt] = useState<number | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -68,6 +72,14 @@ export function ResultScreen({
   const [deleted, setDeleted] = useState(false);
 
   const host = new URL(liveUrl).host;
+
+  // The panel opens below the fold; without this, Replace looks like it did
+  // nothing at all.
+  useEffect(() => {
+    if (replaceOpen) {
+      replacePanel.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [replaceOpen]);
 
   async function confirmDelete() {
     setDeleting(true);
@@ -133,9 +145,11 @@ export function ResultScreen({
           Keeping attaches this page to an account and clears the clock. The page
           stays exactly where it is — same link, same file, no downtime.
         </p>
-        <Button asChild className="mb-5 w-full">
-          <Link href={`/keep/${anonToken}`}>Keep it forever →</Link>
-        </Button>
+        <form action={keepAction} className="mb-5">
+          <Button type="submit" className="w-full">
+            Keep it forever →
+          </Button>
+        </form>
 
         <ReminderForm anonToken={anonToken} />
       </div>
@@ -184,6 +198,7 @@ export function ResultScreen({
 
       <div
         id="replace-panel"
+        ref={replacePanel}
         hidden={!replaceOpen}
         className="w-full rounded-[var(--r-lg)] border border-border bg-surface p-5 text-left shadow-[var(--shadow-sm)]"
       >

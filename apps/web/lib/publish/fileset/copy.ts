@@ -60,6 +60,14 @@ function files(n: number): string {
   return n === 1 ? "1 file" : `${count(n)} files`;
 }
 
+/**
+ * A single dropped file that is neither a page nor a zip (AC7). One sentence
+ * for every drop surface, naming everything kept does take — a file, a folder,
+ * a zip — rather than the one thing that was dropped.
+ */
+export const NOT_A_PAGE =
+  "kept needs an HTML file. Drop an .html file, or a folder or .zip with an index.html in it.";
+
 export function missingIndex(): string {
   return "There's no index.html at the top of this folder. kept opens index.html first — add one or move it up a level.";
 }

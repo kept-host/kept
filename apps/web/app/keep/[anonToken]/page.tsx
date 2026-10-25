@@ -25,8 +25,10 @@
  *
  * THE URL IS A BEARER CREDENTIAL, same as the manage link:
  * `robots: noindex, nofollow` keeps it out of search indexes,
- * `referrer: "no-referrer"` keeps it out of the `Referer` header of every
- * outbound navigation (including the hosted page itself), no link on this page
+ * `referrer: "same-origin"` keeps it out of the `Referer` header of every
+ * cross-origin navigation (including the hosted page itself) while letting the
+ * keep form's native POST carry a real `Origin` (see `/p`'s page for why not
+ * `no-referrer`), no link on this page
  * carries the token, the keep form closes over it inside a server action rather
  * than writing it into a field, and the token is never logged.
  */
@@ -60,7 +62,7 @@ export const metadata: Metadata = {
   title: "Keep this page",
   description: "Someone published a page with kept and shared it with you.",
   robots: { index: false, follow: false },
-  referrer: "no-referrer",
+  referrer: "same-origin",
 };
 
 /**

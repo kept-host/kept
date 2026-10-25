@@ -43,7 +43,10 @@ export async function GET(request: NextRequest): Promise<Response> {
     (await cookies()).set(EXPORT_READY_COOKIE, exportReadyValue(token, response.ok ? "started" : "failed"), {
       path: EXPORT_READY_PATH,
       maxAge: EXPORT_READY_MAX_AGE_SECONDS,
-      sameSite: "strict",
+      // `lax`, not `strict`: it is not a credential (`lib/sites/export-ready.ts`),
+      // and nothing is gained by asking the browser to judge the download's
+      // site context before it keeps a signal the page only reads.
+      sameSite: "lax",
       secure: true,
     });
   }
