@@ -6,20 +6,15 @@ name: Cron — repurge
 # it stands, then purged). The substrate and its reasoning are
 # `cron-draft-reminder.yml`'s; the call is `cron-post.yml`.
 #
-# OFF UNTIL SWITCHED ON, PER TRACK. A track's schedule runs only when its
-# repository variable is `true`, so merging this file replays nothing until
-# someone decides it should:
-#   * dev  — `REPURGE_ENABLED`
-#   * prod — `PROD_REPURGE_ENABLED` (environment `prod-cron`)
-# A manual dispatch runs the track picked in `target`, enabled or not.
+# SCHEDULED BY `apps/scheduler` (D-88), not here. The scheduler Worker POSTs
+# the route every 12 minutes (:07, :19, :31, :43, :55) on each track whose
+# `CRON_JOBS` (apps/scheduler/wrangler.toml) lists `repurge`. This workflow is
+# the manual button: a dispatch runs the track picked in `target`.
 #
 # Dev KV is on the free plan (1k writes a day): a replayed row that names a site
 # re-writes its manifest, so test runs that leave rows behind spend that quota.
 
 on:
-  schedule:
-    # Every 12 minutes, off the hour: :07, :19, :31, :43, :55.
-    - cron: "7-59/12 * * * *"
   workflow_dispatch:
     inputs:
       target:
@@ -35,7 +30,7 @@ permissions:
 jobs:
   dev:
     name: Replay pending purges (dev)
-    if: ${{ (github.event_name == 'schedule' && vars.REPURGE_ENABLED == 'true') || inputs.target == 'dev' }}
+    if: ${{ inputs.target == 'dev' }}
     uses: ./.github/workflows/cron-post.yml
     with:
       environment: dev
@@ -44,7 +39,7 @@ jobs:
 
   prod:
     name: Replay pending purges (prod)
-    if: ${{ (github.event_name == 'schedule' && vars.PROD_REPURGE_ENABLED == 'true') || inputs.target == 'prod' }}
+    if: ${{ inputs.target == 'prod' }}
     uses: ./.github/workflows/cron-post.yml
     with:
       environment: prod-cron

@@ -4,24 +4,20 @@ name: Cron — expire
 # `expired`, one page at a time under the owner and row locks, and writes the
 # `expired` manifest so the edge serves "This draft wasn't kept" (410). Kept
 # pages and flagged drafts are never touched. The substrate and its reasoning
-# are `cron-draft-reminder.yml`'s; the call is `cron-post.yml` (whose
-# concurrency group keeps two runs from overlapping, edge case 14).
+# are `cron-draft-reminder.yml`'s; the call is `cron-post.yml`. Two runs
+# cannot overlap on the clock (an hour apart, each done in ~50 s); a manual run
+# during a scheduled one is safe: each page is expired under its row locks.
 #
-# OFF UNTIL SWITCHED ON, PER TRACK. A track's schedule runs only when its
-# repository variable is `true`, so merging this file expires nothing until
-# someone decides it should:
-#   * dev  — `EXPIRE_ENABLED`
-#   * prod — `PROD_EXPIRE_ENABLED` (environment `prod-cron`)
-# A manual dispatch runs the track picked in `target`, enabled or not.
+# SCHEDULED BY `apps/scheduler` (D-88), not here. The scheduler Worker POSTs
+# the route hourly at :23 on each track whose `CRON_JOBS`
+# (apps/scheduler/wrangler.toml) lists `expire`. This workflow is the manual
+# button: a dispatch runs the track picked in `target`.
 #
 # Dev KV is on the free plan (1k writes a day): every expired draft is one KV
 # write, so the first run on a track with a backlog of overdue drafts spends
 # that much quota (500 per batch, 50 s per run).
 
 on:
-  schedule:
-    # Hourly at :23 — off the hour and off the 12-minute jobs' minutes.
-    - cron: "23 * * * *"
   workflow_dispatch:
     inputs:
       target:
@@ -37,7 +33,7 @@ permissions:
 jobs:
   dev:
     name: Expire drafts (dev)
-    if: ${{ (github.event_name == 'schedule' && vars.EXPIRE_ENABLED == 'true') || inputs.target == 'dev' }}
+    if: ${{ inputs.target == 'dev' }}
     uses: ./.github/workflows/cron-post.yml
     with:
       environment: dev
@@ -46,7 +42,7 @@ jobs:
 
   prod:
     name: Expire drafts (prod)
-    if: ${{ (github.event_name == 'schedule' && vars.PROD_EXPIRE_ENABLED == 'true') || inputs.target == 'prod' }}
+    if: ${{ inputs.target == 'prod' }}
     uses: ./.github/workflows/cron-post.yml
     with:
       environment: prod-cron

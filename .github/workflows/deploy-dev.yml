@@ -8,7 +8,8 @@ name: Deploy dev
 # Dev is intentionally NOT guarded on branch source — fast iteration is the
 # point of the dev track. Only `prod-v*` is guarded (see release.yml).
 #
-# ORDERING — validate -> migrate -> edge -> web -> smoke. Never reorder.
+# ORDERING — validate -> migrate -> edge -> web -> smoke -> scheduler. Never
+# reorder.
 #   * The Worker (apps/edge) READS KV + R2 only and never touches the database,
 #     so a new Worker version is safe against both the old and the new schema.
 #     That is why it deploys early.
@@ -230,3 +231,46 @@ jobs:
           # The POOLED runtime URL — the smoke probe checks what the running
           # app uses, not the direct migration endpoint.
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+  # ---------------------------------------------------------------------------
+  # 6. scheduler — the cron Worker (apps/scheduler, D-88). It POSTs to the
+  # control plane's /api/cron/* routes, so it lands after the control plane it
+  # calls has passed smoke. Not the data plane: it serves nothing, reads no store.
+  # ---------------------------------------------------------------------------
+  scheduler:
+    name: Deploy scheduler (dev)
+    needs: smoke
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_REF }}
+
+      - name: Setup workspace
+        uses: ./.github/actions/setup
+
+      - name: wrangler deploy --env dev
+        run: pnpm --filter @kept/scheduler deploy:dev
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # The bearer the cron routes check, from this environment's CRON_SECRET.
+      # Piped on stdin so it never reaches argv or the log. A Worker secret
+      # outlives deploys; re-putting it each time keeps it equal to the
+      # GitHub secret after a rotation.
+      - name: wrangler secret put CRON_SECRET
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::error::CRON_SECRET is not set in the dev environment"
+            exit 1
+          fi
+          printf '%s' "$CRON_SECRET" | pnpm --filter @kept/scheduler exec wrangler secret put CRON_SECRET --env dev
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

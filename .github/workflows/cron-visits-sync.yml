@@ -1,10 +1,7 @@
 name: Cron — visits sync
 
-# E06 task 009 (D8). Same substrate as cron-draft-reminder.yml — read that
-# file's header for why the scheduler is a GitHub Actions workflow calling an
-# authenticated route and never a Worker `[triggers]` cron: a Worker cron would
-# make the data plane call the control plane. The call itself is
-# `cron-post.yml`, shared by every cron workflow.
+# E06 task 009 (D8). The substrate and its reasoning are
+# `cron-draft-reminder.yml`'s; the call is `cron-post.yml`.
 #
 # WHAT IT DOES: once a day, POST /api/cron/visits-sync, which reads the most
 # recent complete UTC day's per-hostname request counts from Cloudflare's
@@ -13,24 +10,15 @@ name: Cron — visits sync
 # not change. `workflow_dispatch` takes `days` (1–30) for the first-run
 # backfill: run it once by hand per track with `days=30`.
 #
-# OFF UNTIL SWITCHED ON, PER TRACK. The route needs `Zone → Analytics → Read`
-# on that track's control-plane CLOUDFLARE_API_TOKEN (Railway). Until a track
-# has it, every scheduled run would fail on Cloudflare's `authz` refusal and
-# paint the Actions tab red daily for a reason nobody can act on in code. So a
-# track's SCHEDULED job runs only when its repository variable is `true`:
-#   * dev  — `VISITS_SYNC_ENABLED`
-#   * prod — `PROD_VISITS_SYNC_ENABLED` (environment `prod-cron`, see cron-post.yml)
-# otherwise it is skipped, grey, not red. Repository variables, because a
-# job-level `if:` is decided before the job enters an environment and cannot
-# read environment variables. A MANUAL dispatch runs the track picked in
-# `target`, enabled or not: asking for a sync by hand is asking to see whether
-# it works, and a refusal there should fail loudly.
+# SCHEDULED BY `apps/scheduler` (D-88), not here. The scheduler Worker POSTs
+# the route daily at 03:17 UTC (the previous UTC day is complete) on each track
+# whose `CRON_JOBS` (apps/scheduler/wrangler.toml) lists `visits-sync`. This
+# workflow is the manual button: a dispatch runs the track picked in `target`.
+# The route needs `Zone → Analytics → Read` on that track's control-plane
+# CLOUDFLARE_API_TOKEN (Railway); without it every run fails on Cloudflare's
+# `authz` refusal, so list it for prod only once the prod token has it.
 
 on:
-  schedule:
-    # 03:17 UTC daily: the previous UTC day is complete, and an off-the-hour
-    # minute keeps it out of the top-of-the-hour queue GitHub delays most.
-    - cron: "17 3 * * *"
   workflow_dispatch:
     inputs:
       target:
@@ -50,7 +38,7 @@ permissions:
 jobs:
   dev:
     name: Sync visits (dev)
-    if: ${{ (github.event_name == 'schedule' && vars.VISITS_SYNC_ENABLED == 'true') || inputs.target == 'dev' }}
+    if: ${{ inputs.target == 'dev' }}
     uses: ./.github/workflows/cron-post.yml
     with:
       environment: dev
@@ -60,7 +48,7 @@ jobs:
 
   prod:
     name: Sync visits (prod)
-    if: ${{ (github.event_name == 'schedule' && vars.PROD_VISITS_SYNC_ENABLED == 'true') || inputs.target == 'prod' }}
+    if: ${{ inputs.target == 'prod' }}
     uses: ./.github/workflows/cron-post.yml
     with:
       environment: prod-cron

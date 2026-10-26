@@ -1,69 +1,39 @@
 name: Cron — draft reminder
 
-# THE REPO'S SCHEDULER SUBSTRATE (E05 task 011). There was none before this
-# file — no Vercel `crons`, no Railway cron service, no Worker `[triggers]`, no
-# scheduled Action — and **E07 inherits this choice** for the draft-expiry sweep
-# and the grace-end purge. The reasoning, because the next person will need it:
+# E05 task 011. Mails the owner of each anonymous draft (one that left a
+# reminder address) once, about two days before it expires; at most
+# `REMINDER_RUN_CAP` (40) a run, nearest expiry first.
 #
-#   CHOSEN — a scheduled GitHub Actions workflow calling an authenticated route.
-#     * The schedule is committed, reviewed and diffed like any other code. A
-#       Railway cron lives in a dashboard, where nobody can see it in a PR.
-#     * GitHub Environments already hold per-track secrets (E02 task 004), so
-#       `dev` and `prod` are isolated by the same mechanism as every deploy —
-#       no new secret topology, no new provider account.
-#     * It costs nothing: Actions minutes are free on public repos, and the job
-#       is a single `curl`, not a container running a copy of the app.
-#     * It scales to E07 by adding steps, not substrate. The endpoint contract
-#       — POST, bearer secret, idempotent, capped, replayable — is the thing
-#       being reused, and it is provider-agnostic: if this ever moves to a
-#       Railway cron or a queue, the routes do not change.
-#     * `workflow_dispatch` makes a run reproducible by hand, which is what
-#       makes it debuggable.
+# THE CRON SUBSTRATE (D-88, 2026-10-26) — every cron-*.yml shares it. A cron is
+# an idempotent, capped control-plane route, POST /api/cron/<job> with
+# `Authorization: Bearer CRON_SECRET`. Two things call it:
+#   * `apps/scheduler`, a Cloudflare Worker with one every-minute trigger per
+#     track, on the clock. Its schedule table is `apps/scheduler/src/jobs.ts`;
+#     which jobs a track runs is `CRON_JOBS` in its wrangler.toml, so turning a
+#     job on is a reviewed PR and a deploy.
+#   * these workflows, by hand (`workflow_dispatch`, through `cron-post.yml`),
+#     for a test or an incident.
 #
-#   REJECTED — a Cloudflare Worker `[triggers]` cron. It would make the DATA
-#     PLANE call the CONTROL PLANE, inverting the architecture's one-directional
-#     boundary. `apps/edge` reads R2 + KV and nothing else, precisely so that a
-#     control-plane outage cannot take a hosted page offline; giving the Worker
-#     a reason to call `apps/web` creates exactly the coupling the whole design
-#     exists to prevent. Not a close call — this one is a rule, not a trade-off.
+#   WHY NOT A GITHUB `schedule:` (the substrate until 2026-10-26). Best-effort,
+#     and on this repo far worse than "delayed by minutes": over 2026-10-19 →
+#     10-26 it fired the 12-minute jobs about 5% of the time (median gap 4 h),
+#     the hourly one 23%, and the dailies 4–6 h late.
 #
-#   REJECTED — a Railway cron service. It is a second service running the app
-#     image on a schedule: more cost, a second deploy target to keep in sync
-#     with `apps/web`, and configuration that lives in a dashboard instead of
-#     the repo. Its one real advantage — no public endpoint needed — is not an
-#     advantage here, because the endpoint is authenticated anyway and E07's
-#     jobs want to be dispatchable by hand during an incident.
+#   WHY A SEPARATE WORKER, AND STILL NEVER A CRON IN `apps/edge`. The data
+#     plane must never call the control plane: `apps/edge` reads R2 + KV and
+#     nothing else, so a control-plane outage cannot take a hosted page
+#     offline. That rule stands. `apps/scheduler` serves nothing, reads no
+#     store and shares no code or deploy with `apps/edge`; if it breaks, only
+#     the crons stop. It is free (one of the account's five free Cron
+#     Triggers per track) and on time to the minute.
 #
-#   REJECTED — Vercel crons. The control plane is on Railway (E02). Not
-#     available, listed only so nobody re-proposes it from habit.
+#   REJECTED — a Railway cron service. Cheap as a run-and-exit script, but runs
+#     at least 5 minutes apart, drifts by minutes, and lives in a dashboard.
 #
-# THE KNOWN COST OF THIS CHOICE: GitHub's scheduled runs are best-effort and can
-# be delayed by minutes to an hour under load, and are skipped entirely on a
-# repo with no activity for 60 days. Both are acceptable for a T-2d reminder and
-# for E07's daily sweeps — nothing here is time-critical to the minute — but
-# neither would be acceptable for a job with a tight SLA. If E07 ever needs one,
-# that is the moment to revisit, not before.
-#
-# TRACKS — one job per track, each switched on independently, both calling
-# `cron-post.yml`:
-#   * dev  — scheduled runs only when the repository variable
-#     `DRAFT_REMINDER_ENABLED` is `true` (off by default: dev reminders mail
-#     test pages' owners and spend the shared Resend quota).
-#   * prod — scheduled runs only when the repository variable
-#     `PROD_DRAFT_REMINDER_ENABLED` is `true`, so the schedule stays grey (not
-#     red) until prod is deployed and its `prod-cron` environment holds
-#     `CRON_SECRET` and `SMOKE_WEB_URL`. A repository variable, because a
-#     job-level `if:` is decided before the job enters an environment and
-#     cannot read environment variables.
-# A manual dispatch runs the one track picked in `target`, enabled or not:
-# asking for a run by hand is asking to see whether it works.
+# Dev's CRON_JOBS leaves this job out: dev reminders mail test pages' owners
+# and spend the shared Resend quota. Dispatch it by hand to test.
 
 on:
-  schedule:
-    # 09:00 UTC daily. Once a day is the right frequency for a T-2d window that
-    # is 48 hours wide: a draft cannot fall through it, and a delayed run is
-    # still comfortably inside it.
-    - cron: "0 9 * * *"
   workflow_dispatch:
     inputs:
       target:
@@ -79,7 +49,7 @@ permissions:
 jobs:
   dev:
     name: Send draft reminders (dev)
-    if: ${{ (github.event_name == 'schedule' && vars.DRAFT_REMINDER_ENABLED == 'true') || inputs.target == 'dev' }}
+    if: ${{ inputs.target == 'dev' }}
     uses: ./.github/workflows/cron-post.yml
     with:
       environment: dev
@@ -88,7 +58,7 @@ jobs:
 
   prod:
     name: Send draft reminders (prod)
-    if: ${{ (github.event_name == 'schedule' && vars.PROD_DRAFT_REMINDER_ENABLED == 'true') || inputs.target == 'prod' }}
+    if: ${{ inputs.target == 'prod' }}
     uses: ./.github/workflows/cron-post.yml
     with:
       environment: prod-cron

@@ -1,18 +1,16 @@
 name: Cron — POST an authenticated route
 
-# The one job every cron workflow runs, once per track. Callers (cron-*.yml)
-# own the schedule and the per-track on/off switch; this file owns the call.
-# The substrate and its reasoning are `cron-draft-reminder.yml`'s header: a
-# scheduled GitHub Actions workflow calling an authenticated control-plane
-# route, never a Worker `[triggers]` cron.
+# The one job every cron workflow runs when dispatched by hand. The clock is
+# `apps/scheduler` (D-88); this file is the manual path to the same routes.
+# The substrate and its reasoning are `cron-draft-reminder.yml`'s header.
 #
 # TRACKS — the caller passes the GitHub Environment that holds the track's
 # `CRON_SECRET` (secret) and `SMOKE_WEB_URL` (variable, the `app.` origin):
 #   * `dev`       — the dev deploy environment, as before.
 #   * `prod-cron` — NOT `prod`. `prod` carries the required-reviewer rule that
-#     gates `release.yml`; a scheduled job entering it would sit waiting for a
-#     human every day. `prod-cron` holds only what a cron call needs (no deploy
-#     credential), limited to the `main` branch, with no reviewer.
+#     gates `release.yml`; a cron call entering it would wait for a reviewer.
+#     `prod-cron` holds only what a cron call needs (no deploy credential),
+#     limited to the `main` branch, with no reviewer.
 #
 # No checkout and no toolchain: one authenticated HTTP call. Batching, caps and
 # idempotency live in the application, where they are typechecked and tested.
