@@ -1,0 +1,57 @@
+# @kept/scheduler — Cloudflare Worker that runs the control plane's crons (D-88).
+#
+# Its only job is a clock: once a minute it POSTs to whichever
+# `{KEPT_APP_ORIGIN}/api/cron/<job>` routes are due, with `Authorization: Bearer
+# CRON_SECRET`. It replaced GitHub Actions `schedule:`, which fired the
+# 12-minute jobs about 5% of the time (measured 2026-10-19 → 10-26).
+#
+# This is NOT the data plane. `apps/edge` serves pages and must never call the
+# control plane; this Worker serves nothing, has no route, and touches no store.
+# If it breaks, hosted pages are unaffected — only the crons stop.
+#
+# ONE TRIGGER PER ENVIRONMENT. `* * * * *` and the schedule table in
+# `src/jobs.ts` replace the seven per-job crontabs, so each environment uses one
+# of the account's five free Cron Triggers whatever the number of jobs.
+#
+# SWITCHES. `CRON_JOBS` lists the jobs this environment runs, comma-separated;
+# a job not listed never runs, and an unknown name fails every tick. Turning a
+# job on or off is a PR and a deploy (for prod, a release). The GitHub cron
+# workflows stay as manual buttons for running a job by hand.
+#
+# SECRET. `CRON_SECRET` is a Worker secret, put by the deploy job from the
+# GitHub environment's `CRON_SECRET` after `wrangler deploy`. It must match the
+# control plane's.
+#
+# Like `apps/edge`, nothing is top-level: a bare `wrangler deploy` has no
+# trigger and no origin. Always deploy with `--env dev` or `--env prod`.
+
+name = "kept-scheduler"
+main = "src/index.ts"
+compatibility_date = "2026-06-24"
+workers_dev = false
+preview_urls = false
+
+[observability]
+enabled = true
+
+[env.dev]
+name = "kept-scheduler-dev"
+
+[env.dev.triggers]
+crons = ["* * * * *"]
+
+[env.dev.vars]
+KEPT_APP_ORIGIN = "https://app.kept-dev.xyz"
+CRON_JOBS = "repurge,scan-retry,expire,purge,visits-sync"
+
+[env.prod]
+name = "kept-scheduler-prod"
+
+[env.prod.triggers]
+crons = ["* * * * *"]
+
+# Empty until the first prod release proves each job by hand
+# (docs/prod-release.md §4.4); then add it here.
+[env.prod.vars]
+KEPT_APP_ORIGIN = "https://app.kept.host"
+CRON_JOBS = ""
