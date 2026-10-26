@@ -7,20 +7,16 @@ name: Cron — scan retry
 # stay live throughout. The substrate and its reasoning are
 # `cron-draft-reminder.yml`'s; the call is `cron-post.yml`.
 #
-# OFF UNTIL SWITCHED ON, PER TRACK. A track's schedule runs only when its
-# repository variable is `true`, so merging this file scans nothing until
-# someone decides it should:
-#   * dev  — `SCAN_RETRY_ENABLED`
-#   * prod — `PROD_SCAN_RETRY_ENABLED` (environment `prod-cron`)
-# A manual dispatch runs the track picked in `target`, enabled or not.
+# SCHEDULED BY `apps/scheduler` (D-88), not here. The scheduler Worker POSTs
+# the route every 12 minutes (:03, :15, :27, :39, :51) on each track whose
+# `CRON_JOBS` (apps/scheduler/wrangler.toml) lists `scan-retry`. This workflow
+# is the manual button: a dispatch runs the track picked in `target`.
+# List it for prod once prod Railway has `OPENROUTER_API_KEY`.
 #
 # Its first runs on a track work through the pages published before E07 (50
 # per run, newest first) — the same scans `admin:scan --unscanned` runs by hand.
 
 on:
-  schedule:
-    # Every 12 minutes, off the hour and off repurge's minutes: :03, :15, :27, :39, :51.
-    - cron: "3-59/12 * * * *"
   workflow_dispatch:
     inputs:
       target:
@@ -36,7 +32,7 @@ permissions:
 jobs:
   dev:
     name: Retry page scans (dev)
-    if: ${{ (github.event_name == 'schedule' && vars.SCAN_RETRY_ENABLED == 'true') || inputs.target == 'dev' }}
+    if: ${{ inputs.target == 'dev' }}
     uses: ./.github/workflows/cron-post.yml
     with:
       environment: dev
@@ -45,7 +41,7 @@ jobs:
 
   prod:
     name: Retry page scans (prod)
-    if: ${{ (github.event_name == 'schedule' && vars.PROD_SCAN_RETRY_ENABLED == 'true') || inputs.target == 'prod' }}
+    if: ${{ inputs.target == 'prod' }}
     uses: ./.github/workflows/cron-post.yml
     with:
       environment: prod-cron

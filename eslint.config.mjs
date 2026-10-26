@@ -43,5 +43,23 @@ export default tseslint.config(
         },
       ],
     },
+  },
+  // The scheduler Worker reaches the control plane over HTTPS only, never by import.
+  {
+    files: ["apps/scheduler/**/*.{ts,tsx,js,mjs}"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["@kept/web", "@kept/web/*", "**/apps/web/**", "apps/web/*"],
+              message:
+                "apps/scheduler must never import from apps/web; it calls the cron routes over HTTPS.",
+            },
+          ],
+        },
+      ],
+    },
   }
 );

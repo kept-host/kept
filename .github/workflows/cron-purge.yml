@@ -7,22 +7,17 @@ name: Cron — purge
 # version's R2 object, then the row. Clears reporters' names and emails 180 days
 # after their report was resolved. Idempotent: a second run finds nothing. The
 # substrate and its reasoning are `cron-draft-reminder.yml`'s; the call is
-# `cron-post.yml` (whose concurrency group keeps runs from overlapping).
+# `cron-post.yml`.
 #
-# OFF UNTIL SWITCHED ON, PER TRACK. A track's schedule runs only when its
-# repository variable is `true`, so merging this file deletes nothing until
-# someone decides it should:
-#   * dev  — `PURGE_ENABLED`
-#   * prod — `PROD_PURGE_ENABLED` (environment `prod-cron`)
-# A manual dispatch runs the track picked in `target`, enabled or not.
+# SCHEDULED BY `apps/scheduler` (D-88), not here. The scheduler Worker POSTs
+# the route daily at 05:29 UTC on each track whose `CRON_JOBS`
+# (apps/scheduler/wrangler.toml) lists `purge`. This workflow is the manual
+# button: a dispatch runs the track picked in `target`.
 #
 # Dev KV is on the free plan (1k deletes a day): every purged page is one KV
 # delete, so the first run on a track with a backlog spends that much quota.
 
 on:
-  schedule:
-    # 05:29 UTC daily — off the hour, away from the other daily jobs.
-    - cron: "29 5 * * *"
   workflow_dispatch:
     inputs:
       target:
@@ -38,7 +33,7 @@ permissions:
 jobs:
   dev:
     name: Purge pages past their grace (dev)
-    if: ${{ (github.event_name == 'schedule' && vars.PURGE_ENABLED == 'true') || inputs.target == 'dev' }}
+    if: ${{ inputs.target == 'dev' }}
     uses: ./.github/workflows/cron-post.yml
     with:
       environment: dev
@@ -47,7 +42,7 @@ jobs:
 
   prod:
     name: Purge pages past their grace (prod)
-    if: ${{ (github.event_name == 'schedule' && vars.PROD_PURGE_ENABLED == 'true') || inputs.target == 'prod' }}
+    if: ${{ inputs.target == 'prod' }}
     uses: ./.github/workflows/cron-post.yml
     with:
       environment: prod-cron

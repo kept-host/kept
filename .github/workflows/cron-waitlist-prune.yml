@@ -5,18 +5,14 @@ name: Cron — waitlist prune
 # rows that never confirmed, and expired rate-limit buckets. The substrate and
 # its reasoning are `cron-draft-reminder.yml`'s; the call is `cron-post.yml`.
 #
-# OFF UNTIL SWITCHED ON, PER TRACK. A track's schedule runs only when its
-# repository variable is `true` (like the visits sync), so merging this file
-# deletes nothing until someone decides it should:
-#   * dev  — `WAITLIST_PRUNE_ENABLED`
-#   * prod — `PROD_WAITLIST_PRUNE_ENABLED` (environment `prod-cron`), set after
-#     the prod Resend tracking check (docs/prod-release.md §5)
-# A manual dispatch runs the track picked in `target`, enabled or not.
+# SCHEDULED BY `apps/scheduler` (D-88), not here. The scheduler Worker POSTs
+# the route daily at 04:41 UTC on each track whose `CRON_JOBS`
+# (apps/scheduler/wrangler.toml) lists `waitlist-prune`. This workflow is the
+# manual button: a dispatch runs the track picked in `target`.
+# List it for prod after the prod Resend tracking check
+# (docs/prod-release.md §5).
 
 on:
-  schedule:
-    # 04:41 UTC daily — off the hour, away from the other two jobs.
-    - cron: "41 4 * * *"
   workflow_dispatch:
     inputs:
       target:
@@ -32,7 +28,7 @@ permissions:
 jobs:
   dev:
     name: Prune the waitlist (dev)
-    if: ${{ (github.event_name == 'schedule' && vars.WAITLIST_PRUNE_ENABLED == 'true') || inputs.target == 'dev' }}
+    if: ${{ inputs.target == 'dev' }}
     uses: ./.github/workflows/cron-post.yml
     with:
       environment: dev
@@ -41,7 +37,7 @@ jobs:
 
   prod:
     name: Prune the waitlist (prod)
-    if: ${{ (github.event_name == 'schedule' && vars.PROD_WAITLIST_PRUNE_ENABLED == 'true') || inputs.target == 'prod' }}
+    if: ${{ inputs.target == 'prod' }}
     uses: ./.github/workflows/cron-post.yml
     with:
       environment: prod-cron

@@ -49,6 +49,21 @@ importers:
         specifier: ^4.104.0
         version: 4.104.0(@cloudflare/workers-types@4.20260624.1)
 
+  apps/scheduler:
+    devDependencies:
+      '@cloudflare/vitest-pool-workers':
+        specifier: ^0.20.1
+        version: 0.20.1(@cloudflare/workers-types@4.20260624.1)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.10(@types/node@20.19.43)(vite@8.2.0(@types/node@20.19.43)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)))
+      '@cloudflare/workers-types':
+        specifier: ^4.20260624.1
+        version: 4.20260624.1
+      vitest:
+        specifier: ^4.1.10
+        version: 4.1.10(@types/node@20.19.43)(vite@8.2.0(@types/node@20.19.43)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4))
+      wrangler:
+        specifier: ^4.104.0
+        version: 4.104.0(@cloudflare/workers-types@4.20260624.1)
+
   apps/web:
     dependencies:
       '@babel/parser':

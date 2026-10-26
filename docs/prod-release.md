@@ -53,6 +53,8 @@ Neon restore, tags, canary) and [`edge-purge-contract.md`](./edge-purge-contract
     delete writes KV.
   - If dev and prod share one account, they share the quota. The dev e2e suite
     can exhaust it, after which KV writes fail until 00:00 UTC.
+  - Cron Triggers: 5 per account on Free. The scheduler Worker uses one per
+    track (`apps/scheduler`, D-88), so dev + prod fit on one free account.
 - [ ] **Railway**: the project that holds the dev service.
   - `railway.json` already declares a `prod` environment (`sleepApplication: false`, region `europe-west4`).
   - Needs a plan with custom domains and no sleeping.
@@ -109,6 +111,15 @@ From `apps/edge/wrangler.toml` `[env.prod]`:
 | KV namespace (`KEPT_KV`) | id `9a7b60ede13646079c3750276f4864be` (`kept-manifest`) | the id is committed; **unverified** that it exists in the prod account |
 | Vars | `KEPT_BASE_DOMAIN=kept.host`, `KEPT_APEX_ORIGIN=https://kept.host` | in `wrangler.toml` |
 | Worker secrets | **none** | Worker reads R2 + KV only |
+
+From `apps/scheduler/wrangler.toml` `[env.prod]` (the cron clock, D-88):
+
+| Thing | Prod value | Status |
+|---|---|---|
+| Worker name | `kept-scheduler-prod` | created by the release's `scheduler` job |
+| Trigger | `* * * * *` (one Cron Trigger) | created by the deploy |
+| Vars | `KEPT_APP_ORIGIN=https://app.kept.host`, `CRON_JOBS=""` (no jobs until §8) | in `wrangler.toml` |
+| Worker secret | `CRON_SECRET` | put by the `scheduler` job from the `prod` environment (§4.2) |
 
 - [ ] `wrangler r2 bucket list` / `wrangler kv namespace list` (Node 22, prod token) and confirm both.
   - **The prod bucket is `auto-kept-sites`.** Only dev carries a suffix
@@ -228,16 +239,17 @@ Not set on Railway: `MIGRATION_DATABASE_URL` (CI only), `R2_BUCKET_EU` (unread).
 |---|---|---|---|
 | `NEON_API_KEY` | `backup` | Neon API key | ❌ |
 | `MIGRATION_DATABASE_URL` | `migrate` | root branch, **direct** | ❌ |
-| `CLOUDFLARE_API_TOKEN` | `edge`, `smoke` | prod token | ❌ |
-| `CLOUDFLARE_ACCOUNT_ID` | `edge`, `smoke` (as `R2_ACCOUNT_ID`) | account ID | ❌ |
+| `CLOUDFLARE_API_TOKEN` | `edge`, `smoke`, `scheduler` | prod token | ❌ |
+| `CLOUDFLARE_ACCOUNT_ID` | `edge`, `smoke` (as `R2_ACCOUNT_ID`), `scheduler` | account ID | ❌ |
 | `RAILWAY_TOKEN` | `web` | prod-environment project token | ❌ |
 | `RAILWAY_SERVICE_ID` | `web` | prod service ID | ❌ |
 | `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | `smoke` | R2 S3 token | ❌ / ❌ |
 | `DATABASE_URL` | `smoke` | root branch, **pooled** | ❌ |
+| `CRON_SECRET` | `scheduler` | same value as Railway prod `CRON_SECRET`; the job puts it into the scheduler Worker, and fails while it is unset | ❌ |
 
-`CRON_SECRET` does **not** go here. The prod crons use their own environment,
-`prod-cron` (§4.5), because a cron job bound to `prod` would wait for the
-required reviewer every day.
+The manual cron buttons read their own copy of `CRON_SECRET` from `prod-cron`
+(§4.5), because a dispatch bound to `prod` would wait for the required
+reviewer. Rotate both copies, and Railway's, together.
 
 ```bash
 gh secret set NEON_API_KEY --env prod      # paste on stdin; never as an argument
@@ -256,57 +268,39 @@ gh secret set NEON_API_KEY --env prod      # paste on stdin; never as an argumen
 `SMOKE_LEGAL_PLACEHOLDERS` is **not** a variable. `release.yml` hard-codes
 `fail`; `deploy-dev.yml` hard-codes `warn`.
 
-### 4.4 GitHub repository variables: cron switches
+### 4.4 Scheduler `CRON_JOBS`: cron switches
 
-Each cron workflow has one job per track, and each track's **scheduled** run
-has its own switch. They are repository variables because a job-level `if:` is
-decided before the job enters an environment, so it cannot read environment
-variables. A switched-off schedule is skipped (grey), not red. A manual
-dispatch (`target: dev | prod`) always runs the chosen track.
+The crons run on the scheduler Worker's clock (`apps/scheduler`, D-88). Which
+jobs a track runs is `CRON_JOBS` in `apps/scheduler/wrangler.toml`, a
+comma-separated list per `[env.*.vars]`: a job not listed never runs, and an
+unknown name fails every tick. Turning a job on is a PR, then a deploy (prod:
+a release). The schedule itself is `apps/scheduler/src/jobs.ts`.
 
-| Name | Track | Turns on | Set to `true` when | Present |
-|---|---|---|---|---|
-| `REPURGE_ENABLED` | dev | `cron-repurge.yml` | proven on dev | ✅ `true` (2026-10-20) |
-| `EXPIRE_ENABLED` | dev | `cron-expire.yml` | proven on dev (1 KV write per expired draft) | ✅ `true` (2026-10-20) |
-| `PURGE_ENABLED` | dev | `cron-purge.yml` | proven on dev (1 KV delete per purged page; it deletes for good) | ✅ `false` (2026-10-20) |
-| `SCAN_RETRY_ENABLED` | dev | `cron-scan-retry.yml` | dev Railway has `OPENROUTER_API_KEY` | ✅ `false` (2026-10-20) |
-| `DRAFT_REMINDER_ENABLED` | dev | `cron-draft-reminder.yml` | you want dev reminders mailed (Resend quota) | ❌ (unset = off) |
-| `VISITS_SYNC_ENABLED` | dev | `cron-visits-sync.yml` | dev token has Zone → Analytics → Read | ❌ |
-| `WAITLIST_PRUNE_ENABLED` | dev | `cron-waitlist-prune.yml` | dev Resend tracking is off | ❌ |
-| `PROD_DRAFT_REMINDER_ENABLED` | prod | `cron-draft-reminder.yml` | prod is deployed and `prod-cron` is set (§4.5) | ❌ |
-| `PROD_VISITS_SYNC_ENABLED` | prod | `cron-visits-sync.yml` | prod token has Analytics Read | ❌ |
-| `PROD_REPURGE_ENABLED` | prod | `cron-repurge.yml` | prod is deployed and `prod-cron` is set (§4.5) | ❌ |
-| `PROD_EXPIRE_ENABLED` | prod | `cron-expire.yml` | prod is deployed and `prod-cron` is set | ❌ |
-| `PROD_PURGE_ENABLED` | prod | `cron-purge.yml` | prod is deployed and `prod-cron` is set | ❌ |
-| `PROD_SCAN_RETRY_ENABLED` | prod | `cron-scan-retry.yml` | prod Railway has `OPENROUTER_API_KEY` | ❌ |
-| `PROD_WAITLIST_PRUNE_ENABLED` | prod | `cron-waitlist-prune.yml` | prod Resend tracking check passed (§5) | ❌ |
+| Job | Workflow (manual button) | Add to prod's `CRON_JOBS` when | Dev |
+|---|---|---|---|
+| `repurge` | `cron-repurge.yml` | dispatched green by hand (§8) | ✅ listed |
+| `expire` | `cron-expire.yml` | dispatched green (1 KV write per expired draft) | ✅ listed |
+| `purge` | `cron-purge.yml` | dispatched green (1 KV delete per purged page; it deletes for good) | ✅ listed |
+| `scan-retry` | `cron-scan-retry.yml` | prod Railway has `OPENROUTER_API_KEY` | ✅ listed |
+| `visits-sync` | `cron-visits-sync.yml` | prod token has Zone → Analytics → Read; backfill once with `days=30` | ✅ listed |
+| `draft-reminder` | `cron-draft-reminder.yml` | dispatched green | not listed (Resend quota) |
+| `waitlist-prune` | `cron-waitlist-prune.yml` | prod Resend tracking check passed (§5) | not listed |
 
-Every job has a switch, the dev draft reminder included. Once a dev cron is
-proven, its dev switch can stay off; dispatch it by hand when testing.
-
-**Scheduled runs fire only from the default branch's workflow files.** The
-branch decides a cron's *definition* (schedule, route, whether a prod job
-exists); the job's environment decides its *target* (`dev` → app.kept-dev.xyz,
-`prod-cron` → app.kept.host). Until launch the default branch is `develop`, so
-the dev schedules run from `develop`. At launch the default becomes `main`
-(§8), so prod cron definitions change only with a release.
-
-```bash
-gh variable set PROD_WAITLIST_PRUNE_ENABLED --body true   # repo-level, not --env
-```
+Until 2026-10-26 these were GitHub `schedule:` runs behind 14 repository
+variables (`REPURGE_ENABLED`, `PROD_REPURGE_ENABLED`, …). Nothing reads them
+any more; delete any that remain (`gh variable list`).
 
 ### 4.5 GitHub `prod-cron` environment
 
-Every cron workflow calls `.github/workflows/cron-post.yml`, which binds the
-track's environment: `dev`, or `prod-cron` for prod. `prod-cron` holds only what
-a cron call needs, with **no** required reviewer.
+Only the manual buttons use it. Every cron workflow calls
+`.github/workflows/cron-post.yml`, which binds the track's environment: `dev`,
+or `prod-cron` for prod. `prod-cron` holds only what a cron call needs, with
+**no** required reviewer.
 
 - [ ] Create it (Settings → Environments → New), or let the first prod cron run
   create it. Either way, set **Deployment branches and tags → Selected → `main`**
-  so no other branch can reach the prod `CRON_SECRET`. This is why the default
-  branch must be `main` before any `PROD_*_ENABLED` switch is on: scheduled runs
-  use the default branch, and a `develop` run cannot enter `prod-cron`. Manual
-  prod dispatches need `--ref main` (`gh workflow run cron-repurge.yml --ref main -f target=prod`).
+  so no other branch can reach the prod `CRON_SECRET`. Prod dispatches
+  therefore need `--ref main` (`gh workflow run cron-repurge.yml --ref main -f target=prod`).
 
 | Name | Kind | Value | Present |
 |---|---|---|---|
@@ -314,12 +308,16 @@ a cron call needs, with **no** required reviewer.
 | `SMOKE_WEB_URL` | variable | `https://app.kept.host` | ❌ |
 
 Then dispatch each workflow once with `target: prod` (visits with `days=30`)
-before turning on its `PROD_*` switch.
+before adding its job to prod's `CRON_JOBS` (§4.4).
 
-### 4.6 Worker (`apps/edge`)
+### 4.6 Workers (`apps/edge`, `apps/scheduler`)
 
-No secrets. The vars `KEPT_BASE_DOMAIN` and `KEPT_APEX_ORIGIN` are committed in
-`wrangler.toml`. Nothing to set.
+`apps/edge` has no secrets. The vars `KEPT_BASE_DOMAIN` and `KEPT_APEX_ORIGIN`
+are committed in `wrangler.toml`. Nothing to set.
+
+`apps/scheduler` has one secret, `CRON_SECRET`, which the release's `scheduler`
+job puts from the `prod` environment (§4.2). Its vars are committed. Nothing to
+set by hand.
 
 ---
 
@@ -343,8 +341,8 @@ No secrets. The vars `KEPT_BASE_DOMAIN` and `KEPT_APEX_ORIGIN` are committed in
     pnpm --filter @kept/web resend:tracking
   ```
   Both flags must print `false` (exit 0). The prod app key stays sending-only;
-  it gets `restricted_api_key` here, which is expected. **Then** set
-  `WAITLIST_PRUNE_ENABLED=true`.
+  it gets `restricted_api_key` here, which is expected. **Then** add
+  `waitlist-prune` to prod's `CRON_JOBS` (§4.4).
 - [ ] **DMARC** record added (§3.1); SPF/DKIM show verified in Resend.
 - [ ] **Go-live day:**
   - file the PSL request for `kept.host` (E07 owns it; defence in depth since E05a);
@@ -462,7 +460,10 @@ No secrets. The vars `KEPT_BASE_DOMAIN` and `KEPT_APEX_ORIGIN` are committed in
   - `cron-draft-reminder.yml` → HTTP 200 with counts;
   - `cron-waitlist-prune.yml` → `{ deleted }`, after the Resend tracking check (§5);
   - `cron-visits-sync.yml` with `days=30`, once the prod token has Analytics Read.
-  - Green by hand → set that job's `PROD_*_ENABLED` switch (§4.4).
+  - Green by hand → add that job to prod's `CRON_JOBS` (§4.4) and cut a release.
+  - Then check the clock: in the Cloudflare dashboard, `kept-scheduler-prod` →
+    Logs shows each listed job's `200` at its minute, and `job_runs.last_success_at`
+    advances.
 
 ---
 
@@ -471,7 +472,7 @@ No secrets. The vars `KEPT_BASE_DOMAIN` and `KEPT_APEX_ORIGIN` are committed in
 - [ ] Cloudflare on **Workers Paid** (KV quota).
 - [ ] Resend plan can carry launch volume.
 - [ ] E07 shipped: abuse pipeline, expiry/purge crons, PSL filed. Launch requires E06–E14.
-- [ ] Prod cron jobs dispatched green and their `PROD_*_ENABLED` switches on (§8).
+- [ ] Prod cron jobs dispatched green and listed in prod's `CRON_JOBS` (§8).
 - [ ] Set `NEXT_PUBLIC_KEPT_OPEN=true` on the Railway prod service. Railway rebuilds.
   - A variable flip is not a tag. It bypasses `release.yml`, so run the smoke by hand afterwards:
     `SMOKE_WEB_URL=https://app.kept.host SMOKE_EDGE_URL=https://smoke.kept.host pnpm --filter @kept/web smoke:release`
