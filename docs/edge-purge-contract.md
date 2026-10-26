@@ -128,8 +128,9 @@ records every purge it still owes as a `pending_purges` row (`site_id`, `slug`,
 - Inside `syncManifest` the row is written on the sync's own transaction (in a
   savepoint), never on a second pooled connection.
 
-The `repurge` job (`POST /api/cron/repurge`, `.github/workflows/cron-repurge.yml`,
-every 12 minutes, under `CRON_SECRET`) replays due rows in batches
+The `repurge` job (`POST /api/cron/repurge`, every 12 minutes on the scheduler
+Worker `apps/scheduler`, under `CRON_SECRET`; `.github/workflows/cron-repurge.yml`
+runs it by hand) replays due rows in batches
 (`apps/web/lib/storage/repurge.ts`). A row that names a site is re-synced first
 (`syncManifestForReplay`, which reads the row as it stands now), then its own
 batch is purged, and it is kept due in 125 s for that write's own second purge
