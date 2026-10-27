@@ -65,6 +65,8 @@ export const STUDIO_ERROR_CODES = [
   "file_type_not_allowed",
   "invalid_archive",
   "upload_not_found",
+  // E09 task 011: the operator pause reaches the studio's publish and replace too.
+  "publishing_paused",
 ] as const;
 
 export const studioErrorCodeEnum = z.enum(STUDIO_ERROR_CODES);

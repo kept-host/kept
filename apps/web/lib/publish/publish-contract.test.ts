@@ -46,10 +46,17 @@ test("the request schema takes html/turnstileToken/reminderEmail and no slug", (
   }
 });
 
-test("E08: the html envelope's fields are exactly the pre-E08 three", () => {
+test("E08: the html envelope's fields are the pre-E08 three plus E09's provenance", () => {
   assert.deepEqual(Object.keys(htmlPublishRequestSchema.shape).sort(), [
     "html",
+    "model",
+    "prompt",
+    "readme",
     "reminderEmail",
+    "remix_of",
+    "source_url",
+    "title",
+    "tool",
     "turnstileToken",
   ]);
 });

@@ -168,6 +168,7 @@ const STUDIO_ERROR_STATUS = {
   rate_limited: 429,
   slug_unavailable: 503,
   internal_error: 503,
+  publishing_paused: 503,
 } as const satisfies Record<StudioErrorCode, number>;
 
 /**
@@ -193,6 +194,7 @@ const STUDIO_CODE_FOR: Record<PublishErrorCode, StudioErrorCode> = {
   invalid_file: "invalid_file",
   invalid_archive: "invalid_archive",
   upload_not_found: "upload_not_found",
+  publishing_paused: "publishing_paused",
 };
 
 /** The envelope, built and validated in one place. */
