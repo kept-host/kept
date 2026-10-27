@@ -13,6 +13,7 @@
  *                                     /promise, /stats 307 to the same path on
  *                                                      the apex
  *                                     everything else  pass through
+ *   any host                        → /mcp             pass through (E09 §7)
  *   host !== the `app.` host        → /api/auth/*      404, and no `Set-Cookie`
  *                                     /api/*           pass through
  *                                     `(marketing)`    pass through
@@ -72,8 +73,22 @@ const APEX_PATHS: PathSet = {
     "/waitlist/unsubscribe",
     // E07 §6.8: the public report form, served while closed.
     "/report",
+    // E09: the agents page — the install line, the skill, the MCP config.
+    "/agents",
   ]),
   prefixes: ["/legal/"],
+};
+
+/**
+ * Paths served on EVERY host and never redirected between apex and `app.` (E09
+ * §7): the MCP endpoint an agent's config names once, on whichever origin it
+ * was given. Not an API path, so the closed rule lists it here too and leaves
+ * closed mode to the handler. `/install.sh`, `/skill.md` and the other agent
+ * files carry an extension, so the matcher never sends them here at all.
+ */
+const ANY_HOST_PATHS: PathSet = {
+  exact: new Set(["/mcp"]),
+  prefixes: [],
 };
 
 /** An exact-path set plus path prefixes (each ending in `/`). */
@@ -109,7 +124,9 @@ const AUTH_API_PREFIX = "/api/auth/";
 /**
  * Route handlers that answer while kept is closed (E06a §1), on any host: the
  * release smoke's probe, the waitlist and founding forms, the report form
- * (E07), and the cron routes —
+ * (E07), the agent sign-in codes (E09 Q4: `/api/agent/*`, outside
+ * `/api/auth/` so the apex serves them too; their handlers refuse non-admins
+ * while closed), and the cron routes —
  * which carry their own secret check (`lib/cron/authorize.ts`). An allow list,
  * so a route added later is closed until someone decides otherwise.
  */
@@ -123,7 +140,7 @@ const CLOSED_API_PATHS: PathSet = {
     // E07 §6.8: abuse reports are taken while closed (Turnstile + per-IP limits).
     "/api/reports",
   ]),
-  prefixes: ["/api/cron/"],
+  prefixes: ["/api/cron/", "/api/agent/"],
 };
 
 /**
@@ -131,11 +148,13 @@ const CLOSED_API_PATHS: PathSet = {
  * middleware passes them only when the request carries SOMETHING that could
  * authorise it — an `Authorization: Bearer` header or the session cookie — and
  * the handler's first action decides whether it does (`lib/launch-access.ts`).
- * A presence check only: the edge bundle cannot verify either (D6).
+ * A presence check only: the edge bundle cannot verify either (D6). `/api/v1/*`
+ * (E09) is the keyed REST API, keyed uploads included (Q5); its handlers verify
+ * the API key.
  */
 const CREDENTIAL_API_PATHS: PathSet = {
   exact: new Set(["/api/publish"]),
-  prefixes: ["/api/anon/"],
+  prefixes: ["/api/anon/", "/api/v1/"],
 };
 
 /**
@@ -146,9 +165,18 @@ const CREDENTIAL_API_PATHS: PathSet = {
  */
 const APP_API_PATHS: PathSet = {
   // `/api/uploads` (E08 D5): the presigned large-upload path; 401 without a session.
-  exact: new Set(["/api/auth", "/api/sites", "/api/export", "/api/names/check", "/api/account", "/api/uploads"]),
+  // `/api/keys` (E09): the studio's API-key management; 401 without a session.
+  exact: new Set([
+    "/api/auth",
+    "/api/sites",
+    "/api/export",
+    "/api/names/check",
+    "/api/account",
+    "/api/uploads",
+    "/api/keys",
+  ]),
   // `/api/admin/` (E07): the moderation actions; the handlers 404 non-admins.
-  prefixes: ["/api/auth/", "/api/sites/", "/api/og/", "/api/admin/"],
+  prefixes: ["/api/auth/", "/api/sites/", "/api/og/", "/api/admin/", "/api/keys/"],
 };
 
 /**
@@ -294,14 +322,17 @@ export function waitlistHref(appUrl: string | undefined): string {
  *
  *   CLOSED_API_PATHS (health, waitlist,
  *   founding review, reports,
- *   /api/cron/*)                         → not mine
- *   /api/publish, /api/anon/*            → not mine with a Bearer header or the
+ *   /api/cron/*, /api/agent/*)           → not mine
+ *   /api/publish, /api/anon/*,
+ *   /api/v1/*                            → not mine with a Bearer header or the
  *                                          session cookie; else `not-open`
- *   APP_API_PATHS (auth, studio)         → not mine on the `app.` host; else
+ *   APP_API_PATHS (auth, studio, keys)   → not mine on the `app.` host; else
  *                                          `not-open`
  *   every other /api/*                   → `not-open`: the JSON 404, and no
  *                                          route handler runs
  *   _next/*                              → not mine
+ *   ANY_HOST_PATHS (/mcp)                → not mine (the handler enforces
+ *                                          closed mode)
  *   an apex path on the landing's host   → not mine (the split rule passes it)
  *   an apex path elsewhere               → 307 to the same path on the landing's
  *                                          host (`app.`'s `/` included, which
@@ -348,6 +379,7 @@ export function decideClosedAction({
     return { kind: "not-open" };
   }
   if (pathname.startsWith(FRAMEWORK_PREFIX)) return undefined;
+  if (inPathSet(path, ANY_HOST_PATHS)) return undefined;
 
   const landing = landingOriginFor(appUrl);
   const apex = inPathSet(path, APEX_PATHS);
@@ -383,6 +415,10 @@ export function decideHostAction({
   // No route handler reads `x-kept-pathname` — they parse their own request —
   // and the auth endpoints in particular should carry nothing extra.
   const pass: HostAction = { kind: "pass", stampPathname: !isApi };
+  // A route handler too, and served wherever it was called.
+  if (inPathSet(normalizePath(pathname), ANY_HOST_PATHS)) {
+    return { kind: "pass", stampPathname: false };
+  }
 
   const appOrigin = parseAppOrigin(appUrl);
   if (!appOrigin) return pass;

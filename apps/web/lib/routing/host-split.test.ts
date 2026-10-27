@@ -17,8 +17,9 @@ import { test } from "node:test";
 
 import { RESERVED_NAMES } from "@kept/shared";
 import { NextRequest } from "next/server";
+import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
 
-import { middleware } from "../../middleware";
+import { config, middleware } from "../../middleware";
 
 import { keptOpen } from "../launch";
 
@@ -655,4 +656,103 @@ test("E07 AC41 closed middleware: reports reach their handler; admin is never se
   const reportPage = runMiddleware(`https://${APEX_HOST}/report`, APP_URL, false);
   assert.equal(reportPage.status, 200);
   assert.equal(reportPage.headers.get("location"), null);
+});
+
+// ── E09 task 003: every agent path, classified once ─────────────────────────
+
+/** Credentialed while closed: the keyed REST API, keyed uploads included (Q5). */
+const E09_V1_APIS = ["/api/v1/pages", "/api/v1/pages/abc12345", "/api/v1/uploads"];
+/** The agent sign-in codes (Q4): open on every host, apex included. */
+const E09_AGENT_APIS = ["/api/agent/request-code", "/api/agent/verify-code"];
+/** The studio's key management: the app host's. */
+const E09_KEY_APIS = ["/api/keys", "/api/keys/0b0c1d2e-0000-4000-8000-000000000000"];
+/** Files with an extension: served static, never seen by middleware. */
+const E09_STATIC_FILES = ["/install.sh", "/skill.md", "/llms.txt", "/.well-known/skills/index.json"];
+
+test("E09 open: /mcp passes on both hosts, unstamped, and is never redirected", () => {
+  for (const host of [APEX_HOST, APP_HOST]) {
+    for (const pathname of ["/mcp", "/mcp/"]) {
+      assert.deepEqual(decide(host, pathname, "?x=1"), { kind: "pass", stampPathname: false }, `${host}${pathname}`);
+    }
+  }
+  // Only the exact path: nothing below it is opened by the entry.
+  assert.equal(decide(APEX_HOST, "/mcp/x").kind, "redirect");
+});
+
+test("E09 open: /agents is the apex's — the app host sends it there", () => {
+  assert.deepEqual(decide(APEX_HOST, "/agents"), { kind: "pass", stampPathname: true });
+  assert.deepEqual(decide(APP_HOST, "/agents", "?tab=mcp"), {
+    kind: "redirect",
+    location: `${APEX_URL}/agents?tab=mcp`,
+  });
+});
+
+test("E09 open: /api/v1/*, /api/agent/* and /api/keys pass on both hosts — /api/agent is not /api/auth", () => {
+  for (const host of [APEX_HOST, APP_HOST]) {
+    for (const pathname of [...E09_V1_APIS, ...E09_AGENT_APIS, ...E09_KEY_APIS, "/api/uploads"]) {
+      assert.deepEqual(decide(host, pathname), { kind: "pass", stampPathname: false }, `${host}${pathname}`);
+    }
+  }
+});
+
+test("E09 closed: /mcp is the handler's on every host; /agents is served on the apex", () => {
+  for (const host of [APEX_HOST, APP_HOST]) {
+    assert.equal(decideClosed(host, "/mcp"), undefined, host);
+    assert.equal(decideClosed(host, "/mcp", "", APP_URL, true), undefined, host);
+  }
+  assert.equal(decideClosed(APEX_HOST, "/agents"), undefined);
+  assert.deepEqual(decideClosed(APP_HOST, "/agents"), { kind: "redirect", location: `${APEX_URL}/agents` });
+});
+
+test("E09 closed: /api/v1/* passes only with a credential, on every host", () => {
+  for (const host of [APEX_HOST, APP_HOST]) {
+    for (const pathname of E09_V1_APIS) {
+      assert.deepEqual(decideClosed(host, pathname), NOT_OPEN, `${host}${pathname} bare`);
+      assert.equal(decideClosed(host, pathname, "", APP_URL, true), undefined, `${host}${pathname} credentialed`);
+    }
+  }
+  // A prefix, so the bare `/api/v1` is not part of it.
+  assert.deepEqual(decideClosed(APEX_HOST, "/api/v1", "", APP_URL, true), NOT_OPEN);
+});
+
+test("E09 closed: /api/agent/* passes on every host, credential or not", () => {
+  for (const host of [APEX_HOST, APP_HOST]) {
+    for (const pathname of E09_AGENT_APIS) {
+      assert.equal(decideClosed(host, pathname), undefined, `${host}${pathname}`);
+    }
+  }
+});
+
+test("E09 closed: /api/keys passes on the app host only; /api/uploads is unchanged (Q5)", () => {
+  for (const pathname of [...E09_KEY_APIS, "/api/uploads"]) {
+    assert.equal(decideClosed(APP_HOST, pathname), undefined, `app ${pathname}`);
+    assert.deepEqual(decideClosed(APEX_HOST, pathname), NOT_OPEN, `apex ${pathname}`);
+    assert.deepEqual(decideClosed(APEX_HOST, pathname, "", APP_URL, true), NOT_OPEN, `apex ${pathname} credentialed`);
+  }
+  assert.deepEqual(decideClosed(APP_HOST, "/api/keysx"), NOT_OPEN);
+});
+
+test("E09 closed middleware: /mcp and /api/agent/* reach their handlers on the apex; a bare /api/v1 call is not_open", async () => {
+  for (const path of ["/mcp", "/api/agent/request-code"]) {
+    const response = runMiddleware(`https://${APEX_HOST}${path}`, APP_URL, false);
+    assert.equal(response.status, 200, path);
+    assert.equal(response.headers.get("x-middleware-next"), "1", path);
+  }
+  const bare = runMiddleware(`https://${APEX_HOST}/api/v1/pages`, APP_URL, false);
+  assert.equal(bare.status, 404);
+  assert.deepEqual(await bare.json(), NOT_OPEN_BODY);
+  const keyed = runMiddleware(`https://${APEX_HOST}/api/v1/pages`, APP_URL, false, {
+    authorization: "Bearer kpt_live_x",
+  });
+  assert.equal(keyed.status, 200);
+  assert.equal(keyed.headers.get("x-middleware-next"), "1");
+});
+
+test("E09: the matcher skips the agent files (they carry an extension) and catches /mcp and /agents", () => {
+  for (const path of E09_STATIC_FILES) {
+    assert.equal(unstable_doesMiddlewareMatch({ config, url: path }), false, path);
+  }
+  for (const path of ["/mcp", "/agents", "/api/v1/pages", "/api/agent/verify-code", "/api/keys"]) {
+    assert.equal(unstable_doesMiddlewareMatch({ config, url: path }), true, path);
+  }
 });

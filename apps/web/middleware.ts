@@ -138,7 +138,10 @@ export const config = {
    * The first is everything except Next's own assets and the API surface. Broad
    * on purpose: a matcher listing the gated routes would be a second place to
    * remember a new `(app)/*` route, and forgetting it would silently lose the
-   * return URL.
+   * return URL. It also catches `/mcp` (E09), which the split rule passes on
+   * every host. A path with an extension (`/install.sh`, `/skill.md`,
+   * `/llms.txt`, `/.well-known/skills/index.json`) is skipped: a static file,
+   * served on any host, open or closed.
    *
    * The second adds back the API surface. The split rule only has an opinion
    * about `/api/auth/*` — every other API path passes through, so
