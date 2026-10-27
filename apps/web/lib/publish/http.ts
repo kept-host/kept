@@ -6,7 +6,15 @@
  * a dropped file arrives as multipart, a pasted document as JSON, and a `curl`
  * user should not have to JSON-encode a document to use the API.
  */
-import { publishErrorSchema, type PublishError } from "@kept/shared";
+import {
+  KEPT_CLIENT_HEADER,
+  keyedErrorSchema,
+  parseKeptClient,
+  publishErrorSchema,
+  studioErrorSchema,
+  type KeyedError,
+  type PublishError,
+} from "@kept/shared";
 // `.js`: see the same import in `./hooks.ts` (Playwright's ESM loader).
 import { NextResponse } from "next/server.js";
 
@@ -78,6 +86,14 @@ export function publisherFrom(request: Request): PublisherContext {
 }
 
 /**
+ * The `X-Kept-Client` label (E09 D9) — `site_versions.client` — or `null` when
+ * it is absent or not a valid label. Dropped, never refused.
+ */
+export function keptClientFrom(request: Request): string | null {
+  return parseKeptClient(request.headers.get(KEPT_CLIENT_HEADER));
+}
+
+/**
  * The client address the origin's proxy forwards: the first `x-forwarded-for`
  * entry, then `x-real-ip`, else `"unknown"`. `lib/rate-limit/client-ip.ts`
  * prefers Cloudflare's `CF-Connecting-IP` and falls back to this.
@@ -112,9 +128,55 @@ export function browserChannel(request: Request): "web" | "api" {
  * body is the easiest thing in a system to end up in a log.
  */
 export function errorResponse(status: number, body: PublishError): NextResponse {
+  return flatErrorResponse(status, publishErrorSchema.parse(body));
+}
+
+/** The same flat body with E09's keyed codes (`KEYED_ERROR_CODES`): `/api/agent/*`, `/api/v1/*`. */
+export function keyedErrorResponse(status: number, body: KeyedError): NextResponse {
+  return flatErrorResponse(status, keyedErrorSchema.parse(body));
+}
+
+function flatErrorResponse(status: number, body: KeyedError): NextResponse {
   const headers: Record<string, string> = { "cache-control": "no-store" };
   if (body.retry_after_seconds !== undefined) {
     headers["retry-after"] = String(body.retry_after_seconds);
   }
-  return NextResponse.json(publishErrorSchema.parse(body), { status, headers });
+  return NextResponse.json(body, { status, headers });
+}
+
+/** How long a paused caller is told to wait — long enough not to hammer, short enough to notice an unpause. */
+const PUBLISHING_PAUSED_RETRY_SECONDS = 600;
+
+/** The pause's one sentence, the same on every door. */
+const PUBLISHING_PAUSED_MESSAGE =
+  "Publishing on kept is paused for now. Pages already live are not affected. Please try again later.";
+
+/** The pause's flat body — the HTTP doors' 503 below, and the MCP tools' error (009). */
+export const PUBLISHING_PAUSED_ERROR: PublishError = {
+  error: "publishing_paused",
+  message: PUBLISHING_PAUSED_MESSAGE,
+  retry_after_seconds: PUBLISHING_PAUSED_RETRY_SECONDS,
+};
+
+/**
+ * The answer every page-writing route gives while `publishPaused()`
+ * (`lib/launch.ts`) is on — its FIRST action, before closed-mode access, rate
+ * limits, the body and Turnstile, so a paused deploy reads and spends nothing.
+ *
+ * 503 `publishing_paused` with `Retry-After`. `"flat"` is the publish-family
+ * body (`POST /api/publish`, the anon replace, `/api/v1`); `"studio"` the
+ * `{ error: { code, message } }` envelope the studio's client parses, so the
+ * same sentence reaches the dashboard toast.
+ */
+export function publishPausedResponse(shape: "flat" | "studio" = "flat"): NextResponse {
+  if (shape === "flat") {
+    return errorResponse(503, PUBLISHING_PAUSED_ERROR);
+  }
+  return NextResponse.json(
+    studioErrorSchema.parse({ error: { code: "publishing_paused", message: PUBLISHING_PAUSED_MESSAGE } }),
+    {
+      status: 503,
+      headers: { "cache-control": "no-store", "retry-after": String(PUBLISHING_PAUSED_RETRY_SECONDS) },
+    },
+  );
 }

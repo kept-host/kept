@@ -91,7 +91,7 @@ export type TitleSource = (typeof TITLE_SOURCES)[number];
  *              anonymous replace sent same-origin.
  * - `api`    — keyless `POST /api/publish` / `/api/anon/*` without a browser.
  * - `studio` — a signed-in publish or replace (`POST /api/sites`, E06).
- * - `mcp`    — the MCP agent path (E08); valid now so E08 needs no enum migration.
+ * - `mcp`    — the MCP agent path (E09); valid now so E09 needs no enum migration.
  */
 export const PUBLISH_CHANNELS = ["web", "api", "studio", "mcp"] as const;
 

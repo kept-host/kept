@@ -1,5 +1,5 @@
 /**
- * The link previews of the apex and `/founding` (E06a §8): their copy and the
+ * The link previews of the apex, `/founding` (E06a §8) and `/agents` (E09): their copy and the
  * `Metadata` that carries it. Every string is true today or framed as "when kept
  * opens in December" (E06a §7). The images are drawn by `./brand.tsx` and
  * served `force-static` from `/og.png` and `/founding/og.png` — dotted paths, so
@@ -21,6 +21,11 @@ export const LANDING_CARD: BrandCardCopy = {
 export const FOUNDING_CARD: BrandCardCopy = {
   kicker: "Founding creators",
   headline: "Become a founding creator.",
+};
+
+export const AGENTS_CARD: BrandCardCopy = {
+  kicker: "kept for agents",
+  headline: "Let your agent publish. Get a link.",
 };
 
 const LANDING_PITCH =
@@ -63,5 +68,15 @@ export function foundingMetadata(): Metadata {
     description:
       "Founding creators get kept Pro free when kept opens in December. Hand-picked: Arun looks at every application.",
     image: "/founding/og.png",
+  });
+}
+
+/** `/agents`: per-agent setup (E09 task 004). */
+export function agentsMetadata(): Metadata {
+  return previewMetadata({
+    title: "kept for agents · kept",
+    description:
+      "Set up Codex, Claude Code, Cursor or any agent to publish to kept: a live link and a claim link, no account.",
+    image: "/agents/og.png",
   });
 }

@@ -16,10 +16,15 @@
 import { NextResponse } from "next/server";
 
 import { closedModeAccess, keylessPlan } from "../../../../../lib/launch-access";
-import { notOpenResponse } from "../../../../../lib/launch";
+import { notOpenResponse, publishPaused } from "../../../../../lib/launch";
 import { replacePage } from "../../../../../lib/publish/anon-manage";
 import { readFileSet } from "../../../../../lib/publish/fileset/read";
-import { browserChannel, errorResponse } from "../../../../../lib/publish/http";
+import {
+  browserChannel,
+  errorResponse,
+  keptClientFrom,
+  publishPausedResponse,
+} from "../../../../../lib/publish/http";
 
 /** `postgres-js` needs TCP sockets and `aws4fetch` signs with Node's crypto. */
 export const runtime = "nodejs";
@@ -31,6 +36,9 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ anonToken: string }> },
 ): Promise<Response> {
+  // E09 task 011: the operator's pause, before anything is read or spent.
+  if (publishPaused()) return publishPausedResponse();
+
   // E06a §1: closed, only an access token or an admin session gets past this —
   // checked first, before anything is read or written. RETIRE with
   // `lib/launch-access.ts`.
@@ -45,6 +53,7 @@ export async function POST(
     anonToken,
     () => readFileSet(request, { plan: keylessPlan(door), uploaderId: null }),
     browserChannel(request),
+    keptClientFrom(request),
   );
 
   if (!outcome.ok) return errorResponse(outcome.status, outcome.body);

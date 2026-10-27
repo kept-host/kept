@@ -124,6 +124,44 @@ after(async () => {
 });
 
 test(
+  "E09 task 005: an owner replace records its client and channel, and a provenance title is the owner's",
+  { skip },
+  async () => {
+    const { replaceSite } = await import("./manage");
+    const { fileSet } = await import("../testing/file-sets");
+    const { db } = await import("../db");
+    const { siteVersions, sites } = await import("../db/schema");
+    const { eq } = await import("drizzle-orm");
+    const owner = await (await drill()).profile();
+    const page = await publish(owner);
+
+    const marker = `e09-005-${crypto.randomUUID().slice(0, 8)}`;
+    const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${marker}</title></head><body><h1>${marker}</h1></body></html>\n`;
+    const result = await replaceSite(
+      page.siteId,
+      owner,
+      await fileSet({ html, title: "Named by the agent", readme: "# Hi\n\tthere" }),
+      { client: "codex/skill", publishedVia: "api" },
+    );
+    assert.equal(result.unchanged, false);
+    if (result.unchanged) return;
+    // Q7: the agent's title outranks the new bytes' `<title>`, as a rename does.
+    assert.equal(result.title, "Named by the agent");
+
+    const [row] = await db.select().from(sites).where(eq(sites.id, page.siteId));
+    assert.ok(row);
+    assert.equal(row.titleSource, "owner");
+    assert.equal(row.readme, "# Hi\n\tthere", "newlines and tabs survive in readme");
+    assert.equal(row.model, null, "absent stays absent");
+    const [version] = await db
+      .select({ client: siteVersions.client, publishedVia: siteVersions.publishedVia })
+      .from(siteVersions)
+      .where(eq(siteVersions.id, result.versionId));
+    assert.deepEqual(version, { client: "codex/skill", publishedVia: "api" });
+  },
+);
+
+test(
   "bug 3, failing first: a deleted kept page is archived with purge_after = now + DRAFT_GRACE_DAYS, its slot frees and updated_at moves",
   { skip },
   async () => {

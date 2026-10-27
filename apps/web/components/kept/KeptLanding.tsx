@@ -1514,7 +1514,7 @@ export default function KeptLanding() {
                               margin: "0 0 12px",
                             }}
                           >
-                            Add kept to any MCP host — Claude, Cursor, ChatGPT.
+                            Add kept to any MCP host — Claude, Cursor, Codex.
                             No token, no account. Drop this into your MCP
                             config:
                           </p>

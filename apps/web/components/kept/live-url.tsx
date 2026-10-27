@@ -81,20 +81,23 @@ export function SiteStatusDot({
 }
 
 /**
- * Copy the link, and say what happened — including when it did not happen.
+ * Copy a string, and say what happened — including when it did not happen.
  *
  * The flash timer, the refused-clipboard branch and the live region travel with
- * the button rather than with whichever screen mounted it, so the card and the
- * hero cannot drift on the one interaction the whole product is built around.
+ * the button rather than with whichever screen mounted it, so the card, the
+ * hero and `/agents`' code blocks cannot drift on the one interaction the whole
+ * product is built around.
  */
-export function CopyLinkButton({
-  liveUrl,
-  label = "Copy link",
+export function CopyButton({
+  text,
+  label = "Copy",
+  copiedMessage = "Copied to the clipboard.",
+  failedMessage = "Could not copy. Select it and copy manually.",
   size,
   variant,
   className,
 }: {
-  liveUrl: string;
+  text: string;
   /**
    * Resting label. The copied/failed states are owned here and are not props.
    *
@@ -103,6 +106,10 @@ export function CopyLinkButton({
    * buttons twenty distinct accessible names.
    */
   label?: React.ReactNode;
+  /** What the live region says after a copy. */
+  copiedMessage?: string;
+  /** What the live region says when the clipboard refused. */
+  failedMessage?: string;
   size?: React.ComponentProps<typeof Button>["size"];
   variant?: React.ComponentProps<typeof Button>["variant"];
   className?: string;
@@ -125,12 +132,11 @@ export function CopyLinkButton({
 
   async function copy() {
     try {
-      await navigator.clipboard.writeText(liveUrl);
+      await navigator.clipboard.writeText(text);
       flash("done");
     } catch {
       // Clipboard access can be refused outright (permissions, an insecure
-      // context). Say so instead of flashing a "Copied" that did not happen —
-      // this link is the only handle the visitor has.
+      // context). Say so instead of flashing a "Copied" that did not happen.
       flash("failed");
     }
   }
@@ -151,13 +157,32 @@ export function CopyLinkButton({
       {/* One polite live region for both outcomes, so a screen reader hears the
           result of a copy it cannot see flash. */}
       <span aria-live="polite" className="sr-only">
-        {copied === "done"
-          ? "Link copied to the clipboard."
-          : copied === "failed"
-            ? COPY_FAILED
-            : ""}
+        {copied === "done" ? copiedMessage : copied === "failed" ? failedMessage : ""}
       </span>
     </>
+  );
+}
+
+/** Copy the link — this link is the only handle the visitor has. */
+export function CopyLinkButton({
+  liveUrl,
+  label = "Copy link",
+  ...rest
+}: {
+  liveUrl: string;
+  label?: React.ReactNode;
+  size?: React.ComponentProps<typeof Button>["size"];
+  variant?: React.ComponentProps<typeof Button>["variant"];
+  className?: string;
+}) {
+  return (
+    <CopyButton
+      text={liveUrl}
+      label={label}
+      copiedMessage="Link copied to the clipboard."
+      failedMessage={COPY_FAILED}
+      {...rest}
+    />
   );
 }
 

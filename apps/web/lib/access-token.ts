@@ -7,7 +7,8 @@
  * code, so the admin CLI (task 009) and the Playwright harness can mint a token
  * without loading Next's request-scoped modules.
  *
- * RETIRE: when kept opens or E08's API keys arrive.
+ * RETIRE: at launch (E14), when kept opens. API keys (E09) did not retire it
+ * (Q9): they open a `key` door beside it in `lib/launch-access.ts`.
  */
 import { timingSafeEqual } from "node:crypto";
 

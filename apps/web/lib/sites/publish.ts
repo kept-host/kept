@@ -55,7 +55,7 @@
  * the cap, the database and the store ordering. Same split as `./rename.ts` and
  * `./manage.ts`.
  */
-import { hashPublisher, type OwnedPublishResult, type StudioSite } from "@kept/shared";
+import { type OwnedPublishResult, type StudioSite } from "@kept/shared";
 
 import { db } from "../db";
 import {
@@ -68,13 +68,16 @@ import {
 import type { FileSet } from "../publish/fileset/types";
 import { enqueueScan } from "../publish/hooks";
 import {
+  DEFAULT_SOURCE,
   draftClocks,
   pendingVersion,
+  publisherHashOf,
   setTitle,
   storeNewPage,
   type PublisherContext,
+  type PublishSource,
 } from "../publish/pipeline";
-import { publisherHashSalt } from "../storage/env";
+import type { StoredProvenance } from "../publish/provenance";
 
 import { keptQuotaFor, lockOwner } from "./keep";
 import { StudioRefusal } from "./studio-refusal";
@@ -123,6 +126,7 @@ async function insertWithMintedSlug(input: {
   ownerId: string;
   publisherHash: string;
   title: string | null;
+  provenance: StoredProvenance;
 }): Promise<Landed> {
   return withMintedSlug((slug) =>
     db.transaction(async (tx): Promise<Landed> => {
@@ -149,6 +153,7 @@ async function insertWithMintedSlug(input: {
         ownerId: input.ownerId,
         publisherHash: input.publisherHash,
         title: input.title,
+        provenance: input.provenance,
         expiresAt: clocks?.expiresAt ?? null,
         purgeAfter: clocks?.purgeAfter ?? null,
         // The page is this account's from its first byte, so the stamp that
@@ -175,16 +180,14 @@ export async function publishOwnedPage(args: {
   profileId: string;
   set: FileSet;
   publisher: PublisherContext;
+  /** The `X-Kept-Client` label and, for E09's `/api/v1`, the channel (default `studio`). */
+  source?: PublishSource;
 }): Promise<OwnedPublishResult> {
-  const { profileId, set, publisher } = args;
+  const { profileId, set, publisher, source = DEFAULT_SOURCE } = args;
 
   // The raw IP is used to compute the digest and then dropped — never stored,
   // never logged. Recorded because an owned publish is still a publish (E07).
-  const publisherHash = await hashPublisher(
-    publisher.ip,
-    publisher.userAgent,
-    publisherHashSalt(),
-  );
+  const publisherHash = await publisherHashOf(publisher);
 
   // Both ids up front, so every R2 key is known before the transaction opens.
   const siteId = crypto.randomUUID();
@@ -195,10 +198,11 @@ export async function publishOwnedPage(args: {
   // divergence audit can reconcile against. The set hash, size and name all
   // come off the in-memory set (D10 — `hashContent(html)` for a single page).
   const landed = await insertWithMintedSlug({
-    version: pendingVersion(siteId, versionId, set, "studio"),
+    version: pendingVersion(siteId, versionId, set, source.publishedVia ?? "studio", source.client),
     ownerId: profileId,
     publisherHash,
     title: setTitle(set),
+    provenance: set.provenance,
   });
 
   // The account already has this page. No row, no object, no manifest, no scan:

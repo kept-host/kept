@@ -65,6 +65,11 @@ export const STUDIO_ERROR_CODES = [
   "file_type_not_allowed",
   "invalid_archive",
   "upload_not_found",
+  // E09 task 011: the operator pause reaches the studio's publish and replace too.
+  "publishing_paused",
+  // E09 task 006: `POST /api/keys` past `API_KEYS_PER_ACCOUNT` — the keyed
+  // REST enum's code, so Settings and an agent read the same word.
+  "key_limit_reached",
 ] as const;
 
 export const studioErrorCodeEnum = z.enum(STUDIO_ERROR_CODES);

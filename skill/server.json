@@ -1,0 +1,26 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "host.kept/kept",
+  "title": "kept",
+  "description": "Publish HTML pages and static sites to kept and get a public link, with no account.",
+  "version": "1.0.0",
+  "websiteUrl": "https://kept.host/agents",
+  "repository": {
+    "url": "https://github.com/kept-host/skill",
+    "source": "github"
+  },
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://kept.host/mcp",
+      "headers": [
+        {
+          "name": "Authorization",
+          "description": "Optional. Bearer <your kept API key> publishes into your account; without it, pages are drafts with a claim link.",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

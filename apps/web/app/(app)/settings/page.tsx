@@ -2,8 +2,9 @@
  * `(app)/settings` — PRD §5.8 and §9.3, from `kept Settings Screen.dc.html`.
  * E06 task 012 built it; task 013 imported the design.
  *
- * Four sections: Account (the email, sign-in methods, sign out), Plan (badge,
- * usage meters, the Pro list on Free), Your data (the streamed export) and
+ * Five sections: Account (the email, sign-in methods, sign out), Plan (badge,
+ * usage meters, the Pro list on Free), Agents and API keys (E09 task 006: the
+ * agent install cards and the key table), Your data (the streamed export) and
  * Danger zone (delete the account). The design's Handle, Own domain, Referrals
  * and display-name field belong to later epics and are not in the tree (AC10).
  *
@@ -23,8 +24,11 @@
  * Every surface here still paints from tokens, so dark is correct the day it is
  * switched on.
  */
+import { agentSetups } from "@kept/shared";
 import { redirect } from "next/navigation";
 
+import { agentBase } from "@/lib/agents/discovery";
+import { listKeys } from "@/lib/agents/keys";
 import { getSession } from "@/lib/auth/session";
 import { getLinkedProviders } from "@/lib/db/queries/account";
 import { getProfileForSession } from "@/lib/db/queries/profile";
@@ -35,6 +39,7 @@ import { keptQuotaFor } from "@/lib/sites/keep";
 
 import { SignOutButton } from "../sign-out-button";
 import { Wordmark } from "../wordmark";
+import { AgentsPanel } from "./agents-panel";
 import { DeleteAccount } from "./delete-account";
 import { ExportPanel } from "./export-panel";
 import { LinkProviders } from "./link-providers";
@@ -68,7 +73,7 @@ export default async function SettingsPage({
     redirect("/auth?next=%2Fsettings");
   }
 
-  const [linked, deletion, kept, names, params] = await Promise.all([
+  const [linked, deletion, kept, names, keys, params] = await Promise.all([
     getLinkedProviders(profile.id),
     // The counts the deletion list states, read at render time from the same
     // predicates the cap and the Pages home count with. It is also the export's
@@ -76,6 +81,7 @@ export default async function SettingsPage({
     getAccountDeletionSummary(profile.id),
     keptQuotaFor(profile.id),
     chosenNameCount(profile.id),
+    listKeys(profile.id),
     searchParams,
   ]);
 
@@ -130,6 +136,17 @@ export default async function SettingsPage({
               id: "plan",
               label: "Plan",
               content: <PlanPanel plan={profile.plan} kept={kept} names={names} />,
+            },
+            {
+              id: "agents",
+              label: "Agents and API keys",
+              content: (
+                <AgentsPanel
+                  setups={agentSetups(agentBase())}
+                  agentsUrl={`${agentBase()}/agents`}
+                  initialKeys={keys}
+                />
+              ),
             },
             {
               id: "data",

@@ -112,10 +112,25 @@ const GUARDED_FILES = [
   "lib/db/queries/lifecycle.ts",
   "app/api/cron/expire/route.ts",
   "app/api/cron/purge/route.ts",
+  // E09 task 006: API keys — the lifecycle, its queries, the routes, the
+  // Settings panel and its client. No raw key, credential or digest is logged.
+  "lib/agents/keys.ts",
+  "lib/db/queries/api-keys.ts",
+  "app/api/keys/route.ts",
+  "app/api/keys/[id]/route.ts",
+  "app/(app)/settings/agents-panel.tsx",
+  "lib/sites/owner-client.ts",
 ];
 
-/** `email`, `ip`, `token`, or a camelCase name ending in one of them. */
-const SENSITIVE_NAME = /^(?:emails?|ips?|tokens?)$|(?:Emails?|Ips?|IPs?|Tokens?)$/;
+/**
+ * `email`, `ip`, `token`, `apiKey`, `credential`, or a camelCase name ending in
+ * one of them (E09 added the key names).
+ */
+const SENSITIVE_NAME =
+  /^(?:emails?|ips?|tokens?|apiKeys?|api_key|credentials?)$|(?:Emails?|Ips?|IPs?|Tokens?|ApiKeys?|Credentials?)$/;
+
+/** An API key's prefix: a literal carrying it inside a log call is a key on its way out. */
+const KEY_PREFIX = "kpt_live_";
 
 /** Every sensitive identifier referenced inside a `console.*(...)` call. */
 function sensitiveLogReferences(source: string, fileName = "source.ts"): string[] {
@@ -123,9 +138,12 @@ function sensitiveLogReferences(source: string, fileName = "source.ts"): string[
   const found: string[] = [];
 
   const collect = (node: ts.Node): void => {
-    if (ts.isIdentifier(node) && SENSITIVE_NAME.test(node.text)) {
+    if (
+      (ts.isIdentifier(node) && SENSITIVE_NAME.test(node.text)) ||
+      ((ts.isStringLiteralLike(node) || ts.isTemplateLiteralToken(node)) && node.text.includes(KEY_PREFIX))
+    ) {
       const { line } = file.getLineAndCharacterOfPosition(node.getStart());
-      found.push(`${fileName}:${line + 1} ${node.text}`);
+      found.push(`${fileName}:${line + 1} ${ts.isIdentifier(node) ? node.text : KEY_PREFIX}`);
     }
     ts.forEachChild(node, collect);
   };
@@ -154,6 +172,13 @@ test("the detector flags interpolated identities and ignores plain words", () =>
   assert.deepEqual(sensitiveLogReferences("console.error('token rejected for this email');"), []);
   assert.deepEqual(sensitiveLogReferences("console.error(`${err.message}`, relationship, tip);"), []);
   assert.deepEqual(sensitiveLogReferences("logger(email); const t = token;"), []);
+  // E09 task 006: an API key, by name or by its prefix, never reaches a log line.
+  assert.deepEqual(sensitiveLogReferences("console.log(apiKey);").length, 1);
+  assert.deepEqual(sensitiveLogReferences("console.error(`key ${created.apiKey}`);").length, 1);
+  assert.deepEqual(sensitiveLogReferences("console.info(body.api_key);").length, 1);
+  assert.deepEqual(sensitiveLogReferences("console.warn('kpt_live_abc');").length, 1);
+  assert.deepEqual(sensitiveLogReferences("console.warn(`kpt_live_${rest}`);").length, 1);
+  assert.deepEqual(sensitiveLogReferences("console.warn('key revoked', keyId);"), []);
 });
 
 test("no guarded E06a module logs an email, an IP or a token", () => {

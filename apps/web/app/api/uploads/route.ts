@@ -17,7 +17,8 @@ import type { NextResponse } from "next/server";
 
 import { getSession } from "../../../lib/auth/session";
 import { getProfileForSession } from "../../../lib/db/queries/profile";
-import { readJsonOnlyBody, UnreadableBodyError } from "../../../lib/publish/http";
+import { publishPaused } from "../../../lib/launch";
+import { publishPausedResponse, readJsonOnlyBody, UnreadableBodyError } from "../../../lib/publish/http";
 import { refuseUntrustedOrigin } from "../../../lib/publish/origin";
 import {
   ownerResponse,
@@ -33,7 +34,10 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request): Promise<NextResponse> {
-  // FIRST: the session cookie is ambient authority, so a script on a hosted
+  // E09 task 011: the operator's pause comes first — it reads nothing.
+  if (publishPaused()) return publishPausedResponse("studio");
+
+  // Then the session cookie is ambient authority, so a script on a hosted
   // page could otherwise spend its visitor's upload quota. See `lib/publish/origin.ts`.
   const foreign = refuseUntrustedOrigin(request);
   if (foreign) return foreign;

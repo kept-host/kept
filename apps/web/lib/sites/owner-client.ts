@@ -1,7 +1,7 @@
 /**
  * The browser's client for the owner-scoped (studio) routes — publish, keep,
  * demote, swap, rename, details, replace, restore, delete, bulk keep / delete,
- * and account deletion.
+ * account deletion, and API keys (E09).
  * Downloads and the export are plain links (`GET`, `Content-Disposition:
  * attachment`); the one read of the download route here is `readPageHtml`, the
  * studio card's hover preview (task 016), which wants the page as text.
@@ -26,6 +26,7 @@
  */
 import {
   accountDeletionResultSchema,
+  apiKeyCreatedSchema,
   bulkResultSchema,
   deleteResultSchema,
   demoteResultSchema,
@@ -42,6 +43,7 @@ import {
   uploadResponseSchema,
   type AccountDeletionRequest,
   type AccountDeletionResult,
+  type ApiKeyCreated,
   type BulkAction,
   type BulkItemResult,
   type DeleteResult,
@@ -58,7 +60,7 @@ import {
   type SwapResult,
   type UploadResponse,
 } from "@kept/shared";
-import type { z } from "zod";
+import { z } from "zod";
 
 import { archiveForm } from "../publish/pack";
 import { pageDownloadHref } from "./display";
@@ -649,4 +651,39 @@ export async function deleteAccount(
   if (sent.ok) return { ok: true, result: sent.body };
   if (sent.status === 401) return { ok: false, signedOut: true };
   return { ok: false, error: sent.error };
+}
+
+/** A key creation: the new key (shown once), or why none was made. */
+export type ApiKeyCreateOutcome =
+  | { ok: true; key: ApiKeyCreated }
+  | { ok: false; error: StudioError };
+
+/**
+ * `POST /api/keys` — E09 task 006. `key.api_key` is the only copy the browser
+ * will ever get: the caller shows it once and keeps it out of any store.
+ * At the cap the route answers `409 key_limit_reached` with the PRD sentence.
+ *
+ * Never throws, including on abort.
+ */
+export async function createApiKey(name: string, signal?: AbortSignal): Promise<ApiKeyCreateOutcome> {
+  const sent = await send("/api/keys", jsonInit("POST", { name }, signal), apiKeyCreatedSchema, [201]);
+  return sent.ok ? { ok: true, key: sent.body } : { ok: false, error: sent.error };
+}
+
+/**
+ * `DELETE /api/keys/:id` — 204 with no body, read as `null`.
+ *
+ * Never throws, including on abort.
+ */
+export async function revokeApiKey(
+  keyId: string,
+  signal?: AbortSignal,
+): Promise<{ ok: true } | { ok: false; error: StudioError }> {
+  const sent = await send(
+    `/api/keys/${encodeURIComponent(keyId)}`,
+    { method: "DELETE", signal },
+    z.null(),
+    [204],
+  );
+  return sent.ok ? { ok: true } : { ok: false, error: sent.error };
 }

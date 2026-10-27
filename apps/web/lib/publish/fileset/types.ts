@@ -8,6 +8,7 @@
 import type { Plan } from "@kept/shared";
 
 import type { PublishFailure } from "../pipeline";
+import type { StoredProvenance } from "../provenance";
 
 /** One file as an input delivered it: a path not yet normalised, and its bytes. */
 export interface RawFile {
@@ -40,6 +41,8 @@ export interface FileSet {
   ignored: string[];
   turnstileToken?: string;
   reminderEmail?: string;
+  /** E09 D10: the provenance the envelope carried, cleaned (`cleanProvenance`); `{}` when none. */
+  provenance: StoredProvenance;
   /** D5: the upload object this set was read from — deleted once the publish lands (used once). */
   uploadKey?: string;
 }

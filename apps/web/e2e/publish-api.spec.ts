@@ -8,6 +8,9 @@ import {
   type PublishResponse,
 } from "@kept/shared";
 import { test, expect, type APIRequestContext } from "@playwright/test";
+import { eq } from "drizzle-orm";
+
+import { closeDb, db, schema } from "../lib/db";
 
 import {
   isReservedSlug,
@@ -126,6 +129,27 @@ test.describe("the publish API, as an agent calls it", () => {
     for (const token of published.splice(0)) await deleteDraft(request, token);
   });
 
+  test.afterAll(async () => {
+    await closeDb();
+  });
+
+  /** The stored provenance and the version's `client` (E09 task 005). */
+  async function storedProvenance(slug: string) {
+    const [row] = await db
+      .select({
+        title: schema.sites.title,
+        titleSource: schema.sites.titleSource,
+        model: schema.sites.model,
+        tool: schema.sites.tool,
+        sourceUrl: schema.sites.sourceUrl,
+        client: schema.siteVersions.client,
+      })
+      .from(schema.sites)
+      .innerJoin(schema.siteVersions, eq(schema.siteVersions.id, schema.sites.currentVersionId))
+      .where(eq(schema.sites.slug, slug));
+    return row;
+  }
+
   test("a bare POST of an HTML body answers the full seven-field contract", async ({
     request,
   }) => {
@@ -190,17 +214,22 @@ test.describe("the publish API, as an agent calls it", () => {
     const rawHtml = pageHtml(marker());
 
     const responses = {
+      // E09 task 005 rides on two of them: provenance in the body (a JSON
+      // field, a multipart text field) and the `X-Kept-Client` label. Neither
+      // changes the frozen seven-field response.
       "application/json": await request.post("/api/publish", {
-        headers: { "content-type": "application/json" },
-        data: { html: jsonHtml },
+        headers: { "content-type": "application/json", "x-kept-client": "codex/skill" },
+        data: { html: jsonHtml, title: "From an agent", model: "e09-model", source_url: "https://example.com/src" },
       }),
       "multipart/form-data": await request.post("/api/publish", {
+        headers: { "x-kept-client": "Not A Label" },
         multipart: {
           html: {
             name: "page.html",
             mimeType: "text/html",
             buffer: Buffer.from(multipartHtml),
           },
+          tool: "e09-tool",
         },
       }),
       "text/html": await publishViaApi(request, rawHtml),
@@ -228,6 +257,22 @@ test.describe("the publish API, as an agent calls it", () => {
     // Three distinct documents, so three distinct pages — a shared slug would
     // mean the minter is not actually random, and dedup does not apply here.
     expect(new Set(slugs).size, `slugs collided: ${slugs.join(", ")}`).toBe(3);
+
+    // Q7: the agent's title is the owner's; an invalid client label is dropped.
+    expect(await storedProvenance(slugs[0]!)).toEqual({
+      title: "From an agent",
+      titleSource: "owner",
+      model: "e09-model",
+      tool: null,
+      sourceUrl: "https://example.com/src",
+      client: "codex/skill",
+    });
+    expect(await storedProvenance(slugs[1]!)).toMatchObject({
+      titleSource: "html",
+      model: null,
+      tool: "e09-tool",
+      client: null,
+    });
   });
 
   test("E08 AC2: a zip whose files sit under dist/ publishes with dist/ stripped — / serves dist/index.html, and the body is the frozen seven fields", async ({

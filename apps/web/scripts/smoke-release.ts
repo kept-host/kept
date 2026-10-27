@@ -51,6 +51,11 @@
  * hands the value in — `release.yml` `fail`, `deploy-dev.yml` `warn` — so the
  * track is never guessed from the host and a forgotten setting fails safe.
  *
+ * A PAUSED deploy (`KEPT_PUBLISH_PAUSED`, E09 task 011, reported by
+ * `/api/health` as `publishing: "paused"`) lands nothing, open or closed, so
+ * there `smokePaused` replaces both and asserts the switch: `POST /api/publish`
+ * → 503 `publishing_paused` with `Retry-After`. A paused dev still deploys.
+ *
  * THE SCANNER (E07 D17, AC12): `/api/health` reports `scanner: "on" | "off"`.
  * An OPEN deploy with the scanner off has nothing but P4 between the public and
  * kept, so the same explicit track option decides it: a `fail` run (the prod
@@ -139,6 +144,10 @@ function legalPlaceholderPolicy(): LegalPlaceholderPolicy {
 const SCANNER_STATES = ["on", "off"] as const;
 type Scanner = (typeof SCANNER_STATES)[number];
 
+/** `/api/health`'s `publishing` (E09 task 011). */
+const PUBLISHING_STATES = ["on", "paused"] as const;
+type Publishing = (typeof PUBLISHING_STATES)[number];
+
 function fail(name: string, detail: string): StoreResult {
   return { name, pass: false, detail };
 }
@@ -195,7 +204,7 @@ function errText(err: unknown): string {
 async function smokeWeb(
   baseUrl: string,
   deadline: number,
-): Promise<StoreResult & { open?: boolean; scanner?: Scanner }> {
+): Promise<StoreResult & { open?: boolean; scanner?: Scanner; publishing?: Publishing }> {
   const url = new URL("/api/health", baseUrl).toString();
   const name = "web";
 
@@ -232,6 +241,7 @@ async function smokeWeb(
       status?: string;
       open?: unknown;
       scanner?: unknown;
+      publishing?: unknown;
     } | null;
     if (body?.status !== "ok") {
       return fail(name, `GET ${url} → 200 but body.status !== "ok"`);
@@ -243,11 +253,19 @@ async function smokeWeb(
     if (!scanner) {
       return fail(name, `GET ${url} → 200 but body.scanner is not "on" or "off" — is this build older than E07?`);
     }
+    const publishing = PUBLISHING_STATES.find((state) => state === body.publishing);
+    if (!publishing) {
+      return fail(name, `GET ${url} → 200 but body.publishing is not "on" or "paused" — is this build older than E09?`);
+    }
     const warmed = attempt > 0 ? ` (after ${attempt} warm retr${attempt === 1 ? "y" : "ies"})` : "";
     return {
-      ...pass(name, `GET ${url} → 200 {status:"ok", open:${body.open}, scanner:"${scanner}"}${warmed}`),
+      ...pass(
+        name,
+        `GET ${url} → 200 {status:"ok", open:${body.open}, scanner:"${scanner}", publishing:"${publishing}"}${warmed}`,
+      ),
       open: body.open,
       scanner,
+      publishing,
     };
   }
 }
@@ -661,6 +679,38 @@ async function smokeClosed(webUrl: string, deadline: number): Promise<StoreResul
 }
 
 /**
+ * A paused deploy (E09 task 011): the pause is every publish route's first
+ * action, so `POST /api/publish` answers 503 `publishing_paused` with
+ * `Retry-After` and writes nothing. The probe carries a freshly minted (so
+ * unknown) access token only so a CLOSED deploy's middleware lets it reach the
+ * handler; its body is empty, so were the pause down nothing could publish.
+ */
+async function smokePaused(webUrl: string, deadline: number): Promise<StoreResult> {
+  const name = "paused";
+  const publishUrl = new URL("/api/publish", webUrl).toString();
+  const { token } = await mintAccessToken();
+  let res: Response;
+  try {
+    res = await send(publishUrl, deadline, {
+      method: "POST",
+      headers: { "content-type": "text/html", authorization: `Bearer ${token}` },
+      body: "",
+    });
+  } catch (err) {
+    return fail(name, `POST ${publishUrl} — no HTTP response (${errText(err)})`);
+  }
+  const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
+  const retryAfter = res.headers.get("retry-after");
+  if (res.status !== 503 || body?.error !== "publishing_paused" || !retryAfter) {
+    return fail(
+      name,
+      `POST ${publishUrl} → HTTP ${res.status} ${String(body?.error)}, Retry-After ${retryAfter ?? "absent"} on a paused deploy (expected 503 publishing_paused with Retry-After) — the pause is not holding`,
+    );
+  }
+  return pass(name, `paused: POST /api/publish → 503 publishing_paused, Retry-After ${retryAfter}`);
+}
+
+/**
  * The legal pages (AC19): both must answer 200, and a `[[` placeholder fails a
  * `fail` run and only warns a `warn` one (dev keeps its DRAFT banner). Follows
  * redirects, so `--web-url` on `app.` reaches the apex pages.
@@ -776,8 +826,16 @@ async function main(): Promise<void> {
   // plane already warmed by `smokeWeb` because its POST must not be retried.
   // A closed deploy has nothing to publish, so it proves the gate instead. An
   // unknown gate (health failed) runs the open check, which fails loudly.
+  // A paused deploy lands nothing either way, so it proves the pause instead.
+  const paused = web.publishing === "paused";
   const closed = web.open === false;
-  results.push(closed ? await smokeClosed(webUrl, deadline) : await smokePublish(webUrl, deadline));
+  results.push(
+    paused
+      ? await smokePaused(webUrl, deadline)
+      : closed
+        ? await smokeClosed(webUrl, deadline)
+        : await smokePublish(webUrl, deadline),
+  );
 
   for (const r of results) console.log(line(r));
 
@@ -795,7 +853,9 @@ async function main(): Promise<void> {
     "      Both halves are covered: the edge check serves the hand-seeded canary,",
   );
   console.log(
-    closed
+    paused
+      ? "      and the paused check proves this deploy answers every publish 503 publishing_paused."
+      : closed
       ? "      and the closed check proves this deploy publishes nothing without a token and signs nobody in."
       : "      and the publish check writes a page through the API, serves it and deletes it.",
   );

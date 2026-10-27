@@ -11,6 +11,7 @@
 import { z } from "zod";
 
 import { hashBytes } from "./files";
+import { provenanceShape } from "./provenance";
 import { pageHtmlSchema, slugSchema } from "./schemas";
 import { utf8, webGlobals } from "./web-globals";
 
@@ -21,7 +22,7 @@ const BASE64URL_ALPHABET =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 /** Unpadded base64url of a byte array. Hand-rolled so no `btoa` global is needed. */
-function base64UrlEncode(bytes: Uint8Array): string {
+export function base64UrlEncode(bytes: Uint8Array): string {
   let out = "";
   for (let i = 0; i < bytes.length; i += 3) {
     const b0 = bytes[i]!;
@@ -101,6 +102,8 @@ const publishOptionsShape = {
   turnstileToken: z.string().optional(),
   /** Optional address for the pre-expiry reminder (E05's cron). */
   reminderEmail: z.string().email().optional(),
+  /** Optional provenance (E09 D10) — `title`, `model`, `tool`, `prompt`, `readme`, `source_url`, `remix_of`. */
+  ...provenanceShape,
 };
 
 /**
@@ -110,7 +113,8 @@ const publishOptionsShape = {
 const spaField = z.boolean().optional();
 
 /**
- * The single-HTML envelope — the `POST /api/publish` body before E08, unchanged.
+ * The single-HTML envelope — the `POST /api/publish` body before E08, plus
+ * E09's optional provenance.
  *
  * **No `slug`.** The PRD rules a custom slug out at publish — "Slug: unique
  * readable ... auto"; choosing one is the rename path E06 owns. The
@@ -272,6 +276,12 @@ export const PUBLISH_ERROR_CODES = [
   "turnstile_failed",
   /** Rate limited (E07). Carries `retry_after_seconds`. */
   "rate_limited",
+  /**
+   * The operator pause switch (E09 task 011, `KEPT_PUBLISH_PAUSED`): every
+   * publish, replace and upload answers 503 with this code and
+   * `retry_after_seconds`; serving, deletes and keeps stay up.
+   */
+  "publishing_paused",
   /** Slug minting exhausted its retry bound — transient, safe to retry. */
   "slug_unavailable",
   "internal_error",

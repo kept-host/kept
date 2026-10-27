@@ -131,12 +131,22 @@ export function extractPageTitle(html: string): string | null {
   // would store the whole page as a name.
   if (!match) return null;
 
-  // Decode, THEN strip tags, then collapse — the PRD's order. Decoding first is
-  // what makes an entity-encoded tag (`&lt;b&gt;`) a tag that gets stripped,
-  // rather than markup that survives into a card and an image. The capture
-  // group always participates when the pattern matches; `?? ""` only satisfies
-  // `noUncheckedIndexedAccess` and folds to the `null` below.
-  const collapsed = decodeEntities(match[1] ?? "")
+  // The capture group always participates when the pattern matches; `?? ""`
+  // only satisfies `noUncheckedIndexedAccess` and folds to `null` in `cleanTitle`.
+  return cleanTitle(match[1] ?? "");
+}
+
+/**
+ * Title text → a display name, or `null` when nothing usable is left. The one
+ * title cleaning: the `<title>` above, and a publisher-supplied provenance
+ * `title` (E09 D10, `./provenance.ts`).
+ *
+ * Decode, THEN strip tags, then collapse — the PRD's order. Decoding first is
+ * what makes an entity-encoded tag (`&lt;b&gt;`) a tag that gets stripped,
+ * rather than markup that survives into a card and an image.
+ */
+export function cleanTitle(text: string): string | null {
+  const collapsed = decodeEntities(text)
     .replace(TAG_RE, " ")
     .replace(/\s+/g, " ")
     .trim();

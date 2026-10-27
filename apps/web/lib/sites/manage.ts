@@ -63,7 +63,14 @@ import { sites } from "../db/schema";
 import { holdName } from "../names/holds";
 import type { FileSet } from "../publish/fileset/types";
 import { enqueueScan } from "../publish/hooks";
-import { graceEnds, liveUrl, setTitle, storeReplacement } from "../publish/pipeline";
+import {
+  DEFAULT_SOURCE,
+  graceEnds,
+  liveUrl,
+  setTitle,
+  storeReplacement,
+  type PublishSource,
+} from "../publish/pipeline";
 import { removeManifest, syncManifest } from "../storage/manifest";
 import { r2Store } from "../storage/r2";
 
@@ -163,6 +170,7 @@ export async function replaceSite(
   siteId: string,
   profileId: string,
   set: FileSet,
+  source: PublishSource = DEFAULT_SOURCE,
 ): Promise<ReplaceResult> {
   const site = await findSiteForOwner(siteId, profileId);
   // `removed` is E07's takedown. Its owner can still see and download it until
@@ -201,7 +209,8 @@ export async function replaceSite(
     // the OWNER named the page (D11): `pointSiteAt` keeps an owner title, in SQL,
     // and the result carries the title the row actually ended up with.
     title: setTitle(set),
-    publishedVia: "studio",
+    publishedVia: source.publishedVia ?? "studio",
+    client: source.client,
     previous,
   });
 
