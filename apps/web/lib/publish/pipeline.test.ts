@@ -225,14 +225,48 @@ test(
     const { jsonBody } = await import("../testing/file-sets");
 
     const html = pageHtml(runId());
-    const who = publisher("203.0.113.30");
+    // E09 task 005: a ready-made publisher key (the MCP door's) replaces the
+    // IP+UA hash — dedup and E07's buckets are scoped by it.
+    const publisherKey = `e09-005-key-${crypto.randomUUID()}`;
+    const who = { ...publisher("203.0.113.30"), publisherKey };
 
-    const first = await publishPage(jsonBody({ html }), who);
+    // E09 D9/D10: provenance and the client label land with the new page; the
+    // `remix_of` slug names a draft (not kept), so it is dropped silently (Q8).
+    const first = await publishPage(
+      jsonBody({
+        html,
+        title: "  Agent\u0007 title ",
+        model: "claude-opus-4-7",
+        prompt: "line one\nline two\u0000",
+        source_url: "https://example.com/src",
+        remix_of: "k3n8vq2p",
+      }),
+      who,
+      { client: "codex/skill" },
+    );
     assert.equal(first.ok, true, first.ok ? "" : JSON.stringify(first.body));
     if (!first.ok) return;
     created.add(first.body.slug);
 
-    const second = await publishPage(jsonBody({ html }), who);
+    const [stored] = await db.select().from(sites).where(eq(sites.slug, first.body.slug));
+    assert.ok(stored);
+    assert.equal(stored.publisherHash, publisherKey, "the publisher key, not the IP+UA hash");
+    assert.equal(stored.title, "Agent title");
+    assert.equal(stored.titleSource, "owner", "Q7: an agent title outranks <title>");
+    assert.equal(stored.model, "claude-opus-4-7");
+    assert.equal(stored.prompt, "line one\nline two");
+    assert.equal(stored.sourceUrl, "https://example.com/src");
+    assert.equal(stored.tool, null);
+    assert.equal(stored.remixOf, null);
+    const [firstVersion] = await db
+      .select({ client: siteVersions.client, publishedVia: siteVersions.publishedVia })
+      .from(siteVersions)
+      .where(eq(siteVersions.siteId, stored.id));
+    assert.deepEqual(firstVersion, { client: "codex/skill", publishedVia: "api" });
+
+    // The identical bytes again, with different provenance: a dedup hit
+    // returns the existing page as it is and overwrites none of it.
+    const second = await publishPage(jsonBody({ html, title: "Other", model: "other-model" }), who);
     assert.equal(second.ok, true, second.ok ? "" : JSON.stringify(second.body));
     if (!second.ok) return;
 
@@ -249,6 +283,8 @@ test(
 
     const [site] = await db.select().from(sites).where(eq(sites.slug, first.body.slug));
     assert.ok(site);
+    assert.equal(site.title, "Agent title", "dedup leaves provenance alone");
+    assert.equal(site.model, "claude-opus-4-7");
     const { hashToken } = await import("@kept/shared");
     assert.equal(site.anonTokenHash, await hashToken(second.body.anonToken));
 

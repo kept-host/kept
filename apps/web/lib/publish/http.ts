@@ -6,7 +6,13 @@
  * a dropped file arrives as multipart, a pasted document as JSON, and a `curl`
  * user should not have to JSON-encode a document to use the API.
  */
-import { publishErrorSchema, studioErrorSchema, type PublishError } from "@kept/shared";
+import {
+  KEPT_CLIENT_HEADER,
+  parseKeptClient,
+  publishErrorSchema,
+  studioErrorSchema,
+  type PublishError,
+} from "@kept/shared";
 // `.js`: see the same import in `./hooks.ts` (Playwright's ESM loader).
 import { NextResponse } from "next/server.js";
 
@@ -75,6 +81,14 @@ export function publisherFrom(request: Request): PublisherContext {
     ip: forwardedIp(request),
     userAgent: request.headers.get("user-agent") ?? "",
   };
+}
+
+/**
+ * The `X-Kept-Client` label (E09 D9) — `site_versions.client` — or `null` when
+ * it is absent or not a valid label. Dropped, never refused.
+ */
+export function keptClientFrom(request: Request): string | null {
+  return parseKeptClient(request.headers.get(KEPT_CLIENT_HEADER));
 }
 
 /**

@@ -23,7 +23,7 @@ import { getSession } from "../../../../../lib/auth/session";
 import { getProfileForSession } from "../../../../../lib/db/queries/profile";
 import { publishPaused } from "../../../../../lib/launch";
 import { readFileSet } from "../../../../../lib/publish/fileset/read";
-import { publishPausedResponse } from "../../../../../lib/publish/http";
+import { keptClientFrom, publishPausedResponse } from "../../../../../lib/publish/http";
 import { refuseUntrustedOrigin } from "../../../../../lib/publish/origin";
 import {
   ownerResponse,
@@ -58,5 +58,5 @@ export async function POST(
   const set = await readFileSet(request, { plan: profile.plan, uploaderId: profile.id });
 
   const { id } = await params;
-  return ownerResponse(await replaceOwnedSite(id, set, profile.id));
+  return ownerResponse(await replaceOwnedSite(id, set, profile.id, { client: keptClientFrom(request) }));
 }

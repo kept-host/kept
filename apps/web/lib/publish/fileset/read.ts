@@ -57,6 +57,7 @@ import {
 import { fail, requestError, type PublishFailure } from "../pipeline";
 import { r2Store } from "../../storage/r2";
 import { uploadMaxBytes, uploadObjectKey } from "../../uploads/upload";
+import { cleanProvenance, PROVENANCE_FIELDS, provenanceOf, type ProvenanceInput } from "../provenance";
 import { checkSet, extensionOf, siteFileType } from "./checks";
 import { inlineTooLarge, printablePath, uploadNotFound, uploadTooLarge } from "./copy";
 import { hashSet } from "./hash";
@@ -71,10 +72,22 @@ interface RawInput {
   turnstileToken?: string;
   reminderEmail?: string;
   uploadKey?: string;
+  /** E09 D10 — validated by the envelope's schema, cleaned by `readFileSet`. */
+  provenance: ProvenanceInput;
 }
 
 /** The options every non-legacy form validates the same way the JSON envelope does. */
-const optionsSchema = filesPublishRequestSchema.pick({ turnstileToken: true, reminderEmail: true });
+const optionsSchema = filesPublishRequestSchema.pick({
+  turnstileToken: true,
+  reminderEmail: true,
+  title: true,
+  model: true,
+  tool: true,
+  prompt: true,
+  readme: true,
+  source_url: true,
+  remix_of: true,
+});
 
 /** Strict base64: whole quads, padding only at the end. `Buffer.from` alone accepts garbage. */
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
@@ -113,6 +126,7 @@ export async function readFileSet(
     turnstileToken: input.turnstileToken,
     reminderEmail: input.reminderEmail,
     uploadKey: input.uploadKey,
+    provenance: cleanProvenance(input.provenance),
   };
 }
 
@@ -187,6 +201,7 @@ function legacy(raw: unknown, spa: boolean): RawInput | PublishFailure {
     spa,
     turnstileToken: parsed.data.turnstileToken,
     reminderEmail: parsed.data.reminderEmail,
+    provenance: provenanceOf(parsed.data),
   };
 }
 
@@ -208,6 +223,7 @@ async function readJsonInput(raw: unknown, caller: FileSetCaller): Promise<RawIn
       spa: parsed.data.spa ?? false,
       turnstileToken: parsed.data.turnstileToken,
       reminderEmail: parsed.data.reminderEmail,
+      provenance: provenanceOf(parsed.data),
     };
   }
 
@@ -225,6 +241,7 @@ async function readJsonInput(raw: unknown, caller: FileSetCaller): Promise<RawIn
       spa: parsed.data.spa ?? false,
       turnstileToken: parsed.data.turnstileToken,
       reminderEmail: parsed.data.reminderEmail,
+      provenance: provenanceOf(parsed.data),
       uploadKey,
     };
   }
@@ -301,6 +318,7 @@ async function readMultipartInput(copy: Response, plan: Plan): Promise<RawInput 
   const options = {
     turnstileToken: optionalField(form.get("turnstileToken")),
     reminderEmail: optionalField(form.get("reminderEmail")),
+    ...Object.fromEntries(PROVENANCE_FIELDS.map((key) => [key, optionalField(form.get(key))])),
   };
   const archives = form.getAll("archive");
   const fileParts = form.getAll("files");
@@ -316,7 +334,8 @@ async function readMultipartInput(copy: Response, plan: Plan): Promise<RawInput 
 
   const parsedOptions = optionsSchema.safeParse(options);
   if (!parsedOptions.success) return requestError(parsedOptions.error);
-  const envelope = { spa, ...parsedOptions.data };
+  const { turnstileToken, reminderEmail } = parsedOptions.data;
+  const envelope = { spa, turnstileToken, reminderEmail, provenance: provenanceOf(parsedOptions.data) };
 
   if (archives.length > 0) {
     const archive = archives[0];

@@ -182,7 +182,10 @@ test(
     const { jsonBody } = await import("../testing/file-sets");
 
     const first = pageHtml(`${runId()}-v1`);
-    const published = await publishPage(jsonBody({ html: first }), publisher("203.0.113.60"));
+    const published = await publishPage(
+      jsonBody({ html: first, model: "e09-model-1", tool: "e09-tool" }),
+      publisher("203.0.113.60"),
+    );
     assert.equal(published.ok, true, published.ok ? "" : JSON.stringify(published.body));
     if (!published.ok) return;
 
@@ -200,7 +203,13 @@ test(
     assert.equal((await probeUntil(page.liveUrl, /-v1/)).status, 200);
 
     const second = pageHtml(`${runId()}-v2`);
-    const replaced = await replacePage(page.token, jsonBody({ html: second }), "api");
+    // E09 D9/D10: the replace sends one provenance field and a client label.
+    const replaced = await replacePage(
+      page.token,
+      jsonBody({ html: second, model: "e09-model-2" }),
+      "api",
+      "claude-code/mcp",
+    );
     assert.equal(replaced.ok, true, replaced.ok ? "" : JSON.stringify(replaced.body));
     if (!replaced.ok) return;
 
@@ -235,6 +244,12 @@ test(
     // and so was the keyless publish before it (no Turnstile token).
     assert.equal(current.publishedVia, "api");
     assert.equal(versions.find((v) => v.id === firstVersionId)?.publishedVia, "api");
+    // `client` per version; provenance only where the replace sent it —
+    // `tool` was absent, and absent is not "clear".
+    assert.equal(current.client, "claude-code/mcp");
+    assert.equal(versions.find((v) => v.id === firstVersionId)?.client, null);
+    assert.equal(after_.model, "e09-model-2");
+    assert.equal(after_.tool, "e09-tool");
     // The title follows the NEW bytes (D11) — the row's `title_source` is `html`.
     assert.equal(after_.title, second.match(/<title>(.*)<\/title>/)?.[1]);
 

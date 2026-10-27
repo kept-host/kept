@@ -109,7 +109,12 @@ import { SlugUnavailableError } from "../db/queries/publish";
 import { allowNameCheck, checkName } from "../names/check";
 import { renameSite } from "../names/rename";
 import { isFailure, type FileSet } from "../publish/fileset/types";
-import { slugUnavailable, type PublishFailure, type PublisherContext } from "../publish/pipeline";
+import {
+  slugUnavailable,
+  type PublishFailure,
+  type PublisherContext,
+  type PublishSource,
+} from "../publish/pipeline";
 import { consumeUpload, createUpload } from "../uploads/upload";
 import { deleteAccount } from "./account-deletion";
 import { updateSiteDetails } from "./details";
@@ -328,11 +333,12 @@ export async function publishOwnedSite(
   set: FileSet | PublishFailure,
   profileId: string,
   publisher: PublisherContext,
+  source?: PublishSource,
 ): Promise<OwnerOutcome<OwnedPublishResult>> {
   if (isFailure(set)) return fromPublishFailure(set);
 
   try {
-    const result = await publishOwnedPage({ profileId, set, publisher });
+    const result = await publishOwnedPage({ profileId, set, publisher, source });
     // D5, used once: the upload is deleted only after the publish landed, so a
     // failed one can be retried with the same ID inside its window.
     if (set.uploadKey) await consumeUpload(set.uploadKey);
@@ -597,6 +603,7 @@ export async function replaceOwnedSite(
   rawSiteId: string,
   set: FileSet | PublishFailure,
   profileId: string,
+  source?: PublishSource,
 ): Promise<OwnerOutcome<ReplaceResult>> {
   const parsedId = siteIdSchema.safeParse(rawSiteId);
   if (!parsedId.success) return ownerNotFound();
@@ -604,7 +611,7 @@ export async function replaceOwnedSite(
   if (isFailure(set)) return fromPublishFailure(set);
 
   try {
-    const result = await replaceSite(parsedId.data, profileId, set);
+    const result = await replaceSite(parsedId.data, profileId, set, source);
     if (set.uploadKey) await consumeUpload(set.uploadKey);
     return { ok: true, status: 200, body: replaceResultSchema.parse(withIgnored(result, set)) };
   } catch (err) {

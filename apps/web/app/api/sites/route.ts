@@ -33,7 +33,7 @@ import { getSession } from "../../../lib/auth/session";
 import { getProfileForSession } from "../../../lib/db/queries/profile";
 import { readFileSet } from "../../../lib/publish/fileset/read";
 import { publishPaused } from "../../../lib/launch";
-import { publishPausedResponse, publisherFrom } from "../../../lib/publish/http";
+import { keptClientFrom, publishPausedResponse, publisherFrom } from "../../../lib/publish/http";
 import { refuseUntrustedOrigin } from "../../../lib/publish/origin";
 import {
   ownerResponse,
@@ -64,5 +64,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   // The owner's plan's caps (E08 §5.3); the profile may own an `upload_id`.
   const set = await readFileSet(request, { plan: profile.plan, uploaderId: profile.id });
 
-  return ownerResponse(await publishOwnedSite(set, profile.id, publisherFrom(request)));
+  return ownerResponse(await publishOwnedSite(set, profile.id, publisherFrom(request), {
+      client: keptClientFrom(request),
+    }));
 }

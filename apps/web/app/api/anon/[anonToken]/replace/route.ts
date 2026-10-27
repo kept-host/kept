@@ -19,7 +19,12 @@ import { closedModeAccess, keylessPlan } from "../../../../../lib/launch-access"
 import { notOpenResponse, publishPaused } from "../../../../../lib/launch";
 import { replacePage } from "../../../../../lib/publish/anon-manage";
 import { readFileSet } from "../../../../../lib/publish/fileset/read";
-import { browserChannel, errorResponse, publishPausedResponse } from "../../../../../lib/publish/http";
+import {
+  browserChannel,
+  errorResponse,
+  keptClientFrom,
+  publishPausedResponse,
+} from "../../../../../lib/publish/http";
 
 /** `postgres-js` needs TCP sockets and `aws4fetch` signs with Node's crypto. */
 export const runtime = "nodejs";
@@ -48,6 +53,7 @@ export async function POST(
     anonToken,
     () => readFileSet(request, { plan: keylessPlan(door), uploaderId: null }),
     browserChannel(request),
+    keptClientFrom(request),
   );
 
   if (!outcome.ok) return errorResponse(outcome.status, outcome.body);

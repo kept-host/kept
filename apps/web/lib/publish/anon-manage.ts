@@ -128,12 +128,15 @@ function draftWindow(site: AnonSite): Pick<ReplaceResponse, "expires_in" | "expi
  *
  * `publishedVia` is the route's reading of the transport (`browserChannel` in
  * `./http`): `web` for the app's own manage screen, `api` for everyone else. It
- * lands on the version row only; the response body does not carry it.
+ * lands on the version row only; the response body does not carry it — and so
+ * does `client`, the `X-Kept-Client` label (E09 D9). The set's provenance (D10)
+ * is written with the new version, only the fields the request sent.
  */
 export async function replacePage(
   token: string,
   read: FileSetReader,
-  publishedVia: Extract<PublishChannel, "web" | "api">,
+  publishedVia: Exclude<PublishChannel, "studio">,
+  client: string | null = null,
 ): Promise<AnonOutcome<ReplaceResponse>> {
   const site = await resolveAnonToken(token);
   if (!site) return notFound();
@@ -172,6 +175,7 @@ export async function replacePage(
       // guards it in SQL (D11).
       title: setTitle(set),
       publishedVia,
+      client,
       previous: {
         versionId: site.currentVersionId,
         title: site.title,

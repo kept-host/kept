@@ -95,6 +95,37 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 export interface PublisherContext {
   ip: string;
   userAgent: string;
+  /**
+   * E09 D5: a ready-made publisher key that REPLACES `hashPublisher(ip, ua)` —
+   * the dedup scope and E07's buckets are keyed by it. Set by the MCP door,
+   * whose callers share cloud egress IPs; never a raw IP. Absent everywhere
+   * else, and then nothing changes.
+   */
+  publisherKey?: string;
+}
+
+/**
+ * How a write arrived, beyond who sent it: the `X-Kept-Client` label (E09 D9,
+ * `keptClientFrom`) for `site_versions.client`, and — for E09's doors — the
+ * channel to record instead of the path's own (`api` for `/api/v1`, `mcp`).
+ */
+export interface PublishSource {
+  client: string | null;
+  publishedVia?: PublishChannel;
+}
+
+/** No label, the path's own channel — every caller that predates E09. */
+export const DEFAULT_SOURCE: PublishSource = { client: null };
+
+/**
+ * `sites.publisher_hash` for this publisher: `publisherKey` when set, else the
+ * salted hash of IP + UA. The raw IP goes into the digest and nowhere else.
+ */
+export async function publisherHashOf(publisher: PublisherContext): Promise<string> {
+  return (
+    publisher.publisherKey ??
+    hashPublisher(publisher.ip, publisher.userAgent, publisherHashSalt())
+  );
 }
 
 export type PublishOutcome =
@@ -199,6 +230,7 @@ export function pendingVersion(
   versionId: string,
   set: FileSet,
   publishedVia: PublishChannel,
+  client: string | null,
 ): PendingVersionInput {
   return {
     siteId,
@@ -207,6 +239,7 @@ export function pendingVersion(
     contentHash: set.contentHash,
     sizeBytes: set.totalBytes,
     publishedVia,
+    client,
     spa: set.spa,
     has404: set.has404,
     files: set.entries.map(({ path, bytes, sha256 }) => ({ path, sizeBytes: bytes.length, sha256 })),
@@ -363,13 +396,15 @@ export async function storeReplacement(args: {
   /** `setTitle(set)`, re-extracted from the new bytes. */
   title: string | null;
   publishedVia: PublishChannel;
+  /** `site_versions.client` for the new version (E09 D9); absent = none sent. */
+  client?: string | null;
   /** The row's pointer as the caller found it — what an unwind puts back. */
   previous: SitePointer;
 }): Promise<ReplaceStoreResult> {
   const { slug, siteId, versionId, set, previous } = args;
   const keys = versionKeys(siteId, versionId, set);
 
-  await insertPendingVersion(pendingVersion(siteId, versionId, set, args.publishedVia));
+  await insertPendingVersion(pendingVersion(siteId, versionId, set, args.publishedVia, args.client ?? null));
 
   const files = await writeVersionFiles(siteId, versionId, set);
   if (!files.ok) {
@@ -383,7 +418,7 @@ export async function storeReplacement(args: {
       title: args.title,
       contentHash: set.contentHash,
       sizeBytes: set.totalBytes,
-    }));
+    }, set.provenance));
   } catch (err) {
     const keysGone = await deleteKeys(keys, versionId);
     const rowsGone = await dropPendingVersion(siteId, versionId);
@@ -512,17 +547,18 @@ function message(err: unknown): string {
  *
  * @param read the request's file set (`readFileSet`, bound by the route). It
  *   runs AFTER the request ceiling, so a caller over it costs no extraction.
+ * @param source the `X-Kept-Client` label and, for E09's doors, the channel.
+ *
+ * Provenance (E09 D10) rides on the set and is written with the new row. A
+ * dedup hit writes none of it: the existing page is returned as it is.
  */
 export async function publishPage(
   read: FileSetReader,
   publisher: PublisherContext,
+  source: PublishSource = DEFAULT_SOURCE,
 ): Promise<PublishOutcome> {
   // ── 1. request ceiling ─────────────────────────────────────────────────────
-  const publisherHash = await hashPublisher(
-    publisher.ip,
-    publisher.userAgent,
-    publisherHashSalt(),
-  );
+  const publisherHash = await publisherHashOf(publisher);
 
   // The request ceiling counts every request, deduped or not — a dedup hit
   // still rotates the token. It needs only the publisher, so it runs BEFORE the
@@ -559,7 +595,7 @@ export async function publishPage(
   // The door (§5.9), on E04's existing distinction: the landing's browser path
   // is the one that carries a Turnstile token; a keyless caller never does.
   // Recorded on the version row only — the wire response does not change.
-  const publishedVia = turnstileToken !== undefined ? "web" : "api";
+  const publishedVia = source.publishedVia ?? (turnstileToken !== undefined ? "web" : "api");
 
   // One token, used either to rotate the deduped row or to create a new one.
   const anonToken = generateAnonToken();
@@ -597,8 +633,9 @@ export async function publishPage(
   let slug: string;
   try {
     ({ slug } = await insertAnonymousDraft({
-      version: pendingVersion(siteId, versionId, set, publishedVia),
+      version: pendingVersion(siteId, versionId, set, publishedVia, source.client),
       title,
+      provenance: set.provenance,
       anonTokenHash,
       publisherHash,
       expiresAt,

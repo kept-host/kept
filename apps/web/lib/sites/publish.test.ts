@@ -206,10 +206,35 @@ test(
     const owner = await makeAccount("premium");
     await seedKept(owner, FREE_LIMIT);
 
-    const result = await publish(owner, "e06-005-premium");
+    // E09 task 005 rides on this publish: `remix_of` names one of the seeded
+    // pages — kept and live — so it resolves to that page's id (Q8), and the
+    // `X-Kept-Client` label lands on the version.
+    const [remixed] = await db
+      .select({ id: sites.id, slug: sites.slug })
+      .from(sites)
+      .where(eq(sites.ownerId, owner))
+      .limit(1);
+    assert.ok(remixed);
+    const result = await publishOwnedPage({
+      profileId: owner,
+      set: await fileSet({ html: pageHtml("e06-005-premium"), remix_of: remixed.slug, tool: "codex" }),
+      publisher,
+      source: { client: "codex/skill" },
+    });
+    createdSites.add(result.site.id);
+    publishedSlugs.add(result.site.slug);
     assert.equal(result.site.expiresAt, null, "the plan is read, not the free alias");
     assert.equal(await keptCount(owner), FREE_LIMIT + 1);
-    assert.equal((await readSite(result.site.id)).expiresAt, null);
+    const row = await readSite(result.site.id);
+    assert.equal(row.expiresAt, null);
+    assert.equal(row.remixOf, remixed.id);
+    assert.equal(row.tool, "codex");
+    assert.equal(row.titleSource, "html", "no provenance title sent");
+    const [version] = await db
+      .select({ client: siteVersions.client, publishedVia: siteVersions.publishedVia })
+      .from(siteVersions)
+      .where(eq(siteVersions.siteId, result.site.id));
+    assert.deepEqual(version, { client: "codex/skill", publishedVia: "studio" });
   },
 );
 

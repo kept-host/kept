@@ -19,7 +19,7 @@ import { NextResponse } from "next/server";
 import { closedModeAccess, keylessPlan } from "../../../lib/launch-access";
 import { notOpenResponse, publishPaused } from "../../../lib/launch";
 import { readFileSet } from "../../../lib/publish/fileset/read";
-import { errorResponse, publishPausedResponse, publisherFrom } from "../../../lib/publish/http";
+import { errorResponse, keptClientFrom, publishPausedResponse, publisherFrom } from "../../../lib/publish/http";
 import { publishPage } from "../../../lib/publish/pipeline";
 
 /**
@@ -48,6 +48,7 @@ export async function POST(request: Request): Promise<Response> {
   const outcome = await publishPage(
     () => readFileSet(request, { plan: keylessPlan(door), uploaderId: null }),
     publisherFrom(request),
+    { client: keptClientFrom(request) },
   );
 
   if (!outcome.ok) return errorResponse(outcome.status, outcome.body);

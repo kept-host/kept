@@ -16,6 +16,7 @@ import type { ModerationReason, PublishChannel, Region, SiteStatus } from "@kept
 import { and, desc, eq, gt, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 
 import { isNameAvailable } from "../../names/availability";
+import type { StoredProvenance } from "../../publish/provenance";
 import { mintSlugCandidate } from "../../publish/slug";
 import { db, type Tx } from "../index";
 import { sites, siteVersions } from "../schema";
@@ -221,6 +222,8 @@ export interface PendingVersionInput {
   sizeBytes: number;
   /** The door these bytes came through (§5.9). REQUIRED: the column's default is a guess. */
   publishedVia: PublishChannel;
+  /** The `X-Kept-Client` label (E09 D9, `parseKeptClient`); absent or `null` = none sent. */
+  client?: string | null;
   spa: boolean;
   has404: boolean;
   files: readonly VersionFileEntry[];
@@ -247,6 +250,7 @@ export async function insertPendingVersion(input: PendingVersionInput, tx?: Tx):
     contentHash: input.contentHash,
     sizeBytes: input.sizeBytes,
     publishedVia: input.publishedVia,
+    client: input.client ?? null,
     fileCount: input.files.length,
     spa: input.spa,
     has404: input.has404,
@@ -269,6 +273,38 @@ export interface AnonymousDraftInput {
    * path cannot forget it and quietly ship a wall of slugs.
    */
   title: string | null;
+  /** E09 D10 — `cleanProvenance`'s output; `{}` when the request sent none. */
+  provenance: StoredProvenance;
+}
+
+/**
+ * The `sites` columns a request's provenance sets (E09 D10) — only the fields
+ * it SENT, so a replace that omits one leaves it alone (absent ≠ clear).
+ *
+ * `title` is stored as the OWNER's (Q7): it outranks the extracted `<title>`
+ * exactly as a studio rename does, and no later replace's HTML overwrites it.
+ *
+ * `remix_of` arrives as a slug and is resolved HERE, in the same statement
+ * (Q8, E10 D7): the id of the page that has that slug only while it is kept
+ * (`expires_at is null`) and `live`, never the page itself — anything else
+ * stores NULL, silently.
+ */
+export function provenanceColumns(
+  siteId: string,
+  provenance: StoredProvenance,
+): { [K in keyof typeof sites.$inferInsert]?: (typeof sites.$inferInsert)[K] | SQL } {
+  const { title, model, tool, prompt, readme, sourceUrl, remixOf } = provenance;
+  return {
+    ...(title !== undefined && { title, titleSource: "owner" as const }),
+    ...(model !== undefined && { model }),
+    ...(tool !== undefined && { tool }),
+    ...(prompt !== undefined && { prompt }),
+    ...(readme !== undefined && { readme }),
+    ...(sourceUrl !== undefined && { sourceUrl }),
+    ...(remixOf !== undefined && {
+      remixOf: sql`(select ${sites.id} from ${sites} where ${sites.slug} = ${remixOf} and ${sites.expiresAt} is null and ${sites.status} = 'live' and ${sites.id} <> ${siteId} limit 1)`,
+    }),
+  };
 }
 
 /**
@@ -343,6 +379,7 @@ export async function insertAnonymousDraft(
         contentHash: version.contentHash,
         sizeBytes: version.sizeBytes,
         reminderEmail: input.reminderEmail ?? null,
+        ...provenanceColumns(version.siteId, input.provenance),
       });
       await insertPendingVersion(version, tx);
     });
@@ -368,6 +405,8 @@ export interface OwnedPageInput {
   purgeAfter: Date | null;
   /** When the page became this account's. On this path, its creation. */
   claimedAt: Date;
+  /** E09 D10 — `cleanProvenance`'s output; `{}` when the request sent none. */
+  provenance: StoredProvenance;
 }
 
 /**
@@ -414,6 +453,7 @@ export async function insertOwnedPage(tx: Tx, input: OwnedPageInput): Promise<vo
     title: input.title,
     contentHash: version.contentHash,
     sizeBytes: version.sizeBytes,
+    ...provenanceColumns(version.siteId, input.provenance),
   });
   await insertPendingVersion(version, tx);
 }
@@ -632,6 +672,12 @@ export async function pointSiteAt(
  * later — it is not. The same reasoning is why the slug and `siteId` are stable
  * across a replace: it is the same page with new contents.
  *
+ * The replace's provenance (E09 D10) lands in the same transaction — only the
+ * fields the request sent (`provenanceColumns`); a provenance `title` is the
+ * owner's and is what the row ends up with. A replace unwound after this
+ * commits (`revertReplacementVersion`) puts the pointer back, not provenance:
+ * it is self-reported metadata about the page, not about the bytes served.
+ *
  * Throws, rolling back, when the version row is gone: a prune that ran while the
  * files were uploading (it takes the same site-row lock this UPDATE waits on)
  * may have dropped it, and a pointer at a version with no rows is unservable.
@@ -639,13 +685,23 @@ export async function pointSiteAt(
 export async function activatePendingVersion(
   siteId: string,
   target: SitePointer & { versionId: string },
+  provenance: StoredProvenance = {},
 ): Promise<{ title: string | null }> {
   return db.transaction(async (tx) => {
-    const pointed = await pointSiteAt(tx, siteId, target);
+    let pointed = await pointSiteAt(tx, siteId, target);
     if (!(await findSiteVersion(tx, siteId, target.versionId))) {
       throw new Error(`version ${target.versionId} of site ${siteId} was pruned before it could be served`);
     }
     await stampActivated(tx, siteId, target.versionId, "now");
+    const columns = provenanceColumns(siteId, provenance);
+    if (Object.keys(columns).length > 0) {
+      const [row] = await tx
+        .update(sites)
+        .set(columns)
+        .where(eq(sites.id, siteId))
+        .returning({ title: sites.title });
+      pointed = { title: row?.title ?? null };
+    }
     return pointed;
   });
 }
