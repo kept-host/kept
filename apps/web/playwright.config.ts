@@ -112,11 +112,18 @@ process.env.KEPT_E2E_MODERATION_ADMIN_EMAIL ??= `delivered+e07-mod-${crypto.rand
  * `admin-moderation*.spec.ts` and deletes its account afterwards too.
  */
 process.env.KEPT_E2E_EPIC_ADMIN_EMAIL ??= `delivered+e07-epic-${crypto.randomUUID().slice(0, 8)}@resend.dev`;
+/**
+ * A fifth for `agents.closed.spec.ts` (E09 task 007): its emailed-code verify
+ * creates this account and the spec deletes it afterwards. `.invalid`, so even
+ * a run with delivery on can never mail it.
+ */
+process.env.KEPT_E2E_AGENT_ADMIN_EMAIL ??= `e09-agent-admin-${crypto.randomUUID().slice(0, 8)}@kept-e09.invalid`;
 process.env.KEPT_ADMIN_EMAILS = [
   process.env.KEPT_E2E_ADMIN_EMAIL,
   process.env.KEPT_E2E_DRILL_ADMIN_EMAIL,
   process.env.KEPT_E2E_MODERATION_ADMIN_EMAIL,
   process.env.KEPT_E2E_EPIC_ADMIN_EMAIL,
+  process.env.KEPT_E2E_AGENT_ADMIN_EMAIL,
 ].join(",");
 
 /**

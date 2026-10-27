@@ -92,6 +92,10 @@ const NOT_COOKIE_AUTHENTICATED: Record<string, string> = {
     "unauthenticated: public (E07 §6.8) — reads no cookie, writes a report nobody owns; Turnstile and the per-IP limits guard it (report.spec)",
   "POST /api/founding/review":
     "unauthenticated: the HMAC-signed, 14-day review link `t` (KEPT_ADMIN_SECRET) is the authority; idempotent (founding.spec)",
+  "POST /api/agent/request-code":
+    "unauthenticated: reads no cookie, sets none, answers one 202 whatever the address's state — an agent calls it from a terminal (agent-code.spec)",
+  "POST /api/agent/verify-code":
+    "unauthenticated: the emailed code is the authority; mints a key, never a session cookie (agent-code.spec)",
 };
 
 /** What a swept request may act on. A's real things, or things that name nothing. */

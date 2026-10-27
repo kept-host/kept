@@ -26,9 +26,8 @@ export async function sendEmail(compose: (from: string) => Email): Promise<void>
   const { apiKey, from } = resendConfig();
   const email = compose(from);
   if (emailDeliveryOff()) {
-    console.log(
-      `[kept] mail to ${[email.to].flat().join(", ")} not sent — KEPT_EMAIL_DELIVERY=off: ${email.subject}`,
-    );
+    // No subject: an agent sign-in code's subject carries the code (E09 D7).
+    console.log(`[kept] mail to ${[email.to].flat().join(", ")} not sent — KEPT_EMAIL_DELIVERY=off`);
     return;
   }
   const { error } = await new Resend(apiKey).emails.send({ from, ...email });

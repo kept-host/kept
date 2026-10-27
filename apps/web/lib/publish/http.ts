@@ -8,9 +8,11 @@
  */
 import {
   KEPT_CLIENT_HEADER,
+  keyedErrorSchema,
   parseKeptClient,
   publishErrorSchema,
   studioErrorSchema,
+  type KeyedError,
   type PublishError,
 } from "@kept/shared";
 // `.js`: see the same import in `./hooks.ts` (Playwright's ESM loader).
@@ -126,11 +128,20 @@ export function browserChannel(request: Request): "web" | "api" {
  * body is the easiest thing in a system to end up in a log.
  */
 export function errorResponse(status: number, body: PublishError): NextResponse {
+  return flatErrorResponse(status, publishErrorSchema.parse(body));
+}
+
+/** The same flat body with E09's keyed codes (`KEYED_ERROR_CODES`): `/api/agent/*`, `/api/v1/*`. */
+export function keyedErrorResponse(status: number, body: KeyedError): NextResponse {
+  return flatErrorResponse(status, keyedErrorSchema.parse(body));
+}
+
+function flatErrorResponse(status: number, body: KeyedError): NextResponse {
   const headers: Record<string, string> = { "cache-control": "no-store" };
   if (body.retry_after_seconds !== undefined) {
     headers["retry-after"] = String(body.retry_after_seconds);
   }
-  return NextResponse.json(publishErrorSchema.parse(body), { status, headers });
+  return NextResponse.json(body, { status, headers });
 }
 
 /** How long a paused caller is told to wait — long enough not to hammer, short enough to notice an unpause. */

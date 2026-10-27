@@ -184,7 +184,7 @@ export const apiKeyCreatedSchema = apiKeySummarySchema.extend({
 export type ApiKeyCreated = z.infer<typeof apiKeyCreatedSchema>;
 
 /**
- * `/api/v1/*`'s closed code enum (Q10): the keyless codes plus three of its
+ * `/api/v1/*`'s closed code enum (Q10): the keyless codes plus four of its
  * own, in the same flat body, so an agent parses one shape on either door.
  */
 export const KEYED_ERROR_CODES = [
@@ -195,6 +195,8 @@ export const KEYED_ERROR_CODES = [
   "not_found",
   /** `API_KEYS_PER_ACCOUNT` live keys already (`/api/agent/verify-code`). 409. */
   "key_limit_reached",
+  /** `/api/agent/verify-code`: a wrong, expired, spent or never-sent code — one answer for all four. 400. */
+  "invalid_code",
 ] as const;
 
 export const keyedErrorCodeEnum = z.enum(KEYED_ERROR_CODES);
