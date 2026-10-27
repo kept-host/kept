@@ -96,6 +96,11 @@ const NOT_COOKIE_AUTHENTICATED: Record<string, string> = {
     "unauthenticated: reads no cookie, sets none, answers one 202 whatever the address's state — an agent calls it from a terminal (agent-code.spec)",
   "POST /api/agent/verify-code":
     "unauthenticated: the emailed code is the authority; mints a key, never a session cookie (agent-code.spec)",
+  "POST /api/v1/pages":
+    "bearer: an API key (`keyCallerFrom`); a session cookie alone is 401 unauthorized (v1-pages-api.spec)",
+  "PUT /api/v1/pages/[slug]": "bearer: an API key; the cookie is never read (v1-pages-api.spec)",
+  "DELETE /api/v1/pages/[slug]": "bearer: an API key; the cookie is never read (v1-pages-api.spec)",
+  "POST /api/v1/uploads": "bearer: an API key (E09 Q5); `/api/uploads` stays the cookie door (v1-pages-api.spec)",
 };
 
 /** What a swept request may act on. A's real things, or things that name nothing. */

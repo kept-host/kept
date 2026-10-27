@@ -153,8 +153,8 @@ test("the keyed error enum is closed: the keyless codes plus exactly four", () =
   assert.ok(publishErrorSchema.safeParse({ error: "publishing_paused", message: "x", retry_after_seconds: 600 }).success);
 
   const own = KEYED_ERROR_CODES.filter((code) => !(PUBLISH_ERROR_CODES as readonly string[]).includes(code));
-  assert.deepEqual([...own].sort(), ["invalid_code", "key_limit_reached", "not_found", "unauthorized"]);
-  assert.equal(KEYED_ERROR_CODES.length, PUBLISH_ERROR_CODES.length + 4);
+  assert.deepEqual([...own].sort(), ["invalid_code", "key_limit_reached", "not_allowed_in_status", "not_found", "unauthorized"]);
+  assert.equal(KEYED_ERROR_CODES.length, PUBLISH_ERROR_CODES.length + 5);
   for (const code of KEYED_ERROR_CODES) {
     assert.ok(keyedErrorSchema.safeParse({ error: code, message: "x" }).success, code);
   }

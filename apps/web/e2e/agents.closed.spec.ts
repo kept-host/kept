@@ -1,8 +1,9 @@
-import { apiKeyPattern, hashToken } from "@kept/shared";
+import { apiKeyPattern, hashToken, keyedPublishResponseSchema } from "@kept/shared";
 import { expect, test } from "@playwright/test";
 import { config } from "dotenv";
 import { eq, inArray } from "drizzle-orm";
 
+import { createKey } from "../lib/agents/keys";
 import { closeDb, db, schema } from "../lib/db";
 import { upsertAgentCode } from "../lib/db/queries/agent-codes";
 import { keptOpen } from "../lib/launch";
@@ -11,6 +12,7 @@ import { waitlistHref } from "../lib/routing/host-split";
 import { drillIp } from "../lib/testing/drill-ip";
 
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
+import { cleanup, newScope, titledHtml } from "./owner-fixtures";
 
 /**
  * E09's ONE closed-mode spec — the agent doors on the deploy prod runs until
@@ -20,12 +22,13 @@ import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
  *     no mail (task 007).
  *   - for the run's agent admin: a code stored; verify (with a seeded code)
  *     mints a key and creates the account through Better Auth (task 007).
- *   - `/api/v1/pages` with no credential: the middleware's `not_open` 404, so
- *     it holds before task 008's handlers exist.
+ *   - `/api/v1/pages` with no credential: the middleware's `not_open` 404.
+ *   - `/api/v1/pages` with a non-admin's key: the handler's `not_open` 404;
+ *     with the admin's key: the page publishes (task 008, the `key` door).
  *
- * Task 008 adds its admin-key case and task 009 its `/mcp` cases here.
+ * Task 009 adds its `/mcp` cases here.
  *
- * 0 publishes, 0 KV writes. ⚠️ No code or key is printed.
+ * 1 publish, 1 KV write (plus its teardown). ⚠️ No code or key is printed.
  */
 
 config({ path: ".env.local", quiet: true });
@@ -40,6 +43,8 @@ const NOT_OPEN = {
 };
 
 const buckets = new Set<string>();
+/** The admin's keyed page and the non-admin's account, collected in `afterAll`. */
+const scope = newScope();
 
 async function requestCode(request: import("@playwright/test").APIRequestContext, email: string) {
   const ip = drillIp();
@@ -65,6 +70,9 @@ test.describe("the agent doors (closed)", () => {
   });
 
   test.afterAll(async () => {
+    const owners = await db.select({ id: schema.user.id }).from(schema.user).where(eq(schema.user.email, ADMIN));
+    scope.userIds.push(...owners.map((owner) => owner.id));
+    await cleanup(scope);
     // Cascades `profiles` and `api_keys`.
     await db.delete(schema.user).where(inArray(schema.user.email, [ADMIN, STRANGER]));
     await db.delete(schema.agentCodes).where(inArray(schema.agentCodes.email, [ADMIN, STRANGER]));
@@ -109,5 +117,34 @@ test.describe("the agent doors (closed)", () => {
       expect(response.status(), response.url()).toBe(404);
       expect(await response.json()).toEqual(NOT_OPEN);
     }
+  });
+
+  test("/api/v1/pages: a non-admin's key is not_open; the admin's key publishes", async ({ request }) => {
+    const strangerId = crypto.randomUUID();
+    await db.insert(schema.user).values({ id: strangerId, name: "E09 closed stranger", email: `key-${STRANGER}`, emailVerified: true });
+    await db.insert(schema.profiles).values({ id: strangerId, email: `key-${STRANGER}` });
+    scope.userIds.push(strangerId);
+    const strangerKey = await createKey(strangerId, "closed stranger");
+    expect(strangerKey, "a key was minted").not.toBeNull();
+    const refused = await request.post("/api/v1/pages", {
+      headers: { authorization: `Bearer ${strangerKey!.apiKey}` },
+      data: { html: titledHtml("closed stranger") },
+    });
+    expect(refused.status()).toBe(404);
+    expect(await refused.json()).toEqual(NOT_OPEN);
+
+    const [admin] = await db.select({ id: schema.user.id }).from(schema.user).where(eq(schema.user.email, ADMIN));
+    expect(admin, "the previous test made the admin's account").toBeTruthy();
+    const adminKey = await createKey(admin!.id, "closed admin");
+    expect(adminKey, "a key was minted").not.toBeNull();
+    buckets.add(`key:${adminKey!.summary.id}`);
+    const published = await request.post("/api/v1/pages", {
+      headers: { authorization: `Bearer ${adminKey!.apiKey}` },
+      data: { html: titledHtml("closed admin keyed page") },
+    });
+    expect(published.status(), await published.text()).toBe(201);
+    const body = keyedPublishResponseSchema.parse(await published.json());
+    scope.slugs.add(body.slug);
+    expect(body.kept).toBe(true);
   });
 });

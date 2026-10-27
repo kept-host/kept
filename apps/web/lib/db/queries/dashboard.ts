@@ -33,7 +33,8 @@
  * disagree about which drafts exist.
  */
 import { type KeptQuota, type ModerationReason, type NameKind, type SiteStatus } from "@kept/shared";
-import { and, desc, eq, inArray, isNotNull, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, notInArray, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 
 import { chosenNameCount } from "../../names/check";
 import { isKeptCondition, isPastGrace, keptQuotaFor } from "../../sites/keep";
@@ -247,4 +248,92 @@ export async function getOwnedSiteById(
     .limit(1);
 
   return row ?? null;
+}
+
+/**
+ * One of the owner's pages as the keyed REST API and the MCP keyed tools see it
+ * (E09 D8): the row, its provenance, the remixed page's slug and the current
+ * version's file count.
+ */
+export interface KeyedPageRow {
+  id: string;
+  slug: string;
+  title: string | null;
+  status: SiteStatus;
+  expiresAt: Date | null;
+  updatedAt: Date;
+  model: string | null;
+  tool: string | null;
+  prompt: string | null;
+  readme: string | null;
+  sourceUrl: string | null;
+  remixOf: string | null;
+  fileCount: number;
+  /** `updated_at` as Postgres prints it — microsecond-exact, unlike a JS `Date` — for the list cursor. */
+  cursorAt: string;
+}
+
+/** Where a keyed list page resumes: strictly after this `(updated_at, id)`. */
+export interface KeyedPageCursor {
+  at: string;
+  id: string;
+}
+
+/** Archived and removed pages have released their slug (`sites_slug_key`); a key never names them. */
+const KEYED_HIDDEN_STATUSES = ["archived", "removed"] as const satisfies readonly SiteStatus[];
+
+const remixed = alias(sites, "remixed");
+
+function keyedPages(where: ReturnType<typeof and>) {
+  return db
+    .select({
+      id: sites.id,
+      slug: sites.slug,
+      title: sites.title,
+      status: sites.status,
+      expiresAt: sites.expiresAt,
+      updatedAt: sites.updatedAt,
+      model: sites.model,
+      tool: sites.tool,
+      prompt: sites.prompt,
+      readme: sites.readme,
+      sourceUrl: sites.sourceUrl,
+      remixOf: remixed.slug,
+      fileCount: siteVersions.fileCount,
+      cursorAt: sql<string>`${sites.updatedAt}::text`,
+    })
+    .from(sites)
+    .innerJoin(siteVersions, eq(siteVersions.id, sites.currentVersionId))
+    .leftJoin(remixed, eq(remixed.id, sites.remixOf))
+    .where(where);
+}
+
+function ownedVisible(profileId: string) {
+  return and(eq(sites.ownerId, profileId), notInArray(sites.status, [...KEYED_HIDDEN_STATUSES]));
+}
+
+/**
+ * The owner's page with this slug, or `null` — another account's page, an
+ * archived one and a slug that names nothing all read the same (D17). The
+ * owner scope is in the SQL.
+ */
+export async function getKeyedPageBySlug(profileId: string, slug: string): Promise<KeyedPageRow | null> {
+  const [row] = await keyedPages(and(ownedVisible(profileId), eq(sites.slug, slug))).limit(1);
+  return row ?? null;
+}
+
+/**
+ * Up to `limit` of the owner's pages, newest `updated_at` first, `id` breaking
+ * ties, strictly after `after` — a stable keyset cursor, so a page updated
+ * mid-walk moves to the front rather than being read twice in place.
+ */
+export async function listKeyedPages(
+  profileId: string,
+  after: KeyedPageCursor | null,
+  limit: number,
+): Promise<KeyedPageRow[]> {
+  const where = after
+    ? and(ownedVisible(profileId), sql`(${sites.updatedAt}, ${sites.id}) < (${after.at}::timestamptz, ${after.id}::uuid)`)
+    : ownedVisible(profileId);
+  return keyedPages(where).orderBy(desc(sites.updatedAt), desc(sites.id)).limit(limit);
 }

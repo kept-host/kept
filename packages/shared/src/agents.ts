@@ -164,6 +164,17 @@ export const keyedListResponseSchema = z.object({
 
 export type KeyedListResponse = z.infer<typeof keyedListResponseSchema>;
 
+/** Pages per `GET /api/v1/pages` (and MCP `list_pages`) response. */
+export const KEYED_LIST_PAGE_SIZE = 50;
+
+/** `DELETE /api/v1/pages/{slug}`: the page is offline and archived (download window unchanged). */
+export const keyedDeleteResponseSchema = z.object({
+  slug: slugSchema,
+  deleted: z.literal(true),
+});
+
+export type KeyedDeleteResponse = z.infer<typeof keyedDeleteResponseSchema>;
+
 /** One key in `GET /api/keys` — never the key or its hash. */
 export const apiKeySummarySchema = z.object({
   id: z.string().uuid(),
@@ -184,7 +195,7 @@ export const apiKeyCreatedSchema = apiKeySummarySchema.extend({
 export type ApiKeyCreated = z.infer<typeof apiKeyCreatedSchema>;
 
 /**
- * `/api/v1/*`'s closed code enum (Q10): the keyless codes plus four of its
+ * `/api/v1/*`'s closed code enum (Q10): the keyless codes plus five of its
  * own, in the same flat body, so an agent parses one shape on either door.
  */
 export const KEYED_ERROR_CODES = [
@@ -197,6 +208,8 @@ export const KEYED_ERROR_CODES = [
   "key_limit_reached",
   /** `/api/agent/verify-code`: a wrong, expired, spent or never-sent code — one answer for all four. 400. */
   "invalid_code",
+  /** Replace or delete of a page that is not `live` (or is under review / hidden). 409. */
+  "not_allowed_in_status",
 ] as const;
 
 export const keyedErrorCodeEnum = z.enum(KEYED_ERROR_CODES);
