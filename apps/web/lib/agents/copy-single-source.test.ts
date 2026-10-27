@@ -5,7 +5,7 @@
  * nothing else (AC4's local half).
  *
  * The installer downloads from a real local HTTP server serving the real
- * `SKILL.md`; `scripts/publish.sh` is a stand-in until task 010 writes it.
+ * `SKILL.md` and the real `skill/skills/kept/scripts/publish.sh` (task 010).
  * No network beyond 127.0.0.1, no store touched.
  */
 import assert from "node:assert/strict";
@@ -131,7 +131,7 @@ function tree(dir: string): string[] {
 
 test("install.sh: sh -n, shellcheck, installs into a fake ~/.claude and nothing else", async () => {
   const skill = skillMarkdown(BASE);
-  const publish = "#!/bin/sh\necho 'publish.sh stand-in'\n";
+  const publish = readFileSync(join(REPO, "skill/skills/kept/scripts/publish.sh"), "utf8");
   const server = createServer((req, res) => {
     const body = req.url === "/SKILL.md" ? skill : req.url === "/scripts/publish.sh" ? publish : null;
     res.writeHead(body === null ? 404 : 200).end(body ?? "");

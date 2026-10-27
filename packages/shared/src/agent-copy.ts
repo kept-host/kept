@@ -143,6 +143,8 @@ Change the page you already published instead of publishing again:
 - \`publish.sh --replace <manage_token> <path>\` for a page published without an account (the script remembers tokens in \`~/.kept/drafts.json\`).
 - \`publish.sh --page <slug> <path>\` for a page in the user's account.
 
+Only when the user asks to take a page down: \`publish.sh delete <manage_token>\`, or \`publish.sh delete --page <slug>\`.
+
 ## The user's account
 
 If \`${API_KEY_ENV}\` is set or \`~/.kept/credentials\` exists, pages go straight into the user's account: kept if a slot is free, else a draft. There is no claim link then; show the live link and the studio link.
@@ -157,7 +159,7 @@ Pass \`--model\` with the model you are. If the user agrees, pass \`--prompt\` w
 
 - Drafts serve for ${DRAFT_TTL_DAYS} days; a free account keeps ${free.keptPages} pages forever.
 - A site: up to ${free.siteMb} MB and ${free.siteFiles} files, ${free.fileMb} MB per file.
-- Too many publishes in an hour: the script exits 3 and prints how long to wait.
+- Too many publishes in an hour, or kept has paused publishing (\`publishing_paused\`): the script exits 3 and prints how long to wait.
 - kept refuses phishing, malware, scams and illegal content: ${base}/legal/acceptable-use.
 
 ## No shell
@@ -310,6 +312,7 @@ The answer: {"live_url", "studio_url", "slug", "kept", "expires_at"}. Kept if a 
 ## Errors
 
 Non-2xx answers are {"error": "<code>", "message": "…", "retry_after_seconds"?}. 429 rate_limited: wait retry_after_seconds.
+503 publishing_paused: kept has paused publishing; serving, deletes and keeps still work. Wait retry_after_seconds.
 
 ## Other ways in
 

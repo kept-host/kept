@@ -229,6 +229,7 @@ All of these are read by `apps/web` at runtime or build time
 | `TURNSTILE_SECRET_KEY` | yes | §3.3 |
 | `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | no | §3.3 |
 | `NEXT_PUBLIC_KEPT_OPEN` | no | **unset** (or `false`) for pre-launch. `true` only on launch day |
+| `KEPT_PUBLISH_PAUSED` | no | **unset**. The incident lever (§9): exactly `true` pauses publishing |
 | `NEXT_TELEMETRY_DISABLED` | no | `1` |
 | `NEXT_PUBLIC_LOCKED_CTA_URL` | no | leave unset (E11) |
 
@@ -482,6 +483,12 @@ set by hand.
 - [ ] `/api/health` → `"open":true`. An anonymous publish works. Sign-in is open to all.
 - [ ] Decide what to do with `KEPT_ACCESS_TOKEN_HASHES`. Tokens stay valid after opening; remove the digests you no longer want.
 - [ ] Post the Impressum link; file the PSL request (§5).
+
+**Incident lever (E09 task 011):** set `KEPT_PUBLISH_PAUSED=true` on the Railway prod
+service (Railway redeploys; it is read at request time, nothing is baked into the build). Every publish, replace and upload
+(keyless, studio, `/api/v1`, `/mcp`) then answers 503 `publishing_paused` with
+`Retry-After`. Serving, deletes, takedowns and keeps stay up. The skill's
+`publish.sh` exits 3 and prints the wait. Unset it to resume.
 
 **Rollback:**
 - Close again: unset `NEXT_PUBLIC_KEPT_OPEN` (rebuild).

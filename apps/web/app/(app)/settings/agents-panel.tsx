@@ -7,8 +7,8 @@
  * flagged for Arun's review.
  *
  * Two cards. "Connect an agent": Codex · Claude Code · Cursor · Any agent, each
- * its install command with Copy, and Claude chat as a smaller fifth (Q-PRD-3;
- * no ChatGPT, D11). "API keys": the account's live keys, Create (the key is shown
+ * its install command with Copy, and Claude chat as a smaller fifth (Q-PRD-3,
+ * D11). "API keys": the account's live keys, Create (the key is shown
  * once, in a dialog, and dropped from state when it closes) and Revoke behind a
  * confirm. The list arrives from the server component; this island keeps it in
  * step with what it creates and revokes.

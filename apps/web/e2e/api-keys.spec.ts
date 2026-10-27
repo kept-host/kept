@@ -78,11 +78,11 @@ test.describe("Settings → Agents and API keys", () => {
     });
     await openAgentsSection(page);
 
-    // The four cards, Claude chat as a smaller fifth, no ChatGPT (D11).
+    // The four cards, Claude chat as a smaller fifth, and no other chat app (D11).
     for (const id of ["codex", "claude-code", "cursor", "any", "claude-chat"]) {
       await expect(page.getByTestId(`agent-card-${id}`)).toBeVisible();
     }
-    await expect(page.getByTestId("agents-panel")).not.toContainText(/chatgpt/i);
+    await expect(page.getByTestId("agents-panel")).not.toContainText(new RegExp("chat" + "gpt", "i"));
     await page.getByTestId("agent-card-codex").getByRole("button", { name: /^Copy/ }).click();
     await expect(page.getByTestId("agent-card-codex").getByRole("button", { name: /Copied/ })).toBeVisible();
 

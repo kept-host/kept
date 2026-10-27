@@ -1,0 +1,20 @@
+{
+  "name": "kept",
+  "interface": {
+    "displayName": "kept"
+  },
+  "plugins": [
+    {
+      "name": "kept",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
