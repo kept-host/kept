@@ -51,15 +51,6 @@ jobs:
       - name: Install Playwright browsers
         run: pnpm --filter @kept/web exec playwright install --with-deps chromium
 
-      # The skill tests shellcheck `publish.sh` and `/install.sh`. The runner's
-      # apt shellcheck (0.9) flags what a current one does not, so pin the
-      # version a dev machine runs and both agree.
-      - name: Install shellcheck 0.11.0
-        run: |
-          curl -fsSL https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz | tar -xJ
-          sudo install shellcheck-v0.11.0/shellcheck /usr/local/bin/shellcheck
-          shellcheck --version
-
       # `NEXT_PUBLIC_APP_URL` is NOT a secret — it is the control plane's own
       # public origin, and `NEXT_PUBLIC_` values are inlined into the client
       # bundle by design. It is set here so `e2e/host-split.spec.ts` runs.
