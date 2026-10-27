@@ -11,7 +11,9 @@
  * `page_views_daily` and `job_runs` (E06, migration 0005), plus the launch
  * `waitlist` (migration 0006), plus E07's moderation tables — `scans`,
  * `abuse_reports`, `moderation_actions`, `appeals`, `pending_purges` — and
- * `sites.moderation_reason` (migration 0008).
+ * `sites.moderation_reason` (migration 0008), plus E09's `api_keys`,
+ * `agent_codes`, `site_versions.client` and the `sites` provenance columns
+ * (migration 0011).
  */
 import {
   APPEAL_STATUSES,
@@ -23,6 +25,7 @@ import {
   NAME_HOLD_REASONS,
   NAME_KINDS,
   PLANS,
+  PROVENANCE_LIMITS,
   PUBLISH_CHANNELS,
   REGIONS,
   REPORT_STATUSES,
@@ -35,6 +38,7 @@ import {
 } from "@kept/shared";
 import { relations, sql } from "drizzle-orm";
 import {
+  type AnyPgColumn,
   boolean,
   check,
   date,
@@ -66,6 +70,11 @@ export const moderationReasonEnum = pgEnum("moderation_reason", MODERATION_REASO
  */
 function inValues(values: readonly string[]) {
   return sql.raw(values.map((value) => `'${value}'`).join(", "));
+}
+
+/** `char_length(column) <= max` — a CHECK whose bound is a `@kept/shared` number. */
+function maxLength(column: AnyPgColumn, max: number) {
+  return sql`char_length(${column}) <= ${sql.raw(String(max))}`;
 }
 
 // ── Better Auth (E05) ────────────────────────────────────────────────────────
@@ -320,6 +329,20 @@ export const sites = pgTable(
     // by `lib/moderation` (`setStatus`), with the status, in one update; NULL
     // on every page nobody has restricted.
     moderationReason: moderationReasonEnum("moderation_reason"),
+    // Provenance (E09, migration 0011): what the publisher says made the page.
+    // Optional, self-reported, never verified; each capped by a CHECK at
+    // `PROVENANCE_LIMITS`. Written by the publish pipelines (`queries/publish.ts`)
+    // only. ⚠️ UNTRUSTED STRANGER-AUTHORED INPUT, like `title`.
+    model: text("model"),
+    tool: text("tool"),
+    prompt: text("prompt"),
+    readme: text("readme"),
+    sourceUrl: text("source_url"),
+    // The page this one remixes (Q8). A uuid FK, resolved from a slug at
+    // publish; it goes NULL when that page is purged — the remix stays.
+    remixOf: uuid("remix_of").references((): AnyPgColumn => sites.id, {
+      onDelete: "set null",
+    }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -344,6 +367,14 @@ export const sites = pgTable(
       .on(table.slug)
       .where(sql`${table.status} not in ('archived', 'removed')`),
     check("sites_title_source_check", sql`${table.titleSource} in ('html', 'owner')`),
+    check("sites_model_length_check", maxLength(table.model, PROVENANCE_LIMITS.model)),
+    check("sites_tool_length_check", maxLength(table.tool, PROVENANCE_LIMITS.tool)),
+    check("sites_prompt_length_check", maxLength(table.prompt, PROVENANCE_LIMITS.prompt)),
+    check("sites_readme_length_check", maxLength(table.readme, PROVENANCE_LIMITS.readme)),
+    check(
+      "sites_source_url_length_check",
+      maxLength(table.sourceUrl, PROVENANCE_LIMITS.source_url),
+    ),
     // The bearer-token lookup for /p/[anonToken] and the anonymous
     // replace/delete routes; unique because a token identifies exactly one page.
     uniqueIndex("sites_anon_token_hash_key").on(table.anonTokenHash),
@@ -407,38 +438,49 @@ export const sites = pgTable(
 // `currentVersionId` on `sites` references one of these (FK wired app-side to
 // avoid a circular DB constraint; the pair is kept consistent by the publish
 // flow in E04).
-export const siteVersions = pgTable("site_versions", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  siteId: uuid("site_id")
-    .notNull()
-    .references(() => sites.id, { onDelete: "cascade" }),
-  region: regionEnum("region").notNull().default("auto"),
-  // The exact R2 object key this version was written to —
-  // `sites/{siteId}/{versionId}/index.html`. Stored rather than recomputed so a
-  // rollback/purge never has to re-derive a key from a naming convention that
-  // may have changed since the object was written.
-  r2Key: text("r2_key").notNull(),
-  // SHA-256 (hex) of the version's file set (`hashFileSet`; for a set of one,
-  // the `index.html` bytes' own hash, D10), and the SET TOTAL in bytes (E08).
-  contentHash: text("content_hash").notNull(),
-  sizeBytes: integer("size_bytes").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  // When this version last became the live one (D7): set on replace and again
-  // on restore. 0005 backfills existing rows to `created_at`.
-  activatedAt: timestamp("activated_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  // The channel that published this version.
-  publishedVia: publishChannelEnum("published_via").notNull().default("web"),
-  // E08: how many files the set holds (one `site_version_files` row each), and
-  // the two manifest flags the Worker reads — D12 SPA rewrite, D13 the set
-  // ships its own `404.html`.
-  fileCount: integer("file_count").notNull().default(1),
-  spa: boolean("spa").notNull().default(false),
-  has404: boolean("has_404").notNull().default(false),
-});
+export const siteVersions = pgTable(
+  "site_versions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    siteId: uuid("site_id")
+      .notNull()
+      .references(() => sites.id, { onDelete: "cascade" }),
+    region: regionEnum("region").notNull().default("auto"),
+    // The exact R2 object key this version was written to —
+    // `sites/{siteId}/{versionId}/index.html`. Stored rather than recomputed so a
+    // rollback/purge never has to re-derive a key from a naming convention that
+    // may have changed since the object was written.
+    r2Key: text("r2_key").notNull(),
+    // SHA-256 (hex) of the version's file set (`hashFileSet`; for a set of one,
+    // the `index.html` bytes' own hash, D10), and the SET TOTAL in bytes (E08).
+    contentHash: text("content_hash").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    // When this version last became the live one (D7): set on replace and again
+    // on restore. 0005 backfills existing rows to `created_at`.
+    activatedAt: timestamp("activated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    // The channel that published this version.
+    publishedVia: publishChannelEnum("published_via").notNull().default("web"),
+    // E08: how many files the set holds (one `site_version_files` row each), and
+    // the two manifest flags the Worker reads — D12 SPA rewrite, D13 the set
+    // ships its own `404.html`.
+    fileCount: integer("file_count").notNull().default(1),
+    spa: boolean("spa").notNull().default(false),
+    has404: boolean("has_404").notNull().default(false),
+    // The agent that published this version (E09), from `X-Kept-Client` or the
+    // MCP client name, via `parseKeptClient`. NULL when none was sent or it was
+    // malformed — a bad value is dropped, never refused.
+    client: text("client"),
+  },
+  (table) => [
+    // The shape `parseKeptClient` accepts; SQL repeats it (migration test).
+    check("site_versions_client_check", sql`${table.client} ~ '^[a-z0-9._/-]{1,40}$'`),
+  ],
+);
 
 // ── site_version_files ───────────────────────────────────────────────────────
 // Every object of a version (E08 D1): one row per stored path, at R2 key
@@ -764,6 +806,51 @@ export const pendingPurges = pgTable(
   },
   (table) => [index("pending_purges_due_idx").on(table.dueAt)],
 );
+
+// ── api_keys (E09) ───────────────────────────────────────────────────────────
+// A Pro-style key an agent publishes with (`Authorization: Bearer kpt_live_…`).
+// Only the SHA-256 (hex) of the key is stored — the raw key is shown once, at
+// creation. `prefix` is its first characters, for the settings table. Revoking
+// stamps `revoked_at`; the row stays. Keys cascade with the profile, so account
+// deletion needs nothing extra. `last_used_on` is a date: at most one write a
+// day (`touchKeyLastUsed`).
+export const apiKeys = pgTable(
+  "api_keys",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => profiles.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    prefix: text("prefix").notNull(),
+    hash: text("hash").notNull().unique(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastUsedOn: date("last_used_on"),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (table) => [
+    check("api_keys_name_length_check", sql`char_length(${table.name}) between 1 and 60`),
+    // The settings list and the per-account cap count read active keys only.
+    index("api_keys_user_active_idx")
+      .on(table.userId)
+      .where(sql`${table.revokedAt} is null`),
+  ],
+);
+
+// ── agent_codes (E09 D7, Q3) ─────────────────────────────────────────────────
+// The one live sign-in code per address an agent asked for. Only its SHA-256
+// is stored. A new request replaces the row; a correct verify deletes it; five
+// wrong tries kill it. No FK: the address may have no account yet.
+export const agentCodes = pgTable("agent_codes", {
+  email: text("email").primaryKey(),
+  codeHash: text("code_hash").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  attempts: integer("attempts").notNull().default(0),
+  // The requesting agent (`parseKeptClient`), carried to the key it mints.
+  client: text("client"),
+});
 
 // ── relations ────────────────────────────────────────────────────────────────
 export const userRelations = relations(user, ({ one, many }) => ({
