@@ -15,6 +15,7 @@ export * from "./files";
 export * from "./publish";
 export * from "./provenance";
 export * from "./agents";
+export * from "./agent-copy";
 export * from "./keep";
 export * from "./manage";
 export * from "./plans";
