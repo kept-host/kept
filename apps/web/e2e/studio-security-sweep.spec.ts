@@ -106,6 +106,8 @@ interface Target {
   anonToken: string;
   /** The account's email — the typed confirmation account deletion asks for. */
   email: string;
+  /** A live API key on the account (E09 task 006). */
+  keyId: string;
 }
 
 type Send = (
@@ -240,6 +242,18 @@ const SWEPT: Record<string, SweptRoute> = {
       }),
     stranger: true,
   },
+  // E09 task 006: API keys. Minting one from a hosted page would hand its
+  // script a credential for its visitor's account; revoking one would cut off
+  // the visitor's agents.
+  "POST /api/keys": {
+    send: (ctx, base, _t, headers) =>
+      ctx.post(`${base}/api/keys`, { headers, data: { name: sweepName() } }),
+    stranger: "creates a key on the session's own account; it names no key",
+  },
+  "DELETE /api/keys/[id]": {
+    send: (ctx, base, t, headers) => ctx.delete(`${base}/api/keys/${t.keyId}`, { headers }),
+    stranger: true,
+  },
   // Cookie-authenticated although its path carries a token: the keep attaches
   // the page to the SESSION's account, so it is gated like every route above.
   "POST /api/anon/[anonToken]/keep": {
@@ -351,14 +365,28 @@ test.describe("the sweep, on the wire (AC44)", () => {
     expect(keep.status(), await keep.text()).toBe(200);
     const unclaimed = await anonymousDraft(request, scope);
 
+    const minted = await page.request.post(`${baseURL}/api/keys`, {
+      headers: sameOrigin(baseURL),
+      data: { name: sweepName() },
+    });
+    expect(minted.status(), "the sweep's own key").toBe(201);
+    const keyId = ((await minted.json()) as { id: string }).id;
+
     const versionId = (await readSite(kept.siteId)).currentVersionId!;
     const ids = [kept.siteId, draft.siteId, claimed.siteId, unclaimed.siteId];
-    const snapshot = () => Promise.all(ids.map((id) => readSite(id)));
+    const snapshot = async () => ({
+      sites: await Promise.all(ids.map((id) => readSite(id))),
+      // Every key on the account, revoked or not: a mint or a revoke shows here.
+      keys: await db
+        .select({ id: schema.apiKeys.id, revokedAt: schema.apiKeys.revokedAt })
+        .from(schema.apiKeys)
+        .where(eq(schema.apiKeys.userId, userId)),
+    });
     return {
       userId,
       kept,
       unclaimedId: unclaimed.siteId,
-      target: { siteId: kept.siteId, versionId, draftId: draft.siteId, email },
+      target: { siteId: kept.siteId, versionId, draftId: draft.siteId, email, keyId },
       claimedToken: claimed.token,
       liveToken: unclaimed.token,
       snapshot,
@@ -387,7 +415,7 @@ test.describe("the sweep, on the wire (AC44)", () => {
     // The gate's own body, not a per-route approximation of it.
     expect(new Set(bodies.values()).size, [...bodies.keys()].join(", ")).toBe(1);
 
-    expect(await a.snapshot(), "no page moved").toEqual(before);
+    expect(await a.snapshot(), "no page and no key moved").toEqual(before);
     expect((await readSite(a.unclaimedId)).ownerId, "the anonymous draft was not kept").toBeNull();
     expect(
       await db.select({ id: schema.user.id }).from(schema.user).where(eq(schema.user.id, a.userId)),
@@ -419,6 +447,7 @@ test.describe("the sweep, on the wire (AC44)", () => {
         draftId: crypto.randomUUID(),
         anonToken: generateAnonToken(),
         email: a.target.email,
+        keyId: crypto.randomUUID(),
       };
 
       const exempted: string[] = [];
@@ -450,12 +479,12 @@ test.describe("the sweep, on the wire (AC44)", () => {
         expect(await theirs.text(), `${key}: "not yours" must read as "not there"`).toBe(await absent.text());
       }
       expect(exempted.sort(), "only the account-scoped routes name no page").toEqual(
-        ["DELETE /api/account", "POST /api/sites", "POST /api/uploads"].sort(),
+        ["DELETE /api/account", "POST /api/keys", "POST /api/sites", "POST /api/uploads"].sort(),
       );
     } finally {
       await strangerContext.close();
     }
 
-    expect(await a.snapshot(), "nothing B sent moved A's pages").toEqual(before);
+    expect(await a.snapshot(), "nothing B sent moved A's pages or keys").toEqual(before);
   });
 });

@@ -47,7 +47,7 @@ import { waitForTokensApplied } from "./tokens-applied";
  */
 const scope = newScope();
 
-const SECTIONS = ["Account", "Plan", "Your data", "Danger zone"] as const;
+const SECTIONS = ["Account", "Plan", "Agents and API keys", "Your data", "Danger zone"] as const;
 
 /** Open one section from the settings nav. */
 async function openSection(page: Page, label: (typeof SECTIONS)[number]) {
@@ -95,7 +95,7 @@ test.describe("the settings screen", () => {
     await closeDb();
   });
 
-  test("four sections and nothing from a later epic (AC10); the account shows its email and the email link is always on", async ({
+  test("five sections (E09 added Agents and API keys) and nothing from a later epic (AC10); the account shows its email and the email link is always on", async ({
     page,
     baseURL,
   }) => {
@@ -105,7 +105,8 @@ test.describe("the settings screen", () => {
     await waitForTokensApplied(page);
     await expect(page.getByRole("heading", { name: "Settings", level: 1 })).toBeVisible();
 
-    // The shell's nav is Pages and Settings only; the settings nav is the PRD's four.
+    // The shell's nav is Pages and Settings only; the settings nav is the PRD's
+    // four plus E09's agents section.
     await expect(page.getByTestId("studio-nav-sidebar").getByRole("link")).toHaveText(["Pages", "Settings"]);
     await expect(
       page.getByRole("navigation", { name: "Settings sections" }).getByRole("button"),

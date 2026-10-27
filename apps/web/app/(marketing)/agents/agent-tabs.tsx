@@ -2,33 +2,8 @@
 
 import type { AgentSetup, AgentSetupStep } from "@kept/shared";
 
-import { CopyButton } from "@/components/kept/live-url";
+import { CodeBlock } from "@/components/kept/code-block";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-
-/**
- * `/agents`' code block: JetBrains Mono on the sunken surface, with a Copy
- * button whose accessible name says what it copies.
- */
-export function CodeBlock({ code, label }: { code: string; label: string }) {
-  return (
-    <div className="flex items-start gap-2 rounded-md border border-border bg-sunken p-3">
-      <pre className="min-w-0 flex-1 overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-text">
-        {code}
-      </pre>
-      <CopyButton
-        text={code}
-        label={
-          <>
-            Copy<span className="sr-only"> {label}</span>
-          </>
-        }
-        size="sm"
-        variant="secondary"
-        className="shrink-0"
-      />
-    </div>
-  );
-}
 
 function Step({
   index,

@@ -2,11 +2,12 @@ import { agentPrompt, agentSetups } from "@kept/shared";
 import type { Metadata } from "next";
 import Link from "next/link";
 
+import { CodeBlock } from "@/components/kept/code-block";
 import { LegalLinks } from "@/components/kept/legal-links";
 import { agentBase } from "@/lib/agents/discovery";
 import { agentsMetadata } from "@/lib/og/preview";
 
-import { AgentTabs, CodeBlock } from "./agent-tabs";
+import { AgentTabs } from "./agent-tabs";
 
 /**
  * `/agents` (apex, public, open and closed alike) — how to let an agent publish

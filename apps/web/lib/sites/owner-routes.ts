@@ -169,6 +169,7 @@ const STUDIO_ERROR_STATUS = {
   at_kept_limit: 409,
   unchanged: 409,
   last_sign_in_method: 409,
+  key_limit_reached: 409,
   rename_rate_limited: 429,
   rate_limited: 429,
   slug_unavailable: 503,

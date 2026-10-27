@@ -35,6 +35,9 @@ export const API_KEY_DISPLAY_PREFIX_CHARS = 13;
 /** Live keys one account may hold (Q-PRD-1). */
 export const API_KEYS_PER_ACCOUNT = 25;
 
+/** What Settings shows and `POST /api/keys` answers at the cap (PRD §8). */
+export const API_KEY_LIMIT_MESSAGE = `You have ${API_KEYS_PER_ACCOUNT} keys. Revoke one to create another.`;
+
 /** A key's label, as the human or `keyName` gives it. */
 export const apiKeyNameSchema = z.string().trim().min(1).max(60);
 

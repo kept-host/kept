@@ -2,7 +2,8 @@
  * The closed deploy's back door — E06a task 002.
  *
  * `closedModeAccess` is the first line of every publish route while kept is
- * closed: an access token or an admin session passes, anything else does not.
+ * closed: an access token, an admin's API key (E09 task 006) or an admin
+ * session passes, anything else does not.
  * The token half is pure hashing; the session half runs against the real auth
  * instance, the real Drizzle adapter and the real dev Neon branch, with the
  * session minted through the real magic-link verify endpoint (only the inbox is
@@ -194,5 +195,45 @@ test("closed: an admin's session passes; anyone else's does not", { skip: skipLi
       }),
     ),
     "admin",
+  );
+});
+
+test("closed: an API key passes as the `key` door only when its account is an admin's (E09 Q9)", { skip: skipLive }, async () => {
+  const { createKey, revokeKey } = await import("./agents/keys");
+  const { ensureProfile } = await import("./db/queries/profile");
+  const { userEmail } = await import("./db/queries/account");
+
+  // `createdUserIds` is in sign-in order: the admin, then the other account.
+  const [adminId, otherId] = createdUserIds;
+  for (const id of [adminId!, otherId!]) {
+    await ensureProfile({ userId: id, email: await userEmail(id), handle: null });
+  }
+  const adminKey = (await createKey(adminId!, "launch-access drill"))!;
+  const otherKey = (await createKey(otherId!, "launch-access drill"))!;
+
+  setOpen(false);
+  assert.equal(
+    await closedModeAccess(publishRequest({ authorization: `Bearer ${adminKey.apiKey}` })),
+    "key",
+  );
+  assert.equal(keylessPlan("key"), "premium", "a keyless call through the key door is Arun's own");
+  assert.equal(
+    await closedModeAccess(publishRequest({ authorization: `Bearer ${otherKey.apiKey}` })),
+    null,
+    "a non-admin's key does not open the closed deploy",
+  );
+
+  await revokeKey(adminId!, adminKey.summary.id);
+  assert.equal(
+    await closedModeAccess(publishRequest({ authorization: `Bearer ${adminKey.apiKey}` })),
+    null,
+    "a revoked admin key is refused on its next use",
+  );
+
+  setOpen(true);
+  assert.equal(
+    await closedModeAccess(publishRequest({ authorization: `Bearer ${otherKey.apiKey}` })),
+    "open",
+    "open, the key door is not consulted",
   );
 });

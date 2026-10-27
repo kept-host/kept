@@ -11,6 +11,8 @@
  * danger section; the PRD makes it a section of its own, so it gets a nav entry
  * here in the same language.
  *
+ * E09 task 006 adds "Agents and API keys" after Plan — no imported design (Q12).
+ *
  * Like the design, one section is mounted at a time. The section bodies are
  * rendered by the server component and passed in, so every read stays in RSC
  * and this island owns nothing but which one is showing.
