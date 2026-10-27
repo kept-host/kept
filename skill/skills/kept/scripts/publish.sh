@@ -107,7 +107,7 @@ TARGET=""
 PROVENANCE_KEYS=()
 PROVENANCE_VALUES=()
 
-need_value() { [ "$#" -ge 2 ] && [ -n "$2" ] || die 2 "$1 needs a value."; }
+need_value() { if [ "$#" -lt 2 ] || [ -z "$2" ]; then die 2 "$1 needs a value."; fi; }
 
 case "${1:-}" in
   login | delete) COMMAND="$1"; shift ;;
