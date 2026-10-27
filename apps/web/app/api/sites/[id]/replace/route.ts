@@ -21,7 +21,9 @@ import type { NextResponse } from "next/server";
 
 import { getSession } from "../../../../../lib/auth/session";
 import { getProfileForSession } from "../../../../../lib/db/queries/profile";
+import { publishPaused } from "../../../../../lib/launch";
 import { readFileSet } from "../../../../../lib/publish/fileset/read";
+import { publishPausedResponse } from "../../../../../lib/publish/http";
 import { refuseUntrustedOrigin } from "../../../../../lib/publish/origin";
 import {
   ownerResponse,
@@ -39,6 +41,9 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
+  // E09 task 011: the operator's pause comes first — it reads nothing.
+  if (publishPaused()) return publishPausedResponse("studio");
+
   // E05a D3 — the session cookie is ambient authority, so a cross-origin caller
   // is refused before the body is read and before anything is written. A hosted
   // page rewriting its publisher's other pages is exactly the same-site CSRF

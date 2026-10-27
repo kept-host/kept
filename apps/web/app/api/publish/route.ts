@@ -17,9 +17,9 @@
 import { NextResponse } from "next/server";
 
 import { closedModeAccess, keylessPlan } from "../../../lib/launch-access";
-import { notOpenResponse } from "../../../lib/launch";
+import { notOpenResponse, publishPaused } from "../../../lib/launch";
 import { readFileSet } from "../../../lib/publish/fileset/read";
-import { errorResponse, publisherFrom } from "../../../lib/publish/http";
+import { errorResponse, publishPausedResponse, publisherFrom } from "../../../lib/publish/http";
 import { publishPage } from "../../../lib/publish/pipeline";
 
 /**
@@ -33,6 +33,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request): Promise<Response> {
+  // E09 task 011: the operator's pause, before anything is read or spent.
+  if (publishPaused()) return publishPausedResponse();
+
   // E06a §1: closed, only an access token or an admin session gets past this —
   // checked first, before anything is read or written. RETIRE with
   // `lib/launch-access.ts`.

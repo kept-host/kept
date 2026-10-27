@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { SHARED_PACKAGE } from "@kept/shared";
 
-import { keptOpen } from "@/lib/launch";
+import { keptOpen, publishPaused } from "@/lib/launch";
 import { scannerEnabled } from "@/lib/scan/classifier";
 
 /**
@@ -17,6 +17,9 @@ import { scannerEnabled } from "@/lib/scan/classifier";
  * `scanner` is whether pages are classified (E07 D17): `"off"` when the deploy
  * has no `OPENROUTER_API_KEY`, so scans record `skipped` and only P4 can flag.
  * The release smoke fails a prod release that is open with the scanner off.
+ *
+ * `publishing` is the operator's pause (`KEPT_PUBLISH_PAUSED`, E09 task 011):
+ * `"paused"` and the release smoke asserts the 503 instead of publishing.
  */
 export function GET() {
   return NextResponse.json({
@@ -24,5 +27,6 @@ export function GET() {
     shared: SHARED_PACKAGE,
     open: keptOpen(),
     scanner: scannerEnabled() ? "on" : "off",
+    publishing: publishPaused() ? "paused" : "on",
   });
 }

@@ -32,7 +32,8 @@ import type { NextResponse } from "next/server";
 import { getSession } from "../../../lib/auth/session";
 import { getProfileForSession } from "../../../lib/db/queries/profile";
 import { readFileSet } from "../../../lib/publish/fileset/read";
-import { publisherFrom } from "../../../lib/publish/http";
+import { publishPaused } from "../../../lib/launch";
+import { publishPausedResponse, publisherFrom } from "../../../lib/publish/http";
 import { refuseUntrustedOrigin } from "../../../lib/publish/origin";
 import {
   ownerResponse,
@@ -47,7 +48,10 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request): Promise<NextResponse> {
-  // FIRST, before the body is read and before the session is resolved. The
+  // E09 task 011: the operator's pause comes first — it reads nothing.
+  if (publishPaused()) return publishPausedResponse("studio");
+
+  // Then, before the body is read and before the session is resolved. The
   // session cookie is ambient authority, so a script on a hosted page could
   // otherwise publish pages into its visitor's account — same-site CSRF, which
   // `SameSite` does not block. See `lib/publish/origin.ts`.
