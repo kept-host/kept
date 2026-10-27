@@ -323,6 +323,15 @@ export async function getKeyedPageBySlug(profileId: string, slug: string): Promi
 }
 
 /**
+ * One page by id, whatever its owner — the keyless MCP `get_page` (009), after
+ * the page's own manage token has resolved it. Same columns as the keyed reads.
+ */
+export async function getKeyedPageById(siteId: string): Promise<KeyedPageRow | null> {
+  const [row] = await keyedPages(eq(sites.id, siteId)).limit(1);
+  return row ?? null;
+}
+
+/**
  * Up to `limit` of the owner's pages, newest `updated_at` first, `id` breaking
  * ties, strictly after `after` — a stable keyset cursor, so a page updated
  * mid-walk moves to the front rather than being read twice in place.

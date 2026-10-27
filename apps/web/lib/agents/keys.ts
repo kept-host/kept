@@ -96,12 +96,22 @@ export async function revokeKey(profileId: string, keyId: string): Promise<boole
  * most one write a day.
  */
 export async function keyCallerFrom(request: Request): Promise<KeyCaller | null> {
-  const credential = BEARER.exec(request.headers.get("authorization") ?? "")?.[1];
-  if (credential === undefined || !apiKeyPattern.test(credential)) return null;
+  const credential = bearerApiKey(request);
+  if (credential === null) return null;
 
   const caller = await findActiveKeyByHash(await hashApiKey(credential));
   if (caller) await touchKeyLastUsed(caller.keyId);
   return caller;
+}
+
+/**
+ * The well-formed `kpt_live_…` credential the request's Bearer header carries,
+ * or `null` — not yet looked up. The MCP door (009) uses it to tell "no key"
+ * (keyless) from "a key that resolves to nothing" (401).
+ */
+export function bearerApiKey(request: Request): string | null {
+  const credential = BEARER.exec(request.headers.get("authorization") ?? "")?.[1];
+  return credential !== undefined && apiKeyPattern.test(credential) ? credential : null;
 }
 
 /** Count one keyed publish or replace against the key's hourly bucket (D6). */

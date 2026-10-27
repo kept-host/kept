@@ -151,6 +151,13 @@ const PUBLISHING_PAUSED_RETRY_SECONDS = 600;
 const PUBLISHING_PAUSED_MESSAGE =
   "Publishing on kept is paused for now. Pages already live are not affected. Please try again later.";
 
+/** The pause's flat body — the HTTP doors' 503 below, and the MCP tools' error (009). */
+export const PUBLISHING_PAUSED_ERROR: PublishError = {
+  error: "publishing_paused",
+  message: PUBLISHING_PAUSED_MESSAGE,
+  retry_after_seconds: PUBLISHING_PAUSED_RETRY_SECONDS,
+};
+
 /**
  * The answer every page-writing route gives while `publishPaused()`
  * (`lib/launch.ts`) is on — its FIRST action, before closed-mode access, rate
@@ -163,11 +170,7 @@ const PUBLISHING_PAUSED_MESSAGE =
  */
 export function publishPausedResponse(shape: "flat" | "studio" = "flat"): NextResponse {
   if (shape === "flat") {
-    return errorResponse(503, {
-      error: "publishing_paused",
-      message: PUBLISHING_PAUSED_MESSAGE,
-      retry_after_seconds: PUBLISHING_PAUSED_RETRY_SECONDS,
-    });
+    return errorResponse(503, PUBLISHING_PAUSED_ERROR);
   }
   return NextResponse.json(
     studioErrorSchema.parse({ error: { code: "publishing_paused", message: PUBLISHING_PAUSED_MESSAGE } }),

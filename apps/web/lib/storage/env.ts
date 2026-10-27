@@ -392,6 +392,16 @@ export function rateLimitSecret(): string {
 }
 
 /**
+ * `MCP_SESSION_SECRET` (E09 D5): the HMAC key that signs `Mcp-Session-Id`
+ * (`lib/mcp/session.ts`), so a session — and the publisher key derived from it
+ * — cannot be forged or borrowed. Required at call time: an unsigned session id
+ * would let any caller publish as another session.
+ */
+export function mcpSessionSecret(): string {
+  return read({ MCP_SESSION_SECRET: signingSecret }).MCP_SESSION_SECRET;
+}
+
+/**
  * Cloudflare Turnstile (E06a §5). The secret verifies tokens server-side
  * (`verifyTurnstile`); the site key is public and is handed to the widget by a
  * server component. Both are per-track; local and CI use Cloudflare's test keys

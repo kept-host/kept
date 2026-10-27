@@ -225,6 +225,7 @@ All of these are read by `apps/web` at runtime or build time
 | `KEPT_ACCESS_TOKEN_HASHES` | no (digests) | `pnpm --filter @kept/web admin:token new` prints the token once on stdout. Keep it in a password manager and put **only the SHA-256** here (comma-separated). No DB needed |
 | `KEPT_ADMIN_SECRET` | yes | `openssl rand -base64 32` (HMAC for founding review and unsubscribe links) |
 | `RATE_LIMIT_SECRET` | yes | `openssl rand -base64 32` |
+| `MCP_SESSION_SECRET` | yes | `openssl rand -base64 32` (HMAC for `/mcp` session ids, E09) |
 | `TURNSTILE_SECRET_KEY` | yes | §3.3 |
 | `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | no | §3.3 |
 | `NEXT_PUBLIC_KEPT_OPEN` | no | **unset** (or `false`) for pre-launch. `true` only on launch day |

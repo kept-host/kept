@@ -26,9 +26,11 @@ import { cleanup, newScope, titledHtml } from "./owner-fixtures";
  *   - `/api/v1/pages` with a non-admin's key: the handler's `not_open` 404;
  *     with the admin's key: the page publishes (task 008, the `key` door).
  *
- * Task 009 adds its `/mcp` cases here.
+ *   - `/mcp` (task 009): with no credential, `initialize` is a JSON-RPC error
+ *     carrying `not_open` and a lone notification the 404 itself; an access
+ *     token gets the keyless tool set, the admin's key the keyed set.
  *
- * 1 publish, 1 KV write (plus its teardown). ⚠️ No code or key is printed.
+ * 1 publish, 1 KV write (plus its teardown); the `/mcp` cases publish nothing. ⚠️ No code or key is printed.
  */
 
 config({ path: ".env.local", quiet: true });
@@ -51,6 +53,30 @@ async function requestCode(request: import("@playwright/test").APIRequestContext
   buckets.add(await ipKey("agent-code", ip));
   buckets.add(await emailKey("agent-code", email));
   return request.post("/api/agent/request-code", { data: { email }, headers: { "cf-connecting-ip": ip } });
+}
+
+const MCP_HEADERS = { accept: "application/json, text/event-stream", "content-type": "application/json" };
+const INITIALIZE = {
+  jsonrpc: "2.0",
+  id: 0,
+  method: "initialize",
+  params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "closed-drill", version: "1" } },
+};
+
+/** `initialize` then `tools/list` on the session it minted: the tool names this caller sees. */
+async function mcpToolNames(request: import("@playwright/test").APIRequestContext, authorization: string): Promise<string[]> {
+  const headers = { ...MCP_HEADERS, authorization };
+  const initialized = await request.post("/mcp", { headers, data: INITIALIZE });
+  expect(initialized.status(), await initialized.text()).toBe(200);
+  const session = initialized.headers()["mcp-session-id"];
+  expect(session, "initialize minted a session").toBeTruthy();
+  const listed = await request.post("/mcp", {
+    headers: { ...headers, "mcp-session-id": session! },
+    data: { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} },
+  });
+  expect(listed.status()).toBe(200);
+  const body = (await listed.json()) as { result: { tools: { name: string }[] } };
+  return body.result.tools.map((tool) => tool.name).sort();
 }
 
 async function codeRows(email: string): Promise<number> {
@@ -146,5 +172,40 @@ test.describe("the agent doors (closed)", () => {
     const body = keyedPublishResponseSchema.parse(await published.json());
     scope.slugs.add(body.slug);
     expect(body.kept).toBe(true);
+  });
+
+  test("/mcp without a credential: initialize is a JSON-RPC not_open; a lone notification the 404", async ({ request }) => {
+    const refused = await request.post("/mcp", { headers: MCP_HEADERS, data: INITIALIZE });
+    expect(refused.status()).toBe(200);
+    expect(refused.headers()["mcp-session-id"], "no session is minted").toBeUndefined();
+    const body = (await refused.json()) as { id: number; error: { code: number; message: string; data: unknown } };
+    expect(body.id).toBe(0);
+    expect(body.error.message).toBe(NOT_OPEN.message);
+    expect(body.error.data).toEqual(NOT_OPEN);
+
+    const notification = await request.post("/mcp", {
+      headers: MCP_HEADERS,
+      data: { jsonrpc: "2.0", method: "notifications/initialized" },
+    });
+    expect(notification.status()).toBe(404);
+    expect(await notification.json()).toEqual(NOT_OPEN);
+  });
+
+  test("/mcp: an access token gets the keyless set; the admin's key the keyed set", async ({ request }) => {
+    const token = process.env.KEPT_E2E_ACCESS_TOKEN;
+    expect(token, "playwright.config.ts mints KEPT_E2E_ACCESS_TOKEN for a closed run").toBeTruthy();
+    expect(await mcpToolNames(request, `Bearer ${token}`)).toEqual(["delete_page", "get_page", "publish_page", "replace_page"]);
+
+    const [admin] = await db.select({ id: schema.user.id }).from(schema.user).where(eq(schema.user.email, ADMIN));
+    expect(admin, "an earlier test made the admin's account").toBeTruthy();
+    const adminKey = await createKey(admin!.id, "closed mcp admin");
+    expect(adminKey, "a key was minted").not.toBeNull();
+    expect(await mcpToolNames(request, `Bearer ${adminKey!.apiKey}`)).toEqual([
+      "delete_page",
+      "get_page",
+      "list_pages",
+      "publish_page",
+      "replace_page",
+    ]);
   });
 });

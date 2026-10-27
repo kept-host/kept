@@ -98,7 +98,7 @@ function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function draftWindow(site: AnonSite): Pick<ReplaceResponse, "expires_in" | "expires_at"> {
+export function draftWindow(site: AnonSite): Pick<ReplaceResponse, "expires_in" | "expires_at"> {
   // `expires_at == null` ⇒ kept, which has no window. `isDraft = expires_at != null`
   // is the derived predicate; there is no draft status to read.
   return site.expiresAt

@@ -152,7 +152,7 @@ async function readInput(request: Request, caller: FileSetCaller): Promise<RawIn
  * The body, at most `max` bytes: `null` when `Content-Length` says more (the
  * body is cancelled unread) or when the stream passes `max` (cancelled there).
  */
-async function readBounded(
+export async function readBounded(
   request: Request,
   max: number,
 ): Promise<Uint8Array<ArrayBuffer> | null> {
