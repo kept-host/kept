@@ -63,7 +63,11 @@ test("server.json validates against the MCP Registry schema", () => {
 
 test("publish.sh: bash -n, shellcheck, executable, and the inline cap is the shared constant", async () => {
   await run("bash", ["-n", PUBLISH_SH]);
-  await run("shellcheck", [PUBLISH_SH]);
+  // Findings go to stdout, which execFile's error message leaves out — and CI's
+  // shellcheck is older than a dev machine's, so name them in the failure.
+  await run("shellcheck", ["--format=gcc", PUBLISH_SH]).catch((err: { stdout?: string }) => {
+    assert.fail(`shellcheck:\n${err.stdout ?? String(err)}`);
+  });
   assert.equal(statSync(PUBLISH_SH).mode & 0o111, 0o111, "executable");
   const source = readFileSync(PUBLISH_SH, "utf8");
   assert.match(source, new RegExp(`^INLINE_BODY_MAX_BYTES=${INLINE_BODY_MAX_BYTES}$`, "m"));
