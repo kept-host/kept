@@ -342,16 +342,18 @@ export function skillsIndex(base: string): {
 
 /**
  * The global skill folders `/install.sh` looks for (skills.sh's table): the
- * agent's home directory, and its skills directory under it. Each is relative
- * to `$HOME`; Codex honours `$CODEX_HOME`.
+ * agent's home directory, and its skills directory under it unless `skills`
+ * names another. Each is relative to `$HOME`; Codex is detected by its home
+ * (honouring `$CODEX_HOME`) but reads user skills from `~/.agents/skills`
+ * (developers.openai.com/codex/skills).
  */
 const INSTALL_TARGETS = [
   { agent: "Claude Code", home: '"$HOME/.claude"' },
-  { agent: "Codex", home: '"${CODEX_HOME:-$HOME/.codex}"' },
+  { agent: "Codex", home: '"${CODEX_HOME:-$HOME/.codex}"', skills: '"$HOME/.agents/skills"' },
   { agent: "Cursor", home: '"$HOME/.cursor"' },
   { agent: "OpenCode", home: '"$HOME/.config/opencode"' },
   { agent: "Gemini CLI", home: '"$HOME/.gemini"' },
-] as const;
+] as const satisfies readonly { agent: string; home: string; skills?: string }[];
 
 /**
  * `/install.sh` — POSIX sh. Copies the skill into each detected agent's skills
@@ -359,8 +361,10 @@ const INSTALL_TARGETS = [
  * `source` is where `SKILL.md` and `scripts/publish.sh` are downloaded from.
  */
 export function installScript(base: string, source: string = SKILL_SOURCE_URL): string {
-  const targets = INSTALL_TARGETS.map(
-    ({ agent, home }) => `install_into "${agent}" ${home}`,
+  const targets = INSTALL_TARGETS.map((target) =>
+    "skills" in target
+      ? `install_into "${target.agent}" ${target.home} ${target.skills}`
+      : `install_into "${target.agent}" ${target.home}`,
   ).join("\n");
   return `#!/bin/sh
 # kept skill installer — ${base}/agents
@@ -386,7 +390,7 @@ install_into() {
   agent="$1"
   home="$2"
   [ -d "$home" ] || return 0
-  dir="$home/skills/${SKILL_NAME}"
+  dir="\${3:-$home/skills}/${SKILL_NAME}"
   mkdir -p "$dir/scripts"
   download "$SOURCE/SKILL.md" "$dir/SKILL.md"
   download "$SOURCE/scripts/publish.sh" "$dir/scripts/publish.sh"

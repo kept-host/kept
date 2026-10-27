@@ -167,6 +167,15 @@ test("install.sh: sh -n, shellcheck, installs into a fake ~/.claude and nothing 
     assert.equal(statSync(join(home, ".claude/skills/kept/scripts/publish.sh")).mode & 0o777, 0o755);
     assert.equal(readFileSync(join(home, ".claude", "settings.json"), "utf8"), "{}");
 
+    // A home with Codex only: detected by ~/.codex, installed where Codex reads
+    // user skills — ~/.agents/skills (developers.openai.com/codex/skills).
+    const codexHome = join(scratch, "codex-home");
+    mkdirSync(join(codexHome, ".codex"), { recursive: true });
+    const codex = await run("sh", [script], { env: { NODE_ENV: "test", HOME: codexHome, PATH: process.env.PATH ?? "" } });
+    assert.match(codex.stdout, /installed the skill for Codex/);
+    assert.equal(readFileSync(join(codexHome, ".agents/skills/kept/SKILL.md"), "utf8"), skill);
+    assert.ok(!tree(codexHome).includes(".codex/skills"));
+
     // No agent at all: prints the npx command, exits 0, touches nothing.
     const empty = join(scratch, "empty");
     mkdirSync(empty);
