@@ -538,7 +538,7 @@ export async function updateOwnedSite(
   if (!parsed.success) {
     return refuse(
       "invalid_request",
-      parsed.error.issues[0]?.message ?? "Send `{ title }`, `{ listedPublic }`, or both.",
+      parsed.error.issues[0]?.message ?? "Send at least one Details field.",
     );
   }
 

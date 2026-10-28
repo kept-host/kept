@@ -40,6 +40,7 @@ import { findSiteVersion, stampActivated } from "../db/queries/versions";
 import { enqueueScan } from "../publish/hooks";
 import { extractPageTitle } from "../publish/page-title";
 import { liveUrl } from "../publish/pipeline";
+import { refreshReadmePage } from "../readme/page";
 import { syncManifest } from "../storage/manifest";
 import { r2Store } from "../storage/r2";
 
@@ -122,6 +123,8 @@ export async function restoreVersion(
   // D18: the manifest is the row's, read under its lock AFTER this commit — so a
   // flag that committed since the status check above is what the edge serves.
   // Its flags are the restored version's; its purge covers both sets (E08 D14).
+  // The README page names the title, which the restored bytes may have changed.
+  await refreshReadmePage(site.id);
   const synced = await syncManifest(site.id, { alsoPurgeVersionId: previous.versionId });
   if (!synced.ok) {
     console.error(

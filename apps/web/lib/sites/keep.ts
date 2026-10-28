@@ -72,6 +72,7 @@ import { profiles, sites } from "../db/schema";
 // retyped: `now + DRAFT_TTL_DAYS`, then `+ DRAFT_GRACE_DAYS`, both from
 // `@kept/shared`.
 import { draftClocks } from "../publish/pipeline";
+import { refreshReadmePage } from "../readme/page";
 import { syncManifest } from "../storage/manifest";
 
 import { bulkKeepRefusal, managementRefusal } from "./display";
@@ -489,6 +490,8 @@ async function keepLocked(
  */
 async function syncAfterCommit(sync: PendingSync | null): Promise<void> {
   if (!sync) return;
+  // A kept page's README page (E10 D6, Q6) before the sync that purges it.
+  await refreshReadmePage(sync.siteId);
   const synced = await syncManifest(sync.siteId);
   if (synced.ok || !sync.restore) return;
   throw new StudioRefusal(

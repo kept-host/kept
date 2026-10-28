@@ -62,6 +62,10 @@
  * bytes are E07's purge job's, selected on `purge_after`. An inline delete loop
  * would block a request on unbounded work and be a second purge path competing
  * with E07's. Until E07 ships, R2 objects legitimately persist after a deletion.
+ * The README page (`sites/{siteId}/_kept/readme.html`, E10 D6) is one of those
+ * bytes: it stops serving with the manifest above and the purge job deletes it
+ * with the archived page (`lib/lifecycle/purge.ts` names it explicitly — it is
+ * in no file row).
  *
  * ── BETTER AUTH'S `deleteUser` IS DELIBERATELY NOT ENABLED ───────────────────
  * better-auth@1.6.26 ships a `/delete-user` endpoint behind `user.deleteUser.

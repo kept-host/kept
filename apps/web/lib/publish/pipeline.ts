@@ -72,6 +72,7 @@ import {
 } from "../db/queries/publish";
 import { badgeDataFor } from "../badge/badge-data";
 import { readSiteForManifest } from "../db/queries/manifest-sync";
+import { refreshReadmePage } from "../readme/page";
 import { appOrigin, publisherHashSalt, servingBaseDomain } from "../storage/env";
 import { pointerKey, removeManifest, syncManifest, writeManifest } from "../storage/manifest";
 import { pageObjectKey, r2Store, siteObjectKey } from "../storage/r2";
@@ -441,6 +442,9 @@ export async function storeReplacement(args: {
     return { ok: false, error: `point: ${message(err)}`, unwound: keysGone && rowsGone };
   }
 
+  // A kept page's README page (E10 D6) shows the title and provenance this
+  // replace may have changed; the sync below purges it.
+  await refreshReadmePage(siteId);
   const synced = await syncManifest(siteId, { alsoPurgeVersionId: previous.versionId });
   // `purge.ok === false` is NOT a failure (contract §3); `syncManifest` only
   // fails when a store write did, and has already logged it.

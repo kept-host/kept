@@ -55,7 +55,7 @@ import { MS_PER_DAY, MS_PER_SECOND } from "../sites/display";
 import { keepSite } from "../sites/keep";
 import { pruneVersions } from "../sites/manage";
 import { removeManifest, syncManifest } from "../storage/manifest";
-import { pageObjectKey, PAGE_CONTENT_TYPE, r2Store, siteObjectKey } from "../storage/r2";
+import { pageObjectKey, PAGE_CONTENT_TYPE, r2Store, readmeObjectKey, siteObjectKey } from "../storage/r2";
 import { edgeStatus, liveSkip, LockDrill, manifestAt, settle } from "../testing/lock-drill";
 import { NamesDrill } from "../testing/names-drill";
 import { clearPendingPurges } from "../testing/pending-purges";
@@ -340,6 +340,9 @@ test("AC24: purge deletes every eligible status past purge_after — name, manif
     .returning({ id: abuseReports.id });
   reportIds.add(report!.id);
 
+  // E10 D6 (Risk 8): the README page is in no file row, so the purge names it.
+  await r2Store().put(readmeObjectKey(expired.id), "<p>e10-006 readme drill</p>", PAGE_CONTENT_TYPE);
+
   const scope = [expired, archived, removed, reviewed, appealed, released, taker, notYet, kept].map((page) => page.id);
   const untouched = await Promise.all([appealed, taker, notYet, kept].map((page) => rowOf(page.id)));
 
@@ -350,6 +353,7 @@ test("AC24: purge deletes every eligible status past purge_after — name, manif
     assert.deepEqual(await db.select().from(siteVersions).where(eq(siteVersions.siteId, page.id)), []);
     assert.equal(await r2Store().get(page.objectKey), null, `${page.slug}: every version's bytes are gone`);
   }
+  assert.equal(await r2Store().get(readmeObjectKey(expired.id)), null, "the README page is gone with the site");
   for (const page of [expired, archived, removed, reviewed]) {
     assert.equal(await manifestAt(page.slug), null, `${page.slug}: the manifest is gone`);
   }

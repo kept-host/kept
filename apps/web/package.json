@@ -51,6 +51,7 @@
     "geist": "^1.7.2",
     "htmlparser2": "12.0.0",
     "lucide-react": "^0.471.0",
+    "markdown-it": "15.0.2",
     "marked": "18.0.14",
     "motion": "^12.41.0",
     "next": "^15.5.19",

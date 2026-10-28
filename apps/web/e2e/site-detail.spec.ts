@@ -71,21 +71,22 @@ const FREE = limitsFor("free");
 const PRO = limitsFor("premium");
 const DAY = 24 * 60 * 60 * 1000;
 
-/** Text a later epic owns. None of it may exist anywhere in this screen's DOM (AC10). */
+/**
+ * Text a later epic owns. None of it may exist anywhere in this screen's DOM
+ * (AC10). E10 (task 006) shipped "Made with" and "Allow remix" in Details.
+ */
 const LATER_EPIC_TEXT: readonly RegExp[] = [
   /\bCredit\b/,
   /Share kit/i,
   /\bPassword\b/i,
   /referrers/i,
   /countries/i,
-  /Made with/i,
   /Made on kept/i,
   /Founding/i,
   /€/,
   /opens later/i,
   /\bGenerate\b/,
   /\bRegenerate\b/,
-  /\bRemix\b/i,
   /Show prompt/i,
   /\breport\b/i,
   /\bWall\b/,

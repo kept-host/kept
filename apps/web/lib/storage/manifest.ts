@@ -64,6 +64,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import {
   kvManifestSchema,
   MANIFEST_KV_CACHE_TTL_SECONDS,
+  README_PAGE_PATH,
   SITE_INDEX,
   type KvManifest,
   type SiteStatus,
@@ -597,7 +598,10 @@ async function syncSite(siteId: string, durable: boolean, opts: SyncManifestOpti
       const versionIds = [...new Set([site.currentVersionId, opts.alsoPurgeVersionId])].filter(
         (id): id is string => typeof id === "string",
       );
-      const paths = [...(await versionPaths(tx, versionIds)).values()].flat();
+      // The README page (E10 D6) rides on every sync: whoever changed what it
+      // shows (a details save, a keep, a replace) refreshed the object first,
+      // and a demote stops it serving — either way the edge must drop its copy.
+      const paths = [...[...(await versionPaths(tx, versionIds)).values()].flat(), README_PAGE_PATH];
 
       if (isUnserved(site.status)) {
         const removed = await unstoreManifest(site.slug, ledger, paths);

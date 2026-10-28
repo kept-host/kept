@@ -78,6 +78,7 @@ import {
   type PublishSource,
 } from "../publish/pipeline";
 import type { StoredProvenance } from "../publish/provenance";
+import { refreshReadmePage } from "../readme/page";
 
 import { keptQuotaFor, lockOwner } from "./keep";
 import { StudioRefusal } from "./studio-refusal";
@@ -230,6 +231,10 @@ export async function publishOwnedPage(args: {
     }
     throw new OwnedPublishStoreError(stored.error);
   }
+
+  // A page that landed kept with a README (E10 D6, Q6) gets its README page now
+  // that the manifest naming it is written. A brand-new URL has nothing cached.
+  if (landed.site.expiresAt === null) await refreshReadmePage(siteId);
 
   // Fire and forget by contract: the page is already live and a scan must never
   // delay or fail the response. The same seam, in the same position, as every

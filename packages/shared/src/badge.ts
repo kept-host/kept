@@ -25,6 +25,20 @@ export type BadgeStyle = (typeof BADGE_STYLES)[number];
 export const BADGE_VARIANTS = ["draft", "kept"] as const;
 export type BadgeVariant = (typeof BADGE_VARIANTS)[number];
 
+/**
+ * The README page of a kept page (E10 D6), as a path on its host with no
+ * leading slash — the form the control plane's purge list takes. The badge
+ * links `/{README_PAGE_PATH}`; the Worker serves exactly that path.
+ */
+export const README_PAGE_PATH = "_kept/readme";
+
+/**
+ * Its R2 object, per site beside the version prefixes:
+ * `sites/{siteId}/{README_OBJECT}`. Users cannot upload under `_kept/` (E08
+ * D7), so only the control plane writes it.
+ */
+export const README_OBJECT = "_kept/readme.html";
+
 /** The largest markup `renderBadge` may produce, in UTF-8 bytes (PRD §4.2). */
 export const BADGE_MAX_BYTES = 4096;
 
@@ -167,7 +181,7 @@ export function renderBadge(data: BadgeData, ctx: BadgeContext): RenderedBadge {
     const parts = [mark];
     if (data.handle) parts.push(`<span class="m">by @${escapeHtml(data.handle)}</span>`);
     if (data.model) parts.push(`<span>Made with ${escapeHtml(data.model)}</span>`);
-    if (data.readme) parts.push(link(`${page}/_kept/readme`, "How it was made"));
+    if (data.readme) parts.push(link(`${page}/${README_PAGE_PATH}`, "How it was made"));
     if (data.remix) parts.push(link(`${apex}/remix/${encodeURIComponent(ctx.slug)}`, "Remix"));
     parts.push(report);
     const full = `<div class="b">${parts.join("")}</div>`;

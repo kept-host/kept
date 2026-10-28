@@ -17,6 +17,7 @@
 // nothing concatenates a request path into a key before the guard has run.
 
 import {
+  README_OBJECT,
   SITE_FILE_TYPES,
   type KvManifest,
   type Region,
@@ -33,13 +34,6 @@ import { injectsBadge } from "./badge";
  * within the same bound.
  */
 export const MAX_REQUEST_PATH_BYTES = 1024;
-
-/**
- * The README page's key (E10 D6) — per site, not per version, beside the version
- * prefixes. Users cannot upload under `_kept/` (E08 D7), so only the control
- * plane writes here.
- */
-const README_DOCUMENT = "_kept/readme.html";
 
 /** The single-file v1 default; also what a directory-shaped path resolves to. */
 const INDEX_DOCUMENT = "index.html";
@@ -350,8 +344,8 @@ export function fetchReadme(
   return readObject(
     bucket,
     manifest.region,
-    `sites/${manifest.siteId}/${README_DOCUMENT}`,
-    contentTypeFor(README_DOCUMENT),
+    `sites/${manifest.siteId}/${README_OBJECT}`,
+    contentTypeFor(README_OBJECT),
     ifNoneMatch,
     undefined,
   );

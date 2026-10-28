@@ -122,19 +122,18 @@ export const studioSiteSchema = z.object({
   /** End of the post-expiry grace window; `null` on a kept page. */
   purgeAfter: z.string().datetime().nullable(),
   updatedAt: z.string().datetime(),
-  // The Details panel's provenance (E10 §4.1). Optional until E10 task 006
-  // reads them into every studio response; `null` = not given.
-  model: z.string().nullable().optional(),
-  tool: z.string().nullable().optional(),
-  prompt: z.string().nullable().optional(),
-  readme: z.string().nullable().optional(),
-  sourceUrl: z.string().nullable().optional(),
+  // The Details panel's provenance (E10 §4.1); `null` = not given.
+  model: z.string().nullable(),
+  tool: z.string().nullable(),
+  prompt: z.string().nullable(),
+  readme: z.string().nullable(),
+  sourceUrl: z.string().nullable(),
   /** Show the prompt on the page and in Remix links (D8). */
-  showPrompt: z.boolean().optional(),
+  showPrompt: z.boolean(),
   /** Show "Made with {model}" in the badge. */
-  showMadeWith: z.boolean().optional(),
+  showMadeWith: z.boolean(),
   /** The owner's remix choice; `null` = the default rule (`remixAllowed`, D8). */
-  allowRemix: z.boolean().nullable().optional(),
+  allowRemix: z.boolean().nullable(),
 });
 
 export type StudioSite = z.infer<typeof studioSiteSchema>;

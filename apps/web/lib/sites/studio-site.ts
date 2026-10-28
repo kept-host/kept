@@ -28,6 +28,14 @@ const STUDIO_SITE_COLUMNS = {
   expiresAt: sites.expiresAt,
   purgeAfter: sites.purgeAfter,
   updatedAt: sites.updatedAt,
+  model: sites.model,
+  tool: sites.tool,
+  prompt: sites.prompt,
+  readme: sites.readme,
+  sourceUrl: sites.sourceUrl,
+  showPrompt: sites.showPrompt,
+  showMadeWith: sites.showMadeWith,
+  allowRemix: sites.allowRemix,
 } as const;
 
 /** @throws when the row does not exist — the caller just wrote or found it. */
@@ -46,5 +54,13 @@ export async function readStudioSite(tx: Tx, siteId: string): Promise<StudioSite
     expiresAt: row.expiresAt?.toISOString() ?? null,
     purgeAfter: row.purgeAfter?.toISOString() ?? null,
     updatedAt: row.updatedAt.toISOString(),
+    model: row.model,
+    tool: row.tool,
+    prompt: row.prompt,
+    readme: row.readme,
+    sourceUrl: row.sourceUrl,
+    showPrompt: row.showPrompt,
+    showMadeWith: row.showMadeWith,
+    allowRemix: row.allowRemix,
   };
 }

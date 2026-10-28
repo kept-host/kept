@@ -17,7 +17,7 @@
 
 import { Hono, type Context } from "hono";
 
-import { renderBadge, type KvManifest, type RenderedBadge } from "@kept/shared";
+import { README_PAGE_PATH, renderBadge, type KvManifest, type RenderedBadge } from "@kept/shared";
 
 import { injectBadge, injectsBadge } from "./badge";
 import {
@@ -93,7 +93,7 @@ function rewrittenCacheControl(spaRewrite: boolean, pageCacheControl: string): s
 const KEPT_PATH_PREFIX = "/_kept/";
 
 /** The README page of a kept page (E10 D6). */
-const README_PATH = "/_kept/readme";
+const README_PATH = `/${README_PAGE_PATH}`;
 
 /**
  * A body for the visitor: the badge streamed in when the page has one and the
