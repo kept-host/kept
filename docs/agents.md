@@ -49,10 +49,16 @@ the build writes, when `server.json` stops validating against the vendored MCP R
 schema, or when `publish.sh` fails shellcheck. `README.md`, `AGENTS.md`, `LICENSE`,
 `hermes/`, `.github/workflows/ci.yml` and `skills/kept/scripts/publish.sh` are hand-written.
 
-**Mirroring:** `.github/workflows/mirror-skill.yml` pushes `skill/` (with its history,
-via `git subtree split`) to the root of `kept-host/skill` on every push to `develop` that
-touches `skill/**`, and on demand (Actions → Mirror skill → Run workflow). The mirror is
-read-only: edit here, never there.
+**Mirroring:** `.github/workflows/mirror-skill.yml` copies `skill/` to the root of
+`kept-host/skill` on every push to `develop` that touches `skill/**`, and on demand
+(Actions → Mirror skill → Run workflow). Each run is one snapshot commit, "Sync from
+kept-host/kept@<sha>": this repository's history is never published. The `reset` input
+replaces the mirror's history with one snapshot (force-push). The mirror is read-only:
+edit here, never there.
+
+**Nothing an agent can read names a non-prod origin.** `publish.sh` talks to
+`https://kept.host` only (no override), and the mirror's CI is static: shellcheck and an
+install check, no live publish. Test the skill against prod once it is open.
 
 One-time setup (Arun):
 
@@ -61,28 +67,19 @@ One-time setup (Arun):
 3. `kept-host/skill` → Settings → Deploy keys → add `skill_deploy.pub`, **Allow write access**.
 4. `kept-host/kept` → Settings → Secrets and variables → Actions → `SKILL_MIRROR_DEPLOY_KEY`
    = the contents of `skill_deploy` (the private half). Delete both local files.
-5. Run the workflow once by hand. `kept-host/skill` → Settings → Secrets → Actions →
-   `KEPT_DEV_API_KEY` for its own CI.
+5. Run the workflow once by hand.
 6. Protect the mirror's `main` (only the deploy key pushes); its README already points
    issues and PRs here.
 
 At launch (E14) switch the workflow's branch from `develop` to `main`.
-
-Fallback by hand:
-
-```sh
-git subtree split --prefix=skill -b skill-mirror
-git push git@github.com:kept-host/skill.git skill-mirror:main
-```
 
 `/install.sh` downloads from `raw.githubusercontent.com/kept-host/skill/main/skills/kept`,
 so the mirror's `main` is what every curl install gets.
 
 ## Human steps (Arun)
 
-1. Create the public repo `kept-host/skill` and mirror `skill/` into it.
-2. Set its repository secret `KEPT_DEV_API_KEY` (a key made in dev Settings) for the keyed CI step; the keyless step needs none.
-3. After the dev tag: run the skill and the MCP server in Codex, Claude Code and Cursor ("publish ./demo with kept"); record the runs in the PR (AC2, AC5).
-4. Post-merge: ClawHub, MCP Registry (`host.kept/kept`, DNS TXT on `kept.host`), Smithery / Glama, the Cursor plugin submission, the optional Hermes PR. Update the Status column above as each lands.
-5. If Cloudflare bot protection is on for `kept.host`, add a skip rule for `/mcp` and `/install.sh`.
-6. `MCP_SESSION_SECRET` on dev Railway; on prod in E14 (`docs/prod-release.md` §4.1).
+1. Create the public repo `kept-host/skill` and mirror `skill/` into it (above).
+2. After launch: run the skill in Codex, Claude Code and Cursor against prod ("publish ./demo with kept"). The MCP server was checked on dev.
+3. Post-merge: ClawHub, MCP Registry (`host.kept/kept`, DNS TXT on `kept.host`), Smithery / Glama, the Cursor plugin submission, the optional Hermes PR. Update the Status column above as each lands.
+4. If Cloudflare bot protection is on for `kept.host`, add a skip rule for `/mcp` and `/install.sh`.
+5. `MCP_SESSION_SECRET` on dev Railway; on prod in E14 (`docs/prod-release.md` §4.1).

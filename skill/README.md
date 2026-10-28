@@ -76,7 +76,7 @@ Flags: `--title`, `--model`, `--tool`, `--prompt`, `--readme`, `--source-url`, `
 | 3 | `rate_limited`, or `publishing_paused` (kept paused publishing during an incident): the script prints how long to wait |
 | 4 | Network, or kept answered 5xx |
 
-The script never prints an API key. Tokens of pages published without a key are kept in `~/.kept/drafts.json` (0600). `KEPT_BASE_URL` points it at another kept origin (for example `https://kept-dev.xyz`).
+The script never prints an API key. Tokens of pages published without a key are kept in `~/.kept/drafts.json` (0600).
 
 ## Source
 

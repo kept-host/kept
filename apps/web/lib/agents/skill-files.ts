@@ -12,7 +12,8 @@ import { SKILL_NAME, SKILL_REPO, mcpUrl, skillMarkdown, skillsIndex } from "@kep
 
 /**
  * The origin the published skill talks to. The skill ships to every user, so it
- * is always prod; `publish.sh` honours `KEPT_BASE_URL` for dev.
+ * is always prod, and `publish.sh` has no override: nothing an agent reads names
+ * another origin.
  */
 export const SKILL_BUILD_BASE = "https://kept.host";
 

@@ -41,37 +41,3 @@ jobs:
             echo "ok: $dir"
           done
 
-  # One live keyless publish, replace and delete against kept's dev environment,
-  # then a keyed one when the repository secret KEPT_DEV_API_KEY is set.
-  live-dev:
-    runs-on: ubuntu-latest
-    env:
-      KEPT_BASE_URL: https://kept-dev.xyz
-      HAS_KEY: ${{ secrets.KEPT_DEV_API_KEY != '' }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Publish, replace, delete
-        run: |
-          set -euo pipefail
-          export HOME="$RUNNER_TEMP/home"
-          mkdir -p "$HOME" site
-          printf '<!doctype html><title>kept skill CI</title><h1>%s</h1>\n' "$GITHUB_SHA" > site/index.html
-          script=skills/kept/scripts/publish.sh
-          "$script" --model ci --tool github-actions site/index.html | grep -v '^manage_token:'
-          slug="$(sed -n 's/.*"slug":"\([^"]*\)".*/\1/p' "$HOME/.kept/drafts.json")"
-          test "$(stat -c %a "$HOME/.kept/drafts.json")" = 600
-          printf '<!doctype html><title>kept skill CI</title><h1>%s v2</h1>\n' "$GITHUB_SHA" > site/index.html
-          "$script" --replace "$slug" --prompt "CI replace" site
-          "$script" delete "$slug"
-      - name: Keyed publish and delete
-        if: env.HAS_KEY == 'true'
-        env:
-          KEPT_API_KEY: ${{ secrets.KEPT_DEV_API_KEY }}
-        run: |
-          set -euo pipefail
-          export HOME="$RUNNER_TEMP/home-keyed"
-          mkdir -p "$HOME"
-          out="$(skills/kept/scripts/publish.sh --model ci site)"
-          echo "$out"
-          slug="$(printf '%s\n' "$out" | sed -n 's#^Live: *https://\([^.]*\)\..*#\1#p')"
-          skills/kept/scripts/publish.sh delete --page "$slug"

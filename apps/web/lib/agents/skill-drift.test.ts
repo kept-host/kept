@@ -74,12 +74,16 @@ test("publish.sh: bash -n, shellcheck, executable, and the inline cap is the sha
   console.log("[skill] publish.sh: bash -n and shellcheck clean");
 });
 
-/** Runs publish.sh against a refused port with a fresh `$HOME`; resolves to its exit code and output. */
+/**
+ * Runs publish.sh with a fresh `$HOME` and every request routed to a refused
+ * proxy port (curl honours `https_proxy`), so nothing leaves the machine;
+ * resolves to its exit code and output.
+ */
 async function publish(args: string[], extraEnv: Record<string, string> = {}) {
   const home = mkdtempSync(join(tmpdir(), "kept-skill-home-"));
   try {
     const result = await run("bash", [PUBLISH_SH, ...args], {
-      env: { NODE_ENV: "test", PATH: process.env.PATH ?? "", HOME: home, KEPT_BASE_URL: "http://127.0.0.1:9", ...extraEnv },
+      env: { NODE_ENV: "test", PATH: process.env.PATH ?? "", HOME: home, https_proxy: "http://127.0.0.1:9", HTTPS_PROXY: "http://127.0.0.1:9", ...extraEnv },
     }).then(
       ({ stdout, stderr }) => ({ code: 0, output: stdout + stderr }),
       (err: { code: number; stdout: string; stderr: string }) => ({ code: err.code, output: err.stdout + err.stderr }),
