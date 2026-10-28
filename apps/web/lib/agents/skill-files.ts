@@ -8,14 +8,14 @@
  * `README.md`, `AGENTS.md`, `LICENSE`, `hermes/`, the CI workflow and
  * `skills/kept/scripts/publish.sh` are hand-written and live only in `skill/`.
  */
-import { SKILL_NAME, SKILL_REPO, mcpUrl, skillMarkdown, skillsIndex } from "@kept/shared";
+import { KEPT_PROD_ORIGIN, SKILL_NAME, SKILL_REPO, mcpUrl, skillMarkdown, skillsIndex } from "@kept/shared";
 
 /**
  * The origin the published skill talks to. The skill ships to every user, so it
  * is always prod, and `publish.sh` has no override: nothing an agent reads names
  * another origin.
  */
-export const SKILL_BUILD_BASE = "https://kept.host";
+export const SKILL_BUILD_BASE = KEPT_PROD_ORIGIN;
 
 /** The skill repo's version — the plugins, `server.json` and Codex all read it. */
 export const SKILL_VERSION = "1.0.0";

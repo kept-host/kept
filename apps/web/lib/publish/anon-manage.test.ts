@@ -27,6 +27,8 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 
+import { MANIFEST_KV_CACHE_TTL_SECONDS } from "@kept/shared";
+
 import { config } from "dotenv";
 
 // The KV client is imported here — and, outside `lib/storage/`, only here and in
@@ -58,8 +60,13 @@ const skipLive =
     ? `dev credentials absent (${missing.join(", ")}) — run locally with apps/web/.env.local`
     : false;
 
-/** Contract §6: the documented worst case for a KV read to reflect a write. */
-const PROPAGATION_WINDOW_MS = 60_000;
+/**
+ * How long a replace gets to show at the edge: past the second purge
+ * (`KV_REPURGE_DELAY_MS`, 2 × the KV read-cache TTL + 5 s) plus 10 s. The first
+ * purge cannot clear a Worker's KV read cache, so a page read just before its
+ * replace serves the old bytes until the second one lands (contract §6).
+ */
+const PROPAGATION_WINDOW_MS = (2 * MANIFEST_KV_CACHE_TTL_SECONDS + 15) * 1000;
 const PROBE_INTERVAL_MS = 3_000;
 
 const created = new Set<string>();
