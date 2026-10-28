@@ -17,8 +17,9 @@
 
 import { Hono, type Context } from "hono";
 
-import type { KvManifest } from "@kept/shared";
+import { renderBadge, type KvManifest, type RenderedBadge } from "@kept/shared";
 
+import { injectBadge, injectsBadge } from "./badge";
 import {
   FALLBACK_CACHE_CONTROL,
   LIVE_CACHE_CONTROL,
@@ -31,9 +32,9 @@ import {
 } from "./cache";
 import type { Env } from "./env";
 import { buildResponse } from "./headers";
-import { resolveHost } from "./host";
+import { isSlugLabel, resolveHost } from "./host";
 import { resolveManifest } from "./manifest";
-import { fetchPage } from "./r2";
+import { fetchPage, fetchReadme } from "./r2";
 import { renderSystemPage, type SystemPage } from "./system-pages";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -88,6 +89,65 @@ function rewrittenCacheControl(spaRewrite: boolean, pageCacheControl: string): s
   return spaRewrite ? SHORT_EDGE_CACHE_CONTROL : pageCacheControl;
 }
 
+/** kept's own path space on every page host (E08 D7): nothing a user uploads. */
+const KEPT_PATH_PREFIX = "/_kept/";
+
+/** The README page of a kept page (E10 D6). */
+const README_PATH = "/_kept/readme";
+
+/**
+ * A body for the visitor: the badge streamed in when the page has one and the
+ * response is HTML (E10 D1), the R2 stream untouched otherwise — every other
+ * content type stays byte-identical.
+ */
+function withBadge(
+  body: ReadableStream,
+  contentType: string,
+  badge: RenderedBadge | undefined,
+): ReadableStream | null {
+  return badge !== undefined && injectsBadge(contentType)
+    ? injectBadge(body, badge.html)
+    : body;
+}
+
+/**
+ * `/_kept/*` on a `live` page. Only `/_kept/readme` can exist, and only while the
+ * manifest says the page has one (Q6) — then it is one R2 read of a page kept
+ * rendered itself, so `kept-own` (strict CSP, no script) and no badge. Anything
+ * else under `/_kept/` is the branded 404 without touching R2.
+ */
+async function serveKeptPath(
+  c: AppContext,
+  manifest: KvManifest,
+  pathname: string,
+  pageCacheControl: string,
+): Promise<Response> {
+  if (pathname !== README_PATH || manifest.badge?.readme !== true) {
+    return systemPage(c, "notFound");
+  }
+
+  const fetched = await fetchReadme(c.env.KEPT_R2, manifest, c.req.header("if-none-match"));
+  if (fetched.kind === "object") {
+    return buildResponse(fetched.object.body, {
+      status: 200,
+      kind: "kept-own",
+      headers: {
+        "Content-Type": fetched.contentType,
+        ETag: fetched.etag,
+        "Cache-Control": pageCacheControl,
+      },
+    });
+  }
+  if (fetched.kind === "notModified") {
+    return buildResponse(null, {
+      status: 304,
+      kind: "kept-own",
+      headers: { ETag: fetched.etag, "Cache-Control": pageCacheControl },
+    });
+  }
+  return systemPage(c, "notFound");
+}
+
 /**
  * Steps 3–6: everything downstream of the cache lookup, for a resolved slug.
  *
@@ -110,6 +170,25 @@ async function serveSlug(
     return systemPage(c, "notFound");
   }
 
+  if (lookup.kind === "redirect") {
+    // A retired handle (E10 D10): the same path on the current handle's host,
+    // before any R2 read. The target is a KV value, so it must pass the same
+    // label guard a request host does before it becomes a `Location`; the host
+    // suffix and scheme come from configuration, never from the request.
+    // Short-cached like the directory redirect: if the old handle is ever
+    // reclaimed, the purge reaches only the URLs the write side knows, so a
+    // year-long 301 on a deep path would outlive it.
+    if (!isSlugLabel(lookup.redirectTo)) return systemPage(c, "notFound");
+    return buildResponse(null, {
+      status: 301,
+      kind: "kept-own",
+      headers: {
+        Location: `https://${lookup.redirectTo}.${c.env.KEPT_BASE_DOMAIN}${url.pathname}${url.search}`,
+        "Cache-Control": SHORT_EDGE_CACHE_CONTROL,
+      },
+    });
+  }
+
   // A manifest read through the fallback is provisional — KV has not caught up
   // yet — so the page it produces gets the short edge TTL rather than the
   // year-long one. See `SHORT_EDGE_CACHE_CONTROL`. System pages are unaffected:
@@ -129,6 +208,21 @@ async function serveSlug(
   // `expired` is a status the control plane writes, not one the edge computes.
   switch (lookup.manifest.status) {
     case "live": {
+      if (url.pathname.startsWith(KEPT_PATH_PREFIX)) {
+        return serveKeptPath(c, lookup.manifest, url.pathname, pageCacheControl);
+      }
+
+      // The badge travels in the manifest (E10 D3) — rendering it costs no
+      // store read. Its hash scopes the conditional in `r2.ts` (Risk 1).
+      const badge =
+        lookup.manifest.badge === undefined
+          ? undefined
+          : renderBadge(lookup.manifest.badge, {
+              apexOrigin: c.env.KEPT_APEX_ORIGIN,
+              pageOrigin: `https://${slug}.${c.env.KEPT_BASE_DOMAIN}`,
+              slug,
+            });
+
       // Steps 5–6: path → key → the R2 read. `r2.ts` owns the traversal guard,
       // the key shape, D12's SPA rewrite and the two miss-only second reads;
       // this branch only turns the outcome into a response.
@@ -137,19 +231,21 @@ async function serveSlug(
         lookup.manifest,
         url.pathname,
         c.req.header("if-none-match"),
+        badge?.badgeHash,
       );
 
       if (fetched.kind === "object") {
         // Streamed straight from R2 — never buffered through `arrayBuffer()`,
         // because Worker memory is not the place to hold a whole page.
-        // `Content-Type` is the Worker's own; `ETag` is R2's, so the next
-        // request can be conditional.
-        return buildResponse(fetched.object.body, {
+        // `Content-Type` is the Worker's own; `ETag` is R2's — or, with a
+        // badge, R2's plus the badge hash — so the next request can be
+        // conditional. A badged body is streamed through `HTMLRewriter`.
+        return buildResponse(withBadge(fetched.object.body, fetched.contentType, badge), {
           status: 200,
           kind: "user-page",
           headers: {
             "Content-Type": fetched.contentType,
-            ETag: fetched.object.httpEtag,
+            ETag: fetched.etag,
             "Cache-Control": rewrittenCacheControl(fetched.spaRewrite, pageCacheControl),
           },
         });
@@ -195,7 +291,7 @@ async function serveSlug(
         // still a 404, and short-cached like the branded one — a later publish
         // may put a page at this path. No `ETag`: it describes `404.html`, not
         // the URL asked for.
-        return buildResponse(fetched.object.body, {
+        return buildResponse(withBadge(fetched.object.body, fetched.contentType, badge), {
           status: 404,
           kind: "user-page",
           headers: {

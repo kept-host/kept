@@ -11,8 +11,10 @@
 // `list`, no waiting.
 
 import {
-  kvManifestSchema,
+  isRedirectManifest,
+  kvEntrySchema,
   MANIFEST_KV_CACHE_TTL_SECONDS,
+  type KvEntry,
   type KvManifest,
 } from "@kept/shared";
 
@@ -63,7 +65,7 @@ export type ManifestSource = "kv" | "pointer";
  * Outcome of manifest resolution.
  *
  * A KV miss with no pointer, a value that is not JSON, a value that fails
- * `kvManifestSchema`, and an unparseable pointer all collapse into `unservable`
+ * `kvEntrySchema`, and an unparseable pointer all collapse into `unservable`
  * — there is nothing servable in any of those cases and the caller must not have
  * to tell them apart. E04 writes Postgres, then R2, then KV, so a visitor can
  * genuinely arrive mid-sequence and read a half-written manifest; treating that
@@ -71,6 +73,7 @@ export type ManifestSource = "kv" | "pointer";
  */
 export type ManifestLookup =
   | { kind: "manifest"; manifest: KvManifest; source: ManifestSource }
+  | { kind: "redirect"; redirectTo: string }
   | { kind: "unservable" };
 
 const UNSERVABLE: ManifestLookup = { kind: "unservable" };
@@ -84,7 +87,7 @@ const UNSERVABLE: ManifestLookup = { kind: "unservable" };
  * downstream needs to tell those two apart, so they are one value.
  */
 type KvLookup =
-  | { kind: "manifest"; manifest: KvManifest }
+  | { kind: "entry"; entry: KvEntry }
   | { kind: "miss" }
   | { kind: "unservable" };
 
@@ -92,18 +95,26 @@ const KV_MISS: KvLookup = { kind: "miss" };
 const KV_UNSERVABLE: KvLookup = { kind: "unservable" };
 
 /**
- * Parse a stored manifest value. Shared by the KV read and the pointer probe so
- * the two paths cannot drift on what counts as a valid manifest.
+ * Parse a stored value — a page manifest or a retired handle's redirect (E10
+ * Q1). Shared by the KV read and the pointer probe so the two paths cannot
+ * drift on what counts as a valid entry.
  */
-function parseManifest(raw: string): KvManifest | null {
+function parseEntry(raw: string): KvEntry | null {
   let value: unknown;
   try {
     value = JSON.parse(raw);
   } catch {
     return null;
   }
-  const parsed = kvManifestSchema.safeParse(value);
+  const parsed = kvEntrySchema.safeParse(value);
   return parsed.success ? parsed.data : null;
+}
+
+/** An entry as the caller sees it: a page to serve, or a host to 301 to. */
+function toLookup(entry: KvEntry, source: ManifestSource): ManifestLookup {
+  return isRedirectManifest(entry)
+    ? { kind: "redirect", redirectTo: entry.redirectTo }
+    : { kind: "manifest", manifest: entry, source };
 }
 
 /**
@@ -132,8 +143,8 @@ async function readManifest(kv: KVNamespace, slug: string): Promise<KvLookup> {
 
   if (raw === null) return KV_MISS;
 
-  const manifest = parseManifest(raw);
-  return manifest === null ? KV_UNSERVABLE : { kind: "manifest", manifest };
+  const entry = parseEntry(raw);
+  return entry === null ? KV_UNSERVABLE : { kind: "entry", entry };
 }
 
 /**
@@ -167,10 +178,8 @@ async function readPointer(
     return UNSERVABLE;
   }
 
-  const manifest = parseManifest(raw);
-  return manifest === null
-    ? UNSERVABLE
-    : { kind: "manifest", manifest, source: "pointer" };
+  const entry = parseEntry(raw);
+  return entry === null ? UNSERVABLE : toLookup(entry, "pointer");
 }
 
 /**
@@ -209,9 +218,7 @@ export async function resolveManifest(
 ): Promise<ManifestLookup> {
   const lookup = await readManifest(kv, slug);
 
-  if (lookup.kind === "manifest") {
-    return { kind: "manifest", manifest: lookup.manifest, source: "kv" };
-  }
+  if (lookup.kind === "entry") return toLookup(lookup.entry, "kv");
 
   if (lookup.kind === "unservable") return UNSERVABLE;
 

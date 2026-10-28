@@ -23,6 +23,8 @@ import {
   type SiteFileType,
 } from "@kept/shared";
 
+import { injectsBadge } from "./badge";
+
 /**
  * Maximum request path length, in bytes of the raw (still percent-encoded)
  * pathname. 1024 bytes is far past any legitimate page path and well short of
@@ -31,6 +33,13 @@ import {
  * within the same bound.
  */
 export const MAX_REQUEST_PATH_BYTES = 1024;
+
+/**
+ * The README page's key (E10 D6) — per site, not per version, beside the version
+ * prefixes. Users cannot upload under `_kept/` (E08 D7), so only the control
+ * plane writes here.
+ */
+const README_DOCUMENT = "_kept/readme.html";
 
 /** The single-file v1 default; also what a directory-shaped path resolves to. */
 const INDEX_DOCUMENT = "index.html";
@@ -87,9 +96,13 @@ export type PathResolution =
  */
 export type MissingReason = "notFound" | "storeError";
 
-/** One R2 read's outcome, for a path the guard has already accepted. */
-type ObjectFetch =
-  | { kind: "object"; object: R2ObjectBody; contentType: string }
+/**
+ * One R2 read's outcome, for a path the guard has already accepted. `etag` is
+ * the quoted ETag to answer with — R2's own, or the composite one when a badge
+ * is injected (see `fetchObject`).
+ */
+export type ObjectFetch =
+  | { kind: "object"; object: R2ObjectBody; contentType: string; etag: string }
   | { kind: "notModified"; etag: string }
   | { kind: "missing"; reason: MissingReason };
 
@@ -100,7 +113,7 @@ type ObjectFetch =
  * `404.html` (D13).
  */
 export type PageFetch =
-  | { kind: "object"; object: R2ObjectBody; contentType: string; spaRewrite: boolean }
+  | { kind: "object"; object: R2ObjectBody; contentType: string; etag: string; spaRewrite: boolean }
   | { kind: "notModified"; etag: string; spaRewrite: boolean }
   | { kind: "directory"; location: string }
   | { kind: "custom404"; object: R2ObjectBody; contentType: string }
@@ -196,7 +209,7 @@ const ETAG_TOKEN = /^(?:W\/)?"(.*)"$/;
  * Neither a list nor `*` can be pushed into `onlyIf` (the type says
  * `etagDoesNotMatch` accepts an array, but workerd rejects one at runtime:
  * "the provided value is not of type 'string'"), so both are evaluated after the
- * fetch — see `fetchObject`.
+ * fetch — see `readObject`.
  */
 function parseIfNoneMatch(header: string): Conditional {
   const value = header.trim();
@@ -211,6 +224,24 @@ function parseIfNoneMatch(header: string): Conditional {
     etags.push(unquoted ?? token);
   }
 
+  return etags.length > 0 ? { kind: "etags", etags } : NO_CONDITION;
+}
+
+/**
+ * Narrow a parsed conditional to the badged representation (E10 Risk 1).
+ *
+ * A badged response's ETag is `"{r2etag}-{badgeHash}"`: R2's etag alone does not
+ * change when only the badge does, so answering with it would let a 304 pin a
+ * stale badge in a browser for good. Only an etag ending in the CURRENT badge's
+ * suffix can match; it is passed down with the suffix stripped. Any other etag —
+ * R2's bare one from before the badge, or one carrying an older badge's hash —
+ * is dropped, so the request becomes unconditional and gets a full 200.
+ */
+function scopeToBadge(conditional: Conditional, suffix: string): Conditional {
+  if (conditional.kind !== "etags") return conditional;
+  const etags = conditional.etags
+    .filter((etag) => etag.length > suffix.length && etag.endsWith(suffix))
+    .map((etag) => etag.slice(0, -suffix.length));
   return etags.length > 0 ? { kind: "etags", etags } : NO_CONDITION;
 }
 
@@ -258,6 +289,7 @@ export async function fetchPage(
   manifest: KvManifest,
   pathname: string,
   ifNoneMatch: string | undefined,
+  badgeHash: string | undefined,
 ): Promise<PageFetch> {
   const resolved = resolvePath(pathname);
   if (resolved.kind === "rejected") return REJECTED;
@@ -269,6 +301,7 @@ export async function fetchPage(
     manifest,
     spaRewrite ? INDEX_DOCUMENT : resolved.path,
     ifNoneMatch,
+    badgeHash,
   );
   if (fetched.kind !== "missing") return { ...fetched, spaRewrite };
   if (fetched.reason === "storeError") return fetched;
@@ -279,6 +312,7 @@ export async function fetchPage(
       bucket,
       manifest,
       `${resolved.path}/${INDEX_DOCUMENT}`,
+      undefined,
       undefined,
     );
     if (directory.kind === "object") {
@@ -294,7 +328,7 @@ export async function fetchPage(
   }
 
   if (manifest.has404 === true) {
-    const custom = await fetchObject(bucket, manifest, CUSTOM_404_DOCUMENT, undefined);
+    const custom = await fetchObject(bucket, manifest, CUSTOM_404_DOCUMENT, undefined, undefined);
     if (custom.kind === "object") {
       return { kind: "custom404", object: custom.object, contentType: custom.contentType };
     }
@@ -304,8 +338,28 @@ export async function fetchPage(
 }
 
 /**
- * Fetch the object at `path` — a path `resolvePath` accepted, or one of this
- * module's own constants. Never a raw request path.
+ * The README page of a kept page (E10 D6): one R2 read of
+ * `sites/{siteId}/_kept/readme.html`, conditional like any page. Its bytes are
+ * kept's own (rendered by the control plane), so no badge suffix applies.
+ */
+export function fetchReadme(
+  bucket: R2Bucket,
+  manifest: KvManifest,
+  ifNoneMatch: string | undefined,
+): Promise<ObjectFetch> {
+  return readObject(
+    bucket,
+    manifest.region,
+    `sites/${manifest.siteId}/${README_DOCUMENT}`,
+    contentTypeFor(README_DOCUMENT),
+    ifNoneMatch,
+    undefined,
+  );
+}
+
+/**
+ * Fetch the object at `path` of the manifest's version — a path `resolvePath`
+ * accepted, or one of this module's own constants. Never a raw request path.
  *
  * The key is `sites/{siteId}/{versionId}/{path}` — keyed by `siteId`, NEVER by
  * slug. That is what makes a rename in E06 a KV-only write with no file move,
@@ -320,16 +374,44 @@ export async function fetchPage(
  * Nothing throws out of here: every outcome, including an unexpected store
  * failure, is a value the caller can render.
  */
-async function fetchObject(
+function fetchObject(
   bucket: R2Bucket,
   manifest: KvManifest,
   path: string,
   ifNoneMatch: string | undefined,
+  badgeHash: string | undefined,
 ): Promise<ObjectFetch> {
-  const key = `sites/${manifest.siteId}/${manifest.versionId}/${path}`;
+  const contentType = contentTypeFor(path);
+  return readObject(
+    bucket,
+    manifest.region,
+    `sites/${manifest.siteId}/${manifest.versionId}/${path}`,
+    contentType,
+    ifNoneMatch,
+    // Only an HTML response is rewritten, so only it carries the composite ETag.
+    badgeHash !== undefined && injectsBadge(contentType) ? `-${badgeHash}` : undefined,
+  );
+}
 
-  const conditional =
+/**
+ * The single R2 read behind `fetchObject` and `fetchReadme`. `etagSuffix` is
+ * set when the response will carry a badge: the ETag answered becomes
+ * `"{r2etag}{suffix}"` and the conditional is narrowed by `scopeToBadge`.
+ */
+async function readObject(
+  bucket: R2Bucket,
+  region: Region,
+  key: string,
+  contentType: string,
+  ifNoneMatch: string | undefined,
+  etagSuffix: string | undefined,
+): Promise<ObjectFetch> {
+  const parsed =
     ifNoneMatch === undefined ? NO_CONDITION : parseIfNoneMatch(ifNoneMatch);
+  const conditional =
+    etagSuffix === undefined ? parsed : scopeToBadge(parsed, etagSuffix);
+  const etagOf = (object: R2Object) =>
+    etagSuffix === undefined ? object.httpEtag : `"${object.etag}${etagSuffix}"`;
 
   // The single-etag form — what a browser revalidating a page actually sends —
   // is pushed into `onlyIf`, so a match costs no body transfer. A list or `*`
@@ -341,7 +423,7 @@ async function fetchObject(
 
   let object: R2ObjectBody | R2Object | null;
   try {
-    object = await selectBucket(bucket, manifest.region).get(
+    object = await selectBucket(bucket, region).get(
       key,
       pushedDown === undefined
         ? undefined
@@ -363,7 +445,7 @@ async function fetchObject(
   // R2 answers a failed `onlyIf` precondition with a bodyless `R2Object`: the
   // client already holds this version.
   if (!("body" in object)) {
-    return { kind: "notModified", etag: object.httpEtag };
+    return { kind: "notModified", etag: etagOf(object) };
   }
 
   // The conditionals `onlyIf` could not carry, settled here against the object
@@ -378,14 +460,10 @@ async function fetchObject(
       (conditional.kind === "etags" && conditional.etags.includes(object.etag)))
   ) {
     await object.body.cancel().catch(() => {});
-    return { kind: "notModified", etag: object.httpEtag };
+    return { kind: "notModified", etag: etagOf(object) };
   }
 
-  return {
-    kind: "object",
-    object,
-    contentType: contentTypeFor(path),
-  };
+  return { kind: "object", object, contentType, etag: etagOf(object) };
 }
 
 /** Content type from the extension of the key we constructed — see `CONTENT_TYPES`. */
