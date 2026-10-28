@@ -75,8 +75,12 @@ const APEX_PATHS: PathSet = {
     "/report",
     // E09: the agents page — the install line, the skill, the MCP config.
     "/agents",
+    // E10 (Q21): the expired-draft explainer — static, served while closed.
+    "/drafts",
   ]),
-  prefixes: ["/legal/"],
+  // E10 (Q21): `/remix/` is the server-rendered remix prompt for a kept page —
+  // no publish surface, so it is served while closed.
+  prefixes: ["/legal/", "/remix/"],
 };
 
 /**
@@ -166,6 +170,8 @@ const CREDENTIAL_API_PATHS: PathSet = {
 const APP_API_PATHS: PathSet = {
   // `/api/uploads` (E08 D5): the presigned large-upload path; 401 without a session.
   // `/api/keys` (E09): the studio's API-key management; 401 without a session.
+  // `/api/profile`, `/api/referrals` (E10): the creator's profile (bio, socials,
+  // badge) and referral stats; 401 without a session.
   exact: new Set([
     "/api/auth",
     "/api/sites",
@@ -174,9 +180,12 @@ const APP_API_PATHS: PathSet = {
     "/api/account",
     "/api/uploads",
     "/api/keys",
+    "/api/profile",
+    "/api/referrals",
   ]),
   // `/api/admin/` (E07): the moderation actions; the handlers 404 non-admins.
-  prefixes: ["/api/auth/", "/api/sites/", "/api/og/", "/api/admin/", "/api/keys/"],
+  // `/api/profile/` (E10): `/api/profile/handle`, the handle change.
+  prefixes: ["/api/auth/", "/api/sites/", "/api/og/", "/api/admin/", "/api/keys/", "/api/profile/"],
 };
 
 /**
@@ -187,7 +196,8 @@ const APP_API_PATHS: PathSet = {
  * `List-Unsubscribe` POST must not meet a redirect.
  */
 const APP_PAGE_PATHS: PathSet = {
-  exact: new Set(["/auth", "/dashboard", "/settings"]),
+  // `/referrals` (E10): the creator's referral stats.
+  exact: new Set(["/auth", "/dashboard", "/settings", "/referrals"]),
   // `/admin/` (E07): the moderation screen; it 404s anyone but an admin.
   prefixes: ["/auth/", "/site/", "/keep/", "/p/", "/unsubscribe/", "/admin/"],
 };
@@ -326,20 +336,24 @@ export function waitlistHref(appUrl: string | undefined): string {
  *   /api/publish, /api/anon/*,
  *   /api/v1/*                            → not mine with a Bearer header or the
  *                                          session cookie; else `not-open`
- *   APP_API_PATHS (auth, studio, keys)   → not mine on the `app.` host; else
+ *   APP_API_PATHS (auth, studio, keys,
+ *   E10's /api/profile, /api/profile/*,
+ *   /api/referrals)                      → not mine on the `app.` host; else
  *                                          `not-open`
  *   every other /api/*                   → `not-open`: the JSON 404, and no
  *                                          route handler runs
  *   _next/*                              → not mine
  *   ANY_HOST_PATHS (/mcp)                → not mine (the handler enforces
  *                                          closed mode)
- *   an apex path on the landing's host   → not mine (the split rule passes it)
+ *   an apex path on the landing's host
+ *   (E10's /drafts and /remix/* too)     → not mine (the split rule passes it)
  *   an apex path elsewhere               → 307 to the same path on the landing's
  *                                          host (`app.`'s `/` included, which
  *                                          the split rule would send to
  *                                          `/dashboard`)
  *   APP_PAGE_PATHS (sign-in, studio,
- *   keep, manage, unsubscribe, admin)    → not mine (the split rule sends them
+ *   keep, manage, unsubscribe, admin,
+ *   E10's /referrals)                    → not mine (the split rule sends them
  *                                          to the `app.` host)
  *   everything else                      → 307 to the landing's `/`
  *
