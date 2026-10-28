@@ -1,10 +1,11 @@
 import { agentPrompt, agentSetups } from "@kept/shared";
 import type { Metadata } from "next";
 import Link from "next/link";
+import { notFound } from "next/navigation";
 
 import { CodeBlock } from "@/components/kept/code-block";
 import { LegalLinks } from "@/components/kept/legal-links";
-import { agentBase } from "@/lib/agents/discovery";
+import { agentBase, discoveryServed } from "@/lib/agents/discovery";
 import { agentsMetadata } from "@/lib/og/preview";
 
 import { AgentTabs } from "./agent-tabs";
@@ -25,6 +26,7 @@ export function generateMetadata(): Metadata {
 }
 
 export default function AgentsPage() {
+  if (!discoveryServed()) notFound();
   const base = agentBase();
 
   return (

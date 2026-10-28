@@ -499,6 +499,20 @@ set by hand.
 - [ ] `/api/health` → `"open":true`. An anonymous publish works. Sign-in is open to all.
 - [ ] Decide what to do with `KEPT_ACCESS_TOKEN_HASHES`. Tokens stay valid after opening; remove the digests you no longer want.
 - [ ] Post the Impressum link; file the PSL request (§5).
+- [ ] **Agents (E09) by hand, once open.** Not tested on dev on purpose: nothing agent-facing names dev.
+  - **Skill install:** `curl -fsSL https://kept.host/install.sh | sh` → one "installed the skill for …"
+    line per agent (Claude Code → `~/.claude/skills/kept`, Codex → `~/.agents/skills/kept`). Ask Claude
+    Code, Codex and Cursor to "publish ./demo with kept" → each runs `scripts/publish.sh` and returns a
+    `*.kept.host` link (a draft + claim link without a key; into your account with `KEPT_API_KEY`).
+  - **Sign-in by emailed code:** `publish.sh login <you@…>` → a 6-digit code arrives;
+    `publish.sh login --code <code>` saves a key to `~/.kept/credentials` and it shows in Settings →
+    Agents and API keys. A wrong code → `invalid_code`; five wrong tries kill it. Revoke that key after.
+  - **Settings → Agents and API keys:** create a key (shown once, Copy, "N of 25"); revoke it (confirm
+    dialog) → that key on `GET https://kept.host/api/v1/pages` → 401.
+  - **Publish pause:** set `KEPT_PUBLISH_PAUSED=true`, wait for the redeploy → `/api/health`
+    `"publishing":"paused"`; `publish.sh`, `/api/v1`, `/mcp`, the landing drop and the studio all answer
+    "Publishing on kept is paused for now…" (`publish.sh` exits 3); pages still serve; rename and delete
+    still work. **Unset it** → `"publishing":"on"`.
 
 **Incident lever (E09 task 011):** set `KEPT_PUBLISH_PAUSED=true` on the Railway prod
 service (Railway redeploys; it is read at request time, nothing is baked into the build). Every publish, replace and upload

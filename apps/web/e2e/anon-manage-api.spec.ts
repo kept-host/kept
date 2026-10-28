@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { DRAFT_TTL_DAYS, publishErrorSchema } from "@kept/shared";
+import { DRAFT_TTL_DAYS, MANIFEST_KV_CACHE_TTL_SECONDS, publishErrorSchema } from "@kept/shared";
 import { test, expect, type APIRequestContext } from "@playwright/test";
 
 import {
@@ -44,8 +44,12 @@ import { rawRequest } from "./raw-request";
 
 const marker = () => `e04-010-manage-${crypto.randomUUID().slice(0, 8)}`;
 
-/** How long a replaced page gets to serve its new bytes before we call it broken. */
-const SERVE_TIMEOUT_MS = 30_000;
+/**
+ * How long a replaced page gets to serve its new bytes before we call it
+ * broken: past the second purge (`KV_REPURGE_DELAY_MS`, 2 × the KV read-cache
+ * TTL + 5 s) plus 10 s — the first purge cannot clear a Worker's KV read cache.
+ */
+const SERVE_TIMEOUT_MS = (2 * MANIFEST_KV_CACHE_TTL_SECONDS + 15) * 1000;
 const SERVE_INTERVAL_MS = 1_500;
 
 /** Exactly the fields `ReplaceResponse` promises — no token, no `deduped`. */
@@ -151,7 +155,7 @@ test.describe("the anonymous manage API", () => {
   test("replace swaps the bytes at the same URL, echoes no token, and never extends the clock", async ({
     request,
   }) => {
-    test.setTimeout(90_000);
+    test.setTimeout(SERVE_TIMEOUT_MS + 60_000);
 
     const original = pageHtml(marker());
     const draft = await publish(request, original);
@@ -198,7 +202,7 @@ test.describe("the anonymous manage API", () => {
   test("a dropped file replaces as well as pasted markup — one endpoint, both transports", async ({
     request,
   }) => {
-    test.setTimeout(90_000);
+    test.setTimeout(SERVE_TIMEOUT_MS + 60_000);
 
     const draft = await publish(request, pageHtml(marker()));
     const replacement = pageHtml(marker());
@@ -228,7 +232,7 @@ test.describe("the anonymous manage API", () => {
   test("E08: a zip replaces a page with a whole file set — same URL, every file serves, and the keyless body is unchanged", async ({
     request,
   }) => {
-    test.setTimeout(90_000);
+    test.setTimeout(SERVE_TIMEOUT_MS + 60_000);
 
     const draft = await publish(request, pageHtml(marker()));
     const replacement = pageHtml(marker());

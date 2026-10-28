@@ -48,6 +48,13 @@ export const VISITS_SYNC_JOB = "visits-sync" as const;
  */
 export const ABUSE_CONTACT_EMAIL = "abuse@kept.host" as const;
 
+/**
+ * kept's production origin. The published skill talks to it alone, and the
+ * agent discovery files are served only there (and on localhost): nothing an
+ * agent reads names another environment.
+ */
+export const KEPT_PROD_ORIGIN = "https://kept.host" as const;
+
 /** kept's public source repository (AGPL-3.0) — every "open source" / "AGPL" / "GitHub" link. */
 export const SOURCE_REPO_URL = "https://github.com/kept-host/kept" as const;
 
