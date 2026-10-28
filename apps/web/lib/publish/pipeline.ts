@@ -53,6 +53,7 @@ import {
   publishResponseSchema,
   type PublishChannel,
   type PublishError,
+  type BadgeData,
   type PublishResponse,
 } from "@kept/shared";
 import type { z } from "zod";
@@ -69,6 +70,8 @@ import {
   type PendingVersionInput,
   type SitePointer,
 } from "../db/queries/publish";
+import { badgeDataFor } from "../badge/badge-data";
+import { readSiteForManifest } from "../db/queries/manifest-sync";
 import { appOrigin, publisherHashSalt, servingBaseDomain } from "../storage/env";
 import { pointerKey, removeManifest, syncManifest, writeManifest } from "../storage/manifest";
 import { pageObjectKey, r2Store, siteObjectKey } from "../storage/r2";
@@ -311,7 +314,7 @@ export async function writeVersionFiles(
  * `status: "live"` is the one literal manifest left (D18): the row was inserted
  * a moment ago and nobody else can have changed it. Everything after a page's
  * first publish goes through `syncManifest`. `spa` / `has404` are written only
- * when true, so a single-file manifest is byte-identical to `dev-v0.8.0`.
+ * when true; `badge` (E10 D3) always — from `badgeDataFor`, as the sync does.
  *
  * `unwound` reports whether the reverse path completed. `false` means the edge
  * and Postgres may now disagree, and the `pending_purges` row the failed write
@@ -326,6 +329,18 @@ export async function storeNewPage(args: {
 }): Promise<StoreWriteResult> {
   const { slug, siteId, versionId, set, ownerId } = args;
 
+  // The badge (E10 D3) comes from the row just committed — the same builder
+  // `syncManifest` uses, so a first manifest and every later one agree. Read
+  // before any store write: a failure here has nothing to unwind.
+  let badge: BadgeData;
+  try {
+    const row = await readSiteForManifest(siteId);
+    if (!row) return { ok: false, error: `site ${siteId} has no row to build a manifest from`, unwound: true };
+    badge = badgeDataFor(row);
+  } catch (err) {
+    return { ok: false, error: `manifest read: ${message(err)}`, unwound: true };
+  }
+
   const files = await writeVersionFiles(siteId, versionId, set);
   if (!files.ok) return files;
 
@@ -339,6 +354,7 @@ export async function storeNewPage(args: {
     updatedAt: Date.now(),
     ...(set.spa && { spa: true }),
     ...(set.has404 && { has404: true }),
+    badge,
   });
   if (written.ok) {
     // `purge.ok === false` is NOT a failure (contract §3). `writeManifest` has

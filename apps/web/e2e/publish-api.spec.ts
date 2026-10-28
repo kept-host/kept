@@ -24,6 +24,7 @@ import {
   publishViaApi,
   servingDomain,
   SKIP_LIVE_PUBLISH,
+  unbadged,
 } from "./live-publish";
 import { buildZip } from "../lib/testing/zip-fixture";
 
@@ -194,7 +195,7 @@ test.describe("the publish API, as an agent calls it", () => {
     // …and it actually serves, over HTTPS, within seconds of the 201.
     const served = await waitForServe(body.live_url);
     expect(served.status).toBe(200);
-    expect(served.body).toBe(html);
+    expect(unbadged(served.body)).toBe(html);
     expect(served.contentType).toContain("text/html");
   });
 
@@ -302,7 +303,7 @@ test.describe("the publish API, as an agent calls it", () => {
 
     const served = await waitForServe(body.live_url);
     expect(served.status).toBe(200);
-    expect(served.body, "/ serves dist/index.html's bytes").toBe(html);
+    expect(unbadged(served.body), "/ serves dist/index.html's bytes").toBe(html);
     const asset = await probeEdge(`${body.live_url}/assets/app.js`);
     expect(asset.status).toBe(200);
     expect(asset.body).toBe(js);

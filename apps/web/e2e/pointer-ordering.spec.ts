@@ -18,6 +18,7 @@ import {
   probeEdge,
   publishViaApi,
   SKIP_LIVE_PUBLISH,
+  unbadged,
 } from "./live-publish";
 
 /**
@@ -104,7 +105,7 @@ test.describe("pointer ordering, through the publish and delete APIs", () => {
       seen = await probeEdge(liveUrl);
     }
     expect(seen.status, "a freshly published page must serve").toBe(200);
-    expect(seen.body).toBe(html);
+    expect(unbadged(seen.body)).toBe(html);
 
     // The pointer exists BEFORE we touch KV — the publish wrote it, which is
     // half of "pointer → KV" on its own.
@@ -133,7 +134,7 @@ test.describe("pointer ordering, through the publish and delete APIs", () => {
     // response that came through `slugs/{slug}.json` rather than through KV.
     // A 404 here means the pointer was never written, or was written after KV.
     expect(last.status, "a KV miss must fall through to the pointer").toBe(200);
-    expect(last.body).toBe(html);
+    expect(unbadged(last.body)).toBe(html);
     expect(last.cacheControl).toMatch(/s-maxage=60\b/);
   });
 

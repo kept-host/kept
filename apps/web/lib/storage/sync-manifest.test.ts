@@ -39,7 +39,7 @@ import postgres from "postgres";
 import { closeDb, db } from "../db";
 import { insertPendingPurge } from "../db/queries/manifest-sync";
 import { insertVersionFiles, siteObjectKeys } from "../db/queries/version-files";
-import { pendingPurges, sites, siteVersions } from "../db/schema";
+import { pendingPurges, profiles, sites, siteVersions } from "../db/schema";
 import { renameSite } from "../names/rename";
 import { replacePage } from "../publish/anon-manage";
 import { fileSet, jsonBody } from "../testing/file-sets";
@@ -507,10 +507,21 @@ test("E08: a single-file sync writes the dev-v0.8.0 manifest, byte for byte, and
 
   const body = (await r2Store().get(pointerKey(page.slug)))!;
   const { updatedAt } = JSON.parse(body) as { updatedAt: number };
-  // The literal dev-v0.8.0 wrote, in its key order: no `spa`, no `has404`.
+  // The literal dev-v0.8.0 wrote, in its key order: no `spa`, no `has404` —
+  // plus E10's `badge` last, read under the same lock (D3): a kept page with no
+  // handle and no model credits its owner by the permanent referral code (Q3).
+  const [owner] = await db.select({ code: profiles.referralCode }).from(profiles).where(eq(profiles.id, ownerId));
   assert.equal(
     body,
-    JSON.stringify({ siteId: page.id, versionId: v1.id, status: "live", region: "auto", ownerId, updatedAt }),
+    JSON.stringify({
+      siteId: page.id,
+      versionId: v1.id,
+      status: "live",
+      region: "auto",
+      ownerId,
+      updatedAt,
+      badge: { variant: "kept", style: "standard", refCode: owner!.code },
+    }),
   );
 
   const rows = await rowsSince(page.slug, since);

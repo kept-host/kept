@@ -2,29 +2,28 @@
  * Keep, demote and swap — the three site-lifecycle primitives E05 is about,
  * made honest about status by E06 task 004.
  *
- * ⚠️ KEEPING A LIVE PAGE IS A POSTGRES WRITE, NOT A PUBLISH. The manifest the
- * Worker reads is `{ siteId, versionId, status, region, ownerId, updatedAt }`.
- * Keeping a `live` page changes exactly one of those — `ownerId`, from null to a
- * uuid. `status` stays `live`, the slug stays, `versionId` stays, and R2 is
- * untouched because the object is keyed by `siteId`. So the ordinary keep does
- * **not** call `writeManifest`, does **not** purge, and does **not** pay the
- * 125-second re-purge cost. Writing the manifest anyway "for consistency" is a
- * real regression: it burns cache-purge quota and adds a failure mode to a flow
- * that currently has none.
+ * ── EVERY KEEP, DEMOTE AND SWAP SYNCS THE MANIFEST AFTER COMMIT (E10 D5) ──
+ * Until E10 a keep of a `live` page was a Postgres write only: it changed just
+ * `ownerId`, which nothing in `apps/edge` reads, so the manifest was knowingly
+ * left stale on it. E10 ended that: the manifest carries the page's BADGE, and
+ * keeping or demoting a page flips it between the draft and the kept variant
+ * (owner, referral, model, Remix). So every primitive here that changes a row
+ * calls `syncManifest(site)` once its transaction has committed — pointer → KV
+ * → purge, the second purge 125 s later — and `ownerId` is no longer stale.
+ * The no-op keep of an already-kept page writes nothing.
  *
- * The manifest is therefore knowingly STALE on `ownerId` for every kept page,
- * and that is accepted rather than fixed. Nothing in `apps/edge` reads
- * `ownerId` — E03 shipped it as forward-looking metadata for E11 region
- * routing, not as serving input. If a future epic starts reading it, THAT epic
- * re-syncs. E05 does not pre-pay for it.
+ * A failed sync of a page that was already serving is logged, not surfaced:
+ * the page serves, only its badge is behind, and `syncManifest` left a
+ * `pending_purges` row the repurge job replays. The one sync whose failure IS
+ * the caller's answer is the late keep's — below.
  *
- * ── THE ONE STORE CALL: THE LATE KEEP ──────────────────────────────────────
+ * ── THE LATE KEEP: THE SYNC THAT BRINGS A PAGE BACK ─────────────────────────
  * An `expired` row inside its grace window (`purge_after > now()`, PRD §5.3)
  * carries an `expired` manifest — E07's `expire` job writes it through
  * `syncManifest` — so the edge answers 410 "This draft wasn't kept", and only a
  * KV write brings the page back. Keeping it flips the row to `live` and clears its
  * clocks inside the transaction, and then — only after COMMIT —
- * `restoreManifest` writes the manifest through `syncManifest`, from the row
+ * `syncAfterCommit` writes the manifest through `syncManifest`, from the row
  * under its lock (D18: a flag committed in between is what the edge serves,
  * never a stale `live`). Postgres first:
  * the reverse order would put a page back on the internet that the database
@@ -325,12 +324,14 @@ function isGone(site: LockedSite, now: Date): boolean {
 }
 
 /**
- * What a late keep still owes the edge once its transaction has committed: a
- * `syncManifest` of this site. Only the id — the manifest is read from the row
- * at sync time, never carried from inside the transaction (D18).
+ * What a keep or demote still owes the edge once its transaction has
+ * committed: a `syncManifest` of this site (E10 D5). Only the id — the manifest
+ * is read from the row at sync time, never carried from inside the transaction
+ * (D18). `restore`: the late keep, whose sync is what brings the page back.
  */
-interface PendingRestore {
+interface PendingSync {
   siteId: string;
+  restore: boolean;
 }
 
 /**
@@ -362,8 +363,8 @@ function atKeptLimit(plan: Plan): StudioRefusal {
 /**
  * The Postgres half of every keep, inside the caller's transaction.
  *
- * Returns the result and — on the late keep only — the manifest the caller must
- * write AFTER this transaction commits (`restoreManifest`). The store write is
+ * Returns the result and — unless nothing changed — the sync the caller must
+ * run AFTER this transaction commits (`syncAfterCommit`). The store write is
  * never made from in here: an uncommitted row behind a live manifest is the
  * ordering bug the late keep exists to avoid.
  */
@@ -372,7 +373,7 @@ async function keepLocked(
   siteId: string,
   profileId: string,
   door: KeepDoor,
-): Promise<{ result: KeepResult; restore: PendingRestore | null }> {
+): Promise<{ result: KeepResult; sync: PendingSync | null }> {
   const plan = await lockOwner(trx, profileId);
   const site = await lockSite(trx, siteId);
   const now = new Date();
@@ -399,15 +400,15 @@ async function keepLocked(
         slug: site.slug,
         quota: quotaOf(await countKept(trx, profileId), plan),
       },
-      restore: null,
+      sync: null,
     };
   }
 
   // The late keep. Decided here, under both locks, from the row as it is NOW.
   // Refused before any write: with no version there is no R2 object to point a
   // manifest at, and the row must not be marked `live` with nothing to serve.
-  let restore: PendingRestore | null = null;
-  if (site.status === "expired") {
+  const restore = site.status === "expired";
+  if (restore) {
     if (!site.currentVersionId) {
       throw new StudioRefusal(
         "internal_error",
@@ -415,7 +416,6 @@ async function keepLocked(
         `site ${site.id} (slug "${site.slug}") is expired with no current version — cannot restore.`,
       );
     }
-    restore = { siteId: site.id };
   }
 
   const underCap = (await countKept(trx, profileId)) < limitsFor(plan).keptPages;
@@ -463,35 +463,38 @@ async function keepLocked(
       }
     : { outcome: "kept", siteId: site.id, slug: site.slug, quota };
 
-  return { result, restore };
+  return { result, sync: { siteId: site.id, restore } };
 }
 
 /**
- * The store half of a late keep, run only after the keep's transaction has
+ * The store half of a keep or demote, run only after its transaction has
  * committed — and never while `lockOwner` is held (Risk 12): `keepSites` calls it
  * after its batch transaction ends. A PURGE IS TWO PURGES — `syncManifest`'s
  * write already schedules the second one 125 seconds later (`2 × cacheTtl +
  * 5 s`); do not add a third, do not await the delayed one, and do not
  * reimplement the pointer → KV → purge ordering.
  *
- * A failed write is NOT SWALLOWED. Postgres has committed: the page is owned,
- * marked `live`, and either permanent or on a fresh clock, but the edge still
- * says gone. Answering "kept!" would be a lie the owner only discovers by
+ * A failed LATE KEEP is NOT SWALLOWED. Postgres has committed: the page is
+ * owned, marked `live`, and either permanent or on a fresh clock, but the edge
+ * still says gone. Answering "kept!" would be a lie the owner only discovers by
  * clicking their own link. The row is internally consistent and Postgres is the
  * authority, so the restore is replayable: the failed sync left a
  * `pending_purges` row that the repurge job replays.
  *
+ * Any other failed sync is the badge only — the page was serving and still is
+ * — so it is left to that same row (`syncManifest` has logged it).
+ *
  * A failed purge is NOT a failure (edge-purge contract §3): `syncManifest` only
  * fails when a store write did.
  */
-async function restoreManifest(restore: PendingRestore | null): Promise<void> {
-  if (!restore) return;
-  const synced = await syncManifest(restore.siteId);
-  if (synced.ok) return;
+async function syncAfterCommit(sync: PendingSync | null): Promise<void> {
+  if (!sync) return;
+  const synced = await syncManifest(sync.siteId);
+  if (synced.ok || !sync.restore) return;
   throw new StudioRefusal(
     "internal_error",
     RESTORE_INCOMPLETE_MESSAGE,
-    `RESTORE INCOMPLETE — site ${restore.siteId} (slug "${synced.slug}") is kept and marked live in Postgres, but the manifest sync failed: ${synced.error}. The page is NOT serving; the row disagrees until the repurge job replays the sync.`,
+    `RESTORE INCOMPLETE — site ${sync.siteId} (slug "${synced.slug}") is kept and marked live in Postgres, but the manifest sync failed: ${synced.error}. The page is NOT serving; the row disagrees until the repurge job replays the sync.`,
   );
 }
 
@@ -510,11 +513,11 @@ export async function keepSite(
   options: KeepOptions = {},
 ): Promise<KeepSiteResult> {
   const door: KeepDoor = options.expectAnonymous ? "anonymous" : "owner";
-  const { result, restore } = await db.transaction((tx) =>
+  const { result, sync } = await db.transaction((tx) =>
     keepLocked(tx, siteId, profileId, door),
   );
-  await restoreManifest(restore);
-  return { ...result, restored: restore !== null };
+  await syncAfterCommit(sync);
+  return { ...result, restored: sync?.restore === true };
 }
 
 /**
@@ -538,11 +541,11 @@ export type BulkSettled = { id: string; ok: true } | { id: string; ok: false; er
  * single keep runs — inside one SAVEPOINT apiece, so a page that is not found
  * (another account's, past its grace), flagged, or broken is refused alone and
  * the rest still land. The owner lock is held throughout, so the count cannot
- * move under the loop. Late keeps write their manifests after the COMMIT, as
- * `keepSite` does; a failed restore is reported against that page.
+ * move under the loop. Every kept page's manifest is synced after the COMMIT,
+ * as `keepSite` does; a failed restore is reported against that page.
  */
 export async function keepSites(siteIds: readonly string[], profileId: string): Promise<BulkSettled[]> {
-  const { settled, restores } = await db.transaction(async (tx) => {
+  const { settled, syncs } = await db.transaction(async (tx) => {
     const plan = await lockOwner(tx, profileId);
     const { keptPages } = limitsFor(plan);
     const free = Math.max(0, keptPages - (await countKept(tx, profileId)));
@@ -550,22 +553,22 @@ export async function keepSites(siteIds: readonly string[], profileId: string): 
     if (refusal) throw new StudioRefusal("at_kept_limit", refusal);
 
     const settled: BulkSettled[] = [];
-    const restores: { id: string; restore: PendingRestore }[] = [];
+    const syncs: { id: string; sync: PendingSync }[] = [];
     for (const id of siteIds) {
       try {
-        const { restore } = await tx.transaction((page) => keepLocked(page, id, profileId, "owner"));
+        const { sync } = await tx.transaction((page) => keepLocked(page, id, profileId, "owner"));
         settled.push({ id, ok: true });
-        if (restore) restores.push({ id, restore });
+        if (sync) syncs.push({ id, sync });
       } catch (error) {
         settled.push({ id, ok: false, error });
       }
     }
-    return { settled, restores };
+    return { settled, syncs };
   });
 
-  for (const { id, restore } of restores) {
+  for (const { id, sync } of syncs) {
     try {
-      await restoreManifest(restore);
+      await syncAfterCommit(sync);
     } catch (error) {
       settled[settled.findIndex((item) => item.id === id)] = { id, ok: false, error };
     }
@@ -574,7 +577,10 @@ export async function keepSites(siteIds: readonly string[], profileId: string): 
 }
 
 export interface DemoteOptions {
-  /** Compose inside an existing transaction (`swapKept`). Public callers pass none. */
+  /**
+   * Compose inside an existing transaction (`swapKept`), which then owes the
+   * page's `syncManifest` after ITS commit. Public callers pass none.
+   */
   tx?: Tx;
 }
 
@@ -596,8 +602,8 @@ function notDemotable(site: LockedSite): StudioRefusal {
  * foreign and past-grace rows are not found.
  *
  * ARCHIVE, DON'T DELETE: demote removes nothing. `status` stays `live`, the
- * slug stays, the manifest stays, R2 stays — the page keeps serving at the same
- * URL, it just has a deadline again. `owner_id`, `claimed_at`, `name_kind` and
+ * slug stays, R2 stays — the page keeps serving at the same URL, it just has a
+ * deadline again, and its manifest is re-synced for the draft badge (E10 D5). `owner_id`, `claimed_at`, `name_kind` and
  * `listed_public` are all untouched (AC14, D12): a demoted page is an *owned*
  * draft that keeps its name and its Explore choice for when it is kept again.
  *
@@ -610,27 +616,33 @@ export async function demoteSite(
   profileId: string,
   options: DemoteOptions = {},
 ): Promise<DemoteResult> {
-  return inTransaction(options.tx, async (trx) => {
-    const plan = await lockOwner(trx, profileId);
-    const site = await lockSite(trx, siteId);
-    const now = new Date();
+  if (options.tx) return demoteLocked(options.tx, siteId, profileId);
+  const result = await db.transaction((tx) => demoteLocked(tx, siteId, profileId));
+  // The page serves throughout; only its badge changes (kept → draft, E10 D5).
+  await syncAfterCommit({ siteId, restore: false });
+  return result;
+}
 
-    if (!site || site.ownerId !== profileId || isGone(site, now)) {
-      throw new SiteNotFoundError(siteId);
-    }
-    if (site.expiresAt !== null || site.status !== "live") throw notDemotable(site);
+async function demoteLocked(trx: Tx, siteId: string, profileId: string): Promise<DemoteResult> {
+  const plan = await lockOwner(trx, profileId);
+  const site = await lockSite(trx, siteId);
+  const now = new Date();
 
-    const { expiresAt, purgeAfter } = draftClocks(now);
-    await trx.update(sites).set({ expiresAt, purgeAfter }).where(eq(sites.id, siteId));
+  if (!site || site.ownerId !== profileId || isGone(site, now)) {
+    throw new SiteNotFoundError(siteId);
+  }
+  if (site.expiresAt !== null || site.status !== "live") throw notDemotable(site);
 
-    return {
-      siteId: site.id,
-      slug: site.slug,
-      expiresAt: expiresAt.toISOString(),
-      purgeAfter: purgeAfter.toISOString(),
-      quota: quotaOf(await countKept(trx, profileId), plan),
-    };
-  });
+  const { expiresAt, purgeAfter } = draftClocks(now);
+  await trx.update(sites).set({ expiresAt, purgeAfter }).where(eq(sites.id, siteId));
+
+  return {
+    siteId: site.id,
+    slug: site.slug,
+    expiresAt: expiresAt.toISOString(),
+    purgeAfter: purgeAfter.toISOString(),
+    quota: quotaOf(await countKept(trx, profileId), plan),
+  };
 }
 
 /**
@@ -639,8 +651,8 @@ export async function demoteSite(
  * The atomicity is the feature: a partial swap would leave the account either
  * a slot short or a page over the cap, and the second is the one that matters.
  * A must be a kept `live` page and B an owned draft — `live`, or `expired` in
- * its grace window, in which case B is restored exactly as a late keep is and
- * its manifest written once the swap has committed.
+ * its grace window, in which case B is restored exactly as a late keep is.
+ * Both manifests are synced once the swap has committed (E10 D5).
  *
  * Because the demote has written *within this transaction* by the time
  * `keepLocked` counts, the cap check sees the freed slot. An account already
@@ -652,9 +664,9 @@ export async function swapKept(
   keepSiteId: string,
   profileId: string,
 ): Promise<SwapResult> {
-  const { demoted, kept, restore } = await db.transaction(async (tx) => {
+  const { demoted, kept, sync } = await db.transaction(async (tx) => {
     const demoted = await demoteSite(demoteSiteId, profileId, { tx });
-    const { result, restore } = await keepLocked(tx, keepSiteId, profileId, "swap");
+    const { result, sync } = await keepLocked(tx, keepSiteId, profileId, "swap");
     // The swap door throws at the cap rather than landing `owned_draft`, so this
     // only narrows the type; reaching it would mean that rule was removed.
     if (result.outcome !== "kept") {
@@ -662,10 +674,13 @@ export async function swapKept(
         `swapKept: keeping ${keepSiteId} landed "${result.outcome}" — the swap door must refuse at the cap. Rolling back.`,
       );
     }
-    return { demoted, kept: result, restore };
+    return { demoted, kept: result, sync };
   });
 
-  await restoreManifest(restore);
+  // Both pages' badges changed (E10 D5): the demoted one first, then the kept
+  // one — whose late-keep failure, if it is one, is the caller's answer.
+  await syncAfterCommit({ siteId: demoted.siteId, restore: false });
+  await syncAfterCommit(sync);
 
   // Both halves report the SAME post-swap quota. `demoted.quota` was measured
   // between the two writes, when the account was one page short.

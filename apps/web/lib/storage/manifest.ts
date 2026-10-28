@@ -19,7 +19,8 @@
  *   new publish:        R2 object → slugs/{slug}.json → KV {slug} → purge
  *   delete:                        delete pointer     → delete KV  → purge
  *   every later write:  commit the row → syncManifest(siteId)
- *                       (replace, restore, rename, late keep, status flips)
+ *                       (replace, restore, rename, keep, demote, swap,
+ *                       status flips)
  *   rename (E06):       syncManifest(site) → removeManifest(old)
  *
  * …where "purge" is TWO purges, the second one delayed. One is not enough and
@@ -69,6 +70,7 @@ import {
 } from "@kept/shared";
 import { z } from "zod";
 
+import { badgeDataFor } from "../badge/badge-data";
 import { db, type Tx } from "../db";
 import {
   currentVersionPaths,
@@ -529,11 +531,15 @@ export type SyncManifestResult =
  * keep, every moderation status change and the expiry sweep.
  *
  * In ONE transaction: lock the site row → read `slug, status,
- * current_version_id, owner_id, region` and the current version's `spa` /
- * `has_404` → `writeManifest` with exactly those values (`live`,
- * `under_review`, `quarantined`, `expired`) or `removeManifest` (`removed`,
- * `archived`) → commit only after KV has answered. The flags are written only
- * when true, so a single-file manifest is byte-identical to `dev-v0.8.0`.
+ * current_version_id, owner_id, region`, the current version's `spa` /
+ * `has_404` and the badge's inputs → `writeManifest` with exactly those values
+ * (`live`, `under_review`, `quarantined`, `expired`) or `removeManifest`
+ * (`removed`, `archived`) → commit only after KV has answered. The flags are
+ * written only when true; `badge` (E10 D3, `badgeDataFor`) always.
+ *
+ * E10 D5: every change to what the badge shows is a writer too — keep, demote,
+ * swap (both pages), a details save, and — queued as `pending_purges` rows, not
+ * inline (`lib/badge/fan-out.ts`) — a handle or badge-style change.
  *
  * The purge covers the current version's file set, read under the same lock,
  * and — with `alsoPurgeVersionId` — that version's too: a replace or restore
@@ -618,6 +624,7 @@ async function syncSite(siteId: string, durable: boolean, opts: SyncManifestOpti
           updatedAt: Date.now(),
           ...(site.spa && { spa: true }),
           ...(site.has404 && { has404: true }),
+          badge: badgeDataFor(site),
         },
         ledger,
         paths,

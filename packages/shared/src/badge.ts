@@ -101,11 +101,16 @@ function fnv1a(value: string): string {
 const T = BADGE_TOKENS;
 const FONT = 'ui-monospace,"JetBrains Mono",SFMono-Regular,Menlo,monospace';
 
-/** Every style lives in the shadow root; `all: initial` keeps page CSS out (D2). */
+/**
+ * Every style lives in the shadow root; `all: initial` keeps page CSS out (D2).
+ * Page CSS still reaches the HOST element, and an `!important` colour on it
+ * (`* { color: red !important }`) would be inherited inward — so the badge box
+ * sets its own colour rather than inheriting the host's (AC6).
+ */
 const SHADOW_STYLE =
   `:host{all:initial;position:fixed;right:12px;bottom:12px;z-index:2147483647;` +
   `max-width:min(360px,90vw);font:12px/1.5 ${FONT};color:${T["--text"]}}` +
-  `.b{display:flex;flex-wrap:wrap;align-items:center;gap:2px 10px;padding:4px 12px;` +
+  `.b{display:flex;flex-wrap:wrap;align-items:center;gap:2px 10px;padding:4px 12px;color:${T["--text"]};` +
   `background:${T["--surface"]};border:1px solid ${T["--border"]};border-radius:${T["--r-md"]};` +
   `box-shadow:${T["--shadow-md"]}}` +
   `.p{border-radius:${T["--r-pill"]}}` +

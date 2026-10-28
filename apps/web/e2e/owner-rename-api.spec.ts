@@ -26,6 +26,7 @@ import {
   STALE_EDGE_WINDOW_MS,
   urlsFor,
   waitUntilGone,
+  unbadged,
 } from "./live-publish";
 import { jarlessContext, sessionHeaders } from "./session-request";
 
@@ -275,7 +276,7 @@ test.describe("owner rename", () => {
     for (const url of urlsFor(nextSlug)) {
       const probe = await probeEdge(url);
       expect(probe.status, `${url} must serve immediately`).toBe(200);
-      expect(probe.body).toBe(page.html);
+      expect(unbadged(probe.body)).toBe(page.html);
     }
 
     // The OLD slug stops — within the bound, and both forms. `/index.html` is a

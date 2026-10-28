@@ -25,6 +25,7 @@
     "admin:founding": "tsx scripts/admin.ts founding",
     "admin:waitlist": "tsx scripts/admin.ts waitlist",
     "admin:scan": "tsx scripts/admin.ts scan",
+    "admin:badge-backfill": "tsx scripts/admin.ts badge-backfill",
     "eval:scanner": "tsx scripts/eval-scanner.ts"
   },
   "dependencies": {

@@ -9,6 +9,7 @@ import {
   probeEdge,
   publishViaApi,
   SKIP_LIVE_PUBLISH,
+  unbadged,
 } from "./live-publish";
 import { buildZip } from "../lib/testing/zip-fixture";
 
@@ -66,7 +67,7 @@ interface Draft {
 async function waitForBody(url: string, expected: string) {
   const deadline = Date.now() + SERVE_TIMEOUT_MS;
   let last = await probeEdge(url);
-  while (last.body !== expected && Date.now() < deadline) {
+  while (unbadged(last.body) !== expected && Date.now() < deadline) {
     await sleep(SERVE_INTERVAL_MS);
     last = await probeEdge(url);
   }
@@ -194,7 +195,7 @@ test.describe("the anonymous manage API", () => {
     const served = await waitForBody(draft.live_url, replacement);
     expect(served.status).toBe(200);
     expect(
-      served.body,
+      unbadged(served.body),
       "the edge is still serving the previous version — the purge did not land",
     ).toBe(replacement);
   });
@@ -226,7 +227,7 @@ test.describe("the anonymous manage API", () => {
     expect(raw.slug).toBe(draft.slug);
     expect(raw.expires_at).toBe(draft.expires_at);
 
-    expect((await waitForBody(draft.live_url, replacement)).body).toBe(replacement);
+    expect(unbadged((await waitForBody(draft.live_url, replacement)).body)).toBe(replacement);
   });
 
   test("E08: a zip replaces a page with a whole file set — same URL, every file serves, and the keyless body is unchanged", async ({
@@ -256,7 +257,7 @@ test.describe("the anonymous manage API", () => {
     expect(raw.slug).toBe(draft.slug);
     expect(raw.expires_at).toBe(draft.expires_at);
 
-    expect((await waitForBody(draft.live_url, replacement)).body).toBe(replacement);
+    expect(unbadged((await waitForBody(draft.live_url, replacement)).body)).toBe(replacement);
     const asset = await waitForBody(`${draft.live_url}/assets/site.css`, css);
     expect(asset.body).toBe(css);
     expect(asset.contentType).toContain("text/css");

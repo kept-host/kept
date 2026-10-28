@@ -28,6 +28,7 @@ import {
   SKIP_LIVE_PUBLISH,
   STALE_EDGE_WINDOW_MS,
   waitForBytes,
+  unbadged,
 } from "./live-publish";
 import { jarlessContext, sessionHeaders } from "./session-request";
 
@@ -482,7 +483,7 @@ test.describe("owner replace", () => {
     expect(studioErrorSchema.parse(await oversized.json()).error.code).toBe("file_too_large");
 
     expect(await readSite(page.siteId)).toEqual(before);
-    expect((await probeEdge(urlFor(page.slug))).body).toBe(page.html);
+    expect(unbadged((await probeEdge(urlFor(page.slug))).body)).toBe(page.html);
   });
 
   test("signed out is 401, another account's page is the not-found body", async ({
@@ -547,6 +548,6 @@ test.describe("owner replace", () => {
     // E05a's flat body, untouched — the gate runs before any studio code.
     expect(publishErrorSchema.parse(await refused.json()).error).toBe("invalid_request");
     expect(await readSite(page.siteId)).toEqual(before);
-    expect((await probeEdge(urlFor(page.slug))).body).toBe(page.html);
+    expect(unbadged((await probeEdge(urlFor(page.slug))).body)).toBe(page.html);
   });
 });
