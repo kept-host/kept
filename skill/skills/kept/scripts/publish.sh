@@ -14,14 +14,12 @@
 #
 # Key: $KEPT_API_KEY, else ~/.kept/credentials. Never printed.
 # Tokens of pages published without a key: ~/.kept/drafts.json (0600).
-# Origin: $KEPT_BASE_URL (default https://kept.host).
 #
 # Exit: 0 ok · 2 your input (bad flag, missing file, missing_index, too large, …)
 #       3 rate limited or publishing paused (prints how long to wait) · 4 network or server
 set -euo pipefail
 
-BASE="${KEPT_BASE_URL:-https://kept.host}"
-BASE="${BASE%/}"
+BASE="https://kept.host"
 KEPT_DIR="$HOME/.kept"
 DRAFTS="$KEPT_DIR/drafts.json"
 CREDENTIALS="$KEPT_DIR/credentials"
