@@ -12,6 +12,8 @@
  * here in the same language.
  *
  * E09 task 006 adds "Agents and API keys" after Plan — no imported design (Q12).
+ * E10 task 008 adds "Profile" after Account: the design's Handle section, and
+ * the rest of the profile from task 009.
  *
  * Like the design, one section is mounted at a time. The section bodies are
  * rendered by the server component and passed in, so every read stays in RSC

@@ -71,6 +71,8 @@ import {
   confirmsAccountEmail,
   deleteResultSchema,
   demoteResultSchema,
+  handleChangeRequestSchema,
+  handleChangeResultSchema,
   keepResultSchema,
   nameChangeRequestSchema,
   nameChangeResultSchema,
@@ -89,6 +91,7 @@ import {
   type BulkResult,
   type DeleteResult,
   type DemoteResult,
+  type HandleChangeResult,
   type KeepResult,
   type NameChangeResult,
   type NameCheckResult,
@@ -106,6 +109,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { SlugUnavailableError } from "../db/queries/publish";
+import { checkHandle, setHandle, type HandleOwner } from "../handles/handle";
 import { allowNameCheck, checkName } from "../names/check";
 import { renameSite } from "../names/rename";
 import { isFailure, type FileSet } from "../publish/fileset/types";
@@ -578,6 +582,49 @@ export async function checkOwnedName(
     return { ok: true, status: 200, body: nameCheckResultSchema.parse(result) };
   } catch (err) {
     return studioFailure(err, "check a name for", "kept could not check that name just now. Try again.");
+  }
+}
+
+/**
+ * `GET /api/names/check?name=&handle=1` — the handle field's live answer
+ * (E10 §5.5): `checkHandle`, behind the same per-minute limit as the page
+ * name check, with `handle_change_limited` and its date among the statuses.
+ */
+export async function checkOwnedHandle(
+  rawName: string | null,
+  owner: HandleOwner,
+): Promise<OwnerOutcome<NameCheckResult>> {
+  if (!allowNameCheck(owner.id)) {
+    return refuse("rate_limited", "That's a lot of names in a minute. Wait a moment, then try again.");
+  }
+  try {
+    const result = await checkHandle(rawName ?? "", owner);
+    return { ok: true, status: 200, body: nameCheckResultSchema.parse(result) };
+  } catch (err) {
+    return studioFailure(err, "check a handle for", "kept could not check that handle just now. Try again.");
+  }
+}
+
+/**
+ * `PUT /api/profile/handle` — set or change the account's handle (E10 D9,
+ * D10). Every rule, lock and store write is `lib/handles/handle.ts`'s; a
+ * refusal carries the field's own sentence.
+ */
+export async function changeOwnHandle(
+  raw: unknown,
+  profileId: string,
+): Promise<OwnerOutcome<HandleChangeResult>> {
+  const parsed = handleChangeRequestSchema.safeParse(raw);
+  if (!parsed.success) return refuse("invalid_request", "Send `{ handle }` — the handle you want.");
+  try {
+    const result = await setHandle(profileId, parsed.data.handle);
+    return { ok: true, status: 200, body: handleChangeResultSchema.parse(result) };
+  } catch (err) {
+    return studioFailure(
+      err,
+      "change the handle",
+      "kept could not change your handle just now. Nothing was changed — try again.",
+    );
   }
 }
 

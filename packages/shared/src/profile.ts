@@ -131,6 +131,18 @@ export const handleChangeRequestSchema = z.object({
 export type HandleChangeRequest = z.infer<typeof handleChangeRequestSchema>;
 
 /**
+ * What `PUT /api/profile/handle` answers: the handle now set, and the UTC date
+ * it may next change (`null` while a change is allowed now — before the first
+ * change; setting a first handle is not one).
+ */
+export const handleChangeResultSchema = z.object({
+  handle: z.string(),
+  nextChangeOn: z.string().date().nullable(),
+});
+
+export type HandleChangeResult = z.infer<typeof handleChangeResultSchema>;
+
+/**
  * A referral code as stored: lowercase letters and digits, `REFERRAL_CODE_LENGTH`
  * long (hex, minted by the `profiles.referral_code` column default in `0012`).
  */

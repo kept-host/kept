@@ -1,7 +1,7 @@
 /**
  * The browser's client for the owner-scoped (studio) routes — publish, keep,
  * demote, swap, rename, details, replace, restore, delete, bulk keep / delete,
- * account deletion, and API keys (E09).
+ * account deletion, API keys (E09), and the handle (E10).
  * Downloads and the export are plain links (`GET`, `Content-Disposition:
  * attachment`); the one read of the download route here is `readPageHtml`, the
  * studio card's hover preview (task 016), which wants the page as text.
@@ -30,6 +30,7 @@ import {
   bulkResultSchema,
   deleteResultSchema,
   demoteResultSchema,
+  handleChangeResultSchema,
   keepResultSchema,
   nameChangeResultSchema,
   nameCheckResultSchema,
@@ -48,6 +49,8 @@ import {
   type BulkItemResult,
   type DeleteResult,
   type DemoteResult,
+  type HandleChangeRequest,
+  type HandleChangeResult,
   type KeepResult,
   type NameChangeRequest,
   type NameCheckResult,
@@ -292,6 +295,35 @@ export async function checkName(
 ): Promise<NameCheckOutcome> {
   const query = new URLSearchParams({ name, siteId });
   const sent = await send(`/api/names/check?${query}`, { signal }, nameCheckResultSchema);
+  return sent.ok ? { ok: true, result: sent.body } : { ok: false, error: sent.error };
+}
+
+/**
+ * `GET /api/names/check?name=&handle=1` — what the server would say about
+ * `name` as this account's handle (E10 §5.5). Advisory, like `checkName`.
+ *
+ * Never throws, including on abort.
+ */
+export async function checkHandleName(name: string, signal?: AbortSignal): Promise<NameCheckOutcome> {
+  const query = new URLSearchParams({ name, handle: "1" });
+  const sent = await send(`/api/names/check?${query}`, { signal }, nameCheckResultSchema);
+  return sent.ok ? { ok: true, result: sent.body } : { ok: false, error: sent.error };
+}
+
+/** A handle save: the handle as it now is, or why nothing changed. */
+export type HandleOutcome =
+  | { ok: true; result: HandleChangeResult }
+  | { ok: false; error: StudioError };
+
+/**
+ * `PUT /api/profile/handle` — set or change the account's handle (E10 D9, D10).
+ * Every refusal arrives with the field's own sentence.
+ *
+ * Never throws, including on abort.
+ */
+export async function saveHandle(handle: string, signal?: AbortSignal): Promise<HandleOutcome> {
+  const body: HandleChangeRequest = { handle };
+  const sent = await send("/api/profile/handle", jsonInit("PUT", body, signal), handleChangeResultSchema);
   return sent.ok ? { ok: true, result: sent.body } : { ok: false, error: sent.error };
 }
 

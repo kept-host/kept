@@ -8,7 +8,7 @@
  * inbound links the moment it is let go. Generated names are never held.
  */
 import { NAME_HOLD_DAYS, type NameHoldReason } from "@kept/shared";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, sql, type SQL } from "drizzle-orm";
 
 import { db, type Tx } from "../db";
 import { nameHolds, sites } from "../db/schema";
@@ -36,18 +36,42 @@ export async function holdName(
   siteId?: string,
   tx?: Tx,
 ): Promise<void> {
-  const run = async (trx: Tx) => {
-    await lockNames(trx, [name]);
-    const heldUntil = sql`now() + make_interval(days => ${NAME_HOLD_DAYS})`;
-    await trx
-      .insert(nameHolds)
-      .values({ name, userId, siteId: siteId ?? null, reason, heldUntil })
-      .onConflictDoUpdate({
-        target: nameHolds.name,
-        set: { userId, siteId: siteId ?? null, reason, heldUntil, createdAt: sql`now()` },
-      });
-  };
+  const heldUntil = sql`now() + make_interval(days => ${NAME_HOLD_DAYS})`;
+  const run = (trx: Tx) => upsertHold(trx, name, userId, reason, siteId ?? null, heldUntil);
   await (tx ? run(tx) : db.transaction(run));
+}
+
+/**
+ * Hold `name` for `userId` (`null`: nobody) with no end — `held_until =
+ * 'infinity'`. A handle is never released (E10 D9, D10): an old handle is held
+ * for its owner, and a deleted account's handles for nobody (Q17). Same lock
+ * and upsert as `holdName`; always inside the caller's transaction.
+ */
+export async function holdNameForever(
+  tx: Tx,
+  name: string,
+  userId: string | null,
+  reason: NameHoldReason,
+): Promise<void> {
+  await upsertHold(tx, name, userId, reason, null, sql`'infinity'::timestamptz`);
+}
+
+async function upsertHold(
+  tx: Tx,
+  name: string,
+  userId: string | null,
+  reason: NameHoldReason,
+  siteId: string | null,
+  heldUntil: SQL,
+): Promise<void> {
+  await lockNames(tx, [name]);
+  await tx
+    .insert(nameHolds)
+    .values({ name, userId, siteId, reason, heldUntil })
+    .onConflictDoUpdate({
+      target: nameHolds.name,
+      set: { userId, siteId, reason, heldUntil, createdAt: sql`now()` },
+    });
 }
 
 /**

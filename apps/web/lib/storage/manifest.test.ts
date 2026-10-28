@@ -27,6 +27,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { config } from "dotenv";
 
 import {
+  isRedirectManifest,
+  kvEntrySchema,
   kvManifestSchema,
   MANIFEST_KV_CACHE_TTL_SECONDS,
   type KvManifest,
@@ -48,6 +50,7 @@ import {
   setPurgeUrls,
   slugPurgeUrls,
   writeManifest,
+  writeRedirectManifest,
 } from "./manifest";
 import { PURGE_MAX_URLS_PER_REQUEST, purgeBatches, purgeUrls } from "./purge";
 import { r2Store } from "./r2";
@@ -238,6 +241,35 @@ test("an invalid manifest fails at the validate step, before either store", asyn
   } as unknown as KvManifest);
 
   assert.equal(result.ok, false);
+  assert.equal(result.ok === false && result.step, "validate");
+});
+
+test(
+  "E10 Q1: a handle redirect is pointer → KV with identical bytes, and removeManifest unwinds both",
+  { skip: skipLive, timeout: 60_000 },
+  async () => {
+    const old = `d${crypto.randomUUID().replace(/-/g, "").slice(0, 7)}`;
+    drillSlugs.add(old);
+    try {
+      const written = await writeRedirectManifest(old, "e10-current");
+      assert.ok(written.ok, written.ok ? "" : `${written.step}: ${written.error}`);
+      const kv = await kvStore().get(old);
+      assert.equal(kv, written.value, "KV holds the written bytes");
+      assert.equal(await r2Store().get(pointerKey(old)), written.value, "the pointer is byte-identical");
+      const entry = kvEntrySchema.parse(JSON.parse(kv!));
+      assert.ok(isRedirectManifest(entry));
+      assert.deepEqual(Object.keys(entry).sort(), ["redirectTo", "updatedAt"], "the redirect shape only");
+      assert.equal(entry.redirectTo, "e10-current");
+    } finally {
+      const removed = await removeManifest(old);
+      assert.ok(removed.ok, removed.ok ? "" : `${removed.step}: ${removed.error}`);
+    }
+    assert.equal(await r2Store().get(pointerKey(old)), null);
+  },
+);
+
+test("a redirect to a non-string target fails at the validate step, before either store", async () => {
+  const result = await writeRedirectManifest("abc12345", 42 as unknown as string);
   assert.equal(result.ok === false && result.step, "validate");
 });
 

@@ -47,7 +47,7 @@ import { waitForTokensApplied } from "./tokens-applied";
  */
 const scope = newScope();
 
-const SECTIONS = ["Account", "Plan", "Agents and API keys", "Your data", "Danger zone"] as const;
+const SECTIONS = ["Account", "Profile", "Plan", "Agents and API keys", "Your data", "Danger zone"] as const;
 
 /** Open one section from the settings nav. */
 async function openSection(page: Page, label: (typeof SECTIONS)[number]) {
@@ -95,7 +95,7 @@ test.describe("the settings screen", () => {
     await closeDb();
   });
 
-  test("five sections (E09 added Agents and API keys) and nothing from a later epic (AC10); the account shows its email and the email link is always on", async ({
+  test("six sections (E09 added Agents and API keys, E10 Profile) and nothing from a later epic (AC10); the account shows its email and the email link is always on", async ({
     page,
     baseURL,
   }) => {
@@ -106,7 +106,7 @@ test.describe("the settings screen", () => {
     await expect(page.getByRole("heading", { name: "Settings", level: 1 })).toBeVisible();
 
     // The shell's nav is Pages and Settings only; the settings nav is the PRD's
-    // four plus E09's agents section.
+    // four plus E09's agents section and E10's Profile.
     await expect(page.getByTestId("studio-nav-sidebar").getByRole("link")).toHaveText(["Pages", "Settings"]);
     await expect(
       page.getByRole("navigation", { name: "Settings sections" }).getByRole("button"),
@@ -130,7 +130,6 @@ test.describe("the settings screen", () => {
     // ── AC10: walk every section; none of the design's later-epic elements is
     // in the DOM — not hidden, not disabled, not "Soon".
     const ABSENT = [
-      "handle", // Handle section, "Rename handle", "New handle"
       "your wall", // "Your wall lives at", "Your wall · {handle}.kept.host"
       "own domain",
       "dns records",

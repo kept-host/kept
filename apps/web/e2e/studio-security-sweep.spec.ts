@@ -263,6 +263,13 @@ const SWEPT: Record<string, SweptRoute> = {
     send: (ctx, base, t, headers) => ctx.delete(`${base}/api/keys/${t.keyId}`, { headers }),
     stranger: true,
   },
+  // E10 task 008: a hosted page changing its visitor's handle would re-point
+  // where their old one redirects.
+  "PUT /api/profile/handle": {
+    send: (ctx, base, _t, headers) =>
+      ctx.put(`${base}/api/profile/handle`, { headers, data: { handle: sweepName() } }),
+    stranger: "changes the session's own handle; it names no page",
+  },
   // Cookie-authenticated although its path carries a token: the keep attaches
   // the page to the SESSION's account, so it is gated like every route above.
   "POST /api/anon/[anonToken]/keep": {
@@ -390,6 +397,11 @@ test.describe("the sweep, on the wire (AC44)", () => {
         .select({ id: schema.apiKeys.id, revokedAt: schema.apiKeys.revokedAt })
         .from(schema.apiKeys)
         .where(eq(schema.apiKeys.userId, userId)),
+      // E10: the handle and when it last changed — a cross-origin PUT moves neither.
+      profile: await db
+        .select({ handle: schema.profiles.handle, handleChangedAt: schema.profiles.handleChangedAt })
+        .from(schema.profiles)
+        .where(eq(schema.profiles.id, userId)),
     });
     return {
       userId,
@@ -488,7 +500,7 @@ test.describe("the sweep, on the wire (AC44)", () => {
         expect(await theirs.text(), `${key}: "not yours" must read as "not there"`).toBe(await absent.text());
       }
       expect(exempted.sort(), "only the account-scoped routes name no page").toEqual(
-        ["DELETE /api/account", "POST /api/keys", "POST /api/sites", "POST /api/uploads"].sort(),
+        ["DELETE /api/account", "POST /api/keys", "POST /api/sites", "POST /api/uploads", "PUT /api/profile/handle"].sort(),
       );
     } finally {
       await strangerContext.close();

@@ -2,7 +2,8 @@
  * `(app)/settings` — PRD §5.8 and §9.3, from `kept Settings Screen.dc.html`.
  * E06 task 012 built it; task 013 imported the design.
  *
- * Five sections: Account (the email, sign-in methods, sign out), Plan (badge,
+ * Six sections: Account (the email, sign-in methods, sign out), Profile (E10
+ * task 008: the handle field; task 009 adds the rest), Plan (badge,
  * usage meters, the Pro list on Free), Agents and API keys (E09 task 006: the
  * agent install cards and the key table), Your data (the streamed export) and
  * Danger zone (delete the account). The design's Handle, Own domain, Referrals
@@ -32,10 +33,12 @@ import { listKeys } from "@/lib/agents/keys";
 import { getSession } from "@/lib/auth/session";
 import { getLinkedProviders } from "@/lib/db/queries/account";
 import { getProfileForSession } from "@/lib/db/queries/profile";
+import { handleChangeBlockedUntil } from "@/lib/handles/handle";
 import { chosenNameCount } from "@/lib/names/check";
 import { farewellHref } from "@/lib/routing/host-split";
 import { getAccountDeletionSummary } from "@/lib/sites/account-deletion";
 import { keptQuotaFor } from "@/lib/sites/keep";
+import { servingBaseDomain } from "@/lib/storage/env";
 
 import { SignOutButton } from "../sign-out-button";
 import { Wordmark } from "../wordmark";
@@ -44,6 +47,7 @@ import { DeleteAccount } from "./delete-account";
 import { ExportPanel } from "./export-panel";
 import { LinkProviders } from "./link-providers";
 import { PlanPanel } from "./plan-panel";
+import { ProfilePanel } from "./profile-panel";
 import { SettingsCard } from "./settings-card";
 import { SettingsSections } from "./settings-sections";
 
@@ -130,6 +134,17 @@ export default async function SettingsPage({
                     initialErrorCode={first(params.error)}
                   />
                 </>
+              ),
+            },
+            {
+              id: "profile",
+              label: "Profile",
+              content: (
+                <ProfilePanel
+                  handle={profile.handle}
+                  baseDomain={servingBaseDomain()}
+                  blockedUntil={handleChangeBlockedUntil(profile)}
+                />
               ),
             },
             {

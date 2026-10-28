@@ -7,7 +7,7 @@
  * every redirect resolves to the current handle and a second rename leaves no
  * chain behind (Q2).
  */
-import { asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 
 import { db, type Tx } from "../index";
 import { handleRedirects, profiles } from "../schema";
@@ -22,8 +22,8 @@ export async function currentHandleOf(profileId: string): Promise<string | null>
 }
 
 /** Every handle the account has left behind, oldest first. */
-export async function oldHandlesOf(profileId: string): Promise<string[]> {
-  const rows = await db
+export async function oldHandlesOf(profileId: string, tx: Tx | typeof db = db): Promise<string[]> {
+  const rows = await tx
     .select({ oldHandle: handleRedirects.oldHandle })
     .from(handleRedirects)
     .where(eq(handleRedirects.profileId, profileId))
@@ -45,6 +45,36 @@ export async function insertHandleRedirect(
     .insert(handleRedirects)
     .values({ oldHandle, profileId })
     .onConflictDoNothing({ target: handleRedirects.oldHandle });
+}
+
+/**
+ * Take `oldHandle` back as `profileId`'s current handle: its redirect row goes,
+ * inside the handle change's transaction — left behind, the handle would
+ * redirect to itself. Returns whether it was one of the account's old handles.
+ */
+export async function reclaimHandleRedirect(
+  tx: Tx,
+  oldHandle: string,
+  profileId: string,
+): Promise<boolean> {
+  const deleted = await tx
+    .delete(handleRedirects)
+    .where(and(eq(handleRedirects.oldHandle, oldHandle), eq(handleRedirects.profileId, profileId)))
+    .returning({ oldHandle: handleRedirects.oldHandle });
+  return deleted.length > 0;
+}
+
+/** Whether `name` is one `profileId` left behind — theirs to take back as a handle. */
+export async function isOldHandleOf(
+  name: string,
+  profileId: string,
+  tx: Tx | typeof db = db,
+): Promise<boolean> {
+  const [row] = await tx
+    .select({ oldHandle: handleRedirects.oldHandle })
+    .from(handleRedirects)
+    .where(and(eq(handleRedirects.oldHandle, name), eq(handleRedirects.profileId, profileId)));
+  return row !== undefined;
 }
 
 /**

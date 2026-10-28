@@ -54,6 +54,7 @@ import {
   abuseReports,
   account,
   appeals,
+  handleRedirects,
   moderationActions,
   nameHolds,
   profiles,
@@ -239,6 +240,7 @@ after(async () => {
   }
   if (createdSlugs.size > 0) {
     await db.delete(nameHolds).where(inArray(nameHolds.name, [...createdSlugs]));
+    await db.delete(handleRedirects).where(inArray(handleRedirects.oldHandle, [...createdSlugs]));
   }
   for (const id of createdUsers) {
     // `profiles`/`session`/`account` all cascade off `user.id`.
@@ -532,6 +534,37 @@ test(
     assert.equal(reports.length, 1, "the report survives the account");
   },
 );
+
+test("E10 Q17: the current and every old handle become ownerless holds that never expire", { skip }, async () => {
+  const { sql } = await import("drizzle-orm");
+  const { isNameAvailable } = await import("../names/availability");
+  const owner = await makeAccount();
+  const stranger = await makeAccount();
+  const current = chosenName();
+  const old = chosenName();
+  await db.update(profiles).set({ handle: current }).where(eq(profiles.id, owner.id));
+  await db.insert(handleRedirects).values({ oldHandle: old, profileId: owner.id });
+  await db.insert(nameHolds).values({ name: old, userId: owner.id, reason: "renamed", heldUntil: sql`'infinity'::timestamptz` });
+
+  await deleteAccount(owner.id);
+
+  const holds = await db.execute<{ name: string; user_id: string | null; reason: string; forever: boolean }>(
+    sql`select name, user_id, reason, held_until = 'infinity'::timestamptz as forever
+        from name_holds where name in (${current}, ${old}) order by name`,
+  );
+  assert.deepEqual(
+    [...holds].map((row) => ({ ...row })).sort((a, b) => a.name.localeCompare(b.name)),
+    [
+      { name: current, user_id: null, reason: "account_deleted", forever: true },
+      { name: old, user_id: null, reason: "account_deleted", forever: true },
+    ].sort((a, b) => a.name.localeCompare(b.name)),
+  );
+  const [redirect] = await db.select().from(handleRedirects).where(eq(handleRedirects.oldHandle, old));
+  assert.equal(redirect?.profileId, null, "the redirect row outlives the account, ownerless");
+  for (const name of [current, old]) {
+    assert.equal(await isNameAvailable(name, stranger.id), "taken", `${name} is never released`);
+  }
+});
 
 test("an account with no pages deletes cleanly", { skip }, async () => {
   const owner = await makeAccount();

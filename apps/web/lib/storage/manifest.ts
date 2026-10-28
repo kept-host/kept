@@ -22,6 +22,7 @@
  *                       (replace, restore, rename, keep, demote, swap,
  *                       status flips)
  *   rename (E06):       syncManifest(site) → removeManifest(old)
+ *   handle change (E10): commit → writeRedirectManifest(old → current) per old handle
  *
  * …where "purge" is TWO purges, the second one delayed. One is not enough and
  * the reason is not obvious — see `repurgeAfterKvPropagation`. Both are DURABLE
@@ -63,6 +64,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import {
   kvManifestSchema,
+  kvRedirectManifestSchema,
   MANIFEST_KV_CACHE_TTL_SECONDS,
   README_PAGE_PATH,
   SITE_INDEX,
@@ -431,8 +433,35 @@ async function storeManifest(
   }
 
   // ONE serialization, two stores. Do not stringify again below.
-  const value = JSON.stringify(parsed.data);
+  return storeEntry(slug, JSON.stringify(parsed.data), ledger, paths);
+}
 
+/**
+ * A retired handle's redirect (E10 D10, Q1): `{ redirectTo, updatedAt }` under
+ * the OLD handle's key — the Worker 301s any path there to the same path on
+ * `{redirectTo}`. **Pointer → KV → purge**, as `writeManifest`: the pointer
+ * probe parses the same `kvEntrySchema`, so it covers this write's
+ * consistency window too. The purge is the old host's root forms; the edge
+ * caches a redirect for 60 s only, so a deeper path needs none. No site: the
+ * `pending_purges` row (if one is owed) is a plain purge.
+ *
+ * Its remover is `removeManifest(old)` — the reverse sequence, unchanged.
+ */
+export function writeRedirectManifest(oldHandle: string, redirectTo: string): Promise<ManifestWriteResult> {
+  const parsed = kvRedirectManifestSchema.safeParse({ redirectTo, updatedAt: Date.now() });
+  if (!parsed.success) {
+    return Promise.resolve({ ok: false, step: "validate", error: `invalid redirect: ${parsed.error.message}` });
+  }
+  return storeEntry(oldHandle, JSON.stringify(parsed.data), { siteId: null }, []);
+}
+
+/** Pointer → KV → purge for one already-serialized, already-validated value. */
+async function storeEntry(
+  slug: string,
+  value: string,
+  ledger: PurgeLedger,
+  paths: readonly string[],
+): Promise<ManifestWriteResult> {
   try {
     // `putJson` sets `content-type: application/json` (§7.2) and takes the
     // already-serialized string precisely so these bytes are not rebuilt.
