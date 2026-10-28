@@ -98,6 +98,18 @@ Public DNS observed on 2026-10-11:
 - [ ] An explicit `app` record overrides the wildcard. Confirm it is grey.
 - [ ] Copy the SSL/TLS mode from `kept-dev.xyz` (the proxied apex → Railway works there today).
 - [ ] Universal SSL covers `kept.host` and `*.kept.host`. Nothing deeper is used.
+- [ ] **Browser Integrity Check off for agents and pages** (E09; on dev 2026-10-27). With it on,
+  Cloudflare answers 403 (error 1010) to agents whose HTTP client has a "bad" signature, e.g.
+  Python's `urllib`, on `/mcp`, `/skill.md`, `/install.sh` and every hosted page. Rules →
+  Create rule → **Configuration Rule**, name `agents and pages: no browser integrity check`,
+  custom filter expression:
+
+  ```
+  ends_with(http.host, ".kept.host") or (http.host eq "kept.host" and (http.request.uri.path eq "/mcp" or starts_with(http.request.uri.path, "/api/") or http.request.uri.path in {"/install.sh" "/skill.md" "/llms.txt"} or starts_with(http.request.uri.path, "/.well-known/")))
+  ```
+
+  Then **Browser Integrity Check → Off**, Deploy. Also confirm Security → Bots → **Bot Fight
+  Mode** is off: a free-plan configuration rule cannot override it.
 
 ### 3.2 Cloudflare Worker, R2, KV
 
@@ -452,6 +464,10 @@ set by hand.
   - apply at `/founding` → every `KEPT_ADMIN_EMAILS` address gets the review mail;
   - its `/founding/review` link approves → the applicant gets the approval mail.
 - [ ] **Legal:** `/legal/impressum`, `/legal/privacy`, and `/impressum` (308). No DRAFT banner.
+- [ ] **Agents (E09):** each of these prints `200` from a non-browser client:
+  `for u in /skill.md /install.sh /llms.txt /.well-known/skills/index.json; do curl -s -o /dev/null -w '%{http_code} '"$u"'\n' -A Python-urllib/3.14 "https://kept.host$u"; done`.
+  A `403` means the §3.1 Browser Integrity Check rule is missing. `/mcp` `initialize` answers 200;
+  `/api/v1/pages` with no key → 401 `unauthorized`.
 - [ ] **Previews:** `/og.png`, `/founding/og.png`, `/favicon.ico`, `/icon.svg`, `/apple-touch-icon.png` → 200. Paste `https://kept.host` into a link-preview debugger.
 - [ ] **Serve independence (optional):** with the control plane stopped, the canary still serves (`rollback-and-release.md` §8; dev drill only, so do not stop prod casually).
 - [ ] **Crons (prod track).** Switch the default branch to `main` (Settings → General → Default branch;
