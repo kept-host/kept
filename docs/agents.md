@@ -49,13 +49,30 @@ the build writes, when `server.json` stops validating against the vendored MCP R
 schema, or when `publish.sh` fails shellcheck. `README.md`, `AGENTS.md`, `LICENSE`,
 `hermes/`, `.github/workflows/ci.yml` and `skills/kept/scripts/publish.sh` are hand-written.
 
-**Mirroring** (by hand until a workflow is worth it): copy the contents of `skill/` to the
-root of `kept-host/skill` and push to `main`.
+**Mirroring:** `.github/workflows/mirror-skill.yml` pushes `skill/` (with its history,
+via `git subtree split`) to the root of `kept-host/skill` on every push to `develop` that
+touches `skill/**`, and on demand (Actions → Mirror skill → Run workflow). The mirror is
+read-only: edit here, never there.
+
+One-time setup (Arun):
+
+1. Create the public repo `kept-host/skill`, empty (no README).
+2. `ssh-keygen -t ed25519 -f skill_deploy -N "" -C kept-skill-mirror`.
+3. `kept-host/skill` → Settings → Deploy keys → add `skill_deploy.pub`, **Allow write access**.
+4. `kept-host/kept` → Settings → Secrets and variables → Actions → `SKILL_MIRROR_DEPLOY_KEY`
+   = the contents of `skill_deploy` (the private half). Delete both local files.
+5. Run the workflow once by hand. `kept-host/skill` → Settings → Secrets → Actions →
+   `KEPT_DEV_API_KEY` for its own CI.
+6. Protect the mirror's `main` (only the deploy key pushes); its README already points
+   issues and PRs here.
+
+At launch (E14) switch the workflow's branch from `develop` to `main`.
+
+Fallback by hand:
 
 ```sh
-git clone git@github.com:kept-host/skill.git /tmp/kept-skill
-rsync -a --delete --exclude .git skill/ /tmp/kept-skill/
-cd /tmp/kept-skill && git add -A && git commit -m "Sync from kept <sha>" && git push
+git subtree split --prefix=skill -b skill-mirror
+git push git@github.com:kept-host/skill.git skill-mirror:main
 ```
 
 `/install.sh` downloads from `raw.githubusercontent.com/kept-host/skill/main/skills/kept`,
