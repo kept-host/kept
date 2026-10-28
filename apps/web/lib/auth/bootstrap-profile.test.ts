@@ -1,5 +1,6 @@
 /**
- * Profile bootstrap on first sign-in — E05 task 006.
+ * Profile bootstrap on first sign-in — E05 task 006; E10 task 002 (no seeded
+ * handle, a database-minted referral code — AC14).
  *
  * Lives in `lib/auth/` rather than beside `lib/db/queries/profile.ts` for one
  * mechanical reason: `test:unit` globs one directory deep under `lib/`, so a
@@ -17,10 +18,10 @@
  * `./session-lifecycle.test.ts` skips it — the magic-link verification value is
  * written through the plugin's own storage contract and the REAL
  * `/api/auth/magic-link/verify` endpoint is then called with it. The live OAuth
- * handshakes belong to task 012. Their *handle seeding* is still proved here,
- * because what the hook receives from an OAuth callback is a `user` row with a
- * `name` on it and nothing more (better-auth drops the rest of `userInfo` before
- * `createOAuthUser`), and that row is what these tests construct.
+ * handshakes belong to task 012. That a provider name seeds *nothing* is still
+ * proved here, because what the hook receives from an OAuth callback is a `user`
+ * row with a `name` on it and nothing more (better-auth drops the rest of
+ * `userInfo` before `createOAuthUser`), and that row is what these tests construct.
  *
  * SKIPS without `DATABASE_URL`: CI runs `pnpm test` on fork PRs with no secrets.
  * Run locally with `pnpm --filter @kept/web test:unit`.
@@ -32,6 +33,7 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
+import { referralCodeSchema } from "@kept/shared";
 import { config } from "dotenv";
 
 config({ path: ".env.local", quiet: true });
@@ -122,7 +124,7 @@ async function soleProfileFor(userId: string) {
 // ── The hook, through a real sign-in ────────────────────────────────────────
 
 test(
-  "a first magic-link sign-in creates exactly one free profile, with a null handle",
+  "a first magic-link sign-in creates exactly one free profile, with a null handle and a referral code",
   { skip: skipLive },
   async () => {
     const { auth } = await import("./index");
@@ -157,10 +159,11 @@ test(
     );
     assert.equal(profile.plan, "free", "every profile starts free; premium is E11's to grant");
     assert.equal(profile.email, email, "email comes from the verified email on the session");
-    assert.equal(
-      profile.handle,
-      null,
-      "a magic-link signup has no provider handle; null is complete, not a gap to fill",
+    assert.equal(profile.handle, null, "a handle is chosen, never seeded (E10 D9, AC14)");
+    console.log(`[bootstrap-profile] minted referral code: ${profile.referralCode}`);
+    assert.ok(
+      referralCodeSchema.safeParse(profile.referralCode).success,
+      `the referral code ${profile.referralCode} is well-shaped (Q3)`,
     );
   },
 );
@@ -175,6 +178,7 @@ test(
     const ctx = await auth.$context;
 
     let userId: string | undefined;
+    const codes: string[] = [];
     for (const round of [1, 2]) {
       const token = crypto.randomUUID().replace(/-/g, "");
       await ctx.internalAdapter.createVerificationValue({
@@ -189,16 +193,13 @@ test(
       const body = (await verified.json()) as { user: { id: string } };
       userId ??= body.user.id;
       assert.equal(body.user.id, userId, "both sign-ins land in the same account");
+      if (round === 1) createdUserIds.push(userId);
+      // Exactly one: the second sign-in creates no user, so no second profile.
+      codes.push((await soleProfileFor(userId)).referralCode);
     }
-    createdUserIds.push(userId!);
 
-    // Exactly one: the second sign-in creates no user, so no second profile.
-    const profile = await soleProfileFor(userId!);
-    assert.equal(
-      profile.handle,
-      "Round 1",
-      "the handle is seeded once, at creation — a later sign-in must never re-seed it",
-    );
+    assert.equal(codes[0], codes[1], "the referral code is permanent — a sign-in never re-mints it");
+    assert.equal((await soleProfileFor(userId!)).handle, null, "a provider name never seeds a handle");
   },
 );
 
@@ -217,9 +218,7 @@ test(
     // primary key. Without ON CONFLICT DO NOTHING four of these are a unique
     // violation in the user's face.
     const results = await Promise.all(
-      Array.from({ length: 5 }, () =>
-        ensureProfile({ userId: user.id, email: user.email, handle: "Race Condition" }),
-      ),
+      Array.from({ length: 5 }, () => ensureProfile({ userId: user.id, email: user.email })),
     );
 
     // One row, not five and not a unique violation.
@@ -227,76 +226,50 @@ test(
     for (const result of results) {
       assert.equal(result.id, winner.id, "every concurrent caller returns the winning row");
       assert.equal(result.plan, "free");
+      assert.equal(result.referralCode, winner.referralCode, "and the one code it was minted with");
     }
   },
 );
 
 test(
-  "handle is seeded at creation only and is never overwritten by a later call",
+  "a provider name seeds no handle, and a later call rewrites neither the email nor the code",
   { skip: skipLive },
   async () => {
     const { bootstrapProfile } = await import("./bootstrap-profile");
     const { ensureProfile } = await import("../db/queries/profile");
 
-    // What an OAuth callback hands the hook: a user row carrying `name`. GitHub
-    // maps `profile.name || profile.login` into it (see lib/auth/index.ts), so a
-    // GitHub user with no display name arrives here as their login.
+    // What an OAuth callback hands the hook: a user row carrying `name`. Before
+    // E10 that name became the handle; now the handle is a name in the page
+    // namespace and only its owner sets it (D9).
     const user = await insertAuthUser("octocat");
-    await bootstrapProfile({ id: user.id, email: user.email, name: user.name });
+    await bootstrapProfile({ id: user.id, email: user.email });
 
-    const seeded = await soleProfileFor(user.id);
-    assert.equal(seeded.handle, "octocat", "seeded from the provider name, provider-agnostically");
+    const created = await soleProfileFor(user.id);
+    assert.equal(created.handle, null, "no handle from a provider name");
 
-    // Linking a second provider later, or E06 letting the user edit the handle,
-    // must not be undone by a re-seed.
-    await ensureProfile({
-      userId: user.id,
-      email: "someone-else@kept-e05-006.invalid",
-      handle: "Jane Doe From Google",
-    });
+    // Linking a second provider later must not touch the row.
+    await ensureProfile({ userId: user.id, email: "someone-else@kept-e05-006.invalid" });
     const unchanged = await soleProfileFor(user.id);
-    assert.equal(unchanged.handle, "octocat", "a second provider must not overwrite the handle");
-    assert.equal(unchanged.email, user.email, "nor the email");
+    assert.equal(unchanged.email, user.email, "the email is set at creation only");
+    assert.equal(unchanged.referralCode, created.referralCode, "the code is permanent (Q3)");
   },
 );
 
 test(
-  "a blank provider name seeds null rather than a synthesised handle",
-  { skip: skipLive },
-  async () => {
-    const { seedHandle } = await import("../db/queries/profile");
-    const { bootstrapProfile } = await import("./bootstrap-profile");
-
-    // better-auth's magic-link plugin creates the user with `name: name || ""`.
-    assert.equal(seedHandle(""), null);
-    assert.equal(seedHandle("   "), null);
-    assert.equal(seedHandle(undefined), null);
-    assert.equal(seedHandle(null), null);
-    assert.equal(seedHandle("  octocat  "), "octocat");
-
-    const user = await insertAuthUser("");
-    await bootstrapProfile({ id: user.id, email: user.email, name: "" });
-    const profile = await soleProfileFor(user.id);
-    assert.equal(profile.handle, null);
-    assert.equal(profile.plan, "free");
-  },
-);
-
-test(
-  "handle is presentation, not identity — two profiles may share one",
+  "two sign-ups get two different referral codes",
   { skip: skipLive },
   async () => {
     const { bootstrapProfile } = await import("./bootstrap-profile");
 
     const first = await insertAuthUser("Alex Kim");
     const second = await insertAuthUser("Alex Kim");
-    await bootstrapProfile({ id: first.id, email: first.email, name: "Alex Kim" });
-    // No unique index on `handle`; if one is ever added this insert fails, which
-    // is the point of asserting it. Uniqueness is E06's problem if E06 wants it.
-    await bootstrapProfile({ id: second.id, email: second.email, name: "Alex Kim" });
+    await bootstrapProfile({ id: first.id, email: first.email });
+    await bootstrapProfile({ id: second.id, email: second.email });
 
-    assert.equal((await soleProfileFor(first.id)).handle, "Alex Kim");
-    assert.equal((await soleProfileFor(second.id)).handle, "Alex Kim");
+    const [a, b] = [await soleProfileFor(first.id), await soleProfileFor(second.id)];
+    assert.equal(a.handle, null);
+    assert.equal(b.handle, null);
+    assert.notEqual(a.referralCode, b.referralCode);
   },
 );
 
@@ -316,19 +289,16 @@ test(
     const user = await insertAuthUser("Backstop User");
     assert.deepEqual(await profileRowsFor(user.id), [], "no profile exists yet");
 
-    const created = await getProfileForSession({
-      user: { id: user.id, email: user.email, name: "Backstop User" },
-    });
+    const created = await getProfileForSession({ user: { id: user.id, email: user.email } });
     assert.equal(created?.id, user.id, "the profile id IS the auth user id (D1)");
     assert.equal(created?.plan, "free");
-    assert.equal(created?.handle, "Backstop User");
+    assert.equal(created?.handle, null);
+    assert.ok(referralCodeSchema.safeParse(created?.referralCode).success);
 
     // Second read is a plain lookup and returns the same row.
-    const read = await getProfileForSession({
-      user: { id: user.id, email: user.email, name: "Renamed Since" },
-    });
+    const read = await getProfileForSession({ user: { id: user.id, email: user.email } });
     assert.equal(read?.id, created?.id);
-    assert.equal(read?.handle, "Backstop User", "a lookup never re-seeds");
+    assert.equal(read?.referralCode, created?.referralCode, "a lookup never re-mints");
     await soleProfileFor(user.id);
   },
 );

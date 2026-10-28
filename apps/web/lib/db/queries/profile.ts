@@ -1,8 +1,8 @@
 /**
  * Session → profile, and the create-once that makes it total — E05 task 006.
  *
- * Better Auth owns the `user` row. kept owns the `profiles` row (`handle`,
- * `email`, `plan`), and `sites.owner_id` is an FK onto **that**. Every caller
+ * Better Auth owns the `user` row. kept owns the `profiles` row (`email`,
+ * `plan`, `referral_code`, and E10's `handle` and profile fields), and `sites.owner_id` is an FK onto **that**. Every caller
  * that needs an owner id — task 008's keep, task 010's owner routes, E06's
  * dashboard — resolves it here. There is deliberately no second way to get from
  * a session to a profile: two resolutions would eventually disagree about what
@@ -23,10 +23,9 @@
  * `insert … on conflict do nothing` followed by a read collapses that race into
  * one row, in the database, without an advisory lock or a retry loop.
  *
- * `DO NOTHING` — never `DO UPDATE`. The upsert is also what guarantees the
- * handle-seeding rule below: a second sign-in, through a second provider, must
- * not overwrite a handle the user already has, and E06 lets the user edit it,
- * which a re-seed would silently undo.
+ * `DO NOTHING` — never `DO UPDATE`. A second sign-in, through a second
+ * provider, must not overwrite the email or mint a second referral code: a code
+ * is permanent once shared (E10 Q3).
  */
 import type { Plan } from "@kept/shared";
 import { eq } from "drizzle-orm";
@@ -43,70 +42,52 @@ export type ProfileRow = typeof schema.profiles.$inferSelect;
 /** Every profile starts free. `premium` is E11's to grant. */
 const INITIAL_PLAN: Plan = "free";
 
-/**
- * The display handle to seed at creation, or `null`.
- *
- * PROVIDER-AGNOSTIC BY CONSTRUCTION. There is no `github_handle` column and
- * none is coming (epic decision): provider identities live in Better Auth's
- * `account` table, which is the only place they stay correct across link and
- * unlink. What reaches us is the one field every door fills in the same way —
- * `user.name`:
- *
- *   - github — `profile.name || profile.login`, mapped in `lib/auth/index.ts`'s
- *     `getUserInfo`. A GitHub user with no display name seeds their `login`.
- *   - google — the profile name from the id token.
- *   - magic link — Better Auth's plugin creates the user with `name: name || ""`
- *     and kept's sign-in form asks for an email and nothing else, so this is the
- *     empty string and the handle is **null**.
- *
- * NULL IS A COMPLETE STATE, NOT A GAP. A magic-link user genuinely has no
- * provider handle; synthesising one ("user-8f3c") would put a fake identifier in
- * front of them that they never chose. `handle` is presentation only — it is not
- * unique, has no unique index, and nothing resolves by it.
- */
-export function seedHandle(name: string | null | undefined): string | null {
-  const trimmed = name?.trim();
-  return trimmed ? trimmed : null;
-}
+/** Inserts tried before `ensureProfile` gives up (see below). */
+const MAX_INSERT_ATTEMPTS = 5;
 
 /**
  * Create the profile for an auth user if it does not exist, and return it.
  *
  * Idempotent and safe under concurrency: N simultaneous callers produce exactly
- * one row, and every one of them returns it. `handle` and `email` are applied
- * **at creation only** — on an existing row this is a read.
+ * one row, and every one of them returns it. `email`, and the `referral_code`
+ * the database mints, are set **at creation only** — on an existing row this is
+ * a read. `handle` is never written here: it starts `null` and only the owner
+ * sets it (E10 D9).
+ *
+ * The untargeted `ON CONFLICT DO NOTHING` absorbs both the replayed-callback
+ * race on the primary key and a referral-code collision. Only the second leaves
+ * no row behind, so an empty read means "insert again for a fresh code" —
+ * 16^8 codes make even one retry rare.
  */
 export async function ensureProfile(input: {
   /** The Better Auth `user.id`. Becomes `profiles.id` unchanged (D1). */
   userId: string;
   /** The email on the auth user; already lowercased by Better Auth. */
   email: string | null;
-  /** Seed from `seedHandle(user.name)`. `null` is valid and final. */
-  handle: string | null;
 }): Promise<ProfileRow> {
-  await db
-    .insert(schema.profiles)
-    .values({
-      id: input.userId,
-      email: input.email,
-      handle: input.handle,
-      plan: INITIAL_PLAN,
-    })
-    .onConflictDoNothing({ target: schema.profiles.id });
+  for (let attempt = 0; attempt < MAX_INSERT_ATTEMPTS; attempt++) {
+    await db
+      .insert(schema.profiles)
+      .values({
+        id: input.userId,
+        email: input.email,
+        plan: INITIAL_PLAN,
+      })
+      .onConflictDoNothing();
 
-  const [profile] = await db
-    .select()
-    .from(schema.profiles)
-    .where(eq(schema.profiles.id, input.userId));
-
-  if (!profile) {
-    // Unreachable unless the row was deleted between the insert and the read —
-    // which means the auth user was deleted too (the FK cascades). Throwing is
-    // right: the alternative is handing a caller `undefined` and letting it
-    // write `sites.owner_id = null`, silently un-owning a page.
-    throw new Error(`Profile missing for auth user ${input.userId} immediately after upsert`);
+    const [profile] = await db
+      .select()
+      .from(schema.profiles)
+      .where(eq(schema.profiles.id, input.userId));
+    if (profile) return profile;
   }
-  return profile;
+  // A missing row after every attempt means the auth user was deleted under us
+  // (the FK cascades) or the code generator is broken. Throwing is right: the
+  // alternative is handing a caller `undefined` and letting it write
+  // `sites.owner_id = null`, silently un-owning a page.
+  throw new Error(
+    `Profile missing for auth user ${input.userId} after ${MAX_INSERT_ATTEMPTS} upserts`,
+  );
 }
 
 /**
@@ -130,7 +111,7 @@ export async function ensureProfile(input: {
  */
 export async function getProfileForSession(
   session: {
-    user: { id: string; email?: string | null; name?: string | null };
+    user: { id: string; email?: string | null };
   } | null,
 ): Promise<ProfileRow | null> {
   if (!session) return null;
@@ -144,6 +125,5 @@ export async function getProfileForSession(
   return ensureProfile({
     userId: session.user.id,
     email: session.user.email ?? null,
-    handle: seedHandle(session.user.name),
   });
 }

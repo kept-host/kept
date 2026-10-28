@@ -132,7 +132,7 @@ export type HandleChangeRequest = z.infer<typeof handleChangeRequestSchema>;
 
 /**
  * A referral code as stored: lowercase letters and digits, `REFERRAL_CODE_LENGTH`
- * long (minted base32 in code, hex in the `0012` backfill — both fit).
+ * long (hex, minted by the `profiles.referral_code` column default in `0012`).
  */
 export const referralCodeSchema = z
   .string()
