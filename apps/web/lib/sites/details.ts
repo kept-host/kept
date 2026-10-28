@@ -28,7 +28,7 @@
  * year-long cache under the old title. Nothing here touches KV — neither field
  * changes what visitors are served in E06 (PRD §15: "Saved.").
  */
-import type { SiteStatus, SiteUpdateRequest, StudioSite } from "@kept/shared";
+import type { SiteStatus, SiteUpdate, StudioSite } from "@kept/shared";
 import { eq } from "drizzle-orm";
 
 import { db } from "../db";
@@ -88,7 +88,7 @@ async function htmlTitleOf(site: { id: string; currentVersionId: string | null }
 export async function updateSiteDetails(
   siteId: string,
   profileId: string,
-  update: SiteUpdateRequest,
+  update: SiteUpdate,
 ): Promise<StudioSite> {
   return db.transaction(async (tx) => {
     const site = await lockSiteForOwner(tx, siteId, profileId);

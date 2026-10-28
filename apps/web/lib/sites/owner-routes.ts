@@ -171,6 +171,7 @@ const STUDIO_ERROR_STATUS = {
   last_sign_in_method: 409,
   key_limit_reached: 409,
   rename_rate_limited: 429,
+  handle_change_limited: 429,
   rate_limited: 429,
   slug_unavailable: 503,
   internal_error: 503,

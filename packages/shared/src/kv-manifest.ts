@@ -11,6 +11,7 @@
 
 import { z } from "zod";
 
+import { badgeDataSchema } from "./badge";
 import { regionEnum } from "./enums";
 
 /**
@@ -60,6 +61,40 @@ export const kvManifestSchema = z.object({
    * `dev-v0.8.0`.
    */
   has404: z.boolean().optional(),
+  /**
+   * What the page's badge shows (E10 D3). Absent on manifests written before
+   * E10 — the Worker serves those without a badge until the backfill rewrites
+   * them.
+   */
+  badge: badgeDataSchema.optional(),
 });
 
 export type KvManifest = z.infer<typeof kvManifestSchema>;
+
+/**
+ * A retired handle's KV value (E10 D10, Q1): no page, only where it went. The
+ * Worker answers any request to the old host with a 301 to the same path on
+ * `{redirectTo}.{base}` before any R2 read. A separate shape rather than a
+ * field on the page manifest, whose ids and status a redirect does not have —
+ * and `MANIFEST_STATUSES` stays closed.
+ */
+export const kvRedirectManifestSchema = z.object({
+  /** The owner's CURRENT handle — every old handle points straight at it (Q2). */
+  redirectTo: z.string(),
+  /** Epoch milliseconds of the last write. */
+  updatedAt: z.number(),
+});
+
+export type KvRedirectManifest = z.infer<typeof kvRedirectManifestSchema>;
+
+/**
+ * Anything the control plane writes under a slug key: a page or a redirect.
+ * The redirect member is tried second, so a page manifest always parses as one.
+ */
+export const kvEntrySchema = z.union([kvManifestSchema, kvRedirectManifestSchema]);
+
+export type KvEntry = z.infer<typeof kvEntrySchema>;
+
+export function isRedirectManifest(entry: KvEntry): entry is KvRedirectManifest {
+  return "redirectTo" in entry;
+}

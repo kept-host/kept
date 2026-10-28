@@ -15,6 +15,7 @@ import { z } from "zod";
 import { PAGE_TITLE_MAX_LENGTH } from "./constants";
 import { nameKindEnum, siteStatusEnum, titleSourceEnum } from "./enums";
 import { keptQuotaSchema, type KeptQuota } from "./keep";
+import { provenanceShape } from "./provenance";
 
 /**
  * Every code a studio (cookie-authenticated) route may answer with — the error
@@ -70,6 +71,8 @@ export const STUDIO_ERROR_CODES = [
   // E09 task 006: `POST /api/keys` past `API_KEYS_PER_ACCOUNT` — the keyed
   // REST enum's code, so Settings and an agent read the same word.
   "key_limit_reached",
+  // E10 D10: a second handle change inside `HANDLE_CHANGE_DAYS`.
+  "handle_change_limited",
 ] as const;
 
 export const studioErrorCodeEnum = z.enum(STUDIO_ERROR_CODES);
@@ -119,6 +122,19 @@ export const studioSiteSchema = z.object({
   /** End of the post-expiry grace window; `null` on a kept page. */
   purgeAfter: z.string().datetime().nullable(),
   updatedAt: z.string().datetime(),
+  // The Details panel's provenance (E10 §4.1). Optional until E10 task 006
+  // reads them into every studio response; `null` = not given.
+  model: z.string().nullable().optional(),
+  tool: z.string().nullable().optional(),
+  prompt: z.string().nullable().optional(),
+  readme: z.string().nullable().optional(),
+  sourceUrl: z.string().nullable().optional(),
+  /** Show the prompt on the page and in Remix links (D8). */
+  showPrompt: z.boolean().optional(),
+  /** Show "Made with {model}" in the badge. */
+  showMadeWith: z.boolean().optional(),
+  /** The owner's remix choice; `null` = the default rule (`remixAllowed`, D8). */
+  allowRemix: z.boolean().nullable().optional(),
 });
 
 export type StudioSite = z.infer<typeof studioSiteSchema>;
@@ -147,6 +163,19 @@ export const ownedPublishResultSchema = z.object({
 export type OwnedPublishResult = z.infer<typeof ownedPublishResultSchema>;
 
 /**
+ * A provenance field an owner may clear: `""` after trimming → `null`, anything
+ * else through E09's own validator (no second cap). Absent stays absent.
+ */
+function clearable<T extends z.ZodTypeAny>(field: z.ZodOptional<T>) {
+  return z
+    .string()
+    .trim()
+    .pipe(z.union([z.literal("").transform(() => null), field.unwrap()]))
+    .transform((value): string | null => (typeof value === "string" ? value : null))
+    .optional();
+}
+
+/**
  * `PATCH /api/sites/:id` — the page's Details (PRD §5.2): its title and its
  * Explore flag. Either or both; an empty body is a caller bug.
  *
@@ -158,6 +187,10 @@ export type OwnedPublishResult = z.infer<typeof ownedPublishResultSchema>;
  *
  * `listedPublic` is a kept `live` page's choice only (D12); the route refuses it
  * on any other page with `not_allowed_in_status`.
+ *
+ * E10 §4.1 adds the provenance fields, held to E09's validators and caps
+ * (`provenanceShape`). On a text field `""` (after trimming) clears it — the
+ * value comes out `null` — and an absent key leaves it as it is.
  */
 export const siteUpdateRequestSchema = z
   .object({
@@ -171,12 +204,24 @@ export const siteUpdateRequestSchema = z
       )
       .optional(),
     listedPublic: z.boolean().optional(),
+    model: clearable(provenanceShape.model),
+    tool: clearable(provenanceShape.tool),
+    prompt: clearable(provenanceShape.prompt),
+    readme: clearable(provenanceShape.readme),
+    sourceUrl: clearable(provenanceShape.source_url),
+    showPrompt: z.boolean().optional(),
+    showMadeWith: z.boolean().optional(),
+    /** `null` hands the choice back to the default rule (D8). */
+    allowRemix: z.boolean().nullable().optional(),
   })
-  .refine((body) => body.title !== undefined || body.listedPublic !== undefined, {
-    message: "Send `{ title }`, `{ listedPublic }`, or both.",
+  .refine((body) => Object.values(body).some((value) => value !== undefined), {
+    message: "Send at least one Details field.",
   });
 
 export type SiteUpdateRequest = z.input<typeof siteUpdateRequestSchema>;
+
+/** A parsed Details save — what the route hands `updateSiteDetails` (`""` cleared to `null`). */
+export type SiteUpdate = z.output<typeof siteUpdateRequestSchema>;
 
 /** What a Details save returns: the page as it now is, `updatedAt` moved. */
 export const siteUpdateResultSchema = z.object({
@@ -228,6 +273,8 @@ export const nameCheckResultSchema = z.union([
     quota: z.number().int().positive(),
   }),
   z.object({ status: z.literal("rate_limited"), count: z.number().int().nonnegative() }),
+  /** A handle check only (E10 D10): changed within `HANDLE_CHANGE_DAYS`; free again on this UTC date. */
+  z.object({ status: z.literal("handle_change_limited"), availableOn: z.string().date() }),
   z.object({
     status: z.enum([
       "invalid",

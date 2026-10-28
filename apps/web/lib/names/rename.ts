@@ -76,7 +76,11 @@ const REFUSAL_CODE = {
   taken: "name_taken",
   quota: "name_quota",
   rate_limited: "rename_rate_limited",
-} as const satisfies Record<Exclude<NameCheckStatus, "available" | "held_for_you">, StudioErrorCode>;
+} as const satisfies Record<
+  // `handle_change_limited` is the handle check's alone; a page rename never sees it.
+  Exclude<NameCheckStatus, "available" | "held_for_you" | "handle_change_limited">,
+  StudioErrorCode
+>;
 
 /** A check result that refuses the rename — every status but the two that allow it. */
 type RefusedVerdict = NameCheckResult & { status: keyof typeof REFUSAL_CODE };
