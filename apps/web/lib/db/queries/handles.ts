@@ -93,3 +93,21 @@ export async function resolveRefCode(code: string): Promise<string | null> {
   `);
   return row?.id ?? null;
 }
+
+/**
+ * What the edge must say for `name` as a handle (E10 Q2): `redirectTo` — the
+ * current handle of the account that left `name` behind, when it has one —
+ * and whether `name` is somebody's CURRENT handle (no manifest until E12).
+ */
+export async function handleEdgeState(
+  name: string,
+): Promise<{ redirectTo: string | null; isCurrent: boolean }> {
+  const [row] = await db.execute<{ redirect_to: string | null; is_current: boolean }>(sql`
+    select
+      (select ${profiles.handle} from ${handleRedirects}
+        join ${profiles} on ${profiles.id} = ${handleRedirects.profileId}
+        where ${handleRedirects.oldHandle} = ${name}) as redirect_to,
+      exists (select 1 from ${profiles} where ${profiles.handle} = ${name}) as is_current
+  `);
+  return { redirectTo: row?.redirect_to ?? null, isCurrent: row?.is_current === true };
+}

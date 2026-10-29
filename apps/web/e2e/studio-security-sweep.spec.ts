@@ -270,6 +270,16 @@ const SWEPT: Record<string, SweptRoute> = {
       ctx.put(`${base}/api/profile/handle`, { headers, data: { handle: sweepName() } }),
     stranger: "changes the session's own handle; it names no page",
   },
+  // E10 task 009: a hosted page rewriting its visitor's profile — or switching
+  // their badge style, which re-syncs every kept page.
+  "PATCH /api/profile": {
+    send: (ctx, base, _t, headers) =>
+      ctx.patch(`${base}/api/profile`, {
+        headers,
+        data: { displayName: "Swept", bio: "Swept.", socials: { github: "https://github.com/swept" }, badgeStyle: "standard" },
+      }),
+    stranger: "changes the session's own profile; it names no page",
+  },
   // Cookie-authenticated although its path carries a token: the keep attaches
   // the page to the SESSION's account, so it is gated like every route above.
   "POST /api/anon/[anonToken]/keep": {
@@ -397,10 +407,19 @@ test.describe("the sweep, on the wire (AC44)", () => {
         .select({ id: schema.apiKeys.id, revokedAt: schema.apiKeys.revokedAt })
         .from(schema.apiKeys)
         .where(eq(schema.apiKeys.userId, userId)),
-      // E10: the handle and when it last changed — a cross-origin PUT moves neither.
+      // E10: the handle and when it last changed — a cross-origin PUT moves
+      // neither — and the profile a cross-origin PATCH would rewrite.
       profile: await db
-        .select({ handle: schema.profiles.handle, handleChangedAt: schema.profiles.handleChangedAt })
+        .select({
+          handle: schema.profiles.handle,
+          handleChangedAt: schema.profiles.handleChangedAt,
+          bio: schema.profiles.bio,
+          socials: schema.profiles.socials,
+          badgeStyle: schema.profiles.badgeStyle,
+          displayName: schema.user.name,
+        })
         .from(schema.profiles)
+        .innerJoin(schema.user, eq(schema.user.id, schema.profiles.id))
         .where(eq(schema.profiles.id, userId)),
     });
     return {
@@ -500,7 +519,14 @@ test.describe("the sweep, on the wire (AC44)", () => {
         expect(await theirs.text(), `${key}: "not yours" must read as "not there"`).toBe(await absent.text());
       }
       expect(exempted.sort(), "only the account-scoped routes name no page").toEqual(
-        ["DELETE /api/account", "POST /api/keys", "POST /api/sites", "POST /api/uploads", "PUT /api/profile/handle"].sort(),
+        [
+          "DELETE /api/account",
+          "PATCH /api/profile",
+          "POST /api/keys",
+          "POST /api/sites",
+          "POST /api/uploads",
+          "PUT /api/profile/handle",
+        ].sort(),
       );
     } finally {
       await strangerContext.close();

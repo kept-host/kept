@@ -120,6 +120,16 @@ export const profileUpdateRequestSchema = z
 
 export type ProfileUpdateRequest = z.input<typeof profileUpdateRequestSchema>;
 
+/** What `PATCH /api/profile` answers: the profile as it now stands. */
+export const profileResultSchema = z.object({
+  displayName: z.string(),
+  bio: z.string().nullable(),
+  socials: socialsSchema,
+  badgeStyle: z.enum(BADGE_STYLES),
+});
+
+export type ProfileResult = z.infer<typeof profileResultSchema>;
+
 /**
  * `PUT /api/profile/handle` (D9). A plain string, like `nameChangeRequestSchema`:
  * every refusal and its wording belong to `validateName` and the handle check.

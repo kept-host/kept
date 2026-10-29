@@ -64,7 +64,6 @@ const PNG_REFUSAL = "kept needs an HTML file. Drop an .html file, or a folder or
 const LATER_EPIC_TEXT: readonly RegExp[] = [
   /\bWall\b/,
   /\bExplore\b/,
-  /\bReferrals\b/,
   /\bAgents?\b/,
   /\bProfile\b/,
   /\bBadge\b/,
@@ -148,7 +147,7 @@ test.describe("the Pages home", () => {
       return body.textContent ?? "";
     });
 
-  test("AC10: the shell has exactly Pages and Settings, a plan badge and an avatar menu — and no later epic", async ({
+  test("AC10: the shell has exactly Pages, Referrals (E10) and Settings, a plan badge and an avatar menu — and no later epic", async ({
     page,
     baseURL,
   }) => {
@@ -158,7 +157,7 @@ test.describe("the Pages home", () => {
     await expect(page.getByRole("heading", { level: 1, name: "Your pages" })).toBeVisible();
 
     // Both presentations of the nav — the sidebar and the phone's tab bar —
-    // carry exactly two links, in the DOM, whichever one is on screen.
+    // carry exactly three links, in the DOM, whichever one is on screen.
     for (const nav of await page.locator('nav[aria-label="Studio"]').all()) {
       const links = await nav
         .locator("a")
@@ -167,6 +166,7 @@ test.describe("the Pages home", () => {
         );
       expect(links).toEqual([
         ["Pages", "/dashboard"],
+        ["Referrals", "/referrals"],
         ["Settings", "/settings"],
       ]);
     }

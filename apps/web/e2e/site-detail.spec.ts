@@ -90,7 +90,6 @@ const LATER_EPIC_TEXT: readonly RegExp[] = [
   /Show prompt/i,
   /\breport\b/i,
   /\bWall\b/,
-  /\bReferrals\b/,
 ];
 
 /** Every text node in the document except scripts and styles — hidden ones included. */
@@ -103,7 +102,7 @@ const domText = (page: Page) =>
 
 /** AC10 over what is mounted right now: no later-epic text, no later-epic nav. */
 async function expectNoLaterEpicText(page: Page, where: string) {
-  await expect(page.getByRole("link", { name: /^(Wall|Explore|Referrals)$/ })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /^(Wall|Explore)$/ })).toHaveCount(0);
   const text = await domText(page);
   for (const pattern of LATER_EPIC_TEXT) {
     expect(text, `${where}: ${pattern} belongs to a later epic`).not.toMatch(pattern);

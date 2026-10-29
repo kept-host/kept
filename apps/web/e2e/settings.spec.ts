@@ -47,7 +47,16 @@ import { waitForTokensApplied } from "./tokens-applied";
  */
 const scope = newScope();
 
-const SECTIONS = ["Account", "Profile", "Plan", "Agents and API keys", "Your data", "Danger zone"] as const;
+const SECTIONS = [
+  "Account",
+  "Profile",
+  "Badge",
+  "Plan",
+  "Agents and API keys",
+  "Referrals",
+  "Your data",
+  "Danger zone",
+] as const;
 
 /** Open one section from the settings nav. */
 async function openSection(page: Page, label: (typeof SECTIONS)[number]) {
@@ -95,7 +104,7 @@ test.describe("the settings screen", () => {
     await closeDb();
   });
 
-  test("six sections (E09 added Agents and API keys, E10 Profile) and nothing from a later epic (AC10); the account shows its email and the email link is always on", async ({
+  test("eight sections (E09 added Agents and API keys, E10 Profile, Badge and Referrals) and nothing from a later epic (AC10); the account shows its email and the email link is always on", async ({
     page,
     baseURL,
   }) => {
@@ -105,9 +114,14 @@ test.describe("the settings screen", () => {
     await waitForTokensApplied(page);
     await expect(page.getByRole("heading", { name: "Settings", level: 1 })).toBeVisible();
 
-    // The shell's nav is Pages and Settings only; the settings nav is the PRD's
-    // four plus E09's agents section and E10's Profile.
-    await expect(page.getByTestId("studio-nav-sidebar").getByRole("link")).toHaveText(["Pages", "Settings"]);
+    // The shell's nav is Pages, E10's Referrals and Settings; the settings nav
+    // is the PRD's four plus E09's agents section and E10's Profile, Badge and
+    // Referrals.
+    await expect(page.getByTestId("studio-nav-sidebar").getByRole("link")).toHaveText([
+      "Pages",
+      "Referrals",
+      "Settings",
+    ]);
     await expect(
       page.getByRole("navigation", { name: "Settings sections" }).getByRole("button"),
     ).toHaveText([...SECTIONS]);
@@ -135,7 +149,7 @@ test.describe("the settings screen", () => {
       "dns records",
       "remove domain",
       "a domain you own",
-      "referral",
+      // E10 task 009 brings referrals: an entry to `/referrals`, never a link here.
       "?ref=",
       "rewards for founding",
       "sign-ups",
@@ -158,7 +172,7 @@ test.describe("the settings screen", () => {
         expect(text, `"${phrase}" must not be on the ${section} section`).not.toContain(phrase);
       }
       await expect(page.getByRole("textbox", { name: /^name$/i }), "no display-name field").toHaveCount(0);
-      await expect(page.getByRole("link", { name: /wall|explore|referrals/i })).toHaveCount(0);
+      await expect(page.getByRole("link", { name: /wall|explore/i })).toHaveCount(0);
     }
 
     // Every surface paints from tokens, so dark is right the day it ships —

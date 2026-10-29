@@ -97,6 +97,7 @@ import {
   type NameCheckResult,
   type OwnedPublishResult,
   type Plan,
+  type ProfileResult,
   type PublishErrorCode,
   type ReplaceResult,
   type RestoreResult,
@@ -112,6 +113,7 @@ import { SlugUnavailableError } from "../db/queries/publish";
 import { checkHandle, setHandle, type HandleOwner } from "../handles/handle";
 import { allowNameCheck, checkName } from "../names/check";
 import { renameSite } from "../names/rename";
+import { updateProfile } from "../profile/profile";
 import { isFailure, type FileSet } from "../publish/fileset/types";
 import {
   slugUnavailable,
@@ -624,6 +626,22 @@ export async function changeOwnHandle(
       err,
       "change the handle",
       "kept could not change your handle just now. Nothing was changed — try again.",
+    );
+  }
+}
+
+/** `PATCH /api/profile` — the profile fields and the badge style (E10 D12). */
+export async function updateOwnProfile(
+  raw: unknown,
+  owner: { id: string; plan: Plan },
+): Promise<OwnerOutcome<ProfileResult>> {
+  try {
+    return { ok: true, status: 200, body: await updateProfile(owner, raw) };
+  } catch (err) {
+    return studioFailure(
+      err,
+      "update the profile",
+      "kept could not save your profile just now. Nothing was changed — try again.",
     );
   }
 }

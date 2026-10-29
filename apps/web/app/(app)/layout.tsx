@@ -22,8 +22,8 @@
  * ── THE SHELL (`kept Studio Screen.dc.html`) ─────────────────────────────────
  * Desktop: a sidebar with the wordmark, the nav, the plan card and the avatar
  * menu. Phone: a bottom tab bar with the same nav and the avatar menu. Each
- * screen owns its own top bar. The nav is Pages and Settings ONLY (AC10) — see
- * `./studio-nav.tsx`. The plan card shows the plan and the kept allowance, from
+ * screen owns its own top bar. The nav is Pages, Referrals and Settings (AC10,
+ * E10) — see `./studio-nav.tsx`. The plan card shows the plan and the kept allowance, from
  * the same `keptQuotaFor` the cap enforces with; the design's "Apply for
  * Founding" is E11's and is not rendered. Tasks 012 and 013 mount inside this
  * shell and do not edit it.
@@ -86,7 +86,7 @@ export default async function AppLayout({
       {/* `data-tab-bar`: toasts rise above it on a phone (`globals.css`). */}
       <div
         data-tab-bar=""
-        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-3 border-t border-border bg-surface px-1 pb-5 pt-1 md:hidden"
+        className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t border-border bg-surface px-1 pb-5 pt-1 md:hidden"
       >
         <StudioNav variant="tabs" />
         <AccountMenu variant="tabs" {...account} />

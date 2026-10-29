@@ -27,7 +27,7 @@
  * provider, must not overwrite the email or mint a second referral code: a code
  * is permanent once shared (E10 Q3).
  */
-import type { Plan } from "@kept/shared";
+import type { BadgeStyle, Plan, ProfileResult, Socials } from "@kept/shared";
 import { eq } from "drizzle-orm";
 
 import { db, schema } from "..";
@@ -125,5 +125,56 @@ export async function getProfileForSession(
   return ensureProfile({
     userId: session.user.id,
     email: session.user.email ?? null,
+  });
+}
+
+/** The fields `PATCH /api/profile` may write (E10 D12); `undefined` leaves one alone. */
+export interface ProfileFields {
+  /** Better Auth's `user.name` — the one display name every surface reads. */
+  displayName?: string;
+  bio?: string | null;
+  socials?: Socials;
+  badgeStyle?: BadgeStyle;
+}
+
+/**
+ * Write `fields` for `profileId` in one transaction, under the profile row's
+ * lock, and return the profile as it now stands with the badge style it had
+ * before — so the caller knows whether kept pages must re-sync.
+ */
+export async function updateProfileFields(
+  profileId: string,
+  fields: ProfileFields,
+): Promise<{ profile: ProfileResult; previousBadgeStyle: BadgeStyle }> {
+  return db.transaction(async (tx) => {
+    const [before] = await tx
+      .select({ badgeStyle: schema.profiles.badgeStyle })
+      .from(schema.profiles)
+      .where(eq(schema.profiles.id, profileId))
+      .for("update");
+    if (!before) throw new Error(`No profile ${profileId} to update`);
+
+    const { displayName, ...own } = fields;
+    if (Object.values(own).some((value) => value !== undefined)) {
+      await tx.update(schema.profiles).set(own).where(eq(schema.profiles.id, profileId));
+    }
+    if (displayName !== undefined) {
+      await tx.update(schema.user).set({ name: displayName }).where(eq(schema.user.id, profileId));
+    }
+
+    const [after] = await tx
+      .select({
+        displayName: schema.user.name,
+        bio: schema.profiles.bio,
+        socials: schema.profiles.socials,
+        badgeStyle: schema.profiles.badgeStyle,
+      })
+      .from(schema.profiles)
+      .innerJoin(schema.user, eq(schema.user.id, schema.profiles.id))
+      .where(eq(schema.profiles.id, profileId));
+    return {
+      profile: { ...after!, socials: after!.socials ?? {} },
+      previousBadgeStyle: before.badgeStyle,
+    };
   });
 }

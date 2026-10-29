@@ -3,9 +3,10 @@
 /**
  * The studio's navigation — E06 task 011 (PRD §3 item 3, AC10).
  *
- * EXACTLY TWO ITEMS: Pages and Settings. The design's Wall (E12), Explore (E15)
- * and Referrals (E10) are not rendered — no "Soon" pill, no disabled
- * placeholder, no dead link. The epic that builds each one adds it here.
+ * Pages, Referrals (E10 task 009 — the design places it here) and Settings.
+ * The design's Wall (E12) and Explore (E15) are not rendered — no "Soon"
+ * pill, no disabled placeholder, no dead link. The epic that builds each one
+ * adds it here.
  *
  * Two presentations of the same list, from `kept Studio Screen.dc.html`: the
  * desktop sidebar's rows and the phone's bottom tab bar. `aria-current` comes
@@ -14,7 +15,7 @@
  */
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutGrid, Settings2, type LucideIcon } from "lucide-react";
+import { LayoutGrid, Settings2, Users, type LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -28,6 +29,7 @@ interface NavItem {
 
 const NAV: readonly NavItem[] = [
   { href: "/dashboard", label: "Pages", icon: LayoutGrid, owns: ["/dashboard", "/site"] },
+  { href: "/referrals", label: "Referrals", icon: Users, owns: ["/referrals"] },
   { href: "/settings", label: "Settings", icon: Settings2, owns: ["/settings"] },
 ];
 

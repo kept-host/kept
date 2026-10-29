@@ -9,7 +9,10 @@
  * write, which owes its own delayed second purge of the site's whole set, so the
  * row is kept for exactly that (`owePurgeOnly`, the batch ∪ the set) instead of
  * deleted. Only the first batch of a sync names the site (`purgeOwedUrls`), so
- * one failed sync is one re-sync however many batches it owed. A row that names no site is a purge:
+ * one failed sync is one re-sync however many batches it owed. A row with no
+ * site and no URLs may be an owed HANDLE write (E10, `lib/handles/handle.ts`):
+ * it is replayed as `syncHandleEdge(slug)` first, and when that wrote, the
+ * write's own purge ledger owes what is left, so the row is done. A row that names no site is a purge:
  * deleted once it lands, unless the KV write it follows is too recent for one
  * purge to be enough (then it waits until it is).
  *
@@ -36,6 +39,7 @@ import {
   type PendingPurge,
 } from "../db/queries/manifest-sync";
 import { sendAdminAlert, type AdminAlertOutcome } from "../email/admin-alert";
+import { syncHandleEdge } from "../handles/handle";
 import { MS_PER_SECOND } from "../sites/display";
 import { withJobRun } from "../visits/sync";
 
@@ -82,6 +86,15 @@ export async function replayPendingPurge(row: PendingPurge): Promise<ReplayOutco
   try {
     const urls = await urlsOf(row);
     let owed: string[] | null = null;
+
+    if (!row.siteId && (row.urls as string[]).length === 0 && row.slug !== "") {
+      const handle = await syncHandleEdge(row.slug);
+      if (!handle.ok) return await failed(row, `handle: ${handle.error}`);
+      if (handle.outcome !== "none") {
+        await deletePendingPurge(row.id);
+        return "synced";
+      }
+    }
 
     if (row.siteId) {
       const synced = await syncManifestForReplay(row.siteId);

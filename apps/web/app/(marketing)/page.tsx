@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 
 import KeptLanding from "@/components/kept/KeptLanding";
 import { landingMetadata } from "@/lib/og/preview";
+import { parseRef, REF_PARAM } from "@/lib/referrals/ref";
 
 /**
  * kept landing — Claude Design v2 ("drop-box choreography").
@@ -23,6 +24,12 @@ export function generateMetadata(): Metadata {
   return landingMetadata();
 }
 
-export default function MarketingHome() {
-  return <KeptLanding />;
+/** `?ref=` (E10 D11) is validated here and carried on the landing's sign-in link. */
+export default async function MarketingHome({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const ref = (await searchParams)[REF_PARAM];
+  return <KeptLanding refCode={parseRef(Array.isArray(ref) ? ref[0] : ref)} />;
 }

@@ -136,6 +136,7 @@ const LIMIT_LITERAL = /(?<![A-Za-z0-9_])(?:50|1000)(?![A-Za-z0-9_])/g;
  * carry slack a future limit could hide in.
  */
 const NOT_A_LIMIT: Record<string, { occurrences: number; reason: string }> = {
+  "app/(app)/site/[id]/details-section.tsx": { occurrences: 1, reason: "Tailwind `opacity-50`" },
   "app/auth/sign-in-form.tsx": {
     occurrences: 1,
     reason: "1000 ms: the magic-link resend cooldown ticks once a second",

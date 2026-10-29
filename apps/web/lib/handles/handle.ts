@@ -18,8 +18,10 @@
  *   writeRedirectManifest(old → new)   ← EVERY old handle, so no chain (Q2)
  *   resyncOwnerPages                   ← the badge carries the handle (005, Q4: queued)
  *
- * A failed store write after the commit is logged, not answered: the handle is
- * set, and the next change rewrites every redirect again.
+ * A failed store write after the commit is not answered — the handle is set —
+ * but it is owed: `queueHandleSync` leaves a `pending_purges` row (no site, no
+ * URLs, the handle as its slug) and the `repurge` job replays it as
+ * `syncHandleEdge`, which writes what Postgres says the name should answer.
  *
  * ── THE 30-DAY LIMIT (D10, AC16) ─────────────────────────────────────────────
  * Setting a FIRST handle is not a change and stamps nothing; each change after
@@ -34,28 +36,29 @@ import {
   type Plan,
   type StudioErrorCode,
 } from "@kept/shared";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 
 import { resyncOwnerPages } from "../badge/fan-out";
 import { db, type Tx } from "../db";
 import {
+  handleEdgeState,
   insertHandleRedirect,
   isOldHandleOf,
   oldHandlesOf,
   reclaimHandleRedirect,
 } from "../db/queries/handles";
+import { insertPendingPurge } from "../db/queries/manifest-sync";
 import { nameHolds, profiles, sites } from "../db/schema";
 import { claimsItsName, isNameAvailable, lockNames, type Queryable } from "../names/availability";
 import { nameRuleVerdict } from "../names/check";
 import { holdNameForever } from "../names/holds";
 import { nameStatusMessage } from "../names/messages";
 import { NAME_REFUSAL_CODE } from "../names/rename";
+import { MS_PER_DAY } from "../sites/display";
 import { lockOwner } from "../sites/keep";
 import { StudioRefusal } from "../sites/studio-refusal";
 import { servingBaseDomain } from "../storage/env";
 import { removeManifest, writeRedirectManifest } from "../storage/manifest";
-
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /** What the handle check reads off a profile. */
 export interface HandleOwner {
@@ -198,37 +201,98 @@ async function applyHandle(tx: Tx, profileId: string, name: string): Promise<App
   return { previous: owner.handle, reclaimed, changedAt: updated!.handleChangedAt, noop: false };
 }
 
+function message(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** Whether a page that still claims its name sits on `name` — the page's manifest wins. */
+async function pageClaims(name: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: sites.id })
+    .from(sites)
+    .where(and(eq(sites.slug, name), claimsItsName()));
+  return row !== undefined;
+}
+
+export type HandleEdgeSync =
+  | { ok: true; outcome: "redirected" | "removed" | "none" }
+  | { ok: false; error: string };
+
+/**
+ * Make the edge say what Postgres says about `name` as a handle — the replay
+ * of an owed handle write, the handle's `syncManifest`:
+ *
+ *   · a live page claims it            → nothing (the page's manifest is `syncManifest`'s)
+ *   · an old handle of an account      → its redirect to the current handle
+ *   · somebody's current handle        → no manifest (until E12's wall)
+ *   · anything else                    → nothing: not a handle
+ *
+ * Never throws.
+ */
+export async function syncHandleEdge(name: string): Promise<HandleEdgeSync> {
+  try {
+    if (await pageClaims(name)) return { ok: true, outcome: "none" };
+    const { redirectTo, isCurrent } = await handleEdgeState(name);
+    if (redirectTo) {
+      const written = await writeRedirectManifest(name, redirectTo);
+      return written.ok ? { ok: true, outcome: "redirected" } : { ok: false, error: `${written.step}: ${written.error}` };
+    }
+    if (isCurrent) {
+      const removed = await removeManifest(name);
+      return removed.ok ? { ok: true, outcome: "removed" } : { ok: false, error: `${removed.step}: ${removed.error}` };
+    }
+    return { ok: true, outcome: "none" };
+  } catch (err) {
+    return { ok: false, error: message(err) };
+  }
+}
+
+/**
+ * Owe `name`'s handle write to the `repurge` job: a `pending_purges` row with
+ * no site and no URLs, due now, replayed as `syncHandleEdge(name)`. Never
+ * throws — if even this row cannot be written, the log is the last record.
+ */
+async function queueHandleSync(name: string, what: string): Promise<void> {
+  try {
+    await insertPendingPurge({ siteId: null, slug: name, urls: [], dueAt: new Date() });
+    console.error(`[kept] handle change: ${what} — queued for the repurge job.`);
+  } catch (err) {
+    console.error(
+      `[kept] handle change: ${what}, and the retry was not queued — ${message(err)}. "${name}" stays wrong at the edge until the next handle change.`,
+    );
+  }
+}
+
 /**
  * Point every old handle of `profileId` at `current` — one redirect manifest
  * each, so a second change re-points the first old handle too (no chains, Q2).
  * An old handle a live page of the account now sits on (it took the handle
- * before the change, Q22) keeps the page. Never throws.
+ * before the change, Q22) keeps the page. A failed write is queued
+ * (`queueHandleSync`). Never throws.
  */
 async function writeHandleRedirects(profileId: string, current: string): Promise<void> {
+  let olds: string[];
   try {
-    const olds = await oldHandlesOf(profileId);
-    if (olds.length === 0) return;
-    const claimed = new Set(
-      (
-        await db
-          .select({ slug: sites.slug })
-          .from(sites)
-          .where(and(inArray(sites.slug, olds), claimsItsName()))
-      ).map((row) => row.slug),
-    );
-    // Sequential, like every multi-slug store loop: purges stay inside the rate.
-    for (const old of olds.filter((name) => !claimed.has(name))) {
-      const written = await writeRedirectManifest(old, current);
-      if (!written.ok) {
-        console.error(
-          `[kept] handle change: the redirect "${old}" → "${current}" was not written at the "${written.step}" step — ${written.error}. The old host answers the branded 404 until the next handle change rewrites it.`,
-        );
-      }
-    }
+    olds = await oldHandlesOf(profileId);
   } catch (err) {
     console.error(
-      `[kept] handle change: redirects to "${current}" for profile ${profileId} not written — ${err instanceof Error ? err.message : String(err)}.`,
+      `[kept] handle change: redirects to "${current}" for profile ${profileId} not written — ${message(err)}.`,
     );
+    return;
+  }
+  // Sequential, like every multi-slug store loop: purges stay inside the rate.
+  for (const old of olds) {
+    let failure: string | null;
+    try {
+      failure = (await pageClaims(old))
+        ? null
+        : await writeRedirectManifest(old, current).then((written) =>
+            written.ok ? null : `${written.step}: ${written.error}`,
+          );
+    } catch (err) {
+      failure = message(err);
+    }
+    if (failure) await queueHandleSync(old, `the redirect "${old}" → "${current}" was not written (${failure})`);
   }
 }
 
@@ -246,9 +310,7 @@ export async function setHandle(profileId: string, name: string): Promise<Handle
   if (applied.reclaimed) {
     const removed = await removeManifest(name);
     if (!removed.ok) {
-      console.error(
-        `[kept] handle change: the old redirect at "${name}" was not removed at the "${removed.step}" step — ${removed.error}. It still 301s to the handle it left; replay this removal (contract §3).`,
-      );
+      await queueHandleSync(name, `the old redirect at "${name}" was not removed (${removed.step}: ${removed.error})`);
     }
   }
   if (applied.previous !== null) await writeHandleRedirects(profileId, name);
@@ -257,7 +319,7 @@ export async function setHandle(profileId: string, name: string): Promise<Handle
     await resyncOwnerPages(profileId);
   } catch (err) {
     console.error(
-      `[kept] handle change: badge re-sync not queued for profile ${profileId} — ${err instanceof Error ? err.message : String(err)}. Kept pages show the old handle until their next sync.`,
+      `[kept] handle change: badge re-sync not queued for profile ${profileId} — ${message(err)}. Kept pages show the old handle until their next sync.`,
     );
   }
   return { handle: name, nextChangeOn };

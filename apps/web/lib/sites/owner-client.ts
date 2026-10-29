@@ -35,6 +35,7 @@ import {
   nameChangeResultSchema,
   nameCheckResultSchema,
   ownedPublishResultSchema,
+  profileResultSchema,
   replaceResultSchema,
   restoreResultSchema,
   siteUpdateResultSchema,
@@ -55,6 +56,8 @@ import {
   type NameChangeRequest,
   type NameCheckResult,
   type OwnedPublishResult,
+  type ProfileResult,
+  type ProfileUpdateRequest,
   type ReplaceResult,
   type RestoreResult,
   type SiteUpdateRequest,
@@ -324,6 +327,22 @@ export type HandleOutcome =
 export async function saveHandle(handle: string, signal?: AbortSignal): Promise<HandleOutcome> {
   const body: HandleChangeRequest = { handle };
   const sent = await send("/api/profile/handle", jsonInit("PUT", body, signal), handleChangeResultSchema);
+  return sent.ok ? { ok: true, result: sent.body } : { ok: false, error: sent.error };
+}
+
+/** A profile save: the profile as it now is, or why nothing changed. */
+export type ProfileOutcome =
+  | { ok: true; result: ProfileResult }
+  | { ok: false; error: StudioError };
+
+/**
+ * `PATCH /api/profile` — display name, bio, socials, badge style (E10 D12).
+ * Every refusal arrives with the field's own sentence.
+ *
+ * Never throws, including on abort.
+ */
+export async function saveProfile(body: ProfileUpdateRequest, signal?: AbortSignal): Promise<ProfileOutcome> {
+  const sent = await send("/api/profile", jsonInit("PATCH", body, signal), profileResultSchema);
   return sent.ok ? { ok: true, result: sent.body } : { ok: false, error: sent.error };
 }
 

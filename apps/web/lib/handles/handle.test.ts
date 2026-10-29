@@ -5,8 +5,8 @@
  * pointer → KV → purge), read back here from the pointer, which carries the
  * very bytes KV got (`writeRedirectManifest`'s one serialization).
  *
- * KV cost: two redirect writes and two deletes (the take-back's removal and
- * the teardown's). The Worker's 301 is the e2e's (`@edge`, after the rc deploy).
+ * KV cost: three redirect writes (one by the repurge replay of an owed write)
+ * and three deletes (the take-back's removal and the teardown's). The Worker's 301 is the e2e's (`@edge`, after the rc deploy).
  *
  * SKIPS without dev credentials (fork-PR CI).
  */
@@ -204,4 +204,42 @@ test("set a first handle, change it, refuse a second change, take the old one ba
   redirects.delete(first);
   assert.equal(await redirectAt(second), first);
   assert.deepEqual(await holdOn(second), { user_id: me, reason: "renamed", forever: true });
+});
+
+test("a redirect write that fails after the commit is owed: a pending_purges row the repurge job replays", { skip }, async () => {
+  const { setHandle } = await import("./handle");
+  const { replayPendingPurge } = await import("../storage/repurge");
+  const { db } = await import("../db");
+  const { pendingPurges } = await import("../db/schema");
+  const { and, eq, isNull } = await import("drizzle-orm");
+  const d = await names();
+  const me = await d.profile();
+  const first = d.name();
+  const second = d.name();
+  await setHandle(me, first);
+
+  // A real store failure at the first step (the pointer), so nothing reaches
+  // the edge: the R2 client re-reads its configuration on every call.
+  redirects.add(first);
+  const prior = process.env.R2_BUCKET_AUTO;
+  delete process.env.R2_BUCKET_AUTO;
+  try {
+    assert.equal((await setHandle(me, second)).handle, second, "the change commits whatever the edge says");
+  } finally {
+    process.env.R2_BUCKET_AUTO = prior;
+  }
+  assert.equal(await redirectAt(first), null, "nothing was written");
+
+  const [owed] = await db
+    .select()
+    .from(pendingPurges)
+    .where(and(eq(pendingPurges.slug, first), isNull(pendingPurges.siteId)));
+  assert.ok(owed, "the failed redirect write is queued");
+  assert.deepEqual(owed.urls, [], "no URLs: the replay derives the write from Postgres");
+  assert.ok(owed.dueAt.getTime() <= Date.now(), "due now");
+
+  assert.equal(await replayPendingPurge(owed), "synced");
+  assert.equal(await redirectAt(first), second, "the replay wrote the redirect Postgres says");
+  const [left] = await db.select().from(pendingPurges).where(eq(pendingPurges.id, owed.id));
+  assert.equal(left, undefined, "the row is done; the write's own purge ledger owes the rest");
 });

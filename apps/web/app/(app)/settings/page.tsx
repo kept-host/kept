@@ -2,12 +2,13 @@
  * `(app)/settings` — PRD §5.8 and §9.3, from `kept Settings Screen.dc.html`.
  * E06 task 012 built it; task 013 imported the design.
  *
- * Six sections: Account (the email, sign-in methods, sign out), Profile (E10
- * task 008: the handle field; task 009 adds the rest), Plan (badge,
- * usage meters, the Pro list on Free), Agents and API keys (E09 task 006: the
- * agent install cards and the key table), Your data (the streamed export) and
- * Danger zone (delete the account). The design's Handle, Own domain, Referrals
- * and display-name field belong to later epics and are not in the tree (AC10).
+ * Eight sections: Account (the email, sign-in methods, sign out), Profile (E10
+ * task 008: the handle field; task 009: display name, avatar, bio, socials),
+ * Badge (E10 task 009: standard / minimal), Plan (badge, usage meters, the Pro
+ * list on Free), Agents and API keys (E09 task 006: the agent install cards and
+ * the key table), Referrals (E10 task 009: the entry to `/referrals`), Your
+ * data (the streamed export) and Danger zone (delete the account). The
+ * design's Own domain belongs to a later epic and is not in the tree (AC10).
  *
  * Every read happens here, in the server component; every write is a call from
  * a client island — Better Auth's own endpoints for link / unlink / sign out,
@@ -26,6 +27,7 @@
  * switched on.
  */
 import { agentSetups } from "@kept/shared";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { agentBase } from "@/lib/agents/discovery";
@@ -35,6 +37,7 @@ import { getLinkedProviders } from "@/lib/db/queries/account";
 import { getProfileForSession } from "@/lib/db/queries/profile";
 import { handleChangeBlockedUntil } from "@/lib/handles/handle";
 import { chosenNameCount } from "@/lib/names/check";
+import { mayUseMinimalBadge } from "@/lib/plans/badge";
 import { farewellHref } from "@/lib/routing/host-split";
 import { getAccountDeletionSummary } from "@/lib/sites/account-deletion";
 import { keptQuotaFor } from "@/lib/sites/keep";
@@ -43,10 +46,12 @@ import { servingBaseDomain } from "@/lib/storage/env";
 import { SignOutButton } from "../sign-out-button";
 import { Wordmark } from "../wordmark";
 import { AgentsPanel } from "./agents-panel";
+import { BadgePanel } from "./badge-panel";
 import { DeleteAccount } from "./delete-account";
 import { ExportPanel } from "./export-panel";
 import { LinkProviders } from "./link-providers";
 import { PlanPanel } from "./plan-panel";
+import { ProfileFields } from "./profile-fields";
 import { ProfilePanel } from "./profile-panel";
 import { SettingsCard } from "./settings-card";
 import { SettingsSections } from "./settings-sections";
@@ -140,11 +145,25 @@ export default async function SettingsPage({
               id: "profile",
               label: "Profile",
               content: (
-                <ProfilePanel
-                  handle={profile.handle}
-                  baseDomain={servingBaseDomain()}
-                  blockedUntil={handleChangeBlockedUntil(profile)}
-                />
+                <>
+                  <ProfilePanel
+                    handle={profile.handle}
+                    baseDomain={servingBaseDomain()}
+                    blockedUntil={handleChangeBlockedUntil(profile)}
+                  />
+                  <ProfileFields
+                    profile={{ displayName: session.user.name, bio: profile.bio, socials: profile.socials ?? {} }}
+                    email={session.user.email}
+                    image={session.user.image ?? null}
+                  />
+                </>
+              ),
+            },
+            {
+              id: "badge",
+              label: "Badge",
+              content: (
+                <BadgePanel badgeStyle={profile.badgeStyle} mayUseMinimal={mayUseMinimalBadge(profile.plan)} />
               ),
             },
             {
@@ -161,6 +180,23 @@ export default async function SettingsPage({
                   agentsUrl={`${agentBase()}/agents`}
                   initialKeys={keys}
                 />
+              ),
+            },
+            {
+              id: "referrals",
+              label: "Referrals",
+              content: (
+                <SettingsCard title="Referrals" data-testid="referrals-entry">
+                  <p className="text-[15px] text-text-secondary">
+                    Your pages&apos; kept mark carries your referral link. See the link and who signed up with it.
+                  </p>
+                  <Link
+                    href="/referrals"
+                    className="self-start font-medium text-accent underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-accent"
+                  >
+                    Open referrals →
+                  </Link>
+                </SettingsCard>
               ),
             },
             {

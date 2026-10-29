@@ -325,6 +325,23 @@ export function waitlistHref(appUrl: string | undefined): string {
 }
 
 /**
+ * `path` on the landing's origin — from configuration, never the request;
+ * relative when nothing is configured.
+ */
+export function landingHref(appUrl: string | undefined, path: `/${string}`): string {
+  const landing = landingOriginFor(appUrl);
+  return `${landing ? landing.origin : ""}${path}`;
+}
+
+/**
+ * An account's referral link — `https://kept.host/?ref={code}` on prod (E10
+ * D11). The landing, because that is where `?ref` starts its trip to sign-up.
+ */
+export function referralHref(appUrl: string | undefined, refCode: string): string {
+  return landingHref(appUrl, `/?ref=${encodeURIComponent(refCode)}`);
+}
+
+/**
  * The closed rule (E06a §1) — what a deploy that is not yet open
  * (`lib/launch.ts`) does before the split rule runs. `undefined` means "not
  * mine": the request is the split rule's to decide, exactly as on an open
