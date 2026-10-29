@@ -105,7 +105,11 @@ test.describe("the page badge", () => {
 
   test("AC1: keeping it turns the badge into the kept one — the referral link and the report link", async ({ page, baseURL }) => {
     ({ userId: ownerId } = await signInAs(page, baseURL!, scope));
-    const kept = await page.request.post(`${baseURL}/api/anon/${draft.anonToken}/keep`);
+    // A browser sends `Origin` on a cookie-bearing POST; `page.request` does not,
+    // and the origin check (E05a) refuses it without one.
+    const kept = await page.request.post(`${baseURL}/api/anon/${draft.anonToken}/keep`, {
+      headers: { origin: new URL(baseURL!).origin },
+    });
     expect(kept.status(), await kept.text()).toBe(200);
     expect(((await kept.json()) as { outcome: string }).outcome).toBe("kept");
 
