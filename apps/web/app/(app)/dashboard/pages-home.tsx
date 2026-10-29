@@ -53,6 +53,7 @@ import { cn } from "@/lib/utils";
 
 import { Wordmark } from "../wordmark";
 import { DraftsPanel, NO_IDS } from "./drafts-panel";
+import { GettingStartedCard, type GettingStartedSteps } from "./getting-started-card";
 import { HomeCard, toSwapPage, type HomeSite } from "./home-card";
 import { LimitBanner } from "./limit-banner";
 import { MintCard } from "./mint-card";
@@ -104,6 +105,7 @@ export function PagesHome({
   plan,
   visitsAsOf,
   visitsFailed,
+  steps,
 }: {
   kept: HomeSite[];
   drafts: HomeSite[];
@@ -112,6 +114,7 @@ export function PagesHome({
   plan: Plan;
   visitsAsOf: Date | null;
   visitsFailed: boolean;
+  steps: GettingStartedSteps;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -254,6 +257,8 @@ export function PagesHome({
                 </Button>
               </div>
             ) : null}
+
+            {empty ? null : <GettingStartedCard steps={steps} />}
 
             {atLimit && !bannerDismissed ? (
               <LimitBanner limit={quota.limit} plan={plan} onDismiss={() => setBannerDismissed(true)} />

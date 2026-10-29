@@ -9,12 +9,16 @@
  * mutation is the client's, through the owner routes, followed by
  * `router.refresh()`, which re-runs this.
  *
+ * The getting-started card's ticks (E10 task 010) come from the same reads plus
+ * the referral count.
+ *
  * `ClockProvider` gets the server's `Date.now()` so the drafts' countdowns
  * render identically on the server and on first paint, then tick client-side.
  */
 import { getSession } from "@/lib/auth/session";
 import { getDashboardSites, type DashboardSite } from "@/lib/db/queries/dashboard";
 import { getProfileForSession } from "@/lib/db/queries/profile";
+import { referralStats } from "@/lib/db/queries/referrals";
 import { liveUrl } from "@/lib/publish/pipeline";
 import { previewFits } from "@/lib/publish/preview";
 import { effectiveStatus } from "@/lib/sites/display";
@@ -42,7 +46,7 @@ export default async function DashboardPage() {
     throw new Error("Signed in, but no profile resolved for the session.");
   }
 
-  const home = await getDashboardSites(profile.id);
+  const [home, referrals] = await Promise.all([getDashboardSites(profile.id), referralStats(profile.id)]);
   const now = Date.now();
 
   return (
@@ -55,6 +59,7 @@ export default async function DashboardPage() {
         plan={profile.plan}
         visitsAsOf={home.visitsAsOf}
         visitsFailed={home.visitsFailed}
+        steps={{ kept: home.kept.length > 0, handle: profile.handle !== null, referral: referrals.verifiedCount > 0 }}
       />
     </ClockProvider>
   );

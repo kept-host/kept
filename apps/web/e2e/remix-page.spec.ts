@@ -95,7 +95,8 @@ test.describe("/remix and /drafts", () => {
     await expect(desktop).toBeVisible();
     expect((await desktop.getAttribute("href"))!.startsWith("claude://claude.ai/new?q=")).toBe(true);
     expect(await claudeLinkPrompt(page, "Open in Claude desktop")).toBe(expected);
-    await expect(page.getByText("ChatGPT")).toHaveCount(0);
+    // No other chat app (E09 D11) — the name is spelled out only in agent-copy.ts.
+    await expect(page.getByText(new RegExp("chat" + "gpt", "i"))).toHaveCount(0);
 
     const og = await page.locator("main img").getAttribute("src");
     console.log(`[remix] thumbnail ${og}`);

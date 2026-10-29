@@ -110,6 +110,7 @@ export default async function SettingsPage({
         </h1>
 
         <SettingsSections
+          initial={first(params.section)}
           sections={[
             {
               id: "account",

@@ -340,8 +340,8 @@ export function DetailsSection({
   const remixNote = !isKept
     ? "Only kept pages can be remixed."
     : values.allowRemix === null
-      ? `Visitors can open the idea in Claude or ChatGPT. Default: ${remixOn ? "on, because a model is set" : "off until a model is set"}.`
-      : "Visitors can open the idea in Claude or ChatGPT.";
+      ? `Visitors can open the idea in Claude. Default: ${remixOn ? "on, because a model is set" : "off until a model is set"}.`
+      : "Visitors can open the idea in Claude.";
 
   return (
     <Section title="Details" testId="details-section">

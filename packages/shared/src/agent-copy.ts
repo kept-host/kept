@@ -6,7 +6,7 @@
 // else; the skill repo's `SKILL.md` is generated from `skillMarkdown`.
 //
 // Everything that names a URL takes `base` — the landing origin
-// (`https://kept.host` in prod, `https://kept-dev.xyz` on dev) — from the
+// (`https://kept.host` in prod, the dev apex on dev) — from the
 // caller's configuration. The one exception is `remixPrompt`, whose
 // "publish with kept" link is always `KEPT_PROD_ORIGIN` (E10 Q15): it travels
 // in a copied prompt, so it must name where a stranger's agent should publish.
@@ -68,6 +68,12 @@ export function agentPrompt(base: string): string {
 }
 
 // --- MCP tool descriptions (PRD §5.3; Q2: the keyless token is `manage_token`) -
+
+/**
+ * E10 Q16: an agent that fetches its page back sees bytes it did not send. One
+ * line, no domain, in the skill and `/llms.txt`.
+ */
+export const BADGE_NOTE = "kept adds a small badge to HTML pages it serves; your stored file is unchanged.";
 
 const DRAFT_NOTE = `A draft serves for ${DRAFT_TTL_DAYS} days unless the human keeps it.`;
 
@@ -134,6 +140,8 @@ Run \`scripts/publish.sh <file-or-folder>\`.
 - A file publishes as one page. A folder publishes as a site and needs \`index.html\` at its root.
 - Add \`--spa\` for client-routed apps, so unknown paths serve \`index.html\`.
 - Add \`--title "…"\` to name the page.
+
+${BADGE_NOTE}
 
 ## Always
 
@@ -336,6 +344,7 @@ Send X-Kept-Client: {agent}/api so kept can count which agents use it.
 The answer: {"live_url", "claim_url", "slug", "anonToken", "expires_in", "expires_at", "deduped"}. Show the human both links.
 Replace: POST ${base}/api/anon/{anonToken}/replace with the same body. Delete: DELETE ${base}/api/anon/{anonToken}.
 A draft serves for ${DRAFT_TTL_DAYS} days unless the human keeps it.
+${BADGE_NOTE}
 
 ## Publish into an account (API key)
 

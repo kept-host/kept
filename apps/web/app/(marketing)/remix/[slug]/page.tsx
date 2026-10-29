@@ -14,7 +14,7 @@ import { remixPageData } from "@/lib/remix/read";
  * `/remix/{slug}` (apex, public, open and closed alike) — E10 D7, D8, AC12.
  * A kept, live page whose owner allows remixing: its card, its title, "Made
  * with {model}", and the remix prompt from `@kept/shared` to copy or open in
- * Claude. Anything else 404s (`remixPageData`). No ChatGPT button (E09 D11), no
+ * Claude. Anything else 404s (`remixPageData`). No other chat app's button (E09 D11), no
  * click logging (E15 D6). No imported design (Q10): built from the marketing
  * pages' layout and tokens; flagged for Arun's review.
  */

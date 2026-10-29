@@ -60,7 +60,11 @@ const DAY = 24 * HOUR;
 
 const PNG_REFUSAL = "kept needs an HTML file. Drop an .html file, or a folder or .zip with an index.html in it.";
 
-/** Text a later epic owns. None of it may exist anywhere in the home's DOM (AC10). */
+/**
+ * Text a later epic owns. None of it may exist anywhere in the home's DOM (AC10).
+ * E10 task 010 took "Getting started" and "Claim your handle" off this list:
+ * the getting-started card now owns them (`getting-started.spec.ts`).
+ */
 const LATER_EPIC_TEXT: readonly RegExp[] = [
   /\bWall\b/,
   /\bExplore\b/,
@@ -69,9 +73,7 @@ const LATER_EPIC_TEXT: readonly RegExp[] = [
   /\bBadge\b/,
   /\bPassword\b/,
   /Share kit/i,
-  /Getting started/i,
   /Copy (the )?prompt/i,
-  /Claim your handle/i,
   /Ask your agent/i,
   /MCP/,
   /Make room/i,

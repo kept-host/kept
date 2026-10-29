@@ -184,6 +184,24 @@ const workerPublisher = `kept-e2e/${randomBytes(4).toString("hex")}`;
  */
 const LOCAL_WORKERS = 3;
 
+/**
+ * ── FIREFOX AND WEBKIT: THE BADGE ONLY, AND ONLY WHEN ASKED (E10 Q8) ─────────
+ *
+ * The badge renders inside a stranger's page, so AC6 wants it seen in all three
+ * engines. Nothing else does, and every run here spends dev KV — so the two
+ * projects exist only with `KEPT_E2E_CROSS_BROWSER=1` and match `badge.spec.ts`
+ * alone. Every default run (local, CI, `pnpm test`) stays Chromium-only and
+ * needs no other browser installed:
+ *
+ *   pnpm --filter @kept/web exec playwright install firefox webkit
+ *   KEPT_E2E_CROSS_BROWSER=1 pnpm --filter @kept/web exec playwright test e2e/badge.spec.ts --project=firefox --project=webkit
+ */
+const CROSS_BROWSER_PROJECTS = (["Desktop Firefox", "Desktop Safari"] as const).map((device) => ({
+  name: device === "Desktop Firefox" ? "firefox" : "webkit",
+  testMatch: /badge\.spec\.ts/,
+  use: { ...devices[device], userAgent: `${devices[device].userAgent} ${workerPublisher}` },
+}));
+
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
@@ -201,6 +219,7 @@ export default defineConfig({
       name: "chromium",
       use: { ...devices["Desktop Chrome"], userAgent: `${devices["Desktop Chrome"].userAgent} ${workerPublisher}` },
     },
+    ...(process.env.KEPT_E2E_CROSS_BROWSER === "1" ? CROSS_BROWSER_PROJECTS : []),
   ],
   webServer: {
     command: "pnpm --filter @kept/web dev",
