@@ -606,7 +606,11 @@ test("E08: rename purges the OLD hostname's whole set", { skip }, async () => {
   await renameSite(page.id, page.ownerId, newName);
   const old = await rowsSince(page.slug, since);
   assert.equal(old.length, 1);
-  assert.deepEqual(old[0]!.urls, setPurgeUrls(page.slug, v2.paths), "every path of the set, at the old host");
+  assert.deepEqual(old[0]!.urls, syncPurgeUrls(page.slug, v2.paths), "every path of the set, at the old host");
+  assert.ok(
+    (old[0]!.urls as string[]).includes(`https://${page.slug}.${process.env.KEPT_BASE_DOMAIN}/${README_PAGE_PATH}`),
+    "the old host's README page is purged too",
+  );
   assert.equal(old[0]!.siteId, page.id, "the replay re-syncs the page");
   assert.equal(await r2Store().get(pointerKey(page.slug)), null, "the old name is unpublished");
   const renamed = await rowsSince(newName, since);

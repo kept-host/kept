@@ -497,7 +497,9 @@ async function storeEntry(
  * file set (read from `site_version_files` before anything is removed) and goes
  * on the `pending_purges` row so a replay re-syncs that site. Rename passes it
  * for the OLD name: that hostname served the same set, and every path of it
- * must stop answering there. Without one, only the root forms are purged.
+ * must stop answering there — the README page (E10 D6) included, which a cached
+ * copy would otherwise keep serving at the old host. Without one, only the root
+ * forms are purged.
  */
 export async function removeManifest(
   slug: string,
@@ -506,7 +508,7 @@ export async function removeManifest(
   let paths: string[] = [];
   if (siteId) {
     try {
-      paths = await currentVersionPaths(siteId);
+      paths = [...(await currentVersionPaths(siteId)), README_PAGE_PATH];
     } catch (err) {
       return { ok: false, step: "paths", error: message(err) };
     }
