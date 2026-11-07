@@ -237,7 +237,9 @@ export function toolResult(outcome: ToolOutcome): CallToolResult {
 }
 
 const PUBLISH = { readOnlyHint: false, destructiveHint: false, openWorldHint: true } as const;
-const DESTRUCTIVE = { readOnlyHint: false, destructiveHint: true, openWorldHint: true } as const;
+// Replace and delete are destructive, and repeating one with the same arguments
+// changes nothing more — so clients may retry them safely.
+const DESTRUCTIVE = { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true } as const;
 const READ_ONLY = { readOnlyHint: true, openWorldHint: false } as const;
 
 function registerKeyless(server: McpServer, ctx: KeylessContext): void {

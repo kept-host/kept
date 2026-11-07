@@ -118,6 +118,16 @@ test("edge case 2: dist/ and src/ — no single top folder → missing_index", (
   assert.match(message, /^There's no index\.html at the top of this folder/);
 });
 
+test("D7 step 6: an empty or whitespace-only index.html → empty_page, even with other files", () => {
+  for (const text of ["", "  \n\t "]) {
+    const message = refused(normalise([file("index.html", text), file("icon.png")]), "empty_page");
+    assert.match(message, /^index\.html is empty/);
+  }
+  // …also when step 4 renamed the only HTML file.
+  refused(normalise([file("game.html", ""), file("a.css")]), "empty_page");
+  assert.deepEqual(paths(ok(normalise([file("index.html", "<p>x</p>")]))), ["index.html"]);
+});
+
 test("edge case 3 / D7 step 4: the only HTML file, at the root, becomes index.html", () => {
   assert.deepEqual(paths(ok(normalise(files("game.html")))), ["index.html"]);
   assert.deepEqual(paths(ok(normalise(files("about.htm", "style.css")))), ["index.html", "style.css"]);
