@@ -158,7 +158,10 @@ test("tools/list: the keyless and keyed sets, their annotations, and the isError
       [publish?.readOnlyHint, publish?.destructiveHint, publish?.openWorldHint],
       [false, false, true],
     );
-    for (const name of ["replace_page", "delete_page"]) assert.equal(tools.get(name)!.annotations?.destructiveHint, true, name);
+    for (const name of ["replace_page", "delete_page"]) {
+      assert.equal(tools.get(name)!.annotations?.destructiveHint, true, name);
+      assert.equal(tools.get(name)!.annotations?.idempotentHint, true, name);
+    }
     assert.equal(tools.get("get_page")!.annotations?.readOnlyHint, true);
   }
   assert.equal(keyed.tools.get("list_pages")!.annotations?.readOnlyHint, true);

@@ -6,7 +6,9 @@
  *   3. strip one shared top folder, only when there is no root `index.html`
  *      (the `dist/` case; edge cases 1 and 2);
  *   4. a set whose only HTML file sits at the root → that file is `index.html`;
- *   5. require a root `index.html` → else `missing_index` (edge case 4).
+ *   5. require a root `index.html` → else `missing_index` (edge case 4);
+ *   6. refuse a root `index.html` that is empty or only whitespace → `empty_page`,
+ *      the code the single-page forms already answer for an empty body.
  *
  * Every path is checked against `validateSitePath` (NFC, ≤ 512 B, ≤ 16
  * segments, no `..`/control/backslash, `_kept/` reserved) and against every
@@ -16,7 +18,7 @@
 import { SITE_404, SITE_INDEX, SITE_JUNK_NAMES, validateSitePath } from "@kept/shared";
 
 import { fail, type PublishFailure } from "../pipeline";
-import { invalidPath, missingIndex } from "./copy";
+import { emptyIndex, invalidPath, missingIndex } from "./copy";
 import { isHtml } from "./checks";
 import type { RawFile } from "./types";
 
@@ -78,8 +80,12 @@ export function normalise(input: readonly RawFile[]): Normalised | PublishFailur
     files = files.map((file) => (file === html[0] ? { ...file, path: SITE_INDEX } : file));
   }
 
-  if (!files.some((file) => file.path === SITE_INDEX)) {
+  const index = files.find((file) => file.path === SITE_INDEX);
+  if (!index) {
     return fail(400, { error: "missing_index", message: missingIndex() });
+  }
+  if (new TextDecoder().decode(index.bytes).trim() === "") {
+    return fail(400, { error: "empty_page", message: emptyIndex() });
   }
   return { files, ignored, has404: files.some((file) => file.path === SITE_404) };
 }

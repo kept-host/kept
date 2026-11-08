@@ -72,6 +72,10 @@ export function missingIndex(): string {
   return "There's no index.html at the top of this folder. kept opens index.html first — add one or move it up a level.";
 }
 
+export function emptyIndex(): string {
+  return "index.html is empty — there is nothing to show. Send the page's markup in index.html.";
+}
+
 export function tooManyFiles(n: number, plan: Plan, max: number): string {
   return `This site has ${count(n)} files. ${PLAN_LABEL[plan]} sites can have up to ${count(max)}.`;
 }
