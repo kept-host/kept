@@ -203,6 +203,9 @@ export const RESERVED_NAMES = [
  * `inappropriate` is not in the PRD's table: Arun's decision 5 (2026-10-04)
  * pulled the word filter forward from E07 and gave it its own status rather
  * than folding it into `reserved`, so the field can say which rule refused.
+ *
+ * `handle_change_limited` (E10 D10) is the handle check's alone — a page rename
+ * never produces it.
  */
 export const NAME_CHECK_STATUSES = [
   "invalid",
@@ -214,6 +217,7 @@ export const NAME_CHECK_STATUSES = [
   "taken",
   "quota",
   "rate_limited",
+  "handle_change_limited",
   "available",
 ] as const;
 

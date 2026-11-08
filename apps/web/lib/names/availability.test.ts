@@ -133,3 +133,33 @@ test("AC23: a generator that only ever emits a held name exhausts the bound, nev
   );
   assert.equal(attempts, 0, "a held candidate must never reach the insert");
 });
+
+test("E10 D9: a current handle is held_for_you for its account and taken for everyone else; an old handle is taken for all (Q22)", { skip }, async () => {
+  const { db } = await import("../db");
+  const { handleRedirects, nameHolds, profiles } = await import("../db/schema");
+  const { eq, sql } = await import("drizzle-orm");
+  const owner = await drill.profile();
+  const stranger = await drill.profile();
+  const current = drill.name();
+  const old = drill.name();
+  await db.update(profiles).set({ handle: current }).where(eq(profiles.id, owner));
+  await db.insert(handleRedirects).values({ oldHandle: old, profileId: owner });
+  await db.insert(nameHolds).values({ name: old, userId: owner, reason: "renamed", heldUntil: sql`'infinity'::timestamptz` });
+
+  assert.equal(await isNameAvailable(current, owner), "held_for_you");
+  assert.equal(await isNameAvailable(current, stranger), "taken");
+  assert.equal(await isNameAvailable(current, null), "taken");
+  // The redirect row decides it before the hold could say `held_for_you`.
+  assert.equal(await isNameAvailable(old, owner), "taken");
+  assert.equal(await isNameAvailable(old, stranger), "taken");
+});
+
+test("an 'infinity' hold never expires (gt(held_until, now()) holds for it)", { skip }, async () => {
+  const { db } = await import("../db");
+  const { nameHolds } = await import("../db/schema");
+  const { sql } = await import("drizzle-orm");
+  const owner = await drill.profile();
+  const forever = drill.name();
+  await db.insert(nameHolds).values({ name: forever, userId: null, reason: "account_deleted", heldUntil: sql`'infinity'::timestamptz` });
+  assert.equal(await isNameAvailable(forever, owner), "taken");
+});

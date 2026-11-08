@@ -19,6 +19,8 @@ Run `scripts/publish.sh <file-or-folder>`.
 - Add `--spa` for client-routed apps, so unknown paths serve `index.html`.
 - Add `--title "…"` to name the page.
 
+kept adds a small badge to HTML pages it serves; your stored file is unchanged.
+
 ## Always
 
 Show the user **both links**: the live link, and the claim link. Say the page is a draft that serves for 7 days until they open the claim link and keep it.

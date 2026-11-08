@@ -12,8 +12,13 @@
  * here in the same language.
  *
  * E09 task 006 adds "Agents and API keys" after Plan — no imported design (Q12).
+ * E10 task 008 adds "Profile" after Account: the design's Handle section, and
+ * the rest of the profile from task 009. Task 009 also adds "Badge" after
+ * Profile (no design, Q10) and the design's "Referrals" before Your data — an
+ * entry to `/referrals`.
  *
- * Like the design, one section is mounted at a time. The section bodies are
+ * Like the design, one section is mounted at a time. `?section=<id>` opens on
+ * that section (the getting-started card links to Profile, E10 task 010). The section bodies are
  * rendered by the server component and passed in, so every read stays in RSC
  * and this island owns nothing but which one is showing.
  *
@@ -30,8 +35,14 @@ export interface SettingsSection {
   content: React.ReactNode;
 }
 
-export function SettingsSections({ sections }: { sections: readonly SettingsSection[] }) {
-  const [current, setCurrent] = useState(sections[0]?.id);
+export function SettingsSections({
+  sections,
+  initial,
+}: {
+  sections: readonly SettingsSection[];
+  initial?: string | null;
+}) {
+  const [current, setCurrent] = useState(initial ?? sections[0]?.id);
   const shown = sections.find((section) => section.id === current) ?? sections[0];
 
   return (

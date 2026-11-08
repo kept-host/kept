@@ -1,6 +1,7 @@
 /**
  * `GET /api/names/check?name=&siteId=` — the name field's live answer (PRD
- * §5.4). E06 task 006.
+ * §5.4). E06 task 006. With `handle=1` (E10 §5.5) it answers for the
+ * account's handle instead, and takes no `siteId`.
  *
  * `{ status }` plus the numbers its sentence interpolates, never the sentence:
  * the words are `lib/names/messages.ts`'s. `siteId` must be the caller's page
@@ -15,6 +16,7 @@ import type { NextResponse } from "next/server";
 import { getSession } from "../../../../lib/auth/session";
 import { getProfileForSession } from "../../../../lib/db/queries/profile";
 import {
+  checkOwnedHandle,
   checkOwnedName,
   ownerResponse,
   signedOut,
@@ -31,6 +33,9 @@ export async function GET(request: Request): Promise<NextResponse> {
   if (!profile) return ownerResponse(signedOut());
 
   const params = new URL(request.url).searchParams;
+  if (params.get("handle") === "1") {
+    return ownerResponse(await checkOwnedHandle(params.get("name"), profile));
+  }
   return ownerResponse(
     await checkOwnedName(params.get("siteId"), params.get("name"), profile.id),
   );

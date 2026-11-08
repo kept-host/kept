@@ -26,15 +26,13 @@
  *      `profiles.id → user.id` FK satisfiable; running inside the transaction on
  *      a different connection would deadlock or violate it.
  *
- * ── WHAT THE HOOK CAN SEE, AND WHY THAT IS ENOUGH ──────────────────────────
- * It receives the created `user` row, not the raw provider profile: better-auth
- * calls `createOAuthUser({ name, image, email, emailVerified })` and drops the
- * rest of `userInfo`. So `name` is the only provider-derived signal available —
- * which is exactly right, because kept has no provider-specific column and wants
- * none. `seedHandle` (in the query module) owns the mapping from `name` to a
- * handle, including "magic link gives an empty name, so the handle is null".
+ * ── WHAT THE HOOK WRITES ───────────────────────────────────────────────────
+ * The email and a freshly minted referral code, nothing else. The handle starts
+ * `null` (E10 D9, AC14): it is a name in the page namespace that the user
+ * chooses, not something derived from a provider's display name, and the
+ * display name itself stays on Better Auth's `user.name`.
  */
-import { ensureProfile, seedHandle } from "../db/queries/profile";
+import { ensureProfile } from "../db/queries/profile";
 
 /**
  * Create this user's profile. Called once per user by the hook below; safe to
@@ -45,11 +43,9 @@ import { ensureProfile, seedHandle } from "../db/queries/profile";
 export async function bootstrapProfile(user: {
   id: string;
   email?: string | null;
-  name?: string | null;
 }): Promise<void> {
   await ensureProfile({
     userId: user.id,
     email: user.email ?? null,
-    handle: seedHandle(user.name),
   });
 }

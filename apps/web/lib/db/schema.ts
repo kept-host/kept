@@ -13,10 +13,12 @@
  * `abuse_reports`, `moderation_actions`, `appeals`, `pending_purges` — and
  * `sites.moderation_reason` (migration 0008), plus E09's `api_keys`,
  * `agent_codes`, `site_versions.client` and the `sites` provenance columns
- * (migration 0011).
+ * (migration 0011), plus E10's `referrals`, `handle_redirects`, the profile
+ * fields and the `sites` display switches (migration 0012).
  */
 import {
   APPEAL_STATUSES,
+  BADGE_STYLES,
   FOUNDING_NOTE_MAX,
   FOUNDING_STATUSES,
   MODERATION_ACTIONS,
@@ -25,8 +27,10 @@ import {
   NAME_HOLD_REASONS,
   NAME_KINDS,
   PLANS,
+  PROFILE_BIO_MAX,
   PROVENANCE_LIMITS,
   PUBLISH_CHANNELS,
+  REFERRAL_CODE_LENGTH,
   REGIONS,
   REPORT_STATUSES,
   SCAN_STATUSES,
@@ -35,6 +39,7 @@ import {
   SITE_STATUSES,
   TITLE_SOURCES,
   WAITLIST_SOURCES,
+  type Socials,
 } from "@kept/shared";
 import { relations, sql } from "drizzle-orm";
 import {
@@ -202,24 +207,64 @@ export const verification = pgTable(
 // no `provider`. Linked identities live in Better Auth's `account` table as
 // `(userId, providerId, accountId)` — that is the only place they stay correct
 // across a link and an unlink. A copy here would need backfilling on every link
-// and would silently rot the moment a user unlinks a provider. `handle` is a
-// generic *display* handle, seeded opportunistically from whichever provider
-// signed the user up first and editable by the user in E06; it is presentation,
-// not identity. "Which providers is this user linked to?" queries `account`.
-export const profiles = pgTable("profiles", {
-  id: uuid("id")
-    .primaryKey()
-    .references(() => user.id, { onDelete: "cascade" }),
-  handle: text("handle"),
-  email: text("email"),
-  plan: planEnum("plan").notNull().default("free"),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+// and would silently rot the moment a user unlinks a provider. "Which providers
+// is this user linked to?" queries `account`.
+//
+// `handle` (E10 D9, migration 0012) is a NAME in the one namespace page names
+// live in — `{handle}.kept.host` — chosen by the user and validated like a page
+// name. It is not a display handle and is never seeded: `0012` nulled every
+// value, and a new sign-up starts with `null`. Unique where set. The display
+// name is Better Auth's `user.name`.
+export const profiles = pgTable(
+  "profiles",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .references(() => user.id, { onDelete: "cascade" }),
+    handle: text("handle"),
+    email: text("email"),
+    plan: planEnum("plan").notNull().default("free"),
+    // When the handle last changed; it may change once per `HANDLE_CHANGE_DAYS`
+    // (D10). NULL until the first change.
+    handleChangedAt: timestamp("handle_changed_at", { withTimezone: true }),
+    // D12. Capped by a CHECK at `PROFILE_BIO_MAX`. ⚠️ UNTRUSTED USER INPUT.
+    bio: text("bio"),
+    // D12: `Socials` from `@kept/shared`, validated by `socialsSchema` on write.
+    socials: jsonb("socials").$type<Socials>(),
+    // The badge on this account's kept pages (D3); `minimal` is a Pro choice,
+    // gated in `lib/plans/`, not here.
+    badgeStyle: text("badge_style", { enum: BADGE_STYLES })
+      .notNull()
+      .default("standard"),
+    // Q3: a permanent random code, never rewritten — a handle change cannot
+    // orphan a shared link. Minted by the database on every insert (so no
+    // writer can forget it, and `0012`'s ADD COLUMN filled existing rows):
+    // `REFERRAL_CODE_LENGTH` hex characters of a v4 uuid. Not a secret — it is
+    // shared in links. `ensureProfile` redraws on the unique violation.
+    referralCode: text("referral_code")
+      .notNull()
+      .unique()
+      .default(
+        sql`left(md5(gen_random_uuid()::text), ${sql.raw(String(REFERRAL_CODE_LENGTH))})`,
+      ),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("profiles_handle_key")
+      .on(table.handle)
+      .where(sql`${table.handle} is not null`),
+    check("profiles_bio_length_check", maxLength(table.bio, PROFILE_BIO_MAX)),
+    check(
+      "profiles_badge_style_check",
+      sql`${table.badgeStyle} in (${inValues(BADGE_STYLES)})`,
+    ),
+  ],
+);
 
 // ── sites ────────────────────────────────────────────────────────────────────
 // A hosted page. `region` defaults to 'auto' so EU residency (E11) needs no
@@ -331,8 +376,9 @@ export const sites = pgTable(
     moderationReason: moderationReasonEnum("moderation_reason"),
     // Provenance (E09, migration 0011): what the publisher says made the page.
     // Optional, self-reported, never verified; each capped by a CHECK at
-    // `PROVENANCE_LIMITS`. Written by the publish pipelines (`queries/publish.ts`)
-    // only. ⚠️ UNTRUSTED STRANGER-AUTHORED INPUT, like `title`.
+    // `PROVENANCE_LIMITS`. Two writers: the publish pipelines
+    // (`queries/publish.ts`) and the owner's details panel in the studio (E10).
+    // ⚠️ UNTRUSTED STRANGER-AUTHORED INPUT, like `title`.
     model: text("model"),
     tool: text("tool"),
     prompt: text("prompt"),
@@ -343,6 +389,12 @@ export const sites = pgTable(
     remixOf: uuid("remix_of").references((): AnyPgColumn => sites.id, {
       onDelete: "set null",
     }),
+    // E10 (migration 0012), set by the owner. `showMadeWith`: the badge names
+    // the model/tool (D2). `showPrompt`: the prompt is public on the page and in
+    // remix links (D7). `allowRemix`: NULL means the default rule (D8).
+    showMadeWith: boolean("show_made_with").notNull().default(true),
+    showPrompt: boolean("show_prompt").notNull().default(false),
+    allowRemix: boolean("allow_remix"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -851,6 +903,49 @@ export const agentCodes = pgTable("agent_codes", {
   // The requesting agent (`parseKeptClient`), carried to the key it mints.
   client: text("client"),
 });
+
+// ── referrals (E10 D11) ──────────────────────────────────────────────────────
+// Who referred whom: one row per referred account. It counts once
+// `verified_at` is set (a verified email, edge case 10). The referrer goes NULL
+// when their account is deleted; the row goes with the referred account.
+export const referrals = pgTable(
+  "referrals",
+  {
+    referredId: uuid("referred_id")
+      .primaryKey()
+      .references(() => profiles.id, { onDelete: "cascade" }),
+    referrerId: uuid("referrer_id").references(() => profiles.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+  },
+  (table) => [
+    check("referrals_not_self_check", sql`${table.referrerId} <> ${table.referredId}`),
+    index("referrals_referrer_idx").on(table.referrerId),
+  ],
+);
+
+// ── handle_redirects (E10 Q2) ────────────────────────────────────────────────
+// Every handle an account has left behind, pointing at the account — so its
+// redirect always targets the CURRENT handle (no chains). The KV redirect is
+// written from here. `profile_id` goes NULL on account deletion; the name then
+// stays held, ownerless, forever (Q17).
+export const handleRedirects = pgTable(
+  "handle_redirects",
+  {
+    oldHandle: text("old_handle").primaryKey(),
+    profileId: uuid("profile_id").references(() => profiles.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [index("handle_redirects_profile_idx").on(table.profileId)],
+);
 
 // ── relations ────────────────────────────────────────────────────────────────
 export const userRelations = relations(user, ({ one, many }) => ({

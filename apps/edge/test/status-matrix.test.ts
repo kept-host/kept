@@ -85,6 +85,21 @@ describe("manifest status matrix", () => {
     });
   }
 
+  // E10 D6: `/_kept/readme` is a `live`-branch route. Every other status keeps
+  // its system page there, even with the README flag set.
+  for (const status of SERVING_STATUSES.filter((s) => s !== "live")) {
+    const { code, title } = EXPECTED[status];
+    it(`${status} → ${code} on /_kept/readme, even with badge.readme set`, async () => {
+      const slug = `status-readme-${status.replace(/_/g, "-")}`;
+      await seedSite(slug, { status, badge: { variant: "kept", style: "standard", readme: true } });
+      const request = requestFor(slug, "/_kept/readme");
+      await evictFromCache(request);
+      const { response, text } = await dispatchText(request);
+      expect(response.status, describeResponse(response, text)).toBe(code);
+      expect(text).toContain(title);
+    });
+  }
+
   it("makes `removed` indistinguishable from `never existed`", async () => {
     // A removed page must not be confirmable by its status code.
     const removed = await dispatchText(requestFor("status-removed"));

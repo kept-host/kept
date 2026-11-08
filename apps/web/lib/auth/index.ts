@@ -41,6 +41,7 @@ import { magicLink } from "better-auth/plugins";
 import { db, schema } from "../db";
 import { emailFooter } from "../email/footer";
 import { sendEmail } from "../email/send";
+import { recordSignUpReferral, signUpRef, verifySignUpReferral } from "../referrals/capture";
 import {
   appOrigin,
   authConfig,
@@ -209,8 +210,18 @@ function createAuth() {
           before: async (user) => {
             refuseUserUnlessMaySignIn(user.email);
           },
-          after: async (user) => {
+          after: async (user, ctx) => {
             await bootstrapProfile(user);
+            // E10 D11: the `ref` the sign-up carried credits its referrer —
+            // after the profile exists (the referral row's FK), never failing
+            // the sign-in. See `../referrals/capture.ts` for where it is read.
+            await recordSignUpReferral(user, await signUpRef(ctx));
+          },
+        },
+        // A referral counts once the email is verified (edge case 10).
+        update: {
+          after: async (user) => {
+            await verifySignUpReferral(user);
           },
         },
       },

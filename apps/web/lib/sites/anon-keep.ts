@@ -13,20 +13,19 @@
  * module composes them. That is also what lets the drills run with no server,
  * because `next/headers` throws outside a request scope.
  *
- * ── THREE BRANCHES, ONE OF WHICH IS EXPENSIVE (all in `keepSite`) ───────────
+ * ── THREE BRANCHES, EACH SYNCED AFTER COMMIT (all in `keepSite`) ───────────
  *
- *   status 'live', under cap    → `kept`                       POSTGRES ONLY
- *   status 'live', at cap       → `owned_draft`                POSTGRES ONLY
- *   status 'expired', in grace  → `live` again, then after COMMIT
- *                                 syncManifest(site)           pointer → KV →
+ *   status 'live', under cap    → `kept`                       then
+ *   status 'live', at cap       → `owned_draft`                syncManifest(site):
+ *   status 'expired', in grace  → `live` again                 pointer → KV →
  *                                                              purge → purge+125s
  *
- * The ordinary keep does NOT write a manifest and does NOT purge — see the
- * header of `./keep.ts` for why writing it "for consistency" is a regression.
- * The restore is the one place that cost is worth paying: the manifest was
- * REMOVED when the draft expired, so the edge is currently serving "gone" and
- * only a KV write brings the page back. E06 task 004 moved that sequence into
- * `./keep.ts` so the owner door and the swap run the very same one.
+ * Since E10 (D5) every branch writes the manifest: the badge flips from the
+ * draft to the kept variant, and `ownerId` is no longer left stale — see the
+ * header of `./keep.ts`. Only the late keep's sync failing is an error here: the
+ * manifest was REMOVED when the draft expired, so the edge is serving "gone"
+ * until that write lands. E06 task 004 moved the sequence into `./keep.ts` so
+ * the owner door and the swap run the very same one.
  *
  * ── THE RESOLVER DOES NOT DO WHAT IT LOOKS LIKE IT DOES ────────────────────
  * `resolveAnonToken(token)` defaults to `requireLive: true` and returns `null`

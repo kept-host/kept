@@ -1,6 +1,6 @@
-// @kept/shared — Web Crypto and `TextEncoder`, typed narrowly. INTERNAL: shared
-// by ./publish (tokens, hashes) and ./files (set hashes, path byte length); the
-// barrel does not re-export it.
+// @kept/shared — Web Crypto, `TextEncoder` and `URL`, typed narrowly. INTERNAL:
+// shared by ./publish (tokens, hashes), ./files (set hashes, path byte length),
+// ./profile and ./agent-copy (URL parts); the barrel does not re-export it.
 //
 // The package compiles with `lib: ["ES2022"]` — deliberately no `DOM` — so these
 // globals are present at runtime in both Node ≥18 and Workers but carry no
@@ -15,9 +15,17 @@ type WebCryptoLike = {
 
 type TextEncoderCtor = new () => { encode(input: string): Uint8Array };
 
+type UrlCtor = new (input: string) => {
+  protocol: string;
+  hostname: string;
+  username: string;
+  password: string;
+};
+
 export const webGlobals = globalThis as unknown as {
   crypto: WebCryptoLike;
   TextEncoder: TextEncoderCtor;
+  URL: UrlCtor;
 };
 
 /** The UTF-8 bytes of a string. */

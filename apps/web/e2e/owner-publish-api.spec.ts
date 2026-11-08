@@ -16,7 +16,7 @@ import { clearPendingPurges } from "../lib/testing/pending-purges";
 import { removeServedManifests } from "../lib/testing/served-manifests";
 
 import { LIVE_STACK_TIMEOUT, warmDb } from "./live-stack";
-import { pageHtml, probeEdge, servingDomain, SKIP_LIVE_PUBLISH } from "./live-publish";
+import { pageHtml, probeEdge, servingDomain, SKIP_LIVE_PUBLISH, unbadged } from "./live-publish";
 import { seedKept } from "./owner-fixtures";
 import { jarlessContext, sessionHeaders } from "./session-request";
 
@@ -260,7 +260,7 @@ test.describe("owned publish", () => {
 
     const served = await waitForServe(urlFor(site.slug));
     expect(served.status).toBe(200);
-    expect(served.body).toBe(html);
+    expect(unbadged(served.body)).toBe(html);
   });
 
   test("E08: a file list publishes one owned page — 201 OwnedPublishResult + `ignored`, one row per file, and every file serves", async ({
@@ -295,7 +295,7 @@ test.describe("owned publish", () => {
 
     const served = await waitForServe(urlFor(body.site.slug));
     expect(served.status).toBe(200);
-    expect(served.body).toBe(html);
+    expect(unbadged(served.body)).toBe(html);
     const asset = await probeEdge(`${urlFor(body.site.slug)}assets/site.css`);
     expect(asset.status).toBe(200);
     expect(asset.body).toBe(css);

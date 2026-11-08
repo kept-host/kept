@@ -756,3 +756,65 @@ test("E09: the matcher skips the agent files (they carry an extension) and catch
     assert.equal(unstable_doesMiddlewareMatch({ config, url: path }), true, path);
   }
 });
+
+// ── E10 task 003: every creator-loop path, classified once (Q21) ────────────
+
+/** Apex pages served while closed: the draft explainer and the remix prompt. */
+const E10_APEX_PAGES = ["/drafts", "/remix/abc12345"];
+/** The control plane's referral stats page. */
+const E10_APP_PAGES = ["/referrals"];
+/** Session-gated APIs: the profile, the handle change, the referral stats. */
+const E10_APP_APIS = ["/api/profile", "/api/profile/handle", "/api/referrals"];
+
+test("E10 open: /drafts and /remix/* are the apex's — the app host sends them there", () => {
+  for (const pathname of E10_APEX_PAGES) {
+    assert.deepEqual(decide(APEX_HOST, pathname), { kind: "pass", stampPathname: true }, pathname);
+    assert.deepEqual(
+      decide(APP_HOST, pathname, "?ref=x"),
+      { kind: "redirect", location: `${APEX_URL}${pathname}?ref=x` },
+      pathname,
+    );
+  }
+  // A prefix, so the bare `/remix` is not part of it.
+  assert.deepEqual(decide(APEX_HOST, "/remix"), { kind: "redirect", location: `${APP_URL}/remix` });
+});
+
+test("E10 open: /referrals is the app host's — the apex sends it there", () => {
+  for (const pathname of E10_APP_PAGES) {
+    assert.deepEqual(decide(APP_HOST, pathname), { kind: "pass", stampPathname: true }, pathname);
+    assert.deepEqual(decide(APEX_HOST, pathname), { kind: "redirect", location: `${APP_URL}${pathname}` }, pathname);
+  }
+});
+
+test("E10 open: /api/profile, /api/profile/* and /api/referrals pass on both hosts", () => {
+  for (const host of [APEX_HOST, APP_HOST]) {
+    for (const pathname of E10_APP_APIS) {
+      assert.deepEqual(decide(host, pathname), { kind: "pass", stampPathname: false }, `${host}${pathname}`);
+    }
+  }
+});
+
+test("E10 closed: /drafts and /remix/* are served on the apex; the app host sends them there", () => {
+  for (const pathname of E10_APEX_PAGES) {
+    assert.equal(decideClosed(APEX_HOST, pathname), undefined, pathname);
+    assert.deepEqual(decideClosed(APP_HOST, pathname), { kind: "redirect", location: `${APEX_URL}${pathname}` }, pathname);
+  }
+});
+
+test("E10 closed: /referrals is the split rule's on either host", () => {
+  for (const host of [APEX_HOST, APP_HOST]) {
+    assert.equal(decideClosed(host, "/referrals"), undefined, host);
+  }
+  // …which then serves it on the app host and 307s the apex there.
+  assert.deepEqual(decide(APEX_HOST, "/referrals"), { kind: "redirect", location: `${APP_URL}/referrals` });
+});
+
+test("E10 closed: /api/profile, /api/profile/* and /api/referrals pass on the app host only", () => {
+  for (const pathname of E10_APP_APIS) {
+    assert.equal(decideClosed(APP_HOST, pathname), undefined, `app ${pathname}`);
+    assert.deepEqual(decideClosed(APEX_HOST, pathname), NOT_OPEN, `apex ${pathname}`);
+    assert.deepEqual(decideClosed(APEX_HOST, pathname, "", APP_URL, true), NOT_OPEN, `apex ${pathname} credentialed`);
+  }
+  assert.deepEqual(decideClosed(APP_HOST, "/api/profilex"), NOT_OPEN);
+  assert.deepEqual(decideClosed(APP_HOST, "/api/referrals/x"), NOT_OPEN);
+});

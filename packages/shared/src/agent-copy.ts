@@ -6,16 +6,19 @@
 // else; the skill repo's `SKILL.md` is generated from `skillMarkdown`.
 //
 // Everything that names a URL takes `base` — the landing origin
-// (`https://kept.host` in prod, `https://kept-dev.xyz` on dev) — from the
-// caller's configuration. No origin is hard-coded here.
+// (`https://kept.host` in prod, the dev apex on dev) — from the
+// caller's configuration. The one exception is `remixPrompt`, whose
+// "publish with kept" link is always `KEPT_PROD_ORIGIN` (E10 Q15): it travels
+// in a copied prompt, so it must name where a stranger's agent should publish.
 //
 // D11: kept builds for coding agents and Claude chat (a custom connector off the
 // same MCP server). There is no ChatGPT app, connector, card or copy — this
 // comment is the one place the name appears.
 
-import { DRAFT_TTL_DAYS, MAX_PAGE_BYTES } from "./constants";
+import { DRAFT_TTL_DAYS, KEPT_PROD_ORIGIN, MAX_PAGE_BYTES } from "./constants";
 import { INLINE_BODY_MAX_BYTES } from "./files";
 import { limitsFor } from "./plans";
+import { webGlobals } from "./web-globals";
 
 /** The public skill repo (Q1: source in this monorepo's `skill/`, mirrored there). */
 export const SKILL_REPO = "kept-host/skill";
@@ -66,6 +69,12 @@ export function agentPrompt(base: string): string {
 }
 
 // --- MCP tool descriptions (PRD §5.3; Q2: the keyless token is `manage_token`) -
+
+/**
+ * E10 Q16: an agent that fetches its page back sees bytes it did not send. One
+ * line, no domain, in the skill and `/llms.txt`.
+ */
+export const BADGE_NOTE = "kept adds a small badge to HTML pages it serves; your stored file is unchanged.";
 
 const DRAFT_NOTE = `A draft serves for ${DRAFT_TTL_DAYS} days unless the human keeps it.`;
 
@@ -146,6 +155,8 @@ Run \`scripts/publish.sh <file-or-folder>\`.
 - A file publishes as one page. A folder publishes as a site and needs \`index.html\` at its root.
 - Add \`--spa\` for client-routed apps, so unknown paths serve \`index.html\`.
 - Add \`--title "…"\` to name the page.
+
+${BADGE_NOTE}
 
 ## Always
 
@@ -302,6 +313,36 @@ export function agentSetups(base: string): readonly AgentSetup[] {
   ];
 }
 
+// --- The remix prompt (E10 D7, Q15) ----------------------------------------
+
+/** Longest remix prompt, in characters — what the `/remix/{slug}` page copies. */
+export const REMIX_PROMPT_MAX = 4_000;
+
+/**
+ * The prompt the Remix page copies and prefills (D7). `pageUrl` is data — on dev
+ * it is a dev page — but the instructions link is always the production
+ * `/agents`, never an override. `shownPrompt` is passed only when the owner
+ * shows it (D8). Over `REMIX_PROMPT_MAX`, the shown prompt is cut with "…" so
+ * the instructions after it always survive.
+ */
+export function remixPrompt({ pageUrl, shownPrompt }: { pageUrl: string; shownPrompt?: string }): string {
+  const slug = new webGlobals.URL(pageUrl).hostname.split(".")[0]!;
+  const head = `Make a page like ${pageUrl}.`;
+  const tail = `Then publish it with kept (${KEPT_PROD_ORIGIN}/agents) and pass remix_of: "${slug}".`;
+  const shown = shownPrompt?.trim();
+  if (!shown) return `${head} ${tail}`;
+
+  // The shown prompt sits on its own lines, so its end never runs into "Then".
+  const lead = `${head}\n\nHere's the prompt that made it:\n\n`;
+  const gap = "\n\n";
+  const room = REMIX_PROMPT_MAX - lead.length - gap.length - tail.length;
+  if (room <= 1) return `${head} ${tail}`;
+  // Never cut between the halves of a surrogate pair (an emoji).
+  const prompt =
+    shown.length <= room ? shown : `${shown.slice(0, room - 1).replace(/[\uD800-\uDBFF]$/, "")}…`;
+  return lead + prompt + gap + tail;
+}
+
 // --- Discovery files ---------------------------------------------------------
 
 /** `/llms.txt` — what an agent reading the site needs to publish. */
@@ -318,6 +359,7 @@ Send X-Kept-Client: {agent}/api so kept can count which agents use it.
 The answer: {"live_url", "claim_url", "slug", "anonToken", "expires_in", "expires_at", "deduped"}. Show the human both links.
 Replace: POST ${base}/api/anon/{anonToken}/replace with the same body. Delete: DELETE ${base}/api/anon/{anonToken}.
 A draft serves for ${DRAFT_TTL_DAYS} days unless the human keeps it.
+${BADGE_NOTE}
 
 ## Publish into an account (API key)
 

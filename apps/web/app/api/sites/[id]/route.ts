@@ -2,7 +2,9 @@
  * The page itself — E06 tasks 006, 008 and 012.
  *
  *   · `PATCH /api/sites/:id` — its Details: `{ title?, listedPublic? }` (task
- *     012, PRD §5.2). Rules in `lib/sites/details.ts`.
+ *     012, PRD §5.2) and, since E10, the provenance `{ model?, tool?, prompt?,
+ *     showPrompt?, showMadeWith?, allowRemix?, sourceUrl?, readme? }`. Rules in
+ *     `lib/sites/details.ts`.
  *   · `DELETE /api/sites/:id` — an owner takes one page off the internet (D14).
  *
  * A ROUTE FILE AT A SEGMENT THAT ALREADY HAS CHILDREN (`keep`, `demote`,

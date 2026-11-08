@@ -16,7 +16,8 @@
  *     the page (releaseName would upsert a `purged` hold back to its owner)
  *   → removeManifest — unless another page claims the slug now (an archived
  *     or removed row released it; that manifest is the other page's)
- *   → the taken objects, in `deleteMany` (a missing object is not an error)
+ *   → the taken objects and the README page's (`readmeObjectKey`, E10 D6 — in
+ *     no file row), in `deleteMany` (a missing object is not an error)
  *   → the row (versions, scans, appeals cascade; the moderation log and reports
  *     keep theirs with `site_id` NULL and the slug)
  *   COMMIT
@@ -52,7 +53,7 @@ import { releaseName } from "../names/holds";
 import { MS_PER_SECOND } from "../sites/display";
 import { lockOwner } from "../sites/keep";
 import { removeManifest } from "../storage/manifest";
-import { r2Store } from "../storage/r2";
+import { r2Store, readmeObjectKey } from "../storage/r2";
 import { withJobRun } from "../visits/sync";
 
 export type PurgeOutcome = "purged" | "partial" | "skipped" | "failed";
@@ -110,7 +111,8 @@ export async function purgeSite(siteId: string, deleteBudget: number = PURGE_DEL
         if (!removed.ok) throw new Error(`manifest removal failed at the "${removed.step}" step — ${removed.error}`);
       }
 
-      await r2.deleteMany(keys);
+      // The README page (E10 D6) is no version's file, so no file row names it.
+      await r2.deleteMany([...keys, readmeObjectKey(siteId)]);
       await deleteSiteRow(tx, siteId);
       return { outcome: "purged", deleted: keys.length };
     });

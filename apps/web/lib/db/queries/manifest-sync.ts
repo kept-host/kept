@@ -6,45 +6,129 @@
  *
  *   - `lockSiteForSync` — the site row, locked `FOR UPDATE`, with exactly the
  *     columns a manifest is built from (the current version's `spa`/`has_404`
- *     included). Not owner-scoped: the sync serves every writer (owner, token
+ *     and the badge's inputs, E10 D3, included). Not owner-scoped: the sync serves every writer (owner, token
  *     holder, moderation, expiry) and decides nothing but what the edge must say.
  *   - `pending_purges` — the durable half of the double purge. A row is written
  *     before the in-process re-purge is scheduled and deleted when it lands; a
- *     failed purge or a failed manifest write leaves one due now.
+ *     failed purge or a failed manifest write leaves one due now. E10 also
+ *     queues re-syncs here (`enqueueOwnerSyncs`, `enqueueLiveSyncs`).
  */
 import { REPURGE_MAX_ATTEMPTS } from "@kept/shared";
-import { and, asc, eq, inArray, lt, lte, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lt, lte, sql, type SQL } from "drizzle-orm";
 
 import { db, type Tx } from "../index";
-import { pendingPurges, sites, siteVersions } from "../schema";
+import { pendingPurges, profiles, sites, siteVersions } from "../schema";
 
 import { versionPaths } from "./version-files";
+
+/** The columns a manifest — its badge included (E10 D3) — is built from. */
+const manifestColumns = {
+  id: sites.id,
+  slug: sites.slug,
+  status: sites.status,
+  currentVersionId: sites.currentVersionId,
+  ownerId: sites.ownerId,
+  region: sites.region,
+  spa: siteVersions.spa,
+  has404: siteVersions.has404,
+  expiresAt: sites.expiresAt,
+  model: sites.model,
+  showMadeWith: sites.showMadeWith,
+  readme: sites.readme,
+  allowRemix: sites.allowRemix,
+  handle: profiles.handle,
+  referralCode: profiles.referralCode,
+  badgeStyle: profiles.badgeStyle,
+  plan: profiles.plan,
+};
+
+function manifestRowQuery(handle: Tx | typeof db, siteId: string) {
+  return handle
+    .select(manifestColumns)
+    .from(sites)
+    .leftJoin(siteVersions, eq(siteVersions.id, sites.currentVersionId))
+    .leftJoin(profiles, eq(profiles.id, sites.ownerId))
+    .where(eq(sites.id, siteId))
+    .$dynamic();
+}
+
+type ManifestRowRaw = Awaited<ReturnType<typeof manifestRowQuery>>[number];
+
+function normalise(site: ManifestRowRaw | undefined) {
+  return site ? { ...site, spa: site.spa === true, has404: site.has404 === true } : null;
+}
+
+export type ManifestRow = NonNullable<ReturnType<typeof normalise>>;
 
 /**
  * The site row as a manifest needs it, locked until `tx` ends. `null` when the
  * row does not exist (a hard-deleted page — the sync has nothing to say).
  *
  * `spa` / `has404` are the current version's (E08 D12, D13), `false` when it has
- * no row. Only the site row is locked (`OF sites`): Postgres refuses `FOR UPDATE`
- * on the nullable side of an outer join, and a version row never changes.
+ * no row. The badge's inputs (E10 D3) are the row's display switches and its
+ * owner's profile — all-null for an anonymous page. Only the site row is locked
+ * (`OF sites`): Postgres refuses `FOR UPDATE` on the nullable side of an outer
+ * join, a version row never changes, and a profile change that alters the badge
+ * re-syncs its pages through `pending_purges` (`lib/badge/fan-out.ts`).
  */
-export async function lockSiteForSync(tx: Tx, siteId: string) {
-  const [site] = await tx
-    .select({
-      id: sites.id,
-      slug: sites.slug,
-      status: sites.status,
-      currentVersionId: sites.currentVersionId,
-      ownerId: sites.ownerId,
-      region: sites.region,
-      spa: siteVersions.spa,
-      has404: siteVersions.has404,
-    })
-    .from(sites)
-    .leftJoin(siteVersions, eq(siteVersions.id, sites.currentVersionId))
-    .where(eq(sites.id, siteId))
-    .for("update", { of: sites });
-  return site ? { ...site, spa: site.spa === true, has404: site.has404 === true } : null;
+export async function lockSiteForSync(tx: Tx, siteId: string): Promise<ManifestRow | null> {
+  const [site] = await manifestRowQuery(tx, siteId).for("update", { of: sites });
+  return normalise(site);
+}
+
+/**
+ * The same row, unlocked — for a BRAND-NEW page's first manifest
+ * (`storeNewPage`), whose row committed a moment ago and is nobody else's yet.
+ */
+export async function readSiteForManifest(siteId: string): Promise<ManifestRow | null> {
+  const [site] = await manifestRowQuery(db, siteId);
+  return normalise(site);
+}
+
+/**
+ * Queue a re-sync of every site `where` selects, oldest first, at most `limit`:
+ * one `pending_purges` row each (`urls: []`, due now), in ONE statement. The
+ * `repurge` job replays each as `syncManifest(site)` + its purge (E10 Q4) — so a
+ * change that alters many badges never writes KV inline. A site that already
+ * has a re-sync queued (a row naming it with no URLs, not given up) is skipped,
+ * so a second run adds nothing for it. Returns how many rows were queued.
+ */
+async function enqueueSyncs(where: SQL, limit?: number): Promise<number> {
+  const rows = await db.execute<{ id: string }>(sql`
+    insert into ${pendingPurges} (site_id, slug, urls, due_at)
+    select ${sites.id}, ${sites.slug}, '[]'::jsonb, now()
+    from ${sites}
+    where ${where}
+      and not exists (
+        select 1 from ${pendingPurges} queued
+        where queued.site_id = ${sites.id}
+          and queued.urls = '[]'::jsonb
+          and queued.attempts < ${REPURGE_MAX_ATTEMPTS}
+      )
+    order by ${sites.createdAt}
+    ${limit === undefined ? sql`` : sql`limit ${limit}`}
+    returning id`);
+  return rows.length;
+}
+
+/**
+ * Every KEPT page of `profileId` the edge serves (`live`, `under_review`): the
+ * pages whose badge shows the profile (handle, referral code, badge style).
+ * A draft's badge never does, so drafts are not re-synced.
+ */
+export function enqueueOwnerSyncs(profileId: string): Promise<number> {
+  return enqueueSyncs(
+    and(
+      eq(sites.ownerId, profileId),
+      inArray(sites.status, ["live", "under_review"]),
+      isNull(sites.expiresAt),
+    )!,
+  );
+}
+
+/** The badge backfill (E10 §4.10): `live` pages, oldest first, at most `limit`. */
+export function enqueueLiveSyncs(limit?: number): Promise<number> {
+  return enqueueSyncs(eq(sites.status, "live"), limit);
 }
 
 /**

@@ -15,6 +15,10 @@
 // (and `system-pages.test.ts` pins those bytes); what this file guards is that
 // an old manifest still REACHES that page, with the same status and headers.
 //
+// E10 adds a third optional field, `badge`. A manifest without it — every page
+// kept before the E10 backfill — must serve these same bytes and ETags, so this
+// snapshot also pins "no badge, no composite ETag, no rewrite" for old pages.
+//
 // Not pinned: `/about` where `about/index.html` exists. E08 Q-new-6 makes that
 // a 301 to `/about/` on every non-SPA site, old manifests included — a
 // deliberate change, owned by `multi-file.test.ts`.

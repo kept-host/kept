@@ -526,12 +526,21 @@ test(
     assert.deepEqual(await versionFiles(db, version!.id), [{ path: "index.html", sizeBytes: bytes, sha256: PINNED_HASH }]);
     assert.equal(await r2Store().get(pageObjectKey(site.id, version!.id)), PINNED_HTML, "one object, the document's bytes");
 
-    // The manifest dev-v0.8.0 wrote, key for key: no `spa`, no `has404`.
+    // The manifest dev-v0.8.0 wrote, key for key: no `spa`, no `has404` — plus
+    // E10's `badge` last: a keyless draft's, with nothing about its publisher (D4).
     const pointer = (await r2Store().get(pointerKey(slug)))!;
     const { updatedAt } = JSON.parse(pointer) as { updatedAt: number };
     assert.equal(
       pointer,
-      JSON.stringify({ siteId: site.id, versionId: version!.id, status: "live", region: "auto", ownerId: null, updatedAt }),
+      JSON.stringify({
+        siteId: site.id,
+        versionId: version!.id,
+        status: "live",
+        region: "auto",
+        ownerId: null,
+        updatedAt,
+        badge: { variant: "draft", style: "standard" },
+      }),
     );
 
     // …and its purge list: exactly `/` and `/index.html`.

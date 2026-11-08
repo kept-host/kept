@@ -206,7 +206,7 @@ test("closed: an API key passes as the `key` door only when its account is an ad
   // `createdUserIds` is in sign-in order: the admin, then the other account.
   const [adminId, otherId] = createdUserIds;
   for (const id of [adminId!, otherId!]) {
-    await ensureProfile({ userId: id, email: await userEmail(id), handle: null });
+    await ensureProfile({ userId: id, email: await userEmail(id) });
   }
   const adminKey = (await createKey(adminId!, "launch-access drill"))!;
   const otherKey = (await createKey(otherId!, "launch-access drill"))!;

@@ -8,6 +8,7 @@
  *   pnpm --filter @kept/web admin:waitlist export [--confirmed] [--founding approved]
  *   pnpm --filter @kept/web admin:scan --unscanned [--limit <n>]
  *   pnpm --filter @kept/web admin:scan --all-live --dry-run|--apply [--limit <n>]
+ *   pnpm --filter @kept/web admin:badge-backfill [--limit <n>]
  *
  * `admin:scan` is the scanner's backfill (E07 §6.1): `--unscanned` scans live
  * pages that have no scan at all (pages published before E07), `--all-live`
@@ -15,6 +16,12 @@
  * what would be flagged and writes nothing, `--apply` scans for real (trigger
  * `backfill`; a flag goes through `setStatus` like any scan). Newest first;
  * `--limit` takes that many, for a backlog worked through in parts.
+ *
+ * `admin:badge-backfill` (E10 §4.10, Q4) puts the badge into the manifests
+ * written before E10: it queues one `pending_purges` re-sync per `live` page,
+ * oldest first, at most `--limit`, and the `repurge` job replays them — one KV
+ * write each, so on dev (1,000 writes a day) it runs with a limit, after
+ * 00:00 UTC. A page whose re-sync is already queued is skipped.
  *
  * Every command reuses a library function and says what it changed; each is
  * idempotent. `out` is the command's result (stdout: the CSV, the token);
@@ -33,6 +40,7 @@ import {
 
 import { mintAccessToken } from "../access-token";
 import { foundingApplication, upsertApprovedFounding } from "../db/queries/founding";
+import { enqueueLiveSyncs } from "../db/queries/manifest-sync";
 import { liveVersions, unscannedLiveVersions, type ScanTarget } from "../db/queries/scans";
 import { waitlistExport, waitlistStats, type WaitlistExportRow } from "../db/queries/waitlist";
 import { defaultClassifier, type ContentClassifier } from "../scan/classifier";
@@ -50,7 +58,8 @@ const USAGE = `usage:
   admin:waitlist stats
   admin:waitlist export [--confirmed] [--founding ${FOUNDING_STATUSES.join("|")}]
   admin:scan --unscanned [--limit <n>]
-  admin:scan --all-live --dry-run|--apply [--limit <n>]`;
+  admin:scan --all-live --dry-run|--apply [--limit <n>]
+  admin:badge-backfill [--limit <n>]`;
 
 const VALUE_FLAGS = new Set(["note", "founding", "limit"]);
 const SWITCH_FLAGS = new Set(["confirmed", "unscanned", "all-live", "dry-run", "apply"]);
@@ -262,6 +271,14 @@ async function scanCommand(flags: Map<string, string | true>, io: AdminIo) {
   return flags.has("apply") ? backfill(targets, classifier, io) : dryRun(targets, classifier, io);
 }
 
+/** Queue a badge re-sync for `live` pages, oldest first (E10 §4.10). */
+async function badgeBackfill(flags: Map<string, string | true>, io: AdminIo) {
+  const limit = parseLimit(flags.get("limit"));
+  io.info(`database: ${databaseLabel()}`);
+  const queued = await enqueueLiveSyncs(limit);
+  io.out(`queued ${queued} badge re-sync(s) — the repurge job writes them (one KV write each)`);
+}
+
 /** Exactly one of `--unscanned` and `--all-live`; `--all-live` takes exactly one of `--dry-run` and `--apply`. */
 function validScanFlags(flags: Map<string, string | true>): boolean {
   const names = [...flags.keys()].filter((name) => name !== "limit");
@@ -300,6 +317,10 @@ export async function runAdmin(args: readonly string[], io: AdminIo): Promise<vo
   if (group === "scan" && command === undefined) {
     if (!validScanFlags(flags)) throw new Error(USAGE);
     return scanCommand(flags, io);
+  }
+  if (group === "badge-backfill" && command === undefined) {
+    if ([...flags.keys()].some((name) => name !== "limit")) throw new Error(USAGE);
+    return badgeBackfill(flags, io);
   }
   throw new Error(USAGE);
 }
