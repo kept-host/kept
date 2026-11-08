@@ -15,7 +15,8 @@
 // same MCP server). There is no ChatGPT app, connector, card or copy — this
 // comment is the one place the name appears.
 
-import { DRAFT_TTL_DAYS, KEPT_PROD_ORIGIN } from "./constants";
+import { DRAFT_TTL_DAYS, KEPT_PROD_ORIGIN, MAX_PAGE_BYTES } from "./constants";
+import { INLINE_BODY_MAX_BYTES } from "./files";
 import { limitsFor } from "./plans";
 import { webGlobals } from "./web-globals";
 
@@ -77,6 +78,20 @@ export const BADGE_NOTE = "kept adds a small badge to HTML pages it serves; your
 
 const DRAFT_NOTE = `A draft serves for ${DRAFT_TTL_DAYS} days unless the human keeps it.`;
 
+/** What a tool call may carry — free-plan numbers, the caps every caller has at least. */
+function limitsNote(): string {
+  const free = freeLimits();
+  return (
+    `Limits: ${free.siteMb} MB and ${free.siteFiles} files per site, ${free.fileMb} MB per file, ` +
+    `${Math.round(MAX_PAGE_BYTES / MB)} MB per HTML file, ${Math.round(INLINE_BODY_MAX_BYTES / MB)} MB per call. ` +
+    "Static web files only (HTML, CSS, JS, JSON, text, images, fonts, audio, video, 3D models, wasm); send binary files with " +
+    "`encoding: \"base64\"`."
+  );
+}
+
+const REPLACE_NOTE =
+  "It replaces the whole site: send every file again, because any file you leave out is deleted.";
+
 export const MCP_TOOL_DESCRIPTIONS = {
   keyless: {
     publish_page:
@@ -84,13 +99,13 @@ export const MCP_TOOL_DESCRIPTIONS = {
       "or `files` (path + content, `index.html` at the root) for a site; set `spa` for client-routed apps. " +
       "Optional provenance: title, model, tool, prompt, readme, source_url. Returns live_url, claim_url, " +
       `manage_token, expires_at and expires_in. ${DRAFT_NOTE} Always show the human both links; keep ` +
-      "manage_token to change or delete the page later instead of publishing again.",
+      `manage_token to change or delete the page later instead of publishing again. ${limitsNote()}`,
     replace_page:
       "Replace the content of a page you published, keeping its URL. Pass its `manage_token` and new " +
-      "`html` or `files`. Use this to iterate instead of publishing a new page.",
+      `\`html\` or \`files\`. ${REPLACE_NOTE} Use this to iterate instead of publishing a new page.`,
     get_page:
       "Read a page you published by its `manage_token`: its live_url, claim_url, expiry, whether it has " +
-      "been kept, and its provenance.",
+      "been kept, its file_count, and its provenance.",
     delete_page:
       "Stop serving a page you published, by its `manage_token`. The link stops working. Only when the " +
       "human asks.",
@@ -101,14 +116,14 @@ export const MCP_TOOL_DESCRIPTIONS = {
       "or `files` (path + content, `index.html` at the root) for a site; set `spa` for client-routed apps. " +
       "Optional provenance: title, model, tool, prompt, readme, source_url. Returns live_url, studio_url, " +
       "slug, kept and expires_at. The page is kept if the account has a free slot, else it lands as a " +
-      `draft (kept: false). ${DRAFT_NOTE}`,
+      `draft (kept: false). ${DRAFT_NOTE} ${limitsNote()} Pro accounts have higher limits.`,
     replace_page:
       "Replace the content of a page in the account, keeping its URL. Pass its `page` (the slug) and new " +
-      "`html` or `files`. Use this to iterate instead of publishing a new page.",
+      `\`html\` or \`files\`. ${REPLACE_NOTE} Use this to iterate instead of publishing a new page.`,
     list_pages:
       "List the account's pages, newest first. Pass `cursor` from the previous answer's next_cursor to " +
       "page through.",
-    get_page: "Read one page in the account by its `page` (the slug): links, kept or draft, provenance.",
+    get_page: "Read one page in the account by its `page` (the slug): links, kept or draft, file_count, provenance.",
     delete_page:
       "Stop serving a page in the account, by its `page` (the slug). The link stops working. Only when " +
       "the human asks.",
