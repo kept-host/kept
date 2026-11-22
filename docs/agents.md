@@ -29,10 +29,31 @@ share one flat body: `{ "error": "<code>", "message": "…", "retry_after_second
 |---|---|---|---|
 | `rate_limited` | 429 | 3 | Wait `retry_after_seconds` |
 | `publishing_paused` | 503 | 3 | kept paused publishing during an incident (`KEPT_PUBLISH_PAUSED`); serving, deletes and keeps still work. Wait `retry_after_seconds` |
-| `missing_index`, `invalid_path`, `site_too_large`, `page_too_large`, `too_many_files`, `file_too_large`, `file_type_not_allowed`, `invalid_file`, `invalid_archive`, `empty_page`, `invalid_request` | 400 / 413 / 422 | 2 | Fix the input |
+| `missing_index`, `invalid_path`, `site_too_large`, `page_too_large`, `too_many_files`, `file_too_large`, `file_type_not_allowed`, `invalid_file`, `invalid_archive`, `empty_page`, `invalid_request`, `upload_not_found` | 400 / 404 / 413 / 422 | 2 | Fix the input (`upload_not_found`: the upload expired, was used, or came from another MCP session — call `create_upload` again) |
 | `unauthorized`, `not_found`, `not_allowed_in_status`, `key_limit_reached`, `invalid_code` (keyed and sign-in only) | 401 / 404 / 409 / 400 | 2 | Fix the key, the slug or the code |
 | `internal_error`, `slug_unavailable` | 5xx | 4 | Retry later |
 | network failure | — | 4 | Retry later |
+
+## MCP uploads (`create_upload`)
+
+MCP has no file transfer, so an agent that writes a site into `publish_page` pays for every byte in
+output tokens — and agents refuse. With a shell, the agent instead:
+
+1. calls `create_upload` → `{ upload_id, upload_url, expires_at, max_bytes, command }`;
+2. runs `command` from the site folder (`zip` it, `curl -fsS -T` to `upload_url`);
+3. calls `publish_page` or `replace_page` with `{ upload_id }`.
+
+`upload_url` is `PUT {app}/api/uploads/{id}?t=<token>` (`apps/web/app/api/uploads/[uploadId]/route.ts`,
+logic in `lib/uploads/upload.ts`). The token is an HMAC over upload id, owner, byte ceiling and expiry,
+keyed off `MCP_SESSION_SECRET` with its own label — no table, no new env. Valid 15 minutes; the body is
+buffered up to `uploadMaxBytes(plan)` (413 past it) and stored at `uploads/{owner}/{id}.zip`, where
+`readFileSet` reads it like a presigned upload. The owner is the key's profile, or `mcp-{hash}` of a
+keyless MCP session — only that session can publish it; it is deleted once used. Rate limits: the
+`uploads:{owner}` rule (20/h, shared with `/api/v1/uploads`) plus the MCP per-IP rule for keyless.
+Served on `app.` while closed: the token is only minted behind `/mcp`'s closed-mode doors.
+
+A chat app whose code sandbox has no network (ChatGPT; Claude.ai unless the user allows the kept app
+domain in its code-execution network settings) cannot use this and still sends small pages inline.
 
 ## The skill source and its mirror (Q1)
 

@@ -10,6 +10,12 @@
  * the same verbs plus `list_pages`, addressed by `page` (the slug), landing in
  * the key owner's account with `published_via = "mcp"`.
  *
+ * BOTH SETS have `create_upload`: a kept upload URL (`lib/uploads/upload.ts`)
+ * an agent with a shell PUTs a zip to, so a site's bytes never pass through
+ * its tokens; publish and replace then take `{ upload_id }`. A keyed upload
+ * lives under the key owner's profile, a keyless one under its MCP session
+ * (`sessionUploader`) — only that session can publish it.
+ *
  * ERRORS are `isError: true` with the flat `{ error, message,
  * retry_after_seconds? }` body (`PUBLISH_ERROR_CODES` / `KEYED_ERROR_CODES`)
  * as `structuredContent`, and the same JSON as text for clients that read only
@@ -20,6 +26,8 @@
 import {
   MCP_TOOL_DESCRIPTIONS,
   AGENT_RATE_LIMITS,
+  RATE_LIMITS,
+  uploadCommand,
   type KeyedError,
   type Plan,
 } from "@kept/shared";
@@ -46,8 +54,9 @@ import {
   type PublishFailure,
   type PublishSource,
 } from "../publish/pipeline";
+import { consumeUpload, mintUploadLink, spendUpload, uploadObjectKey } from "../uploads/upload";
 
-import { sessionPublisherKey } from "./session";
+import { sessionPublisherKey, sessionUploader } from "./session";
 
 /** What every MCP request knows about its caller beyond the tool set. */
 interface BaseContext {
@@ -96,7 +105,11 @@ const contentShape = {
       }),
     )
     .optional()
-    .describe("The files of a static site; send `html` or `files`, not both."),
+    .describe("The files of a static site; send one of `html`, `files` or `upload_id`."),
+  upload_id: z
+    .string()
+    .optional()
+    .describe("The upload_id create_upload returned, once its command has uploaded the site's zip."),
   spa: z.boolean().optional().describe("Serve `index.html` for unknown extensionless paths (client-routed apps)."),
   title: z.string().optional(),
   model: z.string().optional().describe("The model that wrote the page."),
@@ -112,9 +125,12 @@ type ContentArgs = { [K in keyof typeof contentShape]?: z.infer<(typeof contentS
 const manageTokenShape = { manage_token: z.string().describe("The manage_token publish_page returned.") };
 const pageShape = { page: z.string().describe("The page's slug.") };
 
-/** The tool's content, read exactly as `POST /api/publish` reads a JSON body. No uploads over MCP. */
-function readContent(args: ContentArgs, plan: Plan): Promise<FileSet | PublishFailure> {
-  const caller: FileSetCaller = { plan, uploaderId: null };
+/**
+ * The tool's content, read exactly as `POST /api/publish` reads a JSON body;
+ * an `upload_id` resolves only under `uploaderId`'s prefix.
+ */
+function readContent(args: ContentArgs, plan: Plan, uploaderId: string): Promise<FileSet | PublishFailure> {
+  const caller: FileSetCaller = { plan, uploaderId };
   const request = new Request("https://mcp.invalid/", {
     method: "POST",
     headers: { "content-type": JSON_TYPE },
@@ -126,6 +142,20 @@ function readContent(args: ContentArgs, plan: Plan): Promise<FileSet | PublishFa
 // --- Keyless -------------------------------------------------------------------
 
 const PAUSED: ToolOutcome = { ok: false, body: PUBLISHING_PAUSED_ERROR };
+
+/** A fresh upload URL into `owner`'s prefix, and the shell line that fills it. */
+function uploadLink(owner: string, plan: Plan): ToolOutcome {
+  const link = mintUploadLink(owner, plan);
+  return { ok: true, body: { ...link, command: uploadCommand(link.upload_url) } };
+}
+
+/**
+ * Used once, as the studio does (`publishOwnedSite`): the keyless pipeline
+ * knows nothing of uploads, so the tool deletes the one it published from.
+ */
+async function consumeIfUploaded(uploader: string, args: ContentArgs): Promise<void> {
+  if (args.upload_id) await consumeUpload(uploadObjectKey(uploader, args.upload_id));
+}
 
 function fromPublish<T extends object>(outcome: { ok: true; body: T } | PublishFailure): ToolOutcome {
   return outcome.ok ? { ok: true, body: outcome.body } : { ok: false, body: outcome.body };
@@ -148,18 +178,38 @@ async function keylessLimit(ctx: KeylessContext, publisherKey: string): Promise<
   );
 }
 
+/**
+ * The session's upload URL. Its buckets mirror the keyless publish's: the
+ * studio's hourly upload bucket on the session's uploader, then the per-IP
+ * ceiling across sessions.
+ */
+export async function keylessCreateUpload(ctx: KeylessContext): Promise<ToolOutcome> {
+  if (publishPaused()) return PAUSED;
+  const uploader = await sessionUploader(ctx.session);
+  const { mcpPerIpHour } = AGENT_RATE_LIMITS;
+  const refused =
+    limited(await spendUpload(uploader), `${RATE_LIMITS.uploadsPerUser.limit} uploads an hour per MCP session`) ??
+    limited(
+      await hit(await ipKey("mcp-uploads-ip", ctx.ip), mcpPerIpHour),
+      `${mcpPerIpHour.limit} MCP uploads an hour from one address`,
+    );
+  return refused ? fromPublish(refused) : uploadLink(uploader, ctx.plan);
+}
+
 export async function keylessPublish(ctx: KeylessContext, args: ContentArgs): Promise<ToolOutcome> {
   if (publishPaused()) return PAUSED;
   const publisherKey = await sessionPublisherKey(ctx.session);
   const refused = await keylessLimit(ctx, publisherKey);
   if (refused) return fromPublish(refused);
 
+  const uploader = await sessionUploader(ctx.session);
   const outcome = await publishPage(
-    () => readContent(args, ctx.plan),
+    () => readContent(args, ctx.plan, uploader),
     { ...ctx.publisher, publisherKey },
     { client: ctx.client, publishedVia: "mcp" },
   );
   if (!outcome.ok) return fromPublish(outcome);
+  await consumeIfUploaded(uploader, args);
   const { live_url, claim_url, anonToken, expires_at, expires_in } = outcome.body;
   return { ok: true, body: { live_url, claim_url, manage_token: anonToken, expires_at, expires_in } };
 }
@@ -169,7 +219,10 @@ export async function keylessReplace(
   { manage_token, ...content }: ContentArgs & { manage_token: string },
 ): Promise<ToolOutcome> {
   if (publishPaused()) return PAUSED;
-  return fromPublish(await replacePage(manage_token, () => readContent(content, ctx.plan), "mcp", ctx.client));
+  const uploader = await sessionUploader(ctx.session);
+  const outcome = await replacePage(manage_token, () => readContent(content, ctx.plan, uploader), "mcp", ctx.client);
+  if (outcome.ok) await consumeIfUploaded(uploader, content);
+  return fromPublish(outcome);
 }
 
 /** The page behind a manage token: its links, its clock, whether it was kept, and its provenance. */
@@ -212,9 +265,18 @@ function fromKeyed<T extends object>(outcome: KeyedOutcome<T>): ToolOutcome {
   return outcome.ok ? { ok: true, body: outcome.body } : { ok: false, body: outcome.body };
 }
 
+/** The key owner's upload URL, on the studio's hourly bucket for that profile (`/api/v1/uploads`'s too). */
+export async function keyedCreateUpload(ctx: KeyedContext): Promise<ToolOutcome> {
+  if (publishPaused()) return PAUSED;
+  const { profileId, plan } = ctx.caller;
+  const refused = limited(await spendUpload(profileId), `${RATE_LIMITS.uploadsPerUser.limit} uploads an hour per account`);
+  return refused ? fromPublish(refused) : uploadLink(profileId, plan);
+}
+
+// The studio's publish and replace delete the upload once it lands (`set.uploadKey`).
 export async function keyedPublishTool(ctx: KeyedContext, args: ContentArgs): Promise<ToolOutcome> {
   if (publishPaused()) return PAUSED;
-  const set = await readContent(args, ctx.caller.plan);
+  const set = await readContent(args, ctx.caller.plan, ctx.caller.profileId);
   return fromKeyed(await keyedPublish(ctx.caller, set, ctx.publisher, MCP_SOURCE(ctx)));
 }
 
@@ -223,7 +285,7 @@ export async function keyedReplaceTool(
   { page, ...content }: ContentArgs & { page: string },
 ): Promise<ToolOutcome> {
   if (publishPaused()) return PAUSED;
-  const set = await readContent(content, ctx.caller.plan);
+  const set = await readContent(content, ctx.caller.plan, ctx.caller.profileId);
   return fromKeyed(await keyedReplace(ctx.caller, page, set, MCP_SOURCE(ctx)));
 }
 
@@ -241,6 +303,8 @@ const PUBLISH = { readOnlyHint: false, destructiveHint: false, openWorldHint: tr
 // changes nothing more — so clients may retry them safely.
 const DESTRUCTIVE = { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true } as const;
 const READ_ONLY = { readOnlyHint: true, openWorldHint: false } as const;
+// Every call mints a new upload and spends one of the hour's.
+const UPLOAD = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } as const;
 
 function registerKeyless(server: McpServer, ctx: KeylessContext): void {
   const copy = MCP_TOOL_DESCRIPTIONS.keyless;
@@ -248,6 +312,11 @@ function registerKeyless(server: McpServer, ctx: KeylessContext): void {
     "publish_page",
     { description: copy.publish_page, inputSchema: contentShape, annotations: PUBLISH },
     async (args) => toolResult(await keylessPublish(ctx, args)),
+  );
+  server.registerTool(
+    "create_upload",
+    { description: copy.create_upload, annotations: UPLOAD },
+    async () => toolResult(await keylessCreateUpload(ctx)),
   );
   server.registerTool(
     "replace_page",
@@ -272,6 +341,11 @@ function registerKeyed(server: McpServer, ctx: KeyedContext): void {
     "publish_page",
     { description: copy.publish_page, inputSchema: contentShape, annotations: PUBLISH },
     async (args) => toolResult(await keyedPublishTool(ctx, args)),
+  );
+  server.registerTool(
+    "create_upload",
+    { description: copy.create_upload, annotations: UPLOAD },
+    async () => toolResult(await keyedCreateUpload(ctx)),
   );
   server.registerTool(
     "replace_page",
