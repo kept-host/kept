@@ -387,7 +387,7 @@ Non-2xx answers are {"error": "<code>", "message": "…", "retry_after_seconds"?
 ## Other ways in
 
 - Skill: ${SKILL_INSTALL_COMMAND} (or ${installCommand(base)}); SKILL.md at ${base}/skill.md
-- MCP (Streamable HTTP): ${mcpUrl(base)}
+- MCP (Streamable HTTP): ${mcpUrl(base)} — with a shell, send a site as a zip: create_upload, run its command, then publish_page with upload_id
 - Setup per agent: ${base}/agents
 - Limits: ${free.siteMb} MB and ${free.siteFiles} files per site, ${free.fileMb} MB per file
 - Acceptable use: ${base}/legal/acceptable-use
