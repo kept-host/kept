@@ -331,7 +331,7 @@ const APP_APIS = [
   "/api/uploads",
 ];
 /** Allowed by no rule: `not-open` on every host. */
-const CLOSED_APIS = ["/api", "/api/unknown", "/api/cronx", "/api/publishx", "/api/accounts", "/api/uploads/x"];
+const CLOSED_APIS = ["/api", "/api/unknown", "/api/cronx", "/api/publishx", "/api/accounts", "/api/uploadsx"];
 /** The control plane's pages: the split rule's, on any host, closed or not. */
 const APP_PAGES = [
   "/auth",
@@ -730,6 +730,18 @@ test("E09 closed: /api/keys passes on the app host only; /api/uploads is unchang
     assert.deepEqual(decideClosed(APEX_HOST, pathname, "", APP_URL, true), NOT_OPEN, `apex ${pathname} credentialed`);
   }
   assert.deepEqual(decideClosed(APP_HOST, "/api/keysx"), NOT_OPEN);
+});
+
+test("closed: the create_upload PUT (/api/uploads/{id}) passes on the app host with no credential, never on the apex", () => {
+  const pathname = "/api/uploads/0b0c1d2e-0000-4000-8000-000000000000";
+  // `curl -T` carries the token in the query, not a Bearer header or a cookie.
+  assert.equal(decideClosed(APP_HOST, pathname, "?t=x.y"), undefined);
+  assert.deepEqual(decideClosed(APEX_HOST, pathname, "?t=x.y"), NOT_OPEN);
+  assert.deepEqual(decideClosed(APEX_HOST, pathname, "?t=x.y", APP_URL, true), NOT_OPEN);
+  // Open, every /api path passes on both hosts as before.
+  for (const host of [APEX_HOST, APP_HOST]) {
+    assert.deepEqual(decide(host, pathname), { kind: "pass", stampPathname: false }, host);
+  }
 });
 
 test("E09 closed middleware: /mcp and /api/agent/* reach their handlers on the apex; a bare /api/v1 call is not_open", async () => {

@@ -198,3 +198,100 @@ test("consume-once: consumeUpload deletes the object, and a second read of the I
 
   await consumeUpload(key); // an already-deleted upload is not an error
 });
+
+// ── Kept upload URLs (MCP `create_upload`): the token and the PUT's refusals ──
+// Pure: a test secret, and every case here is refused before R2 is touched.
+
+const TOKEN_SECRET = "upload-token-test-secret-0123456789abcdefghij";
+
+function putRequest(body: Uint8Array<ArrayBuffer> | null, headers: Record<string, string> = {}): Request {
+  return new Request("https://app.kept.test/api/uploads/x", { method: "PUT", headers, body });
+}
+
+test("upload token: round-trips its grant, bound to its upload ID, owner and secret", async () => {
+  const { mintUploadToken, verifyUploadToken } = await import("./upload");
+  const uploadId = crypto.randomUUID();
+  const grant = { owner: "mcp-abc", maxBytes: 1024, exp: Math.floor(Date.now() / 1000) + 60 };
+  const token = mintUploadToken(uploadId, grant, TOKEN_SECRET);
+
+  assert.deepEqual(verifyUploadToken(uploadId, token, TOKEN_SECRET), grant);
+  // Another upload's ID, another secret: the same token names nothing.
+  assert.equal(verifyUploadToken(crypto.randomUUID(), token, TOKEN_SECRET), "invalid");
+  assert.equal(verifyUploadToken(uploadId, token, `${TOKEN_SECRET}x`), "invalid");
+
+  // A rewritten grant (another owner's prefix, a bigger ceiling) keeps the old MAC: refused.
+  const [, mac] = token.split(".");
+  for (const forged of [{ ...grant, owner: "someone-else" }, { ...grant, maxBytes: 10 ** 9 }]) {
+    const payload = Buffer.from(JSON.stringify(forged)).toString("base64url");
+    assert.equal(verifyUploadToken(uploadId, `${payload}.${mac}`, TOKEN_SECRET), "invalid", JSON.stringify(forged));
+  }
+  for (const junk of ["", "x", "a.b", `${token}.extra`, `${token.slice(0, -2)}AA`]) {
+    assert.equal(verifyUploadToken(uploadId, junk, TOKEN_SECRET), "invalid", `junk ${junk.length}`);
+  }
+});
+
+test("upload token: expired at its exp", async () => {
+  const { mintUploadToken, verifyUploadToken } = await import("./upload");
+  const uploadId = crypto.randomUUID();
+  const exp = Math.floor(Date.now() / 1000) + 60;
+  const token = mintUploadToken(uploadId, { owner: "p", maxBytes: 10, exp }, TOKEN_SECRET);
+  assert.equal(typeof verifyUploadToken(uploadId, token, TOKEN_SECRET, exp * 1000 - 1), "object");
+  assert.equal(verifyUploadToken(uploadId, token, TOKEN_SECRET, exp * 1000), "expired");
+});
+
+test("receiveUpload: missing or forged token 403, expired 404 upload_not_found, past the ceiling 413, empty 400", async () => {
+  const { mintUploadToken, receiveUpload } = await import("./upload");
+  const uploadId = crypto.randomUUID();
+  const live = (maxBytes: number) =>
+    mintUploadToken(uploadId, { owner: "p", maxBytes, exp: Math.floor(Date.now() / 1000) + 60 }, TOKEN_SECRET);
+  const refusal = async (outcome: Awaited<ReturnType<typeof receiveUpload>>) => {
+    assert.equal(outcome.ok, false);
+    return outcome.ok ? null : { status: outcome.status, error: outcome.body.error };
+  };
+
+  assert.deepEqual(await refusal(await receiveUpload(uploadId, null, putRequest(new Uint8Array(4)), TOKEN_SECRET)), {
+    status: 403,
+    error: "invalid_request",
+  });
+  assert.deepEqual(
+    await refusal(await receiveUpload(crypto.randomUUID(), live(10), putRequest(new Uint8Array(4)), TOKEN_SECRET)),
+    { status: 403, error: "invalid_request" },
+    "a token for another upload",
+  );
+  assert.deepEqual(
+    await refusal(await receiveUpload("not-a-uuid", live(10), putRequest(new Uint8Array(4)), TOKEN_SECRET)),
+    { status: 403, error: "invalid_request" },
+  );
+
+  const expired = mintUploadToken(uploadId, { owner: "p", maxBytes: 10, exp: Math.floor(Date.now() / 1000) - 1 }, TOKEN_SECRET);
+  assert.deepEqual(await refusal(await receiveUpload(uploadId, expired, putRequest(new Uint8Array(4)), TOKEN_SECRET)), {
+    status: 404,
+    error: "upload_not_found",
+  });
+
+  // Past the grant's ceiling: by the declared length, and by counting a body that declares none.
+  assert.deepEqual(
+    await refusal(await receiveUpload(uploadId, live(8), putRequest(new Uint8Array(9), { "content-length": "9" }), TOKEN_SECRET)),
+    { status: 413, error: "site_too_large" },
+  );
+  const chunked = new Request("https://app.kept.test/api/uploads/x", {
+    method: "PUT",
+    body: new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(5));
+        controller.enqueue(new Uint8Array(5));
+        controller.close();
+      },
+    }),
+    duplex: "half",
+  } as RequestInit);
+  assert.deepEqual(await refusal(await receiveUpload(uploadId, live(8), chunked, TOKEN_SECRET)), {
+    status: 413,
+    error: "site_too_large",
+  });
+
+  assert.deepEqual(await refusal(await receiveUpload(uploadId, live(8), putRequest(null), TOKEN_SECRET)), {
+    status: 400,
+    error: "invalid_request",
+  });
+});

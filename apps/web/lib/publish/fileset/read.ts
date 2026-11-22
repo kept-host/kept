@@ -230,8 +230,8 @@ async function readJsonInput(raw: unknown, caller: FileSetCaller): Promise<RawIn
   if (forms[0] === "upload_id") {
     const parsed = uploadPublishRequestSchema.safeParse(body);
     if (!parsed.success) return requestError(parsed.error);
-    // D5: anonymous and keyless callers (`caller.uploaderId === null`) never
-    // have an upload — the same refusal as an ID that names nothing.
+    // D5: anonymous HTTP callers (`caller.uploaderId === null`) never have an
+    // upload — the same refusal as an ID that names nothing.
     if (caller.uploaderId === null) return uploadNotFoundFailure();
     const uploadKey = uploadObjectKey(caller.uploaderId, parsed.data.upload_id);
     const files = await readUpload(uploadKey, caller.plan);

@@ -124,7 +124,13 @@ test.describe("MCP /mcp", () => {
       expect(a.transport.sessionId).not.toBe(b.transport.sessionId);
 
       const { tools } = await a.client.listTools();
-      expect(tools.map((tool) => tool.name).sort()).toEqual(["delete_page", "get_page", "publish_page", "replace_page"]);
+      expect(tools.map((tool) => tool.name).sort()).toEqual([
+        "create_upload",
+        "delete_page",
+        "get_page",
+        "publish_page",
+        "replace_page",
+      ]);
 
       const html = titledHtml(`mcp keyless ${crypto.randomUUID()}`);
       const first = await call(a.client, "publish_page", { html, model: "drill-model" });
@@ -177,7 +183,14 @@ test.describe("MCP /mcp", () => {
     const keyed = await connect(request, baseURL!, { authorization: `Bearer ${created!.apiKey}` });
     try {
       const { tools } = await keyed.client.listTools();
-      expect(tools.map((tool) => tool.name).sort()).toEqual(["delete_page", "get_page", "list_pages", "publish_page", "replace_page"]);
+      expect(tools.map((tool) => tool.name).sort()).toEqual([
+        "create_upload",
+        "delete_page",
+        "get_page",
+        "list_pages",
+        "publish_page",
+        "replace_page",
+      ]);
 
       const published = keyedPublishResponseSchema.parse(
         await call(keyed.client, "publish_page", { html: titledHtml(`mcp keyed ${crypto.randomUUID()}`) }),

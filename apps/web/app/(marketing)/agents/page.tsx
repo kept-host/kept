@@ -1,4 +1,4 @@
-import { agentPrompt, agentSetups } from "@kept/shared";
+import { agentPrompt, agentSetups, bigSitesNote } from "@kept/shared";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -7,6 +7,7 @@ import { CodeBlock } from "@/components/kept/code-block";
 import { LegalLinks } from "@/components/kept/legal-links";
 import { agentBase, discoveryServed } from "@/lib/agents/discovery";
 import { agentsMetadata } from "@/lib/og/preview";
+import { appOrigin } from "@/lib/storage/env";
 
 import { AgentTabs } from "./agent-tabs";
 
@@ -50,6 +51,11 @@ export default function AgentsPage() {
       <section className="flex flex-col gap-4">
         <h2 className="font-display text-xl font-semibold text-text">Set up your agent</h2>
         <AgentTabs setups={agentSetups(base)} />
+      </section>
+
+      <section className="flex flex-col gap-3">
+        <h2 className="font-display text-xl font-semibold text-text">Big sites and chat apps</h2>
+        <p className="text-text-secondary">{bigSitesNote(new URL(appOrigin()).host)}</p>
       </section>
 
       <p className="text-sm text-text-secondary">

@@ -6,8 +6,8 @@
  * delete. Everything else — the tool lists and their annotations, a refused
  * body, the per-session ceiling, the publish pause — writes nothing to KV.
  *
- * 6 KV-writing calls (two publishes, two replaces, two deletes) plus the
- * teardown's. SKIPS without dev credentials. Every row, object, KV key and
+ * 9 KV-writing calls (four publishes — two of them from a `create_upload` zip —
+ * two replaces, three deletes) plus the teardown's. SKIPS without dev credentials. Every row, object, KV key and
  * rate bucket it made is removed in `after`. Run with
  *
  *   pnpm --filter @kept/web exec tsx --test lib/mcp/tools.test.ts
@@ -30,10 +30,14 @@ import { profiles, rateLimits, siteVersions, sites, user } from "../db/schema";
 import { ipKey } from "../rate-limit";
 import { pageObjectKey, r2Store } from "../storage/r2";
 
-import { mintSessionId, sessionOf, sessionPublisherKey } from "./session";
+import { uploadObjectKey } from "../uploads/upload";
+
+import { mintSessionId, sessionOf, sessionPublisherKey, sessionUploader } from "./session";
 import {
+  keyedCreateUpload,
   keyedPublishTool,
   keyedReplaceTool,
+  keylessCreateUpload,
   keylessDelete,
   keylessGet,
   keylessPublish,
@@ -71,6 +75,7 @@ process.env.RATE_LIMIT_SECRET ??= "e09-009-tools-rate-limit-secret-0123456789abc
 const createdUsers = new Set<string>();
 const publishedSlugs = new Set<string>();
 const buckets = new Set<string>();
+const uploadKeys = new Set<string>();
 
 const IP = "203.0.113.90";
 const publisher = { ip: IP, userAgent: "kept-e09-009-drill/1.0" };
@@ -86,6 +91,8 @@ async function keylessContext(): Promise<KeylessContext> {
     buckets.add(bucket);
   }
   buckets.add(await ipKey("mcp-ip", IP));
+  buckets.add(`uploads:${await sessionUploader(session)}`);
+  buckets.add(await ipKey("mcp-uploads-ip", IP));
   return { kind: "keyless", session, plan: "free", ip: IP, client: CLIENT, publisher };
 }
 
@@ -96,6 +103,7 @@ async function keyedContext(plan: Plan): Promise<KeyedContext> {
   createdUsers.add(id);
   const keyId = crypto.randomUUID();
   buckets.add(`key:${keyId}`);
+  buckets.add(`uploads:${id}`);
   return { kind: "keyed", caller: { keyId, profileId: id, plan }, client: CLIENT, publisher };
 }
 
@@ -122,6 +130,7 @@ after(async () => {
     const keys = [...versions.map((v) => pageObjectKey(siteId, v.id)), ...(await siteObjectKeys(db, siteId))];
     if (keys.length > 0) await r2Store().deleteMany(keys).catch(() => undefined);
   }
+  if (uploadKeys.size > 0) await r2Store().deleteMany([...uploadKeys]);
   if (siteIds.size > 0) await db.delete(sites).where(inArray(sites.id, [...siteIds]));
   if (createdUsers.size > 0) await db.delete(user).where(inArray(user.id, [...createdUsers]));
   if (buckets.size > 0) await db.delete(rateLimits).where(inArray(rateLimits.bucket, [...buckets]));
@@ -148,9 +157,22 @@ test("tools/list: the keyless and keyed sets, their annotations, and the isError
   }
 
   const keyless = await listed(await keylessContext());
-  assert.deepEqual([...keyless.tools.keys()].sort(), ["delete_page", "get_page", "publish_page", "replace_page"]);
+  assert.deepEqual([...keyless.tools.keys()].sort(), [
+    "create_upload",
+    "delete_page",
+    "get_page",
+    "publish_page",
+    "replace_page",
+  ]);
   const keyed = await listed(await keyedContext("free"));
-  assert.deepEqual([...keyed.tools.keys()].sort(), ["delete_page", "get_page", "list_pages", "publish_page", "replace_page"]);
+  assert.deepEqual([...keyed.tools.keys()].sort(), [
+    "create_upload",
+    "delete_page",
+    "get_page",
+    "list_pages",
+    "publish_page",
+    "replace_page",
+  ]);
 
   for (const tools of [keyless.tools, keyed.tools]) {
     const publish = tools.get("publish_page")!.annotations;
@@ -163,6 +185,12 @@ test("tools/list: the keyless and keyed sets, their annotations, and the isError
       assert.equal(tools.get(name)!.annotations?.idempotentHint, true, name);
     }
     assert.equal(tools.get("get_page")!.annotations?.readOnlyHint, true);
+    const upload = tools.get("create_upload")!.annotations;
+    assert.deepEqual(
+      [upload?.readOnlyHint, upload?.destructiveHint, upload?.idempotentHint, upload?.openWorldHint],
+      [false, false, false, true],
+    );
+    assert.ok(tools.get("publish_page")!.inputSchema.properties?.upload_id, "publish takes an upload_id");
   }
   assert.equal(keyed.tools.get("list_pages")!.annotations?.readOnlyHint, true);
   assert.ok(keyless.tools.get("replace_page")!.inputSchema.properties?.manage_token, "keyless addresses by manage_token");
@@ -188,6 +216,8 @@ test("the publish pause answers publishing_paused on every writing tool, reading
       await keylessReplace(keyless, { manage_token: "not-a-token", html }),
       await keyedPublishTool(keyed, { html }),
       await keyedReplaceTool(keyed, { page: "not-a-page", html }),
+      await keylessCreateUpload(keyless),
+      await keyedCreateUpload(keyed),
     ]) {
       assert.equal(outcome.ok, false);
       if (!outcome.ok) assert.equal(outcome.body.error, "publishing_paused");
@@ -306,4 +336,70 @@ test("keyed: one page — publish kept → get → replace → delete, all publi
     await client.close();
     await server.close();
   }
+});
+
+// ── create_upload: the zip goes over a kept PUT, the call carries only its ID ──
+
+/** A one-page site as a zip, the bytes `create_upload`'s command would PUT. */
+async function siteZip(marker: string): Promise<Uint8Array<ArrayBuffer>> {
+  const { downloadZip } = await import("client-zip");
+  return new Uint8Array(
+    await downloadZip([{ name: "index.html", input: pageHtml(marker), lastModified: new Date(0) }]).arrayBuffer(),
+  );
+}
+
+/** `create_upload`, then the PUT its command makes — through the real route handler. */
+async function uploaded(outcome: Awaited<ReturnType<typeof keylessCreateUpload>>, owner: string, marker: string) {
+  assert.ok(outcome.ok, JSON.stringify(outcome.body));
+  const link = outcome.body as { upload_id: string; upload_url: string; max_bytes: number; command: string };
+  uploadKeys.add(uploadObjectKey(owner, link.upload_id));
+  assert.ok(link.command.endsWith(`curl -fsS -T /tmp/kept-site.zip '${link.upload_url}'`), "the command PUTs to the URL");
+  assert.ok(link.command.startsWith("cd <your site folder> && "), "the folder is the agent's to fill in");
+
+  const { PUT } = await import("../../app/api/uploads/[uploadId]/route");
+  const zip = await siteZip(marker);
+  const res = await PUT(new Request(link.upload_url, { method: "PUT", body: zip }), {
+    params: Promise.resolve({ uploadId: link.upload_id }),
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { upload_id: link.upload_id, bytes: zip.length });
+  return link.upload_id;
+}
+
+test("keyless create_upload: PUT the zip, publish_page({ upload_id }) is live and spends it; another session cannot use one", { skip }, async () => {
+  const ctx = await keylessContext();
+  const owner = await sessionUploader(ctx.session);
+
+  const uploadId = await uploaded(await keylessCreateUpload(ctx), owner, "e09 keyless upload");
+  const published = await keylessPublish(ctx, { upload_id: uploadId });
+  assert.ok(published.ok, JSON.stringify(published.body));
+  const body = published.body as Record<string, string>;
+  const slug = slugOf(body.live_url!);
+  publishedSlugs.add(slug);
+  assert.equal((await siteBySlug(slug)).status, "live");
+  assert.equal(await r2Store().get(uploadObjectKey(owner, uploadId)), null, "used once: the upload is deleted");
+
+  // Another session's upload_id names nothing here, and is still there for its own session.
+  const foreignId = await uploaded(await keylessCreateUpload(ctx), owner, "e09 foreign upload");
+  const other = await keylessContext();
+  const refused = await keylessPublish(other, { upload_id: foreignId });
+  assert.equal(refused.ok, false);
+  if (!refused.ok) assert.equal(refused.body.error, "upload_not_found");
+  assert.notEqual(await r2Store().get(uploadObjectKey(owner, foreignId)), null);
+
+  assert.deepEqual(await keylessDelete(body.manage_token!), { ok: true, body: { deleted: true } });
+});
+
+test("keyed create_upload: PUT the zip, publish_page({ upload_id }) lands in the account and spends it", { skip }, async () => {
+  const ctx = await keyedContext("free");
+  const owner = ctx.caller.profileId;
+
+  const uploadId = await uploaded(await keyedCreateUpload(ctx), owner, "e09 keyed upload");
+  const published = await keyedPublishTool(ctx, { upload_id: uploadId });
+  assert.ok(published.ok, JSON.stringify(published.body));
+  const body = keyedPublishResponseSchema.parse(published.body);
+  publishedSlugs.add(body.slug);
+  const site = await siteBySlug(body.slug);
+  assert.deepEqual([site.ownerId, site.status], [owner, "live"]);
+  assert.equal(await r2Store().get(uploadObjectKey(owner, uploadId)), null, "used once: the upload is deleted");
 });

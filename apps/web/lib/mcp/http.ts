@@ -21,7 +21,7 @@
  *
  * ⚠️ NEVER LOGS a session id, a key, or a body (tool arguments carry HTML).
  */
-import { INLINE_BODY_MAX_BYTES } from "@kept/shared";
+import { INLINE_BODY_MAX_BYTES, MCP_SERVER_INSTRUCTIONS } from "@kept/shared";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { isInitializeRequest, isJSONRPCRequest, type RequestId } from "@modelcontextprotocol/sdk/types.js";
@@ -116,7 +116,7 @@ export async function handleMcpPost(request: Request): Promise<Response> {
     ? { kind: "keyed", caller, ...base }
     : { kind: "keyless", session, plan: keylessPlan(door), ip: clientIp(request), ...base };
 
-  const server = new McpServer(SERVER_INFO);
+  const server = new McpServer(SERVER_INFO, { instructions: MCP_SERVER_INSTRUCTIONS });
   registerTools(server, context);
   // Stateless: no `sessionIdGenerator`, so the SDK keeps no session map — the
   // id is checked above and stamped on the `initialize` answer below.
