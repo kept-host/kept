@@ -16,6 +16,7 @@ import { keptOpen } from "@/lib/launch";
 import { infraCostMonth, keptCount, uptime } from "@/lib/landing-stats";
 import { DROP_HINT } from "@/lib/publish/fileset/copy";
 import { UPLOAD_ACCEPT } from "@/lib/publish/pack";
+import { withRef } from "@/lib/referrals/ref";
 
 import {
   KeptEngine,
@@ -113,7 +114,12 @@ function bind<T extends HTMLElement>(ref: { current: T | null }) {
   };
 }
 
-export default function KeptLanding() {
+/**
+ * `refCode`: the visitor's `?ref=` (E10 D11), already validated by the page.
+ * It rides on the sign-in link to `app.` — a cookie on the apex would not be
+ * readable there (03 §9) — and on from there into sign-up.
+ */
+export default function KeptLanding({ refCode = null }: { refCode?: string | null }) {
   const [state, dispatch] = useReducer(reducer, INITIAL);
   // Which door opened the waitlist; a drop is the default (the engine opens it).
   const [waitlistSource, setWaitlistSource] =
@@ -360,7 +366,7 @@ export default function KeptLanding() {
                 needs. A closed deploy (`lib/launch.ts`) has no sign-in, so
                 the same slot offers the waitlist instead. */}
             {keptOpen() ? (
-              <a id="nav-signin" href={DASHBOARD_HREF} style={navSignIn}>
+              <a id="nav-signin" href={withRef(DASHBOARD_HREF, refCode)} style={navSignIn}>
                 SIGN&nbsp;IN
               </a>
             ) : (

@@ -5,7 +5,7 @@
  * branch: CHECKs, foreign keys and partial indexes are database behaviour.
  *
  * Two databases are proved:
- *   - FROM EMPTY: every migration, `0000` → `0011`, replayed into a scratch
+ *   - FROM EMPTY: every migration `0000` → `0011` (not later ones), replayed into a scratch
  *     schema inside a transaction that is rolled back — nothing persists.
  *   - ON TOP OF `0010`: the dev branch's `public` schema, migrated by
  *     `pnpm --filter @kept/web db:migrate`.
@@ -142,14 +142,11 @@ test(
   async () => {
     const { db, sql } = await deps();
     const dir = join(process.cwd(), "drizzle");
+    // Up to 0011 only: later migrations have their own drills.
     const files = readdirSync(dir)
-      .filter((file) => /^\d{4}_.*\.sql$/.test(file))
+      .filter((file) => /^\d{4}_.*\.sql$/.test(file) && file <= "0011_~")
       .sort();
-    assert.equal(
-      files.at(-1)?.slice(0, 4),
-      "0011",
-      "0011 is the latest migration"
-    );
+    assert.equal(files.at(-1)?.slice(0, 4), "0011", "replays through 0011");
     const scratch = `e09_002_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
 
     let defs = new Map<string, string>();

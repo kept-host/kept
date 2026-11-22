@@ -12,9 +12,9 @@
  * FOUR PROPERTIES ARE LOAD-BEARING and are asserted directly rather than
  * inferred from a status code:
  *
- *   1. The ordinary keep NEVER touches the store. Asserted by the absence of
- *      the slug pointer in R2 — `writeManifest` writes the pointer before KV,
- *      so no pointer means no manifest write and no purge.
+ *   1. Every keep owes a manifest sync after its commit (E10 D5) — the badge
+ *      flips to kept. Asserted by the `pending_purges` row the sync records
+ *      for a versionless row, and by the restore drill's pointer (with badge).
  *   2. Unknown token, malformed token, every moderated status, an archived page
  *      and an expired-past-grace page produce the BYTE-IDENTICAL 404. A
  *      distinguishable answer turns a token guess into an existence probe.
@@ -135,6 +135,16 @@ async function makeProfile(): Promise<string> {
   await db.insert(profiles).values({ id, email, plan: "free" });
   createdProfiles.add(id);
   return id;
+}
+
+/** The profile's permanent referral code — a kept badge's `refCode` with no handle (Q3). */
+async function referralCodeOf(profileId: string): Promise<string> {
+  const db = await client();
+  const { profiles } = await schema();
+  const { eq } = await import("drizzle-orm");
+  const [row] = await db.select({ code: profiles.referralCode }).from(profiles).where(eq(profiles.id, profileId));
+  if (!row) throw new Error(`Drill profile ${profileId} vanished.`);
+  return row.code;
 }
 
 interface MakeSite {
@@ -273,7 +283,7 @@ after(async () => {
 });
 
 test(
-  "under the cap: the page is kept, both clocks are gone, the token is dead — and nothing touched the store",
+  "under the cap: the page is kept, both clocks are gone, the token is dead — and the manifest sync is owed (E10 D5)",
   { skip: skipLive },
   async () => {
     const { keepAnonymousPage } = await import("./anon-keep");
@@ -307,9 +317,16 @@ test(
     assert.equal(row.status, "live", "keeping never changes the status");
     assert.equal(row.slug, site.slug, "the URL must not move");
 
-    // PROPERTY 1. `writeManifest` writes the slug pointer BEFORE KV, so the
-    // absence of a pointer for a slug that was never published is proof that
-    // the ordinary keep wrote no manifest and burned no purge.
+    // PROPERTY 1 (E10 D5, AC7). The keep syncs the manifest after its commit —
+    // the badge flips to the kept variant. This row has no version, so the sync
+    // cannot express a manifest: it writes no store (no pointer) and records
+    // its purge as a `pending_purges` row naming the site, due now.
+    const db = await client();
+    const { pendingPurges } = await schema();
+    const { eq } = await import("drizzle-orm");
+    const owed = await db.select().from(pendingPurges).where(eq(pendingPurges.siteId, site.id));
+    assert.equal(owed.length, 1, "the keep's sync is recorded");
+    assert.deepEqual(owed[0]!.urls, [], "a re-sync, not a bare purge");
     if (!skipStores) {
       assert.equal(await r2Store().get(pointerKey(site.slug)), null);
     }
@@ -652,6 +669,7 @@ test(
       region: "auto",
       ownerId: profileId,
       updatedAt: JSON.parse(pointer).updatedAt as number,
+      badge: { variant: "kept", style: "standard", refCode: await referralCodeOf(profileId) },
     });
 
     // AND THE PAGE IS ACTUALLY BACK. A fresh cache-busting URL each poll, so

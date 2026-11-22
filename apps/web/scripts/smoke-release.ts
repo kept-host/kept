@@ -77,6 +77,7 @@ import { mintAccessToken } from "../lib/access-token";
 import { hasLegalPlaceholders } from "../lib/legal";
 import { LEGAL_DOCS } from "../lib/legal/links";
 import { KV_REPURGE_DELAY_MS } from "../lib/storage/manifest";
+import { unbadged } from "../lib/testing/served-badge";
 import { readOption, requireEnv, requireUrl } from "./lib/cli-args";
 import {
   canaryHtml,
@@ -563,10 +564,12 @@ async function smokePublish(webUrl: string, deadline: number): Promise<StoreResu
     }
   }
 
-  if (body !== html) {
+  // E10 Risk 3: the edge adds exactly one badge to an HTML page; the rest of
+  // the body is the published bytes.
+  if (unbadged(body) !== html) {
     return fail(
       name,
-      `GET ${liveUrl} → 200 but served ${body.length}B, not the ${html.length}B published`,
+      `GET ${liveUrl} → 200 but served ${body.length}B, not the ${html.length}B published plus one badge`,
     );
   }
   if (!contentType.startsWith("text/html")) {

@@ -20,7 +20,13 @@
  *   · **D17:** another account's page, a malformed id and a `removed` page are
  *     the one not-found body.
  *
- * SKIPS without dev credentials; every row and object is deleted in `after`.
+ * E10 (task 006) adds the provenance: a provenance-only save (the 001
+ * carry-forward 500), `""` clearing a field, E09's `cleanProvenance` on the way
+ * in, Q5's "no KV unless the badge or README page changed", and the README
+ * page itself — written to real R2 with `<script>` as text, deleted when the
+ * README is cleared. That drill syncs one real manifest (2 KV writes).
+ *
+ * SKIPS without dev credentials; every row, object and manifest is deleted in `after`.
  */
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
@@ -29,6 +35,7 @@ import {
   DRAFT_GRACE_DAYS,
   DRAFT_TTL_DAYS,
   PAGE_TITLE_MAX_LENGTH,
+  PROVENANCE_LIMITS,
   type SiteStatus,
   siteUpdateResultSchema,
   studioErrorSchema,
@@ -57,12 +64,14 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const createdSites = new Set<string>();
 const createdUsers = new Set<string>();
 const createdObjects = new Set<string>();
+/** Slugs a README drill synced to the dev KV namespace — removed in `after`. */
+const createdManifests = new Set<string>();
 
 async function deps() {
   const { eq } = await import("drizzle-orm");
   const { db } = await import("../db/index");
   const { profiles, siteVersions, sites, user } = await import("../db/schema");
-  const { PAGE_CONTENT_TYPE, pageObjectKey, r2Store } = await import("../storage/r2");
+  const { PAGE_CONTENT_TYPE, pageObjectKey, r2Store, readmeObjectKey } = await import("../storage/r2");
   const { updateOwnedSite } = await import("./owner-routes");
   return {
     eq,
@@ -74,6 +83,7 @@ async function deps() {
     PAGE_CONTENT_TYPE,
     pageObjectKey,
     r2Store,
+    readmeObjectKey,
     updateOwnedSite,
   };
 }
@@ -155,6 +165,10 @@ after(async () => {
   const { db, profiles, r2Store, sites, user } = await deps();
   const { inArray } = await import("drizzle-orm");
   for (const key of createdObjects) await r2Store().delete(key).catch(() => undefined);
+  if (createdManifests.size > 0) {
+    await (await import("../testing/served-manifests")).removeServedManifests(createdManifests);
+  }
+  await (await import("../testing/pending-purges")).clearPendingPurges(createdManifests, createdSites);
   if (createdSites.size) await db.delete(sites).where(inArray(sites.id, [...createdSites]));
   if (createdUsers.size) {
     await db.delete(profiles).where(inArray(profiles.id, [...createdUsers]));
@@ -328,4 +342,114 @@ test("a body that names nothing, a title over the cap and a non-boolean flag are
 
   const exactly = await updateOwnedSite(siteId, { title: "x".repeat(PAGE_TITLE_MAX_LENGTH) }, owner);
   assert.equal(exactly.status, 200, "the cap itself is allowed");
+});
+
+/** `pending_purges` rows naming a site — what a manifest sync leaves behind. */
+async function pendingPurgeCount(siteId: string): Promise<number> {
+  const { db, eq } = await deps();
+  const { pendingPurges } = await import("../db/schema");
+  return (await db.select().from(pendingPurges).where(eq(pendingPurges.siteId, siteId))).length;
+}
+
+test("E10 §4.1 (001 carry-forward): a provenance-only save works, \"\" clears, values go through cleanProvenance", { skip }, async () => {
+  const { updateOwnedSite } = await deps();
+  const owner = await makeOwner();
+  // A draft: its badge is fixed (D4), so nothing here owes the edge a sync.
+  const siteId = await seedSite(owner, { kept: false });
+
+  const saved = await updateOwnedSite(
+    siteId,
+    {
+      model: " claude\u0007-opus-4-7 ",
+      tool: "Claude Code",
+      prompt: "line one\nline two",
+      sourceUrl: "https://example.com/src",
+      showPrompt: true,
+      showMadeWith: false,
+      allowRemix: true,
+    },
+    owner,
+  );
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  const site = siteUpdateResultSchema.parse(saved.body).site;
+  assert.equal(site.model, "claude-opus-4-7", "control characters out (cleanProvenance)");
+  assert.equal(site.tool, "Claude Code");
+  assert.equal(site.prompt, "line one\nline two", "newlines survive in a multi-line field");
+  assert.equal(site.sourceUrl, "https://example.com/src");
+  assert.equal(site.showPrompt, true);
+  assert.equal(site.showMadeWith, false);
+  assert.equal(site.allowRemix, true);
+  assert.equal(site.title, "Extracted at publish", "the title is untouched");
+
+  const mixed = await updateOwnedSite(siteId, { title: "Mixed", model: "", allowRemix: null }, owner);
+  assert.equal(mixed.status, 200, JSON.stringify(mixed.body));
+  const cleared = siteUpdateResultSchema.parse(mixed.body).site;
+  assert.equal(cleared.title, "Mixed");
+  assert.equal(cleared.model, null, "\"\" clears the field");
+  assert.equal(cleared.allowRemix, null, "null hands remix back to the default rule");
+  assert.equal(cleared.tool, "Claude Code", "an absent key is left as it is");
+
+  assert.equal(await pendingPurgeCount(siteId), 0, "Q5: a draft's save writes no KV");
+});
+
+test("Q5: a kept page's title-only save without a README writes no KV", { skip }, async () => {
+  const { updateOwnedSite } = await deps();
+  const owner = await makeOwner();
+  const siteId = await seedSite(owner);
+  const outcome = await updateOwnedSite(siteId, { title: "Only the title", tool: "codex" }, owner);
+  assert.equal(outcome.status, 200, JSON.stringify(outcome.body));
+  assert.equal(await pendingPurgeCount(siteId), 0, "neither field is on the badge, and there is no README page");
+});
+
+test("E10 provenance: bad values are invalid_request, and an unserved page refuses them", { skip }, async () => {
+  const { updateOwnedSite } = await deps();
+  const owner = await makeOwner();
+  const siteId = await seedSite(owner, { kept: false });
+
+  for (const [label, raw] of [
+    ["not a URL", { sourceUrl: "not a url" }],
+    ["not http(s)", { sourceUrl: "javascript:alert(1)" }],
+    ["model too long", { model: "m".repeat(PROVENANCE_LIMITS.model + 1) }],
+    ["README too long", { readme: "r".repeat(PROVENANCE_LIMITS.readme + 1) }],
+    ["flag not a boolean", { showPrompt: "yes" }],
+  ] as const) {
+    const outcome = await updateOwnedSite(siteId, raw, owner);
+    assert.equal(outcome.status, 400, `${label}: ${JSON.stringify(outcome.body)}`);
+    assert.equal(studioErrorSchema.parse(outcome.body).error.code, "invalid_request", label);
+  }
+
+  const expired = await seedSite(owner, { kept: false, status: "expired" });
+  const refused = await updateOwnedSite(expired, { model: "claude" }, owner);
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(studioErrorSchema.parse(refused.body).error.code, "not_allowed_in_status");
+});
+
+test("D6 / AC10: a kept page's README is written to _kept/readme.html with <script> as text; clearing it deletes the object", { skip }, async () => {
+  const { r2Store, readmeObjectKey, updateOwnedSite } = await deps();
+  const owner = await makeOwner();
+  const siteId = await seedSite(owner, {
+    html: "<!doctype html><html><head><title>Readme drill</title></head><body>x</body></html>",
+  });
+  createdManifests.add((await row(siteId)).slug);
+  createdObjects.add(readmeObjectKey(siteId));
+
+  const saved = await updateOwnedSite(
+    siteId,
+    { readme: "## Steps\n\n<script>alert(1)</script>\n\n![cat](https://example.com/c.png)", model: "claude-opus-4-7" },
+    owner,
+  );
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+
+  const html = await r2Store().get(readmeObjectKey(siteId));
+  assert.ok(html, "the README page was written to R2");
+  assert.match(html, /<title>How Extracted at publish was made<\/title>/);
+  assert.match(html, /<h2>Steps<\/h2>/);
+  assert.ok(html.includes("&lt;script&gt;alert(1)&lt;/script&gt;"), "raw HTML in the markdown is text");
+  assert.ok(!/<script/i.test(html) && !/<img/i.test(html), "no script, no image");
+  assert.match(html, /Made with claude-opus-4-7/);
+  assert.ok((await pendingPurgeCount(siteId)) >= 1, "the sync's second purge is queued");
+
+  const cleared = await updateOwnedSite(siteId, { readme: "" }, owner);
+  assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+  assert.equal(await r2Store().get(readmeObjectKey(siteId)), null, "a cleared README deletes the object");
 });

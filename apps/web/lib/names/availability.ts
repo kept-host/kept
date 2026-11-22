@@ -6,7 +6,12 @@
  * `archived` / `removed` — the partial `sites_slug_key`'s own predicate) or an
  * unexpired `name_holds` row holds it for somebody else. `RESERVED_NAMES` is not
  * looked at here: `validateName` refuses those before a caller gets this far.
- * E10 adds handles to this same function rather than writing a second check.
+ * E10 adds handles to this same function rather than writing a second check
+ * (D9): an account's current handle is `taken` for everyone else and
+ * `held_for_you` for that account (Q22 — E12's wall row takes it); an old
+ * handle (`handle_redirects`) is `taken` for everybody, its owner included —
+ * it answers with a redirect, so no page may sit on it. Taking one back as a
+ * handle is the handle check's call (`../handles/handle.ts`).
  *
  * ── THE RACE, AND THE LOCK THAT CLOSES IT (epic Risk 8) ──────────────────────
  * The unique index arbitrates active slugs but cannot see holds:
@@ -30,7 +35,7 @@
 import { and, eq, gt, notInArray, sql, type SQL } from "drizzle-orm";
 
 import { db, type Tx } from "../db";
-import { nameHolds, sites } from "../db/schema";
+import { handleRedirects, nameHolds, profiles, sites } from "../db/schema";
 
 /** What the namespace says about a name, for one asker. */
 export type NameAvailability = "available" | "held_for_you" | "taken";
@@ -53,6 +58,8 @@ export type Queryable = Tx | typeof db;
  * which nobody's hold is for.
  *
  *   · an active page has it                       → `taken`
+ *   · it is an account's current handle           → `held_for_you` for that account, else `taken`
+ *   · it is an old handle (`handle_redirects`)    → `taken`
  *   · an unexpired hold for `userId`              → `held_for_you` (it is theirs to take back)
  *   · an unexpired hold for anyone else, or none  → `taken` — never anything
  *                                                    more specific (edge case 4)
@@ -72,6 +79,18 @@ export async function isNameAvailable(
     .where(and(eq(sites.slug, name), claimsItsName()))
     .limit(1);
   if (active) return "taken";
+
+  const [handleOwner] = await tx
+    .select({ id: profiles.id })
+    .from(profiles)
+    .where(eq(profiles.handle, name));
+  if (handleOwner) return userId !== null && handleOwner.id === userId ? "held_for_you" : "taken";
+
+  const [oldHandle] = await tx
+    .select({ name: handleRedirects.oldHandle })
+    .from(handleRedirects)
+    .where(eq(handleRedirects.oldHandle, name));
+  if (oldHandle) return "taken";
 
   const [hold] = await tx
     .select({ userId: nameHolds.userId })

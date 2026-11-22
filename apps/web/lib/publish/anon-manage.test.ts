@@ -27,7 +27,7 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { MANIFEST_KV_CACHE_TTL_SECONDS } from "@kept/shared";
+import { MANIFEST_KV_CACHE_TTL_SECONDS, README_PAGE_PATH } from "@kept/shared";
 
 import { config } from "dotenv";
 
@@ -619,7 +619,7 @@ test(
       .where(and(eq(pendingPurges.slug, setPage.slug), gte(pendingPurges.createdAt, since)));
     assert.equal(rows.length, 1, "ONE manifest write, one batch of purges");
     const paths = [...(await versionPaths(db, [a, b])).values()].flat();
-    assert.deepEqual([...(rows[0]!.urls as string[])].sort(), setPurgeUrls(setPage.slug, paths).sort(), "old ∪ new");
+    assert.deepEqual([...(rows[0]!.urls as string[])].sort(), setPurgeUrls(setPage.slug, [...paths, README_PAGE_PATH]).sort(), "old ∪ new, plus the README page (E10 D6)");
     assert.ok((rows[0]!.urls as string[]).some((url) => url.endsWith("/old.js")), "the removed path is purged");
 
     const manifest = JSON.parse((await r2Store().get(pointerKey(setPage.slug)))!) as Record<string, unknown>;

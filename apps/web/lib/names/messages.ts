@@ -37,6 +37,17 @@ export function namesUsed(count: number, quota: number): string {
 }
 
 /**
+ * A handle's next allowed change date (`availableOn`, `YYYY-MM-DD`) in words —
+ * `27 Nov 2026`. Pinned to a locale and UTC so the server and the field agree.
+ */
+const AVAILABLE_ON_FORMAT = new Intl.DateTimeFormat("en-GB", {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+  timeZone: "UTC",
+});
+
+/**
  * The sentence for one check result about `name`. `hostSuffix` is the dot and
  * the serving base domain (`.kept.host`), only used by `available`.
  *
@@ -67,6 +78,8 @@ export function nameStatusMessage(
       return `You've used ${result.count} of ${result.quota} names. Delete a named page to free one.`;
     case "rate_limited":
       return `You've changed names ${result.count} times today. Try again tomorrow.`;
+    case "handle_change_limited":
+      return `You can change your handle again on ${AVAILABLE_ON_FORMAT.format(new Date(`${result.availableOn}T00:00:00Z`))}.`;
     case "available":
       return `${name}${hostSuffix} is free`;
   }

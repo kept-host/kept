@@ -67,7 +67,7 @@ import { holdName } from "./holds";
 import { nameStatusMessage } from "./messages";
 
 /** Every check status that refuses a rename, and the studio code it answers with. */
-const REFUSAL_CODE = {
+export const NAME_REFUSAL_CODE = {
   invalid: "name_invalid",
   too_short: "name_too_short",
   pro_length: "name_pro_length",
@@ -76,13 +76,17 @@ const REFUSAL_CODE = {
   taken: "name_taken",
   quota: "name_quota",
   rate_limited: "rename_rate_limited",
-} as const satisfies Record<Exclude<NameCheckStatus, "available" | "held_for_you">, StudioErrorCode>;
+} as const satisfies Record<
+  // `handle_change_limited` is the handle check's alone; a page rename never sees it.
+  Exclude<NameCheckStatus, "available" | "held_for_you" | "handle_change_limited">,
+  StudioErrorCode
+>;
 
 /** A check result that refuses the rename — every status but the two that allow it. */
-type RefusedVerdict = NameCheckResult & { status: keyof typeof REFUSAL_CODE };
+type RefusedVerdict = NameCheckResult & { status: keyof typeof NAME_REFUSAL_CODE };
 
 function isRefused(verdict: NameCheckResult): verdict is RefusedVerdict {
-  return verdict.status in REFUSAL_CODE;
+  return verdict.status in NAME_REFUSAL_CODE;
 }
 
 /**
@@ -92,7 +96,7 @@ function isRefused(verdict: NameCheckResult): verdict is RefusedVerdict {
 class NameRefusal extends StudioRefusal {
   constructor(verdict: RefusedVerdict, name: string) {
     super(
-      REFUSAL_CODE[verdict.status],
+      NAME_REFUSAL_CODE[verdict.status],
       nameStatusMessage(verdict, name, `.${servingBaseDomain()}`),
     );
     this.name = "NameRefusal";

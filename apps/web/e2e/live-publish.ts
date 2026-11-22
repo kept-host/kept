@@ -8,6 +8,10 @@ import {
 } from "@playwright/test";
 
 import playwrightConfig from "../playwright.config";
+import { unbadged } from "../lib/testing/served-badge";
+
+/** Risk 3 (E10): served HTML = the published bytes + one `<kept-badge>`. Compare `unbadged(body)`. */
+export { unbadged };
 
 /**
  * The gate and the cleanup every spec that publishes for real shares.
@@ -181,14 +185,15 @@ export async function probeEdge(url: string): Promise<EdgeProbe> {
 export const STALE_EDGE_WINDOW_MS = (2 * MANIFEST_KV_CACHE_TTL_SECONDS + 5) * 1000;
 
 /**
- * Poll a served URL until it answers 200 with exactly `expected`, or throw at
- * the architectural bound above. Returns how long it took.
+ * Poll a served HTML URL until it answers 200 with exactly `expected` plus the
+ * one badge the edge adds (E10 Risk 3), or throw at the architectural bound
+ * above. Returns how long it took.
  */
 export async function waitForBytes(url: string, expected: string): Promise<number> {
   const started = Date.now();
   for (;;) {
     const probe = await probeEdge(url);
-    if (probe.status === 200 && probe.body === expected) return Date.now() - started;
+    if (probe.status === 200 && unbadged(probe.body) === expected) return Date.now() - started;
     if (Date.now() - started > STALE_EDGE_WINDOW_MS) {
       throw new Error(
         `${url} still did not serve the expected bytes after ${Math.round(STALE_EDGE_WINDOW_MS / 1000)}s — past the delayed re-purge, which means a purge did not land.`,

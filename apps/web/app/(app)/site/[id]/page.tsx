@@ -190,6 +190,16 @@ export default async function SiteDetailPage({ params }: { params: Promise<{ id:
           host,
           fileCount: site.fileCount,
           sizeBytes: site.sizeBytes,
+          provenance: {
+            model: site.model,
+            tool: site.tool,
+            prompt: site.prompt,
+            readme: site.readme,
+            sourceUrl: site.sourceUrl,
+            showPrompt: site.showPrompt,
+            showMadeWith: site.showMadeWith,
+            allowRemix: site.allowRemix,
+          },
         }}
         plan={profile.plan}
         quota={home.quota}

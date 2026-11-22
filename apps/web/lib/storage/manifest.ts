@@ -19,8 +19,10 @@
  *   new publish:        R2 object → slugs/{slug}.json → KV {slug} → purge
  *   delete:                        delete pointer     → delete KV  → purge
  *   every later write:  commit the row → syncManifest(siteId)
- *                       (replace, restore, rename, late keep, status flips)
+ *                       (replace, restore, rename, keep, demote, swap,
+ *                       status flips)
  *   rename (E06):       syncManifest(site) → removeManifest(old)
+ *   handle change (E10): commit → writeRedirectManifest(old → current) per old handle
  *
  * …where "purge" is TWO purges, the second one delayed. One is not enough and
  * the reason is not obvious — see `repurgeAfterKvPropagation`. Both are DURABLE
@@ -62,13 +64,16 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import {
   kvManifestSchema,
+  kvRedirectManifestSchema,
   MANIFEST_KV_CACHE_TTL_SECONDS,
+  README_PAGE_PATH,
   SITE_INDEX,
   type KvManifest,
   type SiteStatus,
 } from "@kept/shared";
 import { z } from "zod";
 
+import { badgeDataFor } from "../badge/badge-data";
 import { db, type Tx } from "../db";
 import {
   currentVersionPaths,
@@ -428,8 +433,35 @@ async function storeManifest(
   }
 
   // ONE serialization, two stores. Do not stringify again below.
-  const value = JSON.stringify(parsed.data);
+  return storeEntry(slug, JSON.stringify(parsed.data), ledger, paths);
+}
 
+/**
+ * A retired handle's redirect (E10 D10, Q1): `{ redirectTo, updatedAt }` under
+ * the OLD handle's key — the Worker 301s any path there to the same path on
+ * `{redirectTo}`. **Pointer → KV → purge**, as `writeManifest`: the pointer
+ * probe parses the same `kvEntrySchema`, so it covers this write's
+ * consistency window too. The purge is the old host's root forms; the edge
+ * caches a redirect for 60 s only, so a deeper path needs none. No site: the
+ * `pending_purges` row (if one is owed) is a plain purge.
+ *
+ * Its remover is `removeManifest(old)` — the reverse sequence, unchanged.
+ */
+export function writeRedirectManifest(oldHandle: string, redirectTo: string): Promise<ManifestWriteResult> {
+  const parsed = kvRedirectManifestSchema.safeParse({ redirectTo, updatedAt: Date.now() });
+  if (!parsed.success) {
+    return Promise.resolve({ ok: false, step: "validate", error: `invalid redirect: ${parsed.error.message}` });
+  }
+  return storeEntry(oldHandle, JSON.stringify(parsed.data), { siteId: null }, []);
+}
+
+/** Pointer → KV → purge for one already-serialized, already-validated value. */
+async function storeEntry(
+  slug: string,
+  value: string,
+  ledger: PurgeLedger,
+  paths: readonly string[],
+): Promise<ManifestWriteResult> {
   try {
     // `putJson` sets `content-type: application/json` (§7.2) and takes the
     // already-serialized string precisely so these bytes are not rebuilt.
@@ -465,7 +497,9 @@ async function storeManifest(
  * file set (read from `site_version_files` before anything is removed) and goes
  * on the `pending_purges` row so a replay re-syncs that site. Rename passes it
  * for the OLD name: that hostname served the same set, and every path of it
- * must stop answering there. Without one, only the root forms are purged.
+ * must stop answering there — the README page (E10 D6) included, which a cached
+ * copy would otherwise keep serving at the old host. Without one, only the root
+ * forms are purged.
  */
 export async function removeManifest(
   slug: string,
@@ -474,7 +508,7 @@ export async function removeManifest(
   let paths: string[] = [];
   if (siteId) {
     try {
-      paths = await currentVersionPaths(siteId);
+      paths = [...(await currentVersionPaths(siteId)), README_PAGE_PATH];
     } catch (err) {
       return { ok: false, step: "paths", error: message(err) };
     }
@@ -529,11 +563,15 @@ export type SyncManifestResult =
  * keep, every moderation status change and the expiry sweep.
  *
  * In ONE transaction: lock the site row → read `slug, status,
- * current_version_id, owner_id, region` and the current version's `spa` /
- * `has_404` → `writeManifest` with exactly those values (`live`,
- * `under_review`, `quarantined`, `expired`) or `removeManifest` (`removed`,
- * `archived`) → commit only after KV has answered. The flags are written only
- * when true, so a single-file manifest is byte-identical to `dev-v0.8.0`.
+ * current_version_id, owner_id, region`, the current version's `spa` /
+ * `has_404` and the badge's inputs → `writeManifest` with exactly those values
+ * (`live`, `under_review`, `quarantined`, `expired`) or `removeManifest`
+ * (`removed`, `archived`) → commit only after KV has answered. The flags are
+ * written only when true; `badge` (E10 D3, `badgeDataFor`) always.
+ *
+ * E10 D5: every change to what the badge shows is a writer too — keep, demote,
+ * swap (both pages), a details save, and — queued as `pending_purges` rows, not
+ * inline (`lib/badge/fan-out.ts`) — a handle or badge-style change.
  *
  * The purge covers the current version's file set, read under the same lock,
  * and — with `alsoPurgeVersionId` — that version's too: a replace or restore
@@ -591,7 +629,10 @@ async function syncSite(siteId: string, durable: boolean, opts: SyncManifestOpti
       const versionIds = [...new Set([site.currentVersionId, opts.alsoPurgeVersionId])].filter(
         (id): id is string => typeof id === "string",
       );
-      const paths = [...(await versionPaths(tx, versionIds)).values()].flat();
+      // The README page (E10 D6) rides on every sync: whoever changed what it
+      // shows (a details save, a keep, a replace) refreshed the object first,
+      // and a demote stops it serving — either way the edge must drop its copy.
+      const paths = [...[...(await versionPaths(tx, versionIds)).values()].flat(), README_PAGE_PATH];
 
       if (isUnserved(site.status)) {
         const removed = await unstoreManifest(site.slug, ledger, paths);
@@ -618,6 +659,7 @@ async function syncSite(siteId: string, durable: boolean, opts: SyncManifestOpti
           updatedAt: Date.now(),
           ...(site.spa && { spa: true }),
           ...(site.has404 && { has404: true }),
+          badge: badgeDataFor(site),
         },
         ledger,
         paths,

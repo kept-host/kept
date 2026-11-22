@@ -212,6 +212,16 @@ export interface OwnedSiteDetail extends OwnedSite {
   nameKind: NameKind;
   /** Why E07 restricted the page; `null` unless it is (the banner, D13's byte rule). */
   moderationReason: ModerationReason | null;
+  /** The Details panel's provenance (E10 §4.1) — `null` = not given. */
+  model: string | null;
+  tool: string | null;
+  prompt: string | null;
+  readme: string | null;
+  sourceUrl: string | null;
+  showPrompt: boolean;
+  showMadeWith: boolean;
+  /** `null` = the default rule (`remixAllowed`, D8). */
+  allowRemix: boolean | null;
 }
 
 /**
@@ -241,6 +251,14 @@ export async function getOwnedSiteById(
       listedPublic: sites.listedPublic,
       nameKind: sites.nameKind,
       moderationReason: sites.moderationReason,
+      model: sites.model,
+      tool: sites.tool,
+      prompt: sites.prompt,
+      readme: sites.readme,
+      sourceUrl: sites.sourceUrl,
+      showPrompt: sites.showPrompt,
+      showMadeWith: sites.showMadeWith,
+      allowRemix: sites.allowRemix,
     })
     .from(sites)
     .leftJoin(siteVersions, eq(siteVersions.id, sites.currentVersionId))

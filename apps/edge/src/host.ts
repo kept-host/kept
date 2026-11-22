@@ -43,6 +43,16 @@ function isReservedLabel(label: string): label is ReservedLabel {
  */
 const SLUG_PATTERN = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 
+/**
+ * Whether `label` may stand as a slug's host label — the same guard
+ * `resolveHost` applies. Used on a redirect manifest's `redirectTo` before it
+ * becomes a `Location` host (E10 D10): a value read from KV is not trusted to be
+ * a single DNS label.
+ */
+export function isSlugLabel(label: string): boolean {
+  return SLUG_PATTERN.test(label) && !isReservedLabel(label);
+}
+
 export type HostResolution =
   | { kind: "slug"; slug: string }
   | { kind: "reserved"; label: ReservedLabel }

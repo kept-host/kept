@@ -18,6 +18,7 @@
  */
 import { createHash } from "node:crypto";
 
+import { README_OBJECT } from "@kept/shared";
 import { AwsClient } from "aws4fetch";
 
 import { r2Config } from "./env";
@@ -43,6 +44,15 @@ export function siteObjectKey(siteId: string, versionId: string, path: string): 
 /** The entry document of a version — `siteObjectKey(…, "index.html")`. */
 export function pageObjectKey(siteId: string, versionId: string): string {
   return siteObjectKey(siteId, versionId, "index.html");
+}
+
+/**
+ * The README page's object (E10 D6): `sites/{siteId}/_kept/readme.html` — per
+ * site, beside the version prefixes, so editing a README makes no version. It
+ * is not in `site_version_files`; whoever deletes a site's objects names it.
+ */
+export function readmeObjectKey(siteId: string): string {
+  return `sites/${siteId}/${README_OBJECT}`;
 }
 
 /** S3 `DeleteObjects` accepts at most this many keys per request. */

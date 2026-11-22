@@ -57,7 +57,7 @@ import { KeepAction } from "../../dashboard/keep-action";
 import { Wordmark } from "../../wordmark";
 import { BackLink, TOP_BAR } from "./back-link";
 import { DangerZone } from "./danger-zone";
-import { DetailsSection } from "./details-section";
+import { DetailsSection, type DetailsProvenance } from "./details-section";
 import { NameSection } from "./name-section";
 import { ShareSection } from "./share-section";
 import { StatusChip } from "./status-chip";
@@ -84,6 +84,8 @@ export interface DetailSite {
   fileCount: number | null;
   /** The current version's set total. */
   sizeBytes: number | null;
+  /** How it was made (E10 §4.1) — the Details panel's provenance. */
+  provenance: DetailsProvenance;
 }
 
 /** The design's three listing helpers (`exploreNote`), by what the page is. */
@@ -313,6 +315,8 @@ export function PageDetail({
                   title={site.title}
                   fallbackName={site.slug}
                   listedPublic={site.listedPublic}
+                  provenance={site.provenance}
+                  isKept={!isDraft}
                   canEditTitle={can.title}
                   canList={can.keptLive}
                   listingNote={listingNote}

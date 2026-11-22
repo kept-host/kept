@@ -14,11 +14,13 @@
  * and the limit is large enough that one round trip per row would dominate the
  * suite.
  *
- * Only the LATE KEEP touches a store, because it is the only primitive that may:
- * its drills write a real manifest through `writeManifest` to the dev R2 bucket
- * and KV namespace and assert the slug pointer that write leaves behind. They
- * additionally SKIP without the store credentials; every other drill proves the
- * opposite — the ordinary keep, demote and swap write nothing outside Postgres.
+ * Since E10 (D5) every keep, demote and swap syncs the manifest after its
+ * commit — the badge flips between draft and kept. Rows with no version cannot
+ * be expressed as a manifest, so for most drills the sync fails before any
+ * store call and leaves only a `pending_purges` row (cleared in `after`). The
+ * drills with a version write a real manifest to the dev R2 bucket and KV
+ * namespace and assert the slug pointer that write leaves behind; they
+ * additionally SKIP without the store credentials.
  *
  * The drills SKIP when `DATABASE_URL` is absent: CI runs `pnpm test` on fork PRs
  * with no cloud secrets. Run them locally with
@@ -190,6 +192,16 @@ async function refusedWith(call: () => Promise<unknown>, code: StudioErrorCode):
     assert.equal(err.code, code, err.message);
     return true;
   });
+}
+
+/** The profile's permanent referral code — what a kept badge's `refCode` is with no handle (Q3). */
+async function referralCodeOf(profileId: string): Promise<string> {
+  const db = await client();
+  const { profiles } = await schema();
+  const { eq } = await import("drizzle-orm");
+  const [row] = await db.select({ code: profiles.referralCode }).from(profiles).where(eq(profiles.id, profileId));
+  if (!row) throw new Error(`Drill profile ${profileId} vanished.`);
+  return row.code;
 }
 
 /** The slug pointer `writeManifest` leaves in R2 — the proof a manifest was written. */
@@ -498,6 +510,7 @@ test(
       region: "auto",
       ownerId: profileId,
       updatedAt: pointer.updatedAt,
+      badge: { variant: "kept", style: "standard", refCode: await referralCodeOf(profileId) },
     });
   },
 );
@@ -520,20 +533,26 @@ test(
 );
 
 test(
-  "the ordinary keep is Postgres-only: no manifest is written for a live draft",
+  "E10 D5: the ordinary keep and the demote each sync the manifest after commit — the badge flips kept ↔ draft",
   { skip: skipStores },
   async () => {
-    const { keepSite } = await import("./keep");
+    const { demoteSite, keepSite } = await import("./keep");
     const profileId = await makeProfile();
     const site = await makeSite({ ownerId: profileId, withVersion: true });
+    createdManifests.add(site.slug);
 
     const result = await keepSite(site.id, profileId);
-
     assert.equal(result.outcome, "kept");
-    assert.equal(result.restored, false);
-    // `writeManifest` writes the pointer BEFORE KV, so no pointer for a slug
-    // that was never published is proof no manifest write and no purge happened.
-    assert.equal(await pointerFor(site.slug), null);
+    assert.equal(result.restored, false, "a live page was never offline");
+    const kept = await pointerFor(site.slug);
+    assert.ok(kept, "the keep wrote the manifest");
+    assert.equal(kept.ownerId, profileId, "ownerId is no longer left stale");
+    assert.deepEqual(kept.badge, { variant: "kept", style: "standard", refCode: await referralCodeOf(profileId) });
+
+    await demoteSite(site.id, profileId);
+    const demoted = await pointerFor(site.slug);
+    assert.equal(demoted?.status, "live", "a demoted page still serves");
+    assert.deepEqual(demoted?.badge, { variant: "draft", style: "standard" }, "and wears the draft badge");
   },
 );
 
@@ -893,6 +912,7 @@ test(
     assert.ok(pointer, "and its manifest was written after the swap committed");
     assert.equal(pointer.versionId, b.versionId);
     assert.equal(pointer.status, "live");
+    assert.deepEqual(pointer.badge, { variant: "kept", style: "standard", refCode: await referralCodeOf(profileId) });
 
     const demoted = await readSite(outgoing.id);
     assert.ok(

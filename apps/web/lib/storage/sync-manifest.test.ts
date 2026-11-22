@@ -31,7 +31,7 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { generateAnonToken, hashToken, REPURGE_MAX_ATTEMPTS, type SiteStatus } from "@kept/shared";
+import { generateAnonToken, hashToken, README_PAGE_PATH, REPURGE_MAX_ATTEMPTS, type SiteStatus } from "@kept/shared";
 import { config } from "dotenv";
 import { and, eq, gte, inArray } from "drizzle-orm";
 import postgres from "postgres";
@@ -39,7 +39,7 @@ import postgres from "postgres";
 import { closeDb, db } from "../db";
 import { insertPendingPurge } from "../db/queries/manifest-sync";
 import { insertVersionFiles, siteObjectKeys } from "../db/queries/version-files";
-import { pendingPurges, sites, siteVersions } from "../db/schema";
+import { pendingPurges, profiles, sites, siteVersions } from "../db/schema";
 import { renameSite } from "../names/rename";
 import { replacePage } from "../publish/anon-manage";
 import { fileSet, jsonBody } from "../testing/file-sets";
@@ -476,6 +476,9 @@ async function rowsSince(slug: string, since: Date) {
 
 const sorted = (urls: unknown) => [...(urls as string[])].sort();
 
+/** What `syncManifest` purges for `paths`: the set plus the README page (E10 D6), which rides on every sync. */
+const syncPurgeUrls = (slug: string, paths: readonly string[]) => setPurgeUrls(slug, [...paths, README_PAGE_PATH]);
+
 /** Poll one URL of the scratch page until `done(status, body, cacheControl)` or the window closes. */
 async function pollEdge(
   path: string,
@@ -492,7 +495,7 @@ async function pollEdge(
   }
 }
 
-test("E08: a single-file sync writes the dev-v0.8.0 manifest, byte for byte, and purges only / and /index.html", { skip }, async () => {
+test("E08: a single-file sync writes the dev-v0.8.0 manifest, byte for byte, and purges only /, /index.html and /_kept/readme", { skip }, async () => {
   const ownerId = await drill.profile();
   const page = await drill.site({ ownerId, kept: true });
   slugs.add(page.slug);
@@ -507,15 +510,26 @@ test("E08: a single-file sync writes the dev-v0.8.0 manifest, byte for byte, and
 
   const body = (await r2Store().get(pointerKey(page.slug)))!;
   const { updatedAt } = JSON.parse(body) as { updatedAt: number };
-  // The literal dev-v0.8.0 wrote, in its key order: no `spa`, no `has404`.
+  // The literal dev-v0.8.0 wrote, in its key order: no `spa`, no `has404` —
+  // plus E10's `badge` last, read under the same lock (D3): a kept page with no
+  // handle and no model credits its owner by the permanent referral code (Q3).
+  const [owner] = await db.select({ code: profiles.referralCode }).from(profiles).where(eq(profiles.id, ownerId));
   assert.equal(
     body,
-    JSON.stringify({ siteId: page.id, versionId: v1.id, status: "live", region: "auto", ownerId, updatedAt }),
+    JSON.stringify({
+      siteId: page.id,
+      versionId: v1.id,
+      status: "live",
+      region: "auto",
+      ownerId,
+      updatedAt,
+      badge: { variant: "kept", style: "standard", refCode: owner!.code },
+    }),
   );
 
   const rows = await rowsSince(page.slug, since);
   assert.equal(rows.length, 1, "one batch, one row");
-  assert.deepEqual(rows[0]!.urls, setPurgeUrls(page.slug, []), "the dev-v0.8.0 purge list");
+  assert.deepEqual(rows[0]!.urls, syncPurgeUrls(page.slug, []), "the dev-v0.8.0 purge list, plus E10's README page");
   assert.equal(rows[0]!.siteId, page.id);
 });
 
@@ -548,7 +562,7 @@ test("E08 AC25: replacing a 3-file set with a 2-file set — the removed path st
 
   const rows = await rowsSince(page.slug, since);
   assert.equal(rows.length, 1, "ONE manifest write, one batch of purges");
-  assert.deepEqual(sorted(rows[0]!.urls), sorted(setPurgeUrls(page.slug, [...v2.paths, ...v3.paths])), "old ∪ new");
+  assert.deepEqual(sorted(rows[0]!.urls), sorted(syncPurgeUrls(page.slug, [...v2.paths, ...v3.paths])), "old ∪ new");
   assert.ok((rows[0]!.urls as string[]).some((url) => url.endsWith("/old.js")), "the removed path is purged");
 
   const manifest = JSON.parse((await r2Store().get(pointerKey(page.slug)))!) as Record<string, unknown>;
@@ -579,7 +593,7 @@ test("E08 AC27: restore re-serves a multi-file version with ITS flags, purging b
 
   const rows = await rowsSince(page.slug, since);
   assert.equal(rows.length, 1);
-  assert.deepEqual(sorted(rows[0]!.urls), sorted(setPurgeUrls(page.slug, [...v2.paths, ...v3.paths])), "restored ∪ replaced");
+  assert.deepEqual(sorted(rows[0]!.urls), sorted(syncPurgeUrls(page.slug, [...v2.paths, ...v3.paths])), "restored ∪ replaced");
 });
 
 test("E08: rename purges the OLD hostname's whole set", { skip }, async () => {
@@ -592,11 +606,15 @@ test("E08: rename purges the OLD hostname's whole set", { skip }, async () => {
   await renameSite(page.id, page.ownerId, newName);
   const old = await rowsSince(page.slug, since);
   assert.equal(old.length, 1);
-  assert.deepEqual(old[0]!.urls, setPurgeUrls(page.slug, v2.paths), "every path of the set, at the old host");
+  assert.deepEqual(old[0]!.urls, syncPurgeUrls(page.slug, v2.paths), "every path of the set, at the old host");
+  assert.ok(
+    (old[0]!.urls as string[]).includes(`https://${page.slug}.${process.env.KEPT_BASE_DOMAIN}/${README_PAGE_PATH}`),
+    "the old host's README page is purged too",
+  );
   assert.equal(old[0]!.siteId, page.id, "the replay re-syncs the page");
   assert.equal(await r2Store().get(pointerKey(page.slug)), null, "the old name is unpublished");
   const renamed = await rowsSince(newName, since);
-  assert.deepEqual(renamed[0]!.urls, setPurgeUrls(newName, v2.paths));
+  assert.deepEqual(renamed[0]!.urls, syncPurgeUrls(newName, v2.paths));
   multi.formerSlug = page.slug;
   multi.page = { ...page, slug: newName };
 });
@@ -611,7 +629,7 @@ test("E08: the unserve branch purges the set, and a replayed row with no URLs de
   assert.deepEqual(synced, { ok: true, outcome: "removed", slug: page.slug });
   const rows = await rowsSince(page.slug, since);
   assert.equal(rows.length, 1);
-  assert.deepEqual(rows[0]!.urls, setPurgeUrls(page.slug, v2.paths), "archived: the whole set leaves the edge");
+  assert.deepEqual(rows[0]!.urls, syncPurgeUrls(page.slug, v2.paths), "archived: the whole set leaves the edge");
 
   // A row recorded without URLs (the zone was unconfigured) under a name the
   // page USED to answer at: the replay derives that host's set from Postgres.

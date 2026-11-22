@@ -222,6 +222,7 @@ describe("the field copy (PRD §5.4) — one sentence per status, every number i
     { status: "taken" },
     { status: "quota", count: 11, quota: 13 },
     { status: "rate_limited", count: 17 },
+    { status: "handle_change_limited", availableOn: "2026-11-27" },
     { status: "available" },
   ];
 
@@ -245,5 +246,9 @@ describe("the field copy (PRD §5.4) — one sentence per status, every number i
     );
     assert.equal(say({ status: "available" }), "my-page.kept.example is free");
     assert.equal(say({ status: "taken" }), "That name is taken.");
+    assert.equal(
+      say({ status: "handle_change_limited", availableOn: "2026-11-27" }),
+      "You can change your handle again on 27 Nov 2026.",
+    );
   });
 });

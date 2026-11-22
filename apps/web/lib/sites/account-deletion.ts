@@ -38,11 +38,13 @@
  *     lockNames(chosen names)           ← then the names, sorted (../names/availability.ts)
  *     UPDATE sites SET archived, purge_after  WHERE owner_id = ? AND claims its name
  *     holdName(name, NULL, 'account_deleted') × every chosen name
+ *     holdNameForever(handle, NULL, 'account_deleted') × current + old handles (E10 Q17)
  *     UPDATE sites SET owner_id = NULL, reminder_email = NULL  WHERE owner_id = ?
  *     UPDATE appeals SET rejected  WHERE open AND site_id IN (those rows)
  *     DELETE FROM "user" WHERE id = ?
  *   COMMIT
  *   syncManifest(site) × every site unwound or archived  ← AC42: the edge back on the row
+ *   removeManifest(old handle) × every old handle  ← its redirect goes; the name stays held
  *
  * The manifest calls cannot join a database transaction, so they go **first**:
  * a crash after the unwind and before the commit leaves pages offline that
@@ -62,6 +64,10 @@
  * bytes are E07's purge job's, selected on `purge_after`. An inline delete loop
  * would block a request on unbounded work and be a second purge path competing
  * with E07's. Until E07 ships, R2 objects legitimately persist after a deletion.
+ * The README page (`sites/{siteId}/_kept/readme.html`, E10 D6) is one of those
+ * bytes: it stops serving with the manifest above and the purge job deletes it
+ * with the archived page (`lib/lifecycle/purge.ts` names it explicitly — it is
+ * in no file row).
  *
  * ── BETTER AUTH'S `deleteUser` IS DELIBERATELY NOT ENABLED ───────────────────
  * better-auth@1.6.26 ships a `/delete-user` endpoint behind `user.deleteUser.
@@ -86,10 +92,11 @@ import { and, eq, inArray } from "drizzle-orm";
 
 import { db } from "../db";
 import { getDashboardSites } from "../db/queries/dashboard";
+import { oldHandlesOf } from "../db/queries/handles";
 import { rejectOpenAppealsOn } from "../db/queries/moderation";
-import { sites, user } from "../db/schema";
+import { profiles, sites, user } from "../db/schema";
 import { claimsItsName, lockNames } from "../names/availability";
-import { holdName } from "../names/holds";
+import { holdName, holdNameForever } from "../names/holds";
 import { removeManifest, syncManifest } from "../storage/manifest";
 
 import { lockOwner } from "./keep";
@@ -218,6 +225,7 @@ export async function deleteAccount(profileId: string): Promise<AccountDeletionR
   }
 
   let archived: { id: string }[];
+  let oldHandles: string[] = [];
   try {
     archived = await db.transaction(async (tx) => {
       // THE SAME SERIALISATION POINT every publish, keep and rename takes. A tab
@@ -234,12 +242,17 @@ export async function deleteAccount(profileId: string): Promise<AccountDeletionR
         .where(and(eq(sites.ownerId, profileId), claimsItsName()))
         .for("update");
       const chosen = pages.filter((page) => page.nameKind === "chosen");
-      // Every chosen name locked, sorted, BEFORE a row moves — a rename-to by
-      // another account waits here and then finds the hold.
-      await lockNames(
-        tx,
-        chosen.map((page) => page.slug),
-      );
+      // E10 Q17: the current handle and every old one, read before the user
+      // delete nulls `handle_redirects.profile_id`.
+      const [{ handle } = { handle: null }] = await tx
+        .select({ handle: profiles.handle })
+        .from(profiles)
+        .where(eq(profiles.id, profileId));
+      oldHandles = await oldHandlesOf(profileId, tx);
+      const handles = handle === null ? oldHandles : [handle, ...oldHandles];
+      // Every chosen name and handle locked, sorted, BEFORE a row moves — a
+      // rename-to by another account waits here and then finds the hold.
+      await lockNames(tx, [...chosen.map((page) => page.slug), ...handles]);
 
       if (pages.length > 0) {
         await tx
@@ -254,6 +267,10 @@ export async function deleteAccount(profileId: string): Promise<AccountDeletionR
       }
       for (const page of chosen) {
         await holdName(page.slug, null, "account_deleted", page.id, tx);
+      }
+      // Handles are never released (D9): ownerless, with no end (Q17).
+      for (const name of handles) {
+        await holdNameForever(tx, name, null, "account_deleted");
       }
 
       // EVERY row the account had, archived before or just now, `removed`
@@ -289,6 +306,7 @@ export async function deleteAccount(profileId: string): Promise<AccountDeletionR
 
   for (const page of archived) touched.add(page.id);
   await syncTouched(touched, profileId);
+  await removeHandleRedirects(oldHandles, profileId);
 
   return { pagesArchived: archived.length };
 }
@@ -303,6 +321,22 @@ async function syncTouched(siteIds: ReadonlySet<string>, profileId: string): Pro
     if (!synced.ok) {
       console.error(
         `[kept] account deletion: trailing manifest sync failed for site ${siteId} (profile ${profileId}) — ${synced.error}. Recorded for the repurge job.`,
+      );
+    }
+  }
+}
+
+/**
+ * Take each old handle's redirect off the edge (E10 Q17): nobody's current
+ * handle is left to point at. The names stay held forever. Never throws — the
+ * account is gone; a failure is logged for a replay by hand.
+ */
+async function removeHandleRedirects(oldHandles: readonly string[], profileId: string): Promise<void> {
+  for (const name of oldHandles) {
+    const removed = await removeManifest(name);
+    if (!removed.ok) {
+      console.error(
+        `[kept] account deletion: the redirect at old handle "${name}" (profile ${profileId}) was not removed at the "${removed.step}" step — ${removed.error}. It 301s to an unanswered host; replay this removal (contract §3).`,
       );
     }
   }

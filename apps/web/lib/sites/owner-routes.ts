@@ -71,6 +71,8 @@ import {
   confirmsAccountEmail,
   deleteResultSchema,
   demoteResultSchema,
+  handleChangeRequestSchema,
+  handleChangeResultSchema,
   keepResultSchema,
   nameChangeRequestSchema,
   nameChangeResultSchema,
@@ -89,11 +91,13 @@ import {
   type BulkResult,
   type DeleteResult,
   type DemoteResult,
+  type HandleChangeResult,
   type KeepResult,
   type NameChangeResult,
   type NameCheckResult,
   type OwnedPublishResult,
   type Plan,
+  type ProfileResult,
   type PublishErrorCode,
   type ReplaceResult,
   type RestoreResult,
@@ -106,8 +110,10 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { SlugUnavailableError } from "../db/queries/publish";
+import { checkHandle, setHandle, type HandleOwner } from "../handles/handle";
 import { allowNameCheck, checkName } from "../names/check";
 import { renameSite } from "../names/rename";
+import { updateProfile } from "../profile/profile";
 import { isFailure, type FileSet } from "../publish/fileset/types";
 import {
   slugUnavailable,
@@ -171,6 +177,7 @@ const STUDIO_ERROR_STATUS = {
   last_sign_in_method: 409,
   key_limit_reached: 409,
   rename_rate_limited: 429,
+  handle_change_limited: 429,
   rate_limited: 429,
   slug_unavailable: 503,
   internal_error: 503,
@@ -537,7 +544,7 @@ export async function updateOwnedSite(
   if (!parsed.success) {
     return refuse(
       "invalid_request",
-      parsed.error.issues[0]?.message ?? "Send `{ title }`, `{ listedPublic }`, or both.",
+      parsed.error.issues[0]?.message ?? "Send at least one Details field.",
     );
   }
 
@@ -577,6 +584,65 @@ export async function checkOwnedName(
     return { ok: true, status: 200, body: nameCheckResultSchema.parse(result) };
   } catch (err) {
     return studioFailure(err, "check a name for", "kept could not check that name just now. Try again.");
+  }
+}
+
+/**
+ * `GET /api/names/check?name=&handle=1` — the handle field's live answer
+ * (E10 §5.5): `checkHandle`, behind the same per-minute limit as the page
+ * name check, with `handle_change_limited` and its date among the statuses.
+ */
+export async function checkOwnedHandle(
+  rawName: string | null,
+  owner: HandleOwner,
+): Promise<OwnerOutcome<NameCheckResult>> {
+  if (!allowNameCheck(owner.id)) {
+    return refuse("rate_limited", "That's a lot of names in a minute. Wait a moment, then try again.");
+  }
+  try {
+    const result = await checkHandle(rawName ?? "", owner);
+    return { ok: true, status: 200, body: nameCheckResultSchema.parse(result) };
+  } catch (err) {
+    return studioFailure(err, "check a handle for", "kept could not check that handle just now. Try again.");
+  }
+}
+
+/**
+ * `PUT /api/profile/handle` — set or change the account's handle (E10 D9,
+ * D10). Every rule, lock and store write is `lib/handles/handle.ts`'s; a
+ * refusal carries the field's own sentence.
+ */
+export async function changeOwnHandle(
+  raw: unknown,
+  profileId: string,
+): Promise<OwnerOutcome<HandleChangeResult>> {
+  const parsed = handleChangeRequestSchema.safeParse(raw);
+  if (!parsed.success) return refuse("invalid_request", "Send `{ handle }` — the handle you want.");
+  try {
+    const result = await setHandle(profileId, parsed.data.handle);
+    return { ok: true, status: 200, body: handleChangeResultSchema.parse(result) };
+  } catch (err) {
+    return studioFailure(
+      err,
+      "change the handle",
+      "kept could not change your handle just now. Nothing was changed — try again.",
+    );
+  }
+}
+
+/** `PATCH /api/profile` — the profile fields and the badge style (E10 D12). */
+export async function updateOwnProfile(
+  raw: unknown,
+  owner: { id: string; plan: Plan },
+): Promise<OwnerOutcome<ProfileResult>> {
+  try {
+    return { ok: true, status: 200, body: await updateProfile(owner, raw) };
+  } catch (err) {
+    return studioFailure(
+      err,
+      "update the profile",
+      "kept could not save your profile just now. Nothing was changed — try again.",
+    );
   }
 }
 

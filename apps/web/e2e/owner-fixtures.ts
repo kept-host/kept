@@ -416,7 +416,7 @@ export async function drop(page: Page, target: Locator, file: DroppedFile): Prom
  * is `set null`) and leaves a live page serving that no authority can reach.
  */
 export async function cleanup(scope: OwnerScope): Promise<void> {
-  const { pageObjectKey, r2Store } = await import("../lib/storage/r2");
+  const { pageObjectKey, r2Store, readmeObjectKey } = await import("../lib/storage/r2");
   const { siteObjectKeys } = await import("../lib/db/queries/version-files");
 
   if (scope.userIds.length) {
@@ -447,8 +447,10 @@ export async function cleanup(scope: OwnerScope): Promise<void> {
       .from(schema.siteVersions)
       .where(eq(schema.siteVersions.siteId, id));
     // Every file of every version (E08: a set is many objects); `index.html`
-    // by name too, for a seeded version that has no file rows.
+    // by name too, for a seeded version that has no file rows; and the README
+    // page (E10 D6), which is in no file row.
     const keys = new Set([
+      readmeObjectKey(id),
       ...versions.map((version) => pageObjectKey(id, version.id)),
       ...(await siteObjectKeys(db, id).catch(() => [])),
     ]);
