@@ -47,10 +47,13 @@ export interface FileSet {
   uploadKey?: string;
 }
 
-/** Who is publishing: the plan whose caps apply, and the profile that may own an `upload_id`. */
+/** Who is publishing: the plan whose caps apply, and the uploader that may own an `upload_id`. */
 export interface FileSetCaller {
   plan: Plan;
-  /** The signed-in profile, or `null` for anonymous and keyless callers (D5: no uploads). */
+  /**
+   * The signed-in profile, a keyless MCP session's `sessionUploader`, or `null`
+   * for anonymous HTTP callers (D5: no uploads).
+   */
   uploaderId: string | null;
 }
 

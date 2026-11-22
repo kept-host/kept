@@ -79,3 +79,12 @@ export function sessionOf(id: string): string {
 export function sessionPublisherKey(session: string): Promise<string> {
   return hashToken(publisherHashSalt() + session);
 }
+
+/**
+ * The keyless session's upload owner — its `uploads/{owner}/` prefix and the
+ * owner an upload token names: `mcp-` + `SHA-256(salt ‖ "uploads:" ‖ random)`,
+ * hex. Its own hash, not the publisher key, because it travels in an upload URL.
+ */
+export async function sessionUploader(session: string): Promise<string> {
+  return `mcp-${await hashToken(`${publisherHashSalt()}uploads:${session}`)}`;
+}

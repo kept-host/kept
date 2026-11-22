@@ -165,6 +165,8 @@ const CREDENTIAL_API_PATHS: PathSet = {
  */
 const APP_API_PATHS: PathSet = {
   // `/api/uploads` (E08 D5): the presigned large-upload path; 401 without a session.
+  // `/api/uploads/{id}`: the PUT behind MCP's `create_upload`. Its token is the
+  // credential, and it is minted only for a caller `/mcp`'s closed-mode doors let in.
   // `/api/keys` (E09): the studio's API-key management; 401 without a session.
   exact: new Set([
     "/api/auth",
@@ -176,7 +178,7 @@ const APP_API_PATHS: PathSet = {
     "/api/keys",
   ]),
   // `/api/admin/` (E07): the moderation actions; the handlers 404 non-admins.
-  prefixes: ["/api/auth/", "/api/sites/", "/api/og/", "/api/admin/", "/api/keys/"],
+  prefixes: ["/api/auth/", "/api/sites/", "/api/og/", "/api/admin/", "/api/keys/", "/api/uploads/"],
 };
 
 /**

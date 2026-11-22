@@ -83,17 +83,69 @@ function limitsNote(): string {
 const REPLACE_NOTE =
   "It replaces the whole site: send every file again, because any file you leave out is deleted.";
 
+/** The two ways a site's bytes reach kept over MCP — what publish, replace and the server instructions lead with. */
+const UPLOAD_ROUTE =
+  "If you can run shell commands, don't put file contents in this call: call `create_upload`, run its " +
+  "`command` from the site's folder, then pass the `upload_id` here. Inline `html` or `files` is for small " +
+  "pages when you have no shell.";
+
+/** What `create_upload` does, for both tool sets; `scope` says who may use the upload_id. */
+function createUploadDescription(scope: string): string {
+  return (
+    "Get a one-time URL to upload a site as a .zip, so its files never pass through this conversation. " +
+    "Returns upload_id, upload_url, expires_at, max_bytes and command. Run `command` in a shell from the " +
+    "site's folder (`index.html` at its root): it zips the folder and PUTs the zip to upload_url with curl. " +
+    `Then call publish_page or replace_page with \`upload_id\`. The URL takes one zip of up to max_bytes ` +
+    `until expires_at; the upload_id works once, ${scope}.`
+  );
+}
+
+/**
+ * The shell line `create_upload` returns: zip the folder the agent `cd`s into
+ * (a fresh zip — `zip -r` would add to a stale one) and PUT it to `uploadUrl`.
+ * `<your site folder>` is literal: the agent fills it in.
+ */
+export function uploadCommand(uploadUrl: string): string {
+  return (
+    "cd <your site folder> && rm -f /tmp/kept-site.zip && zip -qr /tmp/kept-site.zip . && " +
+    `curl -fsS -T /tmp/kept-site.zip '${uploadUrl}'`
+  );
+}
+
+/** The MCP server's `instructions` (both tool sets): the two routes, briefly. */
+export const MCP_SERVER_INSTRUCTIONS =
+  "kept publishes HTML pages and static sites to a public link. If you can run shell commands, never put " +
+  "file contents in a tool call: call create_upload, run its command from the site's folder, then call " +
+  "publish_page or replace_page with the upload_id. Without a shell, send small pages inline as `html` or " +
+  "`files`. Always show the human the links publish_page returns.";
+
+/**
+ * `/agents`' note on big sites and chat sandboxes. `appHost` is the host
+ * create_upload's URLs are on (`app.kept.host` in prod), from configuration.
+ */
+export function bigSitesNote(appHost: string): string {
+  return (
+    "An agent that can run shell commands uploads a big site as one zip through MCP's create_upload, so no " +
+    "file passes through the conversation. A chat app's code sandbox can do the same only if it may reach " +
+    `${appHost}: allow that domain in the app's code-execution network settings. Otherwise the agent sends ` +
+    "the page inline, which suits small pages."
+  );
+}
+
 export const MCP_TOOL_DESCRIPTIONS = {
   keyless: {
     publish_page:
-      "Publish an HTML page or a static site to kept and get a public link. Pass `html` for one page, " +
-      "or `files` (path + content, `index.html` at the root) for a site; set `spa` for client-routed apps. " +
+      `${UPLOAD_ROUTE} Publish an HTML page or a static site to kept and get a public link. Pass \`html\` ` +
+      "for one page, or `files` (path + content, `index.html` at the root) for a site; set `spa` for " +
+      "client-routed apps. " +
       "Optional provenance: title, model, tool, prompt, readme, source_url. Returns live_url, claim_url, " +
       `manage_token, expires_at and expires_in. ${DRAFT_NOTE} Always show the human both links; keep ` +
       `manage_token to change or delete the page later instead of publishing again. ${limitsNote()}`,
     replace_page:
-      "Replace the content of a page you published, keeping its URL. Pass its `manage_token` and new " +
-      `\`html\` or \`files\`. ${REPLACE_NOTE} Use this to iterate instead of publishing a new page.`,
+      `${UPLOAD_ROUTE} Replace the content of a page you published, keeping its URL. Pass its ` +
+      "`manage_token` and the new `upload_id`, `html` or `files`; an upload_id from another MCP session is " +
+      `not found. ${REPLACE_NOTE} Use this to iterate instead of publishing a new page.`,
+    create_upload: createUploadDescription("only in this MCP session"),
     get_page:
       "Read a page you published by its `manage_token`: its live_url, claim_url, expiry, whether it has " +
       "been kept, its file_count, and its provenance.",
@@ -103,14 +155,17 @@ export const MCP_TOOL_DESCRIPTIONS = {
   },
   keyed: {
     publish_page:
-      "Publish an HTML page or a static site into the human's kept account. Pass `html` for one page, " +
-      "or `files` (path + content, `index.html` at the root) for a site; set `spa` for client-routed apps. " +
+      `${UPLOAD_ROUTE} Publish an HTML page or a static site into the human's kept account. Pass \`html\` ` +
+      "for one page, or `files` (path + content, `index.html` at the root) for a site; set `spa` for " +
+      "client-routed apps. " +
       "Optional provenance: title, model, tool, prompt, readme, source_url. Returns live_url, studio_url, " +
       "slug, kept and expires_at. The page is kept if the account has a free slot, else it lands as a " +
       `draft (kept: false). ${DRAFT_NOTE} ${limitsNote()} Pro accounts have higher limits.`,
     replace_page:
-      "Replace the content of a page in the account, keeping its URL. Pass its `page` (the slug) and new " +
-      `\`html\` or \`files\`. ${REPLACE_NOTE} Use this to iterate instead of publishing a new page.`,
+      `${UPLOAD_ROUTE} Replace the content of a page in the account, keeping its URL. Pass its \`page\` ` +
+      `(the slug) and the new \`upload_id\`, \`html\` or \`files\`. ${REPLACE_NOTE} Use this to iterate ` +
+      "instead of publishing a new page.",
+    create_upload: createUploadDescription("for this account"),
     list_pages:
       "List the account's pages, newest first. Pass `cursor` from the previous answer's next_cursor to " +
       "page through.",
@@ -332,7 +387,7 @@ Non-2xx answers are {"error": "<code>", "message": "…", "retry_after_seconds"?
 ## Other ways in
 
 - Skill: ${SKILL_INSTALL_COMMAND} (or ${installCommand(base)}); SKILL.md at ${base}/skill.md
-- MCP (Streamable HTTP): ${mcpUrl(base)}
+- MCP (Streamable HTTP): ${mcpUrl(base)} — with a shell, send a site as a zip: create_upload, run its command, then publish_page with upload_id
 - Setup per agent: ${base}/agents
 - Limits: ${free.siteMb} MB and ${free.siteFiles} files per site, ${free.fileMb} MB per file
 - Acceptable use: ${base}/legal/acceptable-use
