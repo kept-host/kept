@@ -13,7 +13,8 @@ live where, and the steps only Arun can take.
 | Hermes | `/.well-known/skills/index.json`, `/skill.md` | Ships with the app; optional PR to `optional-skills/` (`skill/hermes/README.md`) | Built; PR not opened |
 | Codex | `.codex-plugin/plugin.json`, `.agents/plugins/marketplace.json`, `mcp.json` | Git marketplace: `codex plugin marketplace add kept-host/skill`; official listing when self-serve opens | Waits on the mirror |
 | Cursor Marketplace | `.cursor-plugin/plugin.json`, `mcp.json` | Submit for review (~2 weeks; open source required) | Not submitted |
-| Claude Code plugins | `.claude-plugin/marketplace.json`, `.claude-plugin/plugin.json`, `.mcp.json` | `/plugin marketplace add kept-host/skill` | Waits on the mirror |
+| Claude Code plugins | `.claude-plugin/marketplace.json`, `.claude-plugin/plugin.json` (no `version`, so installs follow the mirror's commits), `.mcp.json` | `/plugin marketplace add kept-host/skill`; directory listing via claude.ai/directory/manage at launch | Waits on the mirror; not submitted |
+| Gemini CLI extension | `gemini-extension.json` (`httpUrl`), `skills/` | `gemini extensions install https://github.com/kept-host/skill`; no marketplace | Waits on the mirror |
 | MCP Registry | `server.json` (`host.kept/kept`) | `mcp-publisher publish` after a DNS TXT proof on `kept.host` | Not submitted |
 | Smithery / Glama | `https://kept.host/mcp` | Paste the URL | Not submitted |
 | Claude chat | `https://kept.host/mcp` as a custom connector, no sign-in | Documented on `/agents`; no directory submission (D11) | Built |
@@ -64,6 +65,9 @@ The source is `skill/` in this repo, MIT licensed (the app is AGPL). `skills/kep
 ```sh
 pnpm --filter @kept/web exec tsx scripts/build-skill.ts
 ```
+
+Bump `SKILL_VERSION` (skill-files.ts) when the skill or the tool copy changes, before a Registry or
+Cursor resubmission; Claude Code installs need no bump.
 
 `apps/web/lib/agents/skill-drift.test.ts` fails when a checked-in file differs from what
 the build writes, when `server.json` stops validating against the vendored MCP Registry

@@ -513,6 +513,13 @@ set by hand.
     `"publishing":"paused"`; `publish.sh`, `/api/v1`, `/mcp`, the landing drop and the studio all answer
     "Publishing on kept is paused for now…" (`publish.sh` exits 3); pages still serve; rename and delete
     still work. **Unset it** → `"publishing":"on"`.
+  - **Plugins:** in a clone of the mirror, `claude plugin validate .`; in a clean session,
+    `/plugin marketplace add kept-host/skill`, `/plugin install kept@kept` → `claude mcp list` shows
+    `kept` connected and "publish ./demo with kept" works; `gemini extensions install
+    https://github.com/kept-host/skill` → `/mcp` lists kept. Then submit to the Claude plugin directory
+    (claude.ai/directory/manage) and the Cursor Marketplace, and update the status table in
+    [`agents.md`](./agents.md). First add a square PNG icon (512–2048 px, under 2 MB) at
+    `skill/.claude-plugin/icon.png`: the directory takes it only on the first submission.
 
 **Incident lever (E09 task 011):** set `KEPT_PUBLISH_PAUSED=true` on the Railway prod
 service (Railway redeploys; it is read at request time, nothing is baked into the build). Every publish, replace and upload

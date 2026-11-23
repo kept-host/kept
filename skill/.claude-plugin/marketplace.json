@@ -1,5 +1,6 @@
 {
   "name": "kept",
+  "description": "Publish HTML pages and static sites to kept and get a public link, with no account.",
   "owner": {
     "name": "kept"
   },
