@@ -518,8 +518,9 @@ set by hand.
     `kept` connected and "publish ./demo with kept" works; `gemini extensions install
     https://github.com/kept-host/skill` → `/mcp` lists kept. Then submit to the Claude plugin directory
     (claude.ai/directory/manage) and the Cursor Marketplace, and update the status table in
-    [`agents.md`](./agents.md). First add a square PNG icon (512–2048 px, under 2 MB) at
-    `skill/.claude-plugin/icon.png`: the directory takes it only on the first submission.
+    [`agents.md`](./agents.md). The icon is `skill/.claude-plugin/icon.png` (the favicon mascot,
+    512 px, from `brandIconResponse`); the directory takes it only on the first submission, so replace
+    it before then if a better one exists.
 
 **Incident lever (E09 task 011):** set `KEPT_PUBLISH_PAUSED=true` on the Railway prod
 service (Railway redeploys; it is read at request time, nothing is baked into the build). Every publish, replace and upload
