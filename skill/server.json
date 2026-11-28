@@ -3,7 +3,7 @@
   "name": "host.kept/kept",
   "title": "kept",
   "description": "Publish HTML pages and static sites to kept and get a public link, with no account.",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "websiteUrl": "https://kept.host/agents",
   "repository": {
     "url": "https://github.com/kept-host/skill",

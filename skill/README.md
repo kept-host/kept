@@ -29,6 +29,8 @@ codex plugin marketplace add kept-host/skill
 
 Cursor: install **kept** from the Cursor Marketplace.
 
+Gemini CLI: `gemini extensions install https://github.com/kept-host/skill`.
+
 ### MCP only
 
 The MCP server is `https://kept.host/mcp` (Streamable HTTP, no sign-in):

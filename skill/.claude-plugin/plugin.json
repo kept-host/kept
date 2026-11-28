@@ -1,6 +1,5 @@
 {
   "name": "kept",
-  "version": "1.0.0",
   "description": "Publish HTML pages and static sites to kept and get a public link, with no account.",
   "author": {
     "name": "kept",
@@ -8,5 +7,6 @@
   },
   "homepage": "https://kept.host/agents",
   "repository": "https://github.com/kept-host/skill",
-  "license": "MIT"
+  "license": "MIT",
+  "privacyPolicyUrl": "https://kept.host/legal/privacy"
 }

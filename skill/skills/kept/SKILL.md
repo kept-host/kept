@@ -19,6 +19,8 @@ Run `scripts/publish.sh <file-or-folder>`.
 - Add `--spa` for client-routed apps, so unknown paths serve `index.html`.
 - Add `--title "…"` to name the page.
 
+If kept's MCP tools are connected too, they follow the same rules; with a shell, this script is the shortest path for a folder.
+
 ## Always
 
 Show the user **both links**: the live link, and the claim link. Say the page is a draft that serves for 7 days until they open the claim link and keep it.

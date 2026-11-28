@@ -17,8 +17,14 @@ import { KEPT_PROD_ORIGIN, SKILL_NAME, SKILL_REPO, mcpUrl, skillMarkdown, skills
  */
 export const SKILL_BUILD_BASE = KEPT_PROD_ORIGIN;
 
-/** The skill repo's version — the plugins, `server.json` and Codex all read it. */
-export const SKILL_VERSION = "1.0.0";
+/**
+ * The skill repo's version — `server.json`, the Codex, Cursor and Gemini
+ * manifests read it. Bump it when the skill or the tool copy changes, before a
+ * Registry or Cursor resubmission. The Claude Code manifest leaves it out on
+ * purpose: Claude Code only updates a plugin whose version changed, and
+ * without one it follows the mirror's commits.
+ */
+export const SKILL_VERSION = "1.1.0";
 
 /** The MCP Registry schema `server.json` names; vendored at `lib/agents/fixtures/server.schema.json`. */
 export const MCP_REGISTRY_SCHEMA = "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json";
@@ -116,17 +122,27 @@ export function skillFiles(base: string): Record<string, string> {
     // Claude Code (D3): `/plugin marketplace add kept-host/skill`, then `/plugin install kept@kept`.
     ".claude-plugin/plugin.json": json({
       name: SKILL_NAME,
-      version: SKILL_VERSION,
       description,
       author: { name: author.name, url: author.url },
       homepage: `${base}/agents`,
       repository: REPO_URL,
       license: "MIT",
+      privacyPolicyUrl: `${base}/legal/privacy`,
     }),
     ".claude-plugin/marketplace.json": json({
       name: SKILL_NAME,
+      description,
       owner: { name: author.name },
       plugins: [{ name: SKILL_NAME, source: "./", description }],
+    }),
+
+    // Gemini CLI: `gemini extensions install https://github.com/kept-host/skill`
+    // loads `skills/` and this server (`httpUrl` is Gemini's Streamable HTTP field).
+    "gemini-extension.json": json({
+      name: SKILL_NAME,
+      version: SKILL_VERSION,
+      description,
+      mcpServers: { [SKILL_NAME]: { httpUrl: mcp } },
     }),
   };
 }
